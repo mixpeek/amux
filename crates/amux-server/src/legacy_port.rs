@@ -342,14 +342,25 @@ const RETIRED_PORTS: &[u16] = &[8822];
 /// Recycling those lanes is the owner's call (ethos rule 8 — a restart can
 /// interrupt in-flight customer work); this only makes the count visible.
 fn scan_stranded_sessions() -> Vec<serde_json::Value> {
+    scan_stranded_sessions_checked().unwrap_or_default()
+}
+
+/// The same scan, but `None` when `ps` never ran (AF-320).
+///
+/// The difference is load-bearing and used to be invisible. `ps axeww` failing
+/// produced an empty vec, `stranded_count: 0`, and therefore a `ready_to_retire`
+/// verdict computed as though nothing was stranded — a confident yes derived
+/// from a measurement that did not happen. That is the ethos-rule-4 shape this
+/// module's own doc comment warns about, one function below where it says it.
+fn scan_stranded_sessions_checked() -> Option<Vec<serde_json::Value>> {
     // `ps axeww` appends each process's environment (space-separated KEY=VALUE)
     // after its command, on both BSD (macOS) and GNU (the Linux container) ps.
     let output = std::process::Command::new("ps").arg("axeww").output();
     match output {
         Ok(o) if o.status.success() => {
-            parse_stranded(&String::from_utf8_lossy(&o.stdout), RETIRED_PORTS)
+            Some(parse_stranded(&String::from_utf8_lossy(&o.stdout), RETIRED_PORTS))
         }
-        _ => vec![],
+        _ => None,
     }
 }
 
@@ -676,7 +687,21 @@ fn snapshot_with(stranded: Vec<serde_json::Value>) -> serde_json::Value {
 
 /// `GET /api/debug/legacy-port`.
 pub async fn debug() -> axum::Json<serde_json::Value> {
-    axum::Json(snapshot())
+    let scan = scan_stranded_sessions_checked();
+    let body = snapshot_with(scan.clone().unwrap_or_default());
+    // The population the retirement verdict is drawn from: every hit recorded
+    // on a retired port. A zero with `measured: true` is the answer this whole
+    // counter exists to produce; a zero with `measured: false` is a probe that
+    // did not run, and the two used to be the same payload.
+    let hits = body.get("hits_total").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+    axum::Json(match scan {
+        Some(_) => crate::api::measured::measured(body, hits),
+        None => crate::api::measured::unmeasured(
+            body,
+            "`ps axeww` did not run, so stranded_count is 0 by default rather than by \
+             measurement — do not read ready_to_retire from this response",
+        ),
+    })
 }
 
 /// One hour's worth of accounting, as decided rather than as logged.

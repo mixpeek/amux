@@ -1,0 +1,56 @@
+-- Repair `reclaim_skipped.hits`, which two different events were writing with
+-- two different meanings until the fix that ships alongside this migration.
+--
+-- `hits` is read in exactly one place that matters:
+--
+--     WHERE reason='provider' OR (reason='stalled' AND hits >= STALL_HITS_TO_SKIP)
+--
+-- and the constant it is compared against documents the intent: "A directory is
+-- only routed around after it has hung this many separate scans. One observation
+-- is an anecdote, and the cost of believing it is a permanent hole in the scan
+-- that nothing announces."
+--
+-- But the end-of-scan refresh in `run_scan` also did `hits=hits+1`, once per
+-- scan that ROUTED AROUND the path. Being skipped is a consequence of the
+-- exemption, not evidence for it, so every scan after the first voted to keep an
+-- exemption it was already obeying. The threshold became unfalsifiable.
+--
+-- The live table when this was found (2026-08-30, 24 scans of history):
+--
+--     ~/Library/CloudStorage        provider   hits=8
+--     ~/Library/Mobile Documents    provider   hits=8
+--     ~/Downloads                   stalled    hits=10
+--
+-- The provider rows are what make this certain rather than probable: they are
+-- seeded hits=0, and `record_stalled_dir` only ever writes reason='stalled', so
+-- a provider row has NO legitimate route to a nonzero count. All 8 came from the
+-- refresh. ~/Downloads is those same 8 plus 2 real stalls -- and server-rs.log
+-- holds exactly two `walk thread is blocked` lines for it, nine seconds apart on
+-- 2026-08-22, which is ONE incident recorded twice by the two server processes
+-- that share this database.
+--
+-- Removing the increment stops the ratchet but does not undo it: without this
+-- migration ~/Downloads stays excluded from every future scan forever, on
+-- evidence that has now been withdrawn. So the counts are repaired here.
+
+-- Provider rows: 0 is the only defensible value. They are a standing decision,
+-- they apply regardless of `hits`, and every count they carry was manufactured.
+UPDATE reclaim_skipped SET hits = 0 WHERE reason = 'provider';
+
+-- Stalled rows: clamp to 1, which is the most this data can honestly support.
+--
+-- The row's own EXISTENCE is evidence of exactly one stall -- `record_stalled_dir`
+-- inserts with hits=1 -- and every increment past that is unattributable, because
+-- nothing recorded which writer made it. 1 says what is known: "this directory
+-- stalled at least once; corroboration must be re-earned."
+--
+-- Deliberately NOT 0. Zeroing would discard the observation that created the row,
+-- and the anecdote is real data even though it is not yet a verdict.
+--
+-- The cost, stated plainly: a directory that genuinely hung several separate
+-- scans is knocked back to one, so re-establishing its exemption needs one more
+-- stall -- a single extra STALL_ABORT_SECS (300s) wait, once. That is the price
+-- of not being able to tell the two kinds of hit apart retroactively, and it is
+-- the right way round: the failure mode is one slow scan, not a third of a home
+-- directory silently uncovered.
+UPDATE reclaim_skipped SET hits = 1 WHERE reason = 'stalled' AND hits > 1;

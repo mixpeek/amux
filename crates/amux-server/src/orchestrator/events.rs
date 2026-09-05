@@ -860,6 +860,14 @@ mod tests {
                         gate: vec![],
                         depends_on: vec![],
                         tags: vec![],
+                        ask_type: None,
+                        ask_question: None,
+                        ask_unblocks: None,
+                        ask_actor: None,
+                        source: None,
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
                     },
                     1_700_000_000, // 2023: well before "now"
                 )?;

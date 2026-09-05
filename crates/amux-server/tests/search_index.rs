@@ -23,6 +23,7 @@ fn app() -> (axum::Router, Arc<Store>, tempfile::TempDir) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), store, dir)
 }
@@ -341,4 +342,147 @@ async fn archived_cards_stay_searchable_and_carry_the_flag() {
     let (_, v) = get(&app, "/api/search?q=aardvark").await;
     assert_eq!(hit_ids(&v), vec!["T-1"], "archived cards must remain findable: {v}");
     assert_eq!(v["hits"][0]["meta"]["archived"], 1, "the flag must ride along so a client can filter: {v}");
+}
+
+/// TG-3303: a zero from search must say whether the measurement RAN.
+///
+/// ts-gke searched for a card they had created two hours earlier, got
+/// `{"hits":[]}` with HTTP 200, and were one step from re-filing a peer's work
+/// as untracked. Only a known-positive control — searching for a card id they
+/// had personally created that evening — told them the instrument was dead
+/// rather than the data absent.
+///
+/// What makes it worse than a papercut: `/api/board` REFUSES `q=` with a 400
+/// whose own text redirects the caller here. So the documented way to find a
+/// card by content was the one that could silently answer "nothing", and a
+/// caller following the documentation had no reason to doubt the zero. A
+/// silently-empty search does not fail, it AGREES WITH YOU, which makes every
+/// "no prior art exists, I will build it" decision through it unfalsifiable.
+///
+/// THREE CELLS, and the third is the one that stops this being a blunt "503 on
+/// any zero" that would break every legitimate no-match search.
+#[tokio::test]
+async fn an_empty_index_is_an_error_and_a_real_no_match_is_not() {
+    let (app, store, _d) = app();
+
+    // CELL 1 — nothing indexed at all. This cannot answer any query, so a 200
+    // with an empty list is the lie. It is a 503 naming the repair.
+    let (st, v) = get(&app, "/api/search?q=anything").await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "an empty index must not serve a quiet zero: {v}");
+    assert_eq!(v["index_docs"], serde_json::json!(0));
+    assert!(v["error"].as_str().unwrap_or_default().contains("empty"), "{v}");
+    assert!(v["fix"].as_str().unwrap_or_default().contains("reindex"), "name the repair: {v}");
+
+    card(&store, "AM-1", "tunnel relay port", "the long-poll client", None);
+
+    // CELL 2 — the positive control. Without it, a handler that 503'd
+    // everything would pass cell 1 and cell 3 both.
+    let (st, v) = get(&app, "/api/search?q=tunnel").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hit_ids(&v), vec!["AM-1"], "{v}");
+
+    // CELL 3 — a REAL no-match, which must stay a 200. The index has documents
+    // and none of them match, and that is a legitimate answer to a legitimate
+    // question. `index_docs` rides along so the caller can tell this zero from
+    // cell 1's without running a control of their own.
+    let (st, v) = get(&app, "/api/search?q=zzzzznotathing").await;
+    assert_eq!(st, StatusCode::OK, "a genuine no-match is not an error: {v}");
+    assert_eq!(v["hits"].as_array().map(Vec::len), Some(0));
+    assert_eq!(v["index_docs"], serde_json::json!(1), "the zero must publish what was searched: {v}");
+}
+
+// ---------------------------------------------------------------------------
+// AF-499 — the human's own prompts are searchable
+// ---------------------------------------------------------------------------
+
+/// Insert straight into `cmd_history`, for the same reason `card` does: the
+/// claim is that a TRIGGER indexes it, and a test going through the API could
+/// not tell a trigger from a write hook.
+fn prompt(store: &Store, id: i64, session: &str, kind: &str, text: &str) {
+    let (session, kind, text) = (session.to_string(), kind.to_string(), text.to_string());
+    store
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO cmd_history (id, text, type, session, ts, origin, card_id)
+                 VALUES (?1, ?2, ?3, ?4, 1785000000, '', NULL)",
+                rusqlite::params![id, text, kind, session],
+            )?;
+            Ok(amux_server::db::WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
+}
+
+/// THE CELL THIS EXISTS FOR. Reported live: "you ask it a question ... and then
+/// the answer to that question is gonna be lost in the ether." The question was
+/// stored the whole time and no instrument could reach it — measured on the live
+/// DB, 10,569 cmd_history rows against an index that held none of them.
+#[tokio::test]
+async fn a_question_a_human_asked_a_worker_is_findable_afterwards() {
+    let (app, store, _d) = app();
+    prompt(&store, 1, "gtm-engine", "user", "can you check whether the HubSpot token still works");
+    let (st, v) = get(&app, "/api/search?q=HubSpot").await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        hit_ids(&v).contains(&"1".to_string()),
+        "the prompt was not indexed: {v:#}"
+    );
+}
+
+/// The predicate, which is the whole design. cmd_history is mostly MACHINE
+/// traffic — auto-pickup dispatches, peer relays, scheduler commands — 8,923 of
+/// 10,569 rows on the live DB. Indexing those turns a searchable corpus into a
+/// log, which is the thing that stops it discriminating (ethos rule 5).
+#[tokio::test]
+async fn machine_traffic_in_the_same_table_is_not_indexed() {
+    let (app, store, _d) = app();
+    prompt(&store, 1, "gtm-engine", "user", "zebrafish question from a human");
+    prompt(&store, 2, "gtm-engine", "pickup", "zebrafish auto-pickup dispatch");
+    prompt(&store, 3, "gtm-engine", "session", "zebrafish peer relay");
+    prompt(&store, 4, "gtm-engine", "schedule", "zebrafish scheduled command");
+    let (_st, v) = get(&app, "/api/search?q=zebrafish").await;
+    assert_eq!(
+        hit_ids(&v),
+        vec!["1".to_string()],
+        "exactly the human prompt should be indexed, nothing else: {v:#}"
+    );
+}
+
+/// The status view must describe the SAME population the index holds, or a
+/// drifted index reads as a corpus with nothing in it (ethos rule 4). This is
+/// the cell that fails if FAMILIES' predicate and the trigger's disagree.
+#[tokio::test]
+async fn the_status_count_for_prompts_matches_what_is_actually_indexed() {
+    let (app, store, _d) = app();
+    prompt(&store, 1, "a", "user", "one");
+    prompt(&store, 2, "a", "pickup", "two");
+    prompt(&store, 3, "b", "user", "three");
+    let (st, v) = get(&app, "/api/search/status").await;
+    assert_eq!(st, StatusCode::OK);
+    let row = v["families"]
+        .as_array()
+        .and_then(|a| a.iter().find(|t| t["type"] == "prompt").cloned())
+        .unwrap_or_else(|| panic!("no prompt family in status: {v:#}"));
+    assert_eq!(row["live"], 2, "the live count is not the type='user' population: {row:#}");
+    assert_eq!(row["indexed"], 2, "the indexed count disagrees with the source: {row:#}");
+    assert_eq!(row["consistent"], true, "{row:#}");
+    assert_eq!(row["predicate"], "type = 'user'", "the status describes a different population: {row:#}");
+}
+
+/// Deleting the history row removes it from the index. Without this a prompt
+/// someone deleted stays searchable, which is the opposite of what deleting it
+/// meant.
+#[tokio::test]
+async fn deleting_a_prompt_removes_it_from_the_index() {
+    let (app, store, _d) = app();
+    prompt(&store, 7, "a", "user", "kumquat");
+    let (_s, before) = get(&app, "/api/search?q=kumquat").await;
+    assert_eq!(hit_ids(&before), vec!["7".to_string()]);
+    store
+        .write(|conn| {
+            conn.execute("DELETE FROM cmd_history WHERE id = 7", [])?;
+            Ok(amux_server::db::WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
+    let (_s, after) = get(&app, "/api/search?q=kumquat").await;
+    assert!(hit_ids(&after).is_empty(), "a deleted prompt is still searchable: {after:#}");
 }

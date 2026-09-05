@@ -41,7 +41,12 @@ fn builtin_semantics(id: &str) -> Option<(ColumnRole, TerminalBehavior)> {
 /// board in order (the `unknown is not zero` rule).
 pub fn load_workflow(conn: &Connection) -> Option<BoardWorkflow> {
     let mut stmt = conn
-        .prepare("SELECT id, label, position, COALESCE(gate,''), COALESCE(mode,'implicit') FROM statuses ORDER BY position")
+        .prepare(
+            "SELECT id, label, position, COALESCE(gate,''), COALESCE(mode,'implicit'), \
+             purpose, entry_conditions, responsible_role, allowed_actions, \
+             required_outputs, failure_transition, target_sla_seconds \
+             FROM statuses ORDER BY position"
+        )
         .ok()?;
     let cols: Vec<BoardColumn> = stmt
         .query_map([], |r| {
@@ -50,11 +55,22 @@ pub fn load_workflow(conn: &Connection) -> Option<BoardWorkflow> {
             let position: i64 = r.get(2)?;
             let gate_json: String = r.get(3)?;
             let _mode: String = r.get(4)?;
-            Ok((id, label, position, gate_json))
+            let purpose: Option<String> = r.get(5)?;
+            let entry_conditions: Option<String> = r.get(6)?;
+            let responsible_role: Option<String> = r.get(7)?;
+            let allowed_actions_json: Option<String> = r.get(8)?;
+            let required_outputs_json: Option<String> = r.get(9)?;
+            let failure_transition: Option<String> = r.get(10)?;
+            let target_sla_seconds: Option<i64> = r.get(11)?;
+            Ok((id, label, position, gate_json, purpose, entry_conditions,
+                responsible_role, allowed_actions_json, required_outputs_json,
+                failure_transition, target_sla_seconds))
         })
         .ok()?
         .flatten()
-        .map(|(id, label, position, gate_json)| {
+        .map(|(id, label, position, gate_json, purpose, entry_conditions,
+               responsible_role, allowed_actions_json, required_outputs_json,
+               failure_transition, target_sla_seconds)| {
             let (role, terminal) = builtin_semantics(&id)
                 .unwrap_or((ColumnRole::Custom, TerminalBehavior::NonTerminal));
             BoardColumn {
@@ -65,6 +81,13 @@ pub fn load_workflow(conn: &Connection) -> Option<BoardWorkflow> {
                 terminal,
                 gate_criteria: parse_gate_json(&gate_json),
                 applies_to_types: None,
+                purpose,
+                entry_conditions,
+                responsible_role,
+                allowed_actions: parse_string_array_json(allowed_actions_json.as_deref()),
+                required_outputs: parse_string_array_json(required_outputs_json.as_deref()),
+                failure_transition: failure_transition.map(ColumnId::new),
+                target_sla_seconds,
             }
         })
         .collect();
@@ -72,6 +95,14 @@ pub fn load_workflow(conn: &Connection) -> Option<BoardWorkflow> {
         return None;
     }
     Some(BoardWorkflow::new(cols))
+}
+
+fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
+    match raw {
+        None => Vec::new(),
+        Some(s) if s.trim().is_empty() => Vec::new(),
+        Some(s) => serde_json::from_str::<Vec<String>>(s).unwrap_or_default(),
+    }
 }
 
 /// `statuses.gate` is a JSON array of criterion strings (Python's shape).
@@ -103,7 +134,10 @@ mod tests {
         c.execute_batch(
             "CREATE TABLE statuses (id TEXT PRIMARY KEY, label TEXT NOT NULL,
                 position INTEGER NOT NULL DEFAULT 0, is_builtin INTEGER NOT NULL DEFAULT 0,
-                gate TEXT, mode TEXT NOT NULL DEFAULT 'implicit');",
+                gate TEXT, mode TEXT NOT NULL DEFAULT 'implicit',
+                purpose TEXT, entry_conditions TEXT, responsible_role TEXT,
+                allowed_actions TEXT, required_outputs TEXT,
+                failure_transition TEXT, target_sla_seconds INTEGER);",
         )
         .unwrap();
         // Exactly the live production seed.

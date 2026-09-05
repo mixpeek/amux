@@ -78,7 +78,7 @@ use serde_json::json;
 
 use crate::api::AppState;
 
-const JOB: &str = "status-history";
+const JOB: &str = super::registry::ids::STATUS_HISTORY;
 const TICK_SECS: u64 = 20;
 pub const EVENT: &str = "session.status_decided";
 
@@ -95,7 +95,7 @@ fn retention_days() -> f64 {
 }
 
 pub fn tick_secs() -> u64 {
-    std::env::var("AMUX_STATUS_HISTORY_SECS")
+    std::env::var(super::per_job_disable_var(JOB))
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|s: &u64| *s >= 5)

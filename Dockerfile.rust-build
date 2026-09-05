@@ -1,0 +1,15 @@
+# Fast, per-commit remote build. Used by scripts/rust-remote-build.sh on
+# every auto-builder tick — assumes amux-rust-base (Dockerfile.rust-base)
+# already exists on the remote host with the toolchain + dependency cache
+# warm, so this is just "copy fresh source, incremental compile", not a
+# from-scratch toolchain install.
+#
+# No hostnames, no secrets in this file — those live in AMUX_REMOTE_BUILD_HOST
+# (~/.amux/server.env, private/gitignored), this file is in a public repo.
+FROM amux-rust-base
+SHELL ["/bin/bash", "-c"]
+WORKDIR /build
+COPY . .
+RUN rm -f .cargo/config.toml
+ENV CARGO_TARGET_DIR=/build/target
+RUN source /root/.cargo/env && cargo build --release -p amux-server

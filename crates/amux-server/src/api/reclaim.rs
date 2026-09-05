@@ -290,6 +290,73 @@ fn record_stalled_dir(store: &crate::db::SharedStore, path: String, detail: Stri
     }
 }
 
+/// Mark the skip rows a scan leaned on as still live. `last_seen` ONLY.
+///
+/// The `hits` column answers exactly one question — "how many separate scans
+/// has this directory HUNG?" — because that is the question
+/// `STALL_HITS_TO_SKIP` is asked: a directory is routed around only after a
+/// second scan corroborates the first, since one observation is an anecdote
+/// and the cost of believing it is a silent permanent hole in the scan.
+///
+/// This function used to do `hits=hits+1` alongside the `last_seen` write, and
+/// that turned the threshold into a ratchet that manufactured its own evidence.
+/// Being skipped is a CONSEQUENCE of the exemption, not corroboration for it,
+/// so counting it meant every subsequent scan voted to keep the exemption it
+/// was already obeying. Once a path crossed the threshold once it could never
+/// fall back below it, could never be re-tested, and `hits` could no longer
+/// distinguish "hung ten scans" from "hung once and was avoided nine times".
+///
+/// It is not hypothetical — this is what the live table looked like when it was
+/// found (2026-08-30, amux.db, 24 scans of history):
+///
+/// ```text
+/// path                              reason    hits
+/// ~/Library/CloudStorage            provider     8
+/// ~/Library/Mobile Documents        provider     8
+/// ~/Downloads                       stalled     10
+/// ```
+///
+/// The two `provider` rows are the proof, and they are why this is certain
+/// rather than likely. Provider rows are seeded `hits=0` and `record_stalled_dir`
+/// only ever writes `reason='stalled'`, so a provider row has no legitimate path
+/// to a nonzero count at all — every one of those 8 came from here. `~/Downloads`
+/// is the same 8 plus the 2 genuine stalls it did record, and server-rs.log
+/// contains exactly two `walk thread is blocked` lines for it, nine seconds
+/// apart on 2026-08-22, one incident seen by both servers.
+///
+/// So `~/Downloads` — a directory that answers readdir in ~2s with 318 entries —
+/// was permanently excluded from disk reclaim on the strength of one contended
+/// moment, and the counter that would have let anyone notice was being inflated
+/// by the exclusion itself. The sibling test
+/// `provider_roots_seed_as_skips_and_can_be_cleared` warns in its own doc comment
+/// that "a one-way ratchet would let the scan's coverage shrink silently over
+/// time, which is worse than the hang it is avoiding: a hang is visible". This
+/// was that ratchet, one function away from the test that named it.
+///
+/// This is its own function rather than three lines inline in `run_scan` for one
+/// reason: inline it could not be called from a test, so nothing in the suite
+/// could ever observe what it did to `hits`. The suite covered
+/// `record_stalled_dir` — the increment that was CORRECT — and had no reach at
+/// all into the one that was wrong.
+fn touch_skips(store: &crate::db::SharedStore, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let now = now_secs();
+    let res = store.write(move |c| {
+        for p in &paths {
+            c.execute(
+                "UPDATE reclaim_skipped SET last_seen=?2 WHERE path=?1",
+                rusqlite::params![p, now],
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    });
+    if let Err(e) = res {
+        tracing::error!(error = %e, "failed to refresh reclaim skip last_seen");
+    }
+}
+
 // ── volume state ─────────────────────────────────────────────────────────────
 
 pub(crate) fn now_secs() -> i64 {
@@ -1312,18 +1379,7 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     let n_skipped = hit_skips.len();
-    if !hit_skips.is_empty() {
-        let now = now_secs();
-        let _ = store.write(move |c| {
-            for p in &hit_skips {
-                c.execute(
-                    "UPDATE reclaim_skipped SET last_seen=?2, hits=hits+1 WHERE path=?1",
-                    rusqlite::params![p, now],
-                )?;
-            }
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        });
-    }
+    touch_skips(&store, hit_skips);
 
     // Snapshot-held space as a first-class finding. Without this the UI shows
     // a big reclaimable total that the disk will not actually hand back.
@@ -2493,5 +2549,95 @@ mod tests {
         assert_eq!(reason, "stalled");
         assert!(detail.contains("45s"), "detail must carry the stall duration: {detail}");
         assert_eq!(hits, 2, "a repeat stall must increment rather than insert a second row");
+    }
+
+    /// Being routed around must not COUNT as evidence for being routed around.
+    ///
+    /// `STALL_HITS_TO_SKIP` asks "how many separate scans has this directory
+    /// hung?", so only a stall may answer it. The end-of-scan refresh used to
+    /// answer it too, which made the exemption self-certifying: every scan that
+    /// obeyed the skip cast a vote to keep it, and a path that crossed the
+    /// threshold once could never come back.
+    ///
+    /// The regression this pins is not theoretical. ~/Downloads reached hits=10
+    /// on two real stalls nine seconds apart (one incident, seen by both server
+    /// processes) plus eight scans that merely walked past it, and was excluded
+    /// from disk reclaim for eight days on that arithmetic.
+    #[test]
+    fn being_routed_around_does_not_corroborate_a_skip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: crate::db::SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
+        let victim = "/Users/someone/Downloads";
+        let victim_path = PathBuf::from(victim);
+
+        record_stalled_dir(&store, victim.into(), "quiet 300s".into());
+        assert!(
+            !load_skips(&store).contains(&victim_path),
+            "one stall is an observation, not an exemption"
+        );
+
+        // Ten scans route around it. Under the old code each of these did
+        // hits=hits+1, so the FIRST one alone crossed STALL_HITS_TO_SKIP and
+        // the directory was exempt from then on.
+        for _ in 0..10 {
+            touch_skips(&store, vec![victim.to_string()]);
+        }
+
+        let hits: i64 = store
+            .read()
+            .expect("read")
+            .query_row("SELECT hits FROM reclaim_skipped WHERE path=?1", [victim], |r| r.get(0))
+            .expect("row");
+        assert_eq!(hits, 1, "hits counts stalls only; ten skips must add none, got {hits}");
+        assert!(
+            !load_skips(&store).contains(&victim_path),
+            "a directory must not become permanently exempt by being skipped"
+        );
+
+        // CONTROL. Without this the assertion above would also pass if the
+        // threshold had simply stopped working, which is the opposite bug and a
+        // worse one -- a scan that hangs forever on a genuinely dead mount.
+        record_stalled_dir(&store, victim.into(), "quiet 300s".into());
+        assert!(
+            load_skips(&store).contains(&victim_path),
+            "a second REAL stall must still exempt the directory"
+        );
+    }
+
+    /// last_seen still moves, which is the whole reason the refresh exists:
+    /// a skip row nothing has hit lately may be a fossil, and only a moving
+    /// last_seen can tell a live exemption from one whose filesystem came back.
+    #[test]
+    fn touching_a_skip_moves_last_seen_without_touching_hits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: crate::db::SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
+        let p = "/mnt/slow";
+
+        store
+            .write(move |c| {
+                c.execute(
+                    "INSERT INTO reclaim_skipped (path, reason, detail, first_seen, last_seen, hits)
+                     VALUES (?1,'stalled','seeded',100,100,1)",
+                    [p],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .expect("seed");
+
+        touch_skips(&store, vec![p.to_string()]);
+
+        let (last_seen, hits): (i64, i64) = store
+            .read()
+            .expect("read")
+            .query_row(
+                "SELECT last_seen, hits FROM reclaim_skipped WHERE path=?1",
+                [p],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("row");
+        assert!(last_seen > 100, "last_seen must advance, got {last_seen}");
+        assert_eq!(hits, 1, "hits must be untouched by a refresh");
     }
 }

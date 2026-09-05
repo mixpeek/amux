@@ -7,18 +7,18 @@ amux service watchdog — EXTERNAL liveness for the rust server (com.amux.server
 Three things watch the server, and they cover different failures. Keeping them
 straight is the whole design:
 
-  * **launchd `KeepAlive`** (com.amux.server-rs.plist) restarts a process that
-    EXITS. It cannot see a process that is alive and wedged — from launchd's
-    vantage a spinning server and a working one are identical.
+  * **launchd `KeepAlive`** (com.amux.server-rs.plist) normally restarts a
+    process that EXITS. It cannot see a process that is alive and wedged, and a
+    newly replaced ad-hoc-signed binary can leave it stuck at EX_CONFIG until
+    the agent registration is refreshed.
   * **The in-process invariant monitor** (`crates/amux-server/src/invariants/`)
     checks SEAMS on a 30s tick: route contract, config provenance, queue
     liveness. It is excellent at "two subsystems disagree" and structurally
     blind to "this process is dead", because if the process wedges the monitor
     wedges with it. A monitor cannot report its own death.
-  * **This file** covers the gap neither can: the process is ALIVE, holds the
-    port, and does not answer `/health`. That failure mode is not hypothetical
-    here — `/health` returns `store:"hung"` + HTTP 503 precisely because the
-    store has been observed unable to answer while the process looked fine.
+  * **This file** covers both gaps: a process is ALIVE but does not answer
+    `/health`, or launchd has failed to restore a dead listener. Both failure
+    modes have occurred on this host.
 
 So the watchdog is retargeted, not retired (AMUX-2618). What it is NOT allowed
 to do is anything the other two already do, or anything a human should decide.
@@ -48,10 +48,10 @@ state.
 `connection refused` and `connected but silent` are different faults with
 different owners, and collapsing them is what made this thing noisy:
 
-  * **refused** — nothing is listening. launchd owns it, and on this machine the
-    server also restarts on every rebuild, so short bursts of refusal are
-    NORMAL. Kickstarting here races the rebuild. We only escalate if it stays
-    down long enough that KeepAlive has demonstrably failed.
+  * **refused** — nothing is listening. Short self-adoption gaps are normal, but
+    two consecutive observations mean KeepAlive has demonstrably failed. The
+    watchdog first kickstarts the exact service and, if macOS still reports a
+    dead service, reloads that service's exact plist before escalating.
   * **hung / degraded** — the port answers but `/health` does not, or answers
     `store != ok`. Nobody else can see this. This is the one case we act on.
 
@@ -90,6 +90,12 @@ AMUX_PORT = int(os.environ.get("AMUX_RS_PORT", os.environ.get("AMUX_PORT", 8824)
 _SCHEME = "https" if IS_MACOS else "http"
 HEALTH_URL = os.environ.get("WATCHDOG_HEALTH_URL", f"{_SCHEME}://localhost:{AMUX_PORT}/health")
 LAUNCHD_LABEL = os.environ.get("WATCHDOG_LAUNCHD_LABEL", "com.amux.server-rs")
+LAUNCHD_PLIST = Path(
+    os.environ.get(
+        "WATCHDOG_LAUNCHD_PLIST",
+        str(Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"),
+    )
+)
 DRY_RUN = os.environ.get("WATCHDOG_DRY_RUN") == "1"
 
 LOG_FILE = Path(os.environ.get("WATCHDOG_LOG", str(Path.home() / ".amux" / "logs" / "watchdog.log")))
@@ -101,10 +107,10 @@ CHECK_INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", 30))
 # Consecutive HUNG observations before we kickstart. 3 x 30s = 90s of a process
 # holding the port and not answering.
 HUNG_THRESHOLD = int(os.environ.get("WATCHDOG_HUNG_THRESHOLD", 3))
-# Consecutive DOWN (refused) observations before we merely SAY SO. Deliberately
-# long: launchd KeepAlive plus the rebuild-on-save loop produce short refusals
-# many times a day, and 139 of the old log's alarms were exactly that.
-DOWN_ESCALATE = int(os.environ.get("WATCHDOG_DOWN_ESCALATE", 20))
+# Consecutive DOWN (refused) observations before recovery. Two 30s observations
+# ignore the ordinary sub-5s self-adoption gap but cap a client-visible outage at
+# roughly one minute instead of the old ten-minute diagnostic-only path.
+DOWN_ESCALATE = int(os.environ.get("WATCHDOG_DOWN_ESCALATE", 2))
 # Don't kickstart more than once per this window — a crash-looping service is
 # not fixed by restarting it faster, and the restart storm looks like the fault.
 KICKSTART_COOLDOWN = int(os.environ.get("WATCHDOG_KICKSTART_COOLDOWN", 300))
@@ -254,11 +260,58 @@ def _find_server_pid() -> int | None:
         return None
 
 
-def restart_server() -> bool:
+def _reload_launch_agent(target: str) -> bool:
+    """Reload the one exact server plist after launchd itself is wedged.
+
+    This is intentionally narrower than restarting arbitrary services: the
+    label and plist are fixed by this watchdog's configuration, and it only runs
+    after the canonical listener has already failed repeated probes.
+    """
+    plist = LAUNCHD_PLIST
+    if not plist.is_file():
+        log(f"launchd reload refused — plist does not exist: {plist}")
+        return False
+    domain = f"gui/{os.getuid()}"
+    if DRY_RUN:
+        log(f"DRY RUN — would reload {plist} in {domain} and kickstart {target}")
+        return True
+    try:
+        # bootout returns non-zero when already unloaded; that is an acceptable
+        # precondition for bootstrap and must not suppress the actual repair.
+        subprocess.run(
+            ["launchctl", "bootout", domain, str(plist)],
+            capture_output=True,
+            timeout=10,
+        )
+        boot = subprocess.run(
+            ["launchctl", "bootstrap", domain, str(plist)],
+            capture_output=True,
+            timeout=10,
+        )
+        if boot.returncode != 0:
+            err = (boot.stderr or b"").decode().strip()
+            log(f"launchd bootstrap failed (rc={boot.returncode}) plist={plist}: {err}")
+            return False
+        subprocess.run(["launchctl", "enable", target], capture_output=True, timeout=5)
+        start = subprocess.run(
+            ["launchctl", "kickstart", target], capture_output=True, timeout=15
+        )
+        if start.returncode != 0:
+            err = (start.stderr or b"").decode().strip()
+            log(f"launchd kickstart after reload failed (rc={start.returncode}): {err}")
+            return False
+        log(f"launchd agent reloaded from {plist}")
+        return True
+    except Exception as e:
+        log(f"launchd agent reload failed: {e}")
+        return False
+
+
+def restart_server(reload_if_needed: bool = False) -> bool:
     """Kickstart the rust service and wait for it to answer.
 
-    Only ever called for hung/degraded — never for `down`, where launchd's
-    KeepAlive is already the mechanism and a kickstart would just race it."""
+    For a persistent `down`, optionally re-register the exact launch agent when
+    a normal kickstart cannot recover it."""
     global _last_kickstart
     now = time.time()
     if now - _last_kickstart < KICKSTART_COOLDOWN:
@@ -273,6 +326,7 @@ def restart_server() -> bool:
 
     if IS_MACOS:
         log(f"restarting via launchctl kickstart -k {target}")
+        kick_ok = True
         try:
             r = subprocess.run(
                 ["launchctl", "kickstart", "-k", target], capture_output=True, timeout=15
@@ -283,10 +337,13 @@ def restart_server() -> bool:
                 # mismatch instead of inferring it from a silent no-op.
                 err = (r.stderr or b"").decode().strip()
                 log(f"launchctl kickstart failed (rc={r.returncode}) label={LAUNCHD_LABEL}: {err}")
-                return False
+                kick_ok = False
         except Exception as e:
             log(f"launchctl restart failed: {e}")
-            return False
+            kick_ok = False
+        if not kick_ok:
+            if not reload_if_needed or not _reload_launch_agent(target):
+                return False
     else:
         pid = _find_server_pid()
         if not pid:
@@ -311,6 +368,15 @@ def restart_server() -> bool:
         if verdict == "ok":
             log("server healthy again after restart")
             return True
+    if IS_MACOS and reload_if_needed and kick_ok:
+        log("server still down after kickstart — reloading its launch agent")
+        if _reload_launch_agent(target):
+            for _ in range(6):
+                time.sleep(5)
+                verdict, _detail = probe()
+                if verdict == "ok":
+                    log("server healthy again after launch-agent reload")
+                    return True
     log("server still not healthy after restart")
     return False
 
@@ -402,14 +468,16 @@ def run():
         elif verdict == "down":
             _consecutive_down += 1
             _consecutive_hung = 0
-            # Info, not alarm: launchd KeepAlive owns process death and the
-            # rebuild-on-save loop makes brief refusals routine.
+            # Brief refusals are expected during self-adoption. Persistent
+            # refusal is actionable because launchd can itself be stuck.
             log(f"down ({_consecutive_down}/{DOWN_ESCALATE}) — {detail}")
             if _consecutive_down >= DOWN_ESCALATE:
-                escalate(
-                    f"server has been unreachable for ~{_consecutive_down * CHECK_INTERVAL}s "
-                    f"— launchd KeepAlive on {LAUNCHD_LABEL} has not brought it back"
-                )
+                log("down threshold reached — recovering the canonical listener")
+                if not restart_server(reload_if_needed=True):
+                    escalate(
+                        f"server has been unreachable for ~{_consecutive_down * CHECK_INTERVAL}s "
+                        f"— kickstart and launch-agent reload did not recover {LAUNCHD_LABEL}"
+                    )
                 _consecutive_down = 0
 
         else:  # hung | degraded

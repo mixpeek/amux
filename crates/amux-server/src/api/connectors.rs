@@ -88,6 +88,15 @@ enum Auth {
         callback_path: &'static str,
         scopes: &'static str,
     },
+    /// Username + password exchanged server-side for a session token — no
+    /// browser redirect, no client secret. Self-hosted services (Mattermost)
+    /// also need a configurable server URL, since unlike Slack/Google there
+    /// is no single fixed public API host.
+    LoginPassword {
+        username_env: &'static str,
+        password_env: &'static str,
+        base_url_env: &'static str,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -192,10 +201,234 @@ const REGISTRY: &[Provider] = &[
         docs: "https://api.slack.com/apps",
         test_url: "https://slack.com/api/auth.test",
     },
+    Provider {
+        id: "telegram",
+        label: "Telegram",
+        category: "Chat",
+        auth: Auth::ApiKey { key_env: "TELEGRAM_BOT_TOKEN" },
+        // No OAuth, no server URL to configure — one bot token, and the
+        // `runtime_jobs::telegram_poll` long-poll loop (no public endpoint
+        // needed, unlike a webhook) picks it up on the next server restart.
+        // Chats link themselves to a session by sending `/link <session>` to
+        // the bot; `/api/telegram/mappings` is the operator-side view.
+        setup_note: "Message @BotFather on Telegram, /newbot, paste the token it gives you. No webhook/public URL needed — amux polls. After saving, restart the server so the poll loop picks up the token, then send /link <session> to the bot from Telegram.",
+        docs: "https://core.telegram.org/bots#how-do-i-create-a-bot",
+        test_url: "",
+    },
+    Provider {
+        id: "mattermost",
+        label: "Mattermost",
+        category: "Chat",
+        auth: Auth::LoginPassword {
+            username_env: "MATTERMOST_LOGIN",
+            password_env: "MATTERMOST_PASSWORD",
+            base_url_env: "MATTERMOST_URL",
+        },
+        // Self-hosted: no fixed docs/console URL, no fixed test_url — the
+        // server is wherever MATTERMOST_URL says it is (see mattermost_test_url).
+        setup_note: "Self-hosted Mattermost. Paste the server URL (e.g. https://chat.example.com, no trailing slash), plus a login and password — a personal access token works too as the password.",
+        docs: "",
+        test_url: "",
+    },
 ];
 
 fn provider(id: &str) -> Option<&'static Provider> {
     REGISTRY.iter().find(|p| p.id == id)
+}
+
+// ---------------------------------------------------------------------------
+// USER-DEFINED CONNECTORS (AMUX-3993)
+//
+// The registry above is a const table, which the module header calls "one row"
+// to add a connector. That row is a CODE EDIT: it needs a rebuild, a commit and
+// a deploy before Ethan can paste a key. For a connector whose only novelty is
+// "this vendor wants an API key in this env var", that is the whole cost, and it
+// is why the tab could show six providers and no way to add a seventh.
+//
+// So a connector may also be DECLARED AT RUNTIME and stored as data. Everything
+// else is unchanged and deliberately so:
+//
+//   * values still go to ~/.amux/server.env via set_server_env_key — the one
+//     place credential VALUES live. This store holds NAMES ONLY: the id, the
+//     label, and which env vars to ask for. Never a secret.
+//   * scope still comes from the `connectors` capability in scope.rs, which
+//     already has global/group/worker. Nothing here re-implements scoping.
+//
+// A custom row and a builtin row are resolved through ONE seam ([`def_of`]) and
+// rendered by one loop, rather than the tab growing a second list with its own
+// rules. That is the mistake this module's header warns about.
+// ---------------------------------------------------------------------------
+
+/// Where user-declared connectors live. NAMES ONLY — no credential value ever
+/// enters this file, so it is not a secret store and does not need the
+/// server.env handling.
+fn custom_store_path(home: &std::path::Path) -> PathBuf {
+    home.join("connectors").join("custom.json")
+}
+
+/// A connector Ethan declared in the tab.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct CustomProvider {
+    id: String,
+    label: String,
+    #[serde(default)]
+    category: String,
+    /// "api_key" or "oauth2".
+    kind: String,
+    /// api_key
+    #[serde(default)]
+    key_env: String,
+    /// oauth2
+    #[serde(default)]
+    client_id_env: String,
+    #[serde(default)]
+    client_secret_env: String,
+    #[serde(default)]
+    authorize_url: String,
+    #[serde(default)]
+    token_url: String,
+    #[serde(default)]
+    scopes: String,
+    #[serde(default)]
+    setup_note: String,
+    #[serde(default)]
+    docs: String,
+    #[serde(default)]
+    test_url: String,
+}
+
+fn load_custom(home: &std::path::Path) -> Vec<CustomProvider> {
+    std::fs::read_to_string(custom_store_path(home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<CustomProvider>>(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_custom(home: &std::path::Path, list: &[CustomProvider]) -> std::io::Result<()> {
+    let path = custom_store_path(home);
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let body = serde_json::to_string_pretty(list).unwrap_or_else(|_| "[]".into());
+    std::fs::write(&path, body)
+}
+
+/// The owned, source-agnostic view of a connector.
+///
+/// Builtins are `&'static`; custom ones are read off disk and cannot be. Rather
+/// than leak custom strings into 'static (which grows on every reload, since the
+/// store is re-read per request) or run two parallel code paths, both sources
+/// convert into this one owned type.
+#[derive(Clone)]
+struct Def {
+    id: String,
+    label: String,
+    category: String,
+    kind: &'static str,
+    env_keys: Vec<String>,
+    /// oauth2 only; empty for api_key.
+    authorize_url: String,
+    token_url: String,
+    scopes: String,
+    setup_note: String,
+    docs: String,
+    test_url: String,
+    /// False for rows declared in the tab — the UI offers Delete only on those,
+    /// and the delete endpoint refuses a builtin rather than silently no-oping.
+    builtin: bool,
+}
+
+impl From<&'static Provider> for Def {
+    fn from(p: &'static Provider) -> Def {
+        let (kind, authorize_url, token_url, scopes) = match p.auth {
+            Auth::ApiKey { .. } => ("api_key", String::new(), String::new(), String::new()),
+            Auth::OAuth2 { scopes, .. } => ("oauth2", String::new(), String::new(), scopes.to_string()),
+            Auth::LoginPassword { .. } => {
+                ("login_password", String::new(), String::new(), String::new())
+            }
+        };
+        Def {
+            id: p.id.to_string(),
+            label: p.label.to_string(),
+            category: p.category.to_string(),
+            kind,
+            env_keys: env_keys(p).into_iter().map(str::to_string).collect(),
+            authorize_url,
+            token_url,
+            scopes,
+            setup_note: p.setup_note.to_string(),
+            docs: p.docs.to_string(),
+            test_url: p.test_url.to_string(),
+            builtin: true,
+        }
+    }
+}
+
+impl From<&CustomProvider> for Def {
+    fn from(c: &CustomProvider) -> Def {
+        let (kind, env_keys) = if c.kind == "oauth2" {
+            ("oauth2", vec![c.client_id_env.clone(), c.client_secret_env.clone()])
+        } else {
+            ("api_key", vec![c.key_env.clone()])
+        };
+        Def {
+            id: c.id.clone(),
+            label: c.label.clone(),
+            category: if c.category.trim().is_empty() {
+                "Custom".to_string()
+            } else {
+                c.category.clone()
+            },
+            kind,
+            env_keys: env_keys.into_iter().filter(|k| !k.trim().is_empty()).collect(),
+            authorize_url: c.authorize_url.clone(),
+            token_url: c.token_url.clone(),
+            scopes: c.scopes.clone(),
+            setup_note: c.setup_note.clone(),
+            docs: c.docs.clone(),
+            test_url: c.test_url.clone(),
+            builtin: false,
+        }
+    }
+}
+
+/// Every connector, builtin first then declared. THE one place the two sources
+/// are joined.
+fn defs(home: &std::path::Path) -> Vec<Def> {
+    let mut out: Vec<Def> = REGISTRY.iter().map(Def::from).collect();
+    out.extend(load_custom(home).iter().map(Def::from));
+    out
+}
+
+/// Resolve one connector from either source.
+fn def_of(home: &std::path::Path, id: &str) -> Option<Def> {
+    defs(home).into_iter().find(|d| d.id == id)
+}
+
+/// The env-var NAMES a connector declares, builtin or declared (AMUX-3994).
+///
+/// Exported so the `.mdai` engine can resolve a `connector:`-backed fetch
+/// without duplicating the registry or reading credentials itself: mdai asks
+/// for the NAMES, then reads the value from server.env like everything else.
+pub fn env_keys_for(home: &std::path::Path, id: &str) -> Option<Vec<String>> {
+    def_of(home, id).map(|d| d.env_keys)
+}
+
+/// A connector id must be safe to use as a path component (the token store is
+/// `~/.amux/connectors/<id>/`) and as a JSON key. Rejects rather than sanitises:
+/// a silently-rewritten id is one the caller cannot find again.
+fn valid_connector_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// An env var name Ethan may declare. Same reasoning: reject, do not rewrite.
+fn valid_env_name(k: &str) -> bool {
+    !k.is_empty()
+        && k.len() <= 128
+        && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && !k.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
 /// The env-var NAMES a provider needs, in paste order. OAuth needs two (client
@@ -208,6 +441,11 @@ fn env_keys(p: &Provider) -> Vec<&'static str> {
             client_secret_env,
             ..
         } => vec![client_id_env, client_secret_env],
+        Auth::LoginPassword {
+            username_env,
+            password_env,
+            base_url_env,
+        } => vec![base_url_env, username_env, password_env],
     }
 }
 
@@ -384,6 +622,91 @@ fn google_union_scopes(requesting: &Provider) -> String {
     set.into_iter().collect::<Vec<_>>().join(" ")
 }
 
+/// Plain-words capability for one OAuth scope, and whether it is DESTRUCTIVE.
+///
+/// AF-500. A user watched a worker delete a shared Google Sheet and asked two
+/// questions the product could not answer: "do I want to give it so much
+/// permission?" and "why did it delete the sheet?" Their worry was correct and
+/// understated: `google_union_scopes` unions every Google provider's scopes, so
+/// authorizing ANY Google connector — connecting Gmail for email, say — also
+/// requests `auth/drive`, which is full Drive including permanent deletion, and
+/// hands it to every worker. The auth response said "One approval per account"
+/// and listed nothing.
+///
+/// Returning `None` for an unmapped scope would let a new scope be added and
+/// silently vanish from the disclosure, which understates a grant in exactly the
+/// direction that matters. Unknown scopes are listed verbatim instead.
+fn scope_capability(scope: &str) -> (String, bool) {
+    match scope {
+        "https://www.googleapis.com/auth/drive" => (
+            "Google Drive — read, edit, CREATE AND PERMANENTLY DELETE any file in this \
+             account's Drive, including files other people shared with it"
+                .into(),
+            true,
+        ),
+        "https://www.googleapis.com/auth/drive.file" => (
+            "Google Drive — only files this app created or the account explicitly opened \
+             with it; it cannot see or delete anything else"
+                .into(),
+            false,
+        ),
+        "https://www.googleapis.com/auth/documents" => {
+            ("Google Docs — read and edit document content".into(), false)
+        }
+        "https://www.googleapis.com/auth/gmail.modify" => (
+            "Gmail — read, write, and DELETE mail and drafts in this mailbox".into(),
+            true,
+        ),
+        "https://www.googleapis.com/auth/gmail.send" => {
+            ("Gmail — send mail AS this account".into(), true)
+        }
+        "https://www.googleapis.com/auth/gmail.settings.basic" => {
+            ("Gmail — change settings such as filters, forwarding and signatures".into(), true)
+        }
+        "https://www.googleapis.com/auth/calendar" => (
+            "Google Calendar — read, create, edit and DELETE events".into(),
+            true,
+        ),
+        "https://www.googleapis.com/auth/userinfo.email" => {
+            ("Read this account's email address".into(), false)
+        }
+        s if s.ends_with(".readonly") => (format!("Read-only: {s}"), false),
+        s => (format!("{s} (amux has no plain-words description for this scope yet)"), false),
+    }
+}
+
+/// The whole grant, in the order a human should read it: what it permits, and
+/// which of those are destructive.
+///
+/// Every scope appears exactly once in `permits`, so the count is a real
+/// denominator rather than a list that quietly drops what it does not recognise.
+fn describe_grant(scope: &str) -> Value {
+    let mut permits = Vec::new();
+    let mut destructive = Vec::new();
+    for s in scope.split_whitespace() {
+        let (text, danger) = scope_capability(s);
+        if danger {
+            destructive.push(text.clone());
+        }
+        permits.push(text);
+    }
+    json!({
+        "scope_count": scope.split_whitespace().count(),
+        "permits": permits,
+        "destructive": destructive,
+        "summary": if destructive.is_empty() {
+            "This grant permits no destructive action.".to_string()
+        } else {
+            format!(
+                "THIS ONE APPROVAL GIVES EVERY WORKER {} DESTRUCTIVE CAPABILITIES on this \
+                 account, listed under `destructive`. A worker can act on them without asking \
+                 again. Approve only if that is what you want.",
+                destructive.len()
+            )
+        },
+    })
+}
+
 fn pending_path(home: &std::path::Path) -> PathBuf {
     home.join("connectors").join("pending.json")
 }
@@ -489,6 +812,42 @@ fn write_store_file(path: &std::path::Path, body: &Value) -> std::io::Result<()>
     Ok(())
 }
 
+/// `POST {base}/api/v4/users/login` — Mattermost's login endpoint. Goes
+/// through the shared `HttpTransport` trait's `post_json_with_header` (added
+/// alongside this fix): the session token comes back in the `Token` RESPONSE
+/// HEADER, not the JSON body, which the trait's plain `(status, body)`-shaped
+/// methods cannot carry — `post_json_with_header` exists for exactly that
+/// shape. Going through the trait (rather than a private `reqwest::Client`,
+/// as this function used to) is what makes this branch of `begin_auth`
+/// reachable by the existing `MockHttp`/`app_with` test harness; see the
+/// `login_password_...` tests below. A personal access token works as
+/// `password` too — Mattermost accepts either through the same endpoint.
+///
+/// Returns `(session_token, user_id)` on success.
+async fn mattermost_login(
+    http: &Arc<dyn HttpTransport>,
+    base_url: &str,
+    login_id: &str,
+    password: &str,
+) -> Result<(String, String), String> {
+    let (status, body, token) = http
+        .post_json_with_header(
+            &format!("{base_url}/api/v4/users/login"),
+            &json!({ "login_id": login_id, "password": password }),
+            "Token",
+        )
+        .await?;
+    if !(200..300).contains(&status) {
+        let detail = body.get("message").and_then(Value::as_str).unwrap_or("login failed");
+        return Err(format!("HTTP {status}: {detail}"));
+    }
+    let Some(token) = token else {
+        return Err("login succeeded but no Token header in the response — unexpected Mattermost API shape".to_string());
+    };
+    let user_id = body.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+    Ok((token, user_id))
+}
+
 /// GET /api/connectors — the registry with per-provider status. `?worker=` is
 /// accepted for parity with the scope explain link but the status here is
 /// global (credential presence + token); per-scope enablement is the scope
@@ -536,6 +895,10 @@ async fn list() -> Response {
                         "scopes": scopes,
                     }),
                 ),
+                // No browser redirect, no scopes — "oauth" stays Null the same
+                // way it does for ApiKey; the credential paste form is the
+                // whole story until POST .../auth actually logs in.
+                Auth::LoginPassword { .. } => ("login_password", Value::Null),
             };
             // A Google connector backed by the service-account domain-wide
             // delegation is usable with no per-user grant (AMUX-3347) — but ONLY
@@ -550,7 +913,7 @@ async fn list() -> Response {
                 "connected"
             } else if !all_creds_set {
                 "needs_credentials"
-            } else if kind == "oauth2" && !has_token(p) {
+            } else if (kind == "oauth2" || kind == "login_password") && !has_token(p) {
                 "needs_auth"
             } else {
                 "connected"
@@ -599,10 +962,263 @@ async fn list() -> Response {
             })
         })
         .collect();
+    // DECLARED CONNECTORS, appended to the SAME array with the SAME field shape
+    // (AMUX-3993). One list, two constructors — not a second list with its own
+    // rules, which is the mistake this module's header warns about. The builtin
+    // loop above carries Google/Slack-family machinery that a declared row has
+    // no equivalent of, which is why the construction differs and the CONTRACT
+    // does not.
+    let home = amux_home();
+    let mut items = items;
+    for c in load_custom(&home) {
+        let d = Def::from(&c);
+        let key_status: Vec<Value> = d
+            .env_keys
+            .iter()
+            .map(|k| {
+                let v = env_val(&file_env, k);
+                json!({
+                    "name": k,
+                    "set": v.is_some(),
+                    "masked": v.as_deref().map(super::settings::mask_secret),
+                })
+            })
+            .collect();
+        let all_set = !key_status.is_empty()
+            && key_status.iter().all(|k| k["set"].as_bool().unwrap_or(false));
+        let is_oauth = d.kind == "oauth2";
+        let has_grant = !store_accounts(&home, &d.id).is_empty();
+        let status = if !all_set {
+            "needs_credentials"
+        } else if is_oauth && !has_grant {
+            "needs_auth"
+        } else {
+            "connected"
+        };
+        // An API key IS the credential, so it is usable the moment it is set.
+        // An OAuth row is only usable once a grant exists — the same honesty the
+        // builtin ladder applies, rather than calling a pasted client id
+        // "connected" and handing a caller nothing (AMUX-3362).
+        let usable = all_set && (!is_oauth || has_grant);
+        items.push(json!({
+            "id": d.id,
+            "label": d.label,
+            "category": d.category,
+            "auth": if is_oauth { "oauth2" } else { "apikey" },
+            "oauth": if is_oauth {
+                json!({
+                    "redirect_uri": format!("{}/api/connectors/{}/callback", origin(), d.id),
+                    "scopes": d.scopes,
+                    "authorize_url": d.authorize_url,
+                    "token_url": d.token_url,
+                })
+            } else {
+                Value::Null
+            },
+            "env_keys": key_status,
+            "status": status,
+            "cred_source": if all_set { json!("server.env") } else { Value::Null },
+            "usable": usable,
+            "token_endpoint": if usable {
+                json!(format!("/api/connectors/{}/token", d.id))
+            } else {
+                Value::Null
+            },
+            "detail": Value::Null,
+            "setup_note": d.setup_note,
+            "docs": d.docs,
+            // The ONLY field a builtin does not carry. The tab offers Delete on
+            // these and not on builtins, and the delete endpoint refuses a
+            // builtin rather than silently no-oping.
+            "custom": true,
+        }));
+    }
     Json(json!({
         "connectors": items,
         "origin": origin(),
         "note": "Paste credential VALUES here; they are written to ~/.amux/server.env and never returned. When a connector reports a token_endpoint, POST it to mint a ready-to-use short-lived bearer (no key path to know). Set scope (global/group/worker) via the Scope tab or the per-connector scope control (PUT /api/scope, capability=connectors).",
+    }))
+    .into_response()
+}
+
+/// POST /api/connectors — declare a NEW connector (AMUX-3993).
+///
+/// Body: `{id,label,kind,category?,key_env?|client_id_env+client_secret_env,
+///          authorize_url?,token_url?,scopes?,setup_note?,docs?,test_url?}`
+///
+/// NAMES ONLY. This endpoint never accepts a credential VALUE — the paste is a
+/// separate call to `/{id}/credentials`, which writes to server.env. Keeping the
+/// two apart is why the definition file can live unencrypted next to the token
+/// store without becoming a second secret store.
+///
+/// SCOPE IS NOT SET HERE, on purpose. The module header's rule is that this
+/// module never re-implements scoping, and it would be re-implementing it to
+/// write a prefs layer from here. The tab calls `PUT /api/scope` with
+/// `capability=connectors` after a successful create, defaulting the level to
+/// `global` — so the default is EXPLICIT and visible in the Scope tab rather
+/// than an implicit consequence of no layer existing anywhere.
+async fn create_connector(Json(body): Json<Value>) -> Response {
+    let home = amux_home();
+    let get = |k: &str| -> String {
+        body.get(k).and_then(Value::as_str).unwrap_or_default().trim().to_string()
+    };
+    let id = get("id").to_ascii_lowercase();
+    let label = get("label");
+    let kind = {
+        let k = get("kind");
+        if k.is_empty() { "api_key".to_string() } else { k }
+    };
+
+    let bad = |msg: String, how: &str| -> Response {
+        (StatusCode::BAD_REQUEST, Json(json!({"error": msg, "how": how}))).into_response()
+    };
+    if !valid_connector_id(&id) {
+        return bad(
+            format!("invalid connector id '{id}'"),
+            "lowercase letters, digits, '-' and '_' only, 1-64 chars — it is used as a path component under ~/.amux/connectors/ and is rejected rather than rewritten, so the id you get back is the id you asked for",
+        );
+    }
+    if label.is_empty() {
+        return bad("label is required".into(), "the human-readable name shown in the Connectors tab");
+    }
+    if kind != "api_key" && kind != "oauth2" {
+        return bad(format!("unknown kind '{kind}'"), "kind must be \"api_key\" or \"oauth2\"");
+    }
+    // A builtin wins: shadowing one from the tab would make the same id mean two
+    // things depending on which loop rendered it.
+    if provider(&id).is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!("'{id}' is a built-in connector"),
+                "how": "pick another id — a declared connector may not shadow a builtin, or the same id would resolve differently depending on which list rendered it",
+            })),
+        )
+            .into_response();
+    }
+    let mut list = load_custom(&home);
+    if list.iter().any(|c| c.id == id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!("connector '{id}' already exists"),
+                "how": "DELETE /api/connectors/{id} first, or pick another id",
+            })),
+        )
+            .into_response();
+    }
+
+    let c = CustomProvider {
+        id: id.clone(),
+        label,
+        category: get("category"),
+        kind: kind.clone(),
+        key_env: get("key_env").to_ascii_uppercase(),
+        client_id_env: get("client_id_env").to_ascii_uppercase(),
+        client_secret_env: get("client_secret_env").to_ascii_uppercase(),
+        authorize_url: get("authorize_url"),
+        token_url: get("token_url"),
+        scopes: get("scopes"),
+        setup_note: get("setup_note"),
+        docs: get("docs"),
+        test_url: get("test_url"),
+    };
+
+    // Every env name this connector will be allowed to write must be a legal
+    // env name, checked BEFORE the row is stored. `set_credentials` restricts a
+    // paste to exactly these, so an unchecked name here would be an unchecked
+    // name at write time.
+    let declared: Vec<&String> = if kind == "oauth2" {
+        vec![&c.client_id_env, &c.client_secret_env]
+    } else {
+        vec![&c.key_env]
+    };
+    for k in &declared {
+        if !valid_env_name(k) {
+            return bad(
+                format!("invalid env var name '{k}'"),
+                "A-Z, 0-9 and '_' only, not starting with a digit — this name is what the credential paste is restricted to, so it is validated before the connector is stored",
+            );
+        }
+    }
+    if kind == "oauth2" && (c.authorize_url.is_empty() || c.token_url.is_empty()) {
+        return bad(
+            "oauth2 needs authorize_url and token_url".into(),
+            "amux has no per-vendor knowledge for a declared connector, so the grant cannot start without both endpoints",
+        );
+    }
+
+    list.push(c);
+    if let Err(e) = save_custom(&home, &list) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("could not write the connector store: {e}")})),
+        )
+            .into_response();
+    }
+    let d = def_of(&home, &id).expect("just stored");
+    Json(json!({
+        "ok": true,
+        "connector": {
+            "id": d.id,
+            "label": d.label,
+            "category": d.category,
+            "auth": if d.kind == "oauth2" { "oauth2" } else { "apikey" },
+            "env_keys": d.env_keys,
+            "custom": true,
+        },
+        "next": format!("POST /api/connectors/{id}/credentials with {{\"<ENV_NAME>\": \"<value>\"}}"),
+        "scope_next": "PUT /api/scope capability=connectors level=global (the tab does this for you)",
+    }))
+    .into_response()
+}
+
+/// DELETE /api/connectors/{id} — forget a DECLARED connector.
+///
+/// Removes the definition only. The credential VALUES in server.env are left
+/// alone and named in the response: deleting a row in the tab should not
+/// silently destroy a key that other things may still read, and a caller who
+/// wants them gone can say so explicitly.
+async fn delete_connector(Path(id): Path<String>) -> Response {
+    let home = amux_home();
+    if def_of(&home, &id).is_some_and(|d| d.builtin) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("'{id}' is a built-in connector and cannot be deleted"),
+                "how": "built-ins come from the const registry in connectors.rs; removing one is a code change",
+            })),
+        )
+            .into_response();
+    }
+    let mut list = load_custom(&home);
+    let before = list.len();
+    let removed: Vec<String> = list
+        .iter()
+        .filter(|c| c.id == id)
+        .flat_map(|c| Def::from(c).env_keys)
+        .collect();
+    list.retain(|c| c.id != id);
+    if list.len() == before {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("no declared connector '{id}'")})),
+        )
+            .into_response();
+    }
+    if let Err(e) = save_custom(&home, &list) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("could not write the connector store: {e}")})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "ok": true,
+        "deleted": id,
+        // Said out loud rather than done silently, in both directions.
+        "credentials_left_in_server_env": removed,
+        "note": "the definition is gone; the credential VALUES above are still in ~/.amux/server.env and were NOT deleted",
     }))
     .into_response()
 }
@@ -613,10 +1229,14 @@ async fn list() -> Response {
 /// arbitrary env key). Values go to server.env and are redacted from the log and
 /// the response.
 async fn set_credentials(Path(id): Path<String>, Json(body): Json<Value>) -> Response {
-    let Some(p) = provider(&id) else {
+    // Resolved through the ONE seam, so a connector declared in the tab accepts
+    // a paste exactly like a builtin does (AMUX-3993). The restriction below is
+    // unchanged and is the security property: a paste for one connector can only
+    // write the env keys THAT connector declares, whichever source declared it.
+    let Some(d) = def_of(&amux_home(), &id) else {
         return (StatusCode::NOT_FOUND, Json(json!({"error": format!("unknown connector '{id}'")}))).into_response();
     };
-    let allowed = env_keys(p);
+    let allowed: Vec<&str> = d.env_keys.iter().map(String::as_str).collect();
     let Some(obj) = body.as_object() else {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "body must be a JSON object of {ENV_NAME: value}"}))).into_response();
     };
@@ -715,6 +1335,69 @@ async fn begin_auth(
             "note": "key-only connector: paste the API key, no browser grant needed",
         }))
         .into_response(),
+        // No browser redirect — the login itself happens right here, using
+        // the username/password already pasted via /credentials. This is the
+        // one Auth kind where "begin" and "complete" the grant are the same
+        // request; there is no pending state, no callback, no PKCE, because
+        // there is no third party redirecting a browser back to us.
+        Auth::LoginPassword {
+            username_env,
+            password_env,
+            base_url_env,
+        } => {
+            let (Some(base_url), Some(username), Some(password)) = (
+                resolve_cred_in(&ctx.home, &file_env, p.category, base_url_env),
+                resolve_cred_in(&ctx.home, &file_env, p.category, username_env),
+                resolve_cred_in(&ctx.home, &file_env, p.category, password_env),
+            ) else {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": "credentials not set",
+                        "need_env": [base_url_env, username_env, password_env],
+                        "how": "paste the server URL, login, and password first (this connector's credentials form)",
+                    })),
+                )
+                    .into_response();
+            };
+            let base_url = base_url.trim_end_matches('/').to_string();
+            let account = if account.is_empty() { username.clone() } else { account };
+            match mattermost_login(&ctx.http, &base_url, &username, &password).await {
+                Ok((token, user_id)) => {
+                    let store = json!({
+                        "token": token,
+                        "base_url": base_url,
+                        "user_id": user_id,
+                        "login": username,
+                        "logged_in_at": now_ts(),
+                    });
+                    if let Err(e) = write_store_file(&store_path(&ctx.home, p.id, &account), &store) {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"ok": false, "error": format!("login succeeded but could not write token store: {e}")})),
+                        )
+                            .into_response();
+                    }
+                    tracing::info!("connector_auth: mattermost login stored for account={} base_url={}", account, base_url);
+                    Json(json!({
+                        "ok": true,
+                        "auth": "login_password",
+                        "account": account,
+                        "note": "logged in and stored — the grant is shared by every worker, same as an OAuth connector.",
+                    }))
+                    .into_response()
+                }
+                Err(e) => {
+                    tracing::warn!("connector_auth: mattermost login failed for account={}: {}", account, e);
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"ok": false, "error": format!("login failed: {e}")})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         Auth::OAuth2 {
             client_id_env,
             callback_path,
@@ -754,10 +1437,13 @@ async fn begin_auth(
                 format!("{}{}", origin(), callback_path)
             };
             let state = token_urlsafe(24);
+            // AF-500: kept so the response can say what the human is approving.
+            let mut granted_scope = scopes.to_string();
             let (url, verifier) = if p.category == "Google" {
                 // One grant covers the whole Google family: union scopes, so
                 // Ethan approves ONCE per account (see the broker doc above).
                 let scope = google_union_scopes(p);
+                granted_scope = scope.clone();
                 let verifier = token_urlsafe(64);
                 let challenge = base64url_nopad(&Sha256::digest(verifier.as_bytes()));
                 (
@@ -825,8 +1511,11 @@ async fn begin_auth(
                 )
                     .into_response();
             }
+            let described = describe_grant(&granted_scope);
             tracing::info!(
-                "connector_auth: {} grant started for account={} family={} redirect_uri={}",
+                scopes = %granted_scope,
+                destructive = described["destructive"].as_array().map(Vec::len).unwrap_or(0),
+                "connector_auth: {} grant started for account={} family={} redirect_uri={} (AF-500)",
                 p.id,
                 account,
                 family,
@@ -860,7 +1549,17 @@ async fn begin_auth(
                         "add_redirect_uri": redirect_uri,
                     })
                 },
-                "note": "open authorize_url in a browser and approve — the callback completes the exchange and stores the grant for every worker. One approval per account.",
+                // WHAT THE APPROVAL ACTUALLY PERMITS (AF-500). The note below has
+                // always said "One approval per account" and never what that one
+                // approval covers. For Google it is the UNION of every Google
+                // provider's scopes, so connecting Gmail for email also grants full
+                // Drive — read, edit and permanent DELETE — to every worker.
+                // A user watched that capability delete a shared Sheet and asked
+                // "do I want to give it so much permission?"; nothing here could
+                // have answered them.
+                "grant": described,
+                "scopes": granted_scope,
+                "note": "open authorize_url in a browser and approve — the callback completes the exchange and stores the grant for every worker. One approval per account. READ `grant` FIRST: it says what that approval permits.",
             }))
             .into_response()
         }
@@ -1149,10 +1848,63 @@ async fn complete_exchange(
 /// bearer value is NEVER logged — only the provider id, HTTP status and latency
 /// (grep `connector_test`).
 async fn test_connection(Path(id): Path<String>) -> Response {
+    // DECLARED CONNECTORS TEST GENERICALLY (AMUX-3993). The builtin ladder below
+    // branches per `Auth` because each vendor family has its own shape; a row
+    // declared in the tab has no such knowledge, so all amux can honestly do is
+    // GET the declared test_url with the declared key as a bearer. When no
+    // test_url was given, say the test did not RUN rather than return a
+    // pass/fail neither of us measured (ethos rule 4).
+    if let Some(d) = def_of(&amux_home(), &id).filter(|d| !d.builtin) {
+        let file_env = parse_env_file(&amux_home().join("server.env"));
+        let missing: Vec<&String> =
+            d.env_keys.iter().filter(|k| env_val(&file_env, k).is_none()).collect();
+        if !missing.is_empty() {
+            return Json(json!({
+                "ok": false,
+                "status": "needs_credentials",
+                "measured": false,
+                "detail": format!("set {} first — nothing to test yet", missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
+            }))
+            .into_response();
+        }
+        if d.test_url.trim().is_empty() {
+            return Json(json!({
+                "ok": true,
+                "status": "connected",
+                "measured": false,
+                "why_unmeasured": "no test_url was declared for this connector, so amux checked that the credential is PRESENT and did not verify it works",
+                "detail": format!("{} set", d.env_keys.join(", ")),
+            }))
+            .into_response();
+        }
+        let key = d.env_keys.first().and_then(|k| env_val(&file_env, k)).unwrap_or_default();
+        let res = ReqwestTransport::new().get(&d.test_url, Some(&key)).await;
+        return match res {
+            Ok((code, _)) if (200..300).contains(&code) => Json(json!({
+                "ok": true, "status": "connected", "measured": true, "http": code,
+            }))
+            .into_response(),
+            Ok((code, body)) => Json(json!({
+                "ok": false,
+                "status": "error",
+                "measured": true,
+                "http": code,
+                "detail": format!("{} answered {code}", d.test_url),
+                "body": body,
+            }))
+            .into_response(),
+            Err(e) => Json(json!({
+                "ok": false, "status": "error", "measured": true,
+                "detail": format!("{}: {e}", d.test_url),
+            }))
+            .into_response(),
+        };
+    }
     let Some(p) = provider(&id) else {
         return (StatusCode::NOT_FOUND, Json(json!({"error": format!("unknown connector '{id}'")}))).into_response();
     };
     let file_env = parse_env_file(&amux_home().join("server.env"));
+    let mut url = p.test_url.to_string();
     let bearer = match p.auth {
         Auth::ApiKey { key_env } => match env_val(&file_env, key_env) {
             Some(k) => k,
@@ -1165,6 +1917,38 @@ async fn test_connection(Path(id): Path<String>) -> Response {
                 .into_response()
             }
         },
+        // Self-hosted: test_url is static-empty in the registry (there is no
+        // fixed host), built here from the stored grant's own base_url — the
+        // one that was ACTUALLY reached at login time, not merely whatever
+        // MATTERMOST_URL currently says, in case it changed since.
+        Auth::LoginPassword { .. } => {
+            let home = amux_home();
+            let Some(account) = store_accounts(&home, p.id).into_iter().next() else {
+                return Json(json!({
+                    "ok": false,
+                    "status": "needs_auth",
+                    "detail": "not connected yet — POST /api/connectors/mattermost/auth first",
+                }))
+                .into_response();
+            };
+            let store: Value = std::fs::read_to_string(store_path(&home, p.id, &account))
+                .ok()
+                .and_then(|r| serde_json::from_str(&r).ok())
+                .unwrap_or(json!({}));
+            let (Some(token), Some(base_url)) = (
+                store.get("token").and_then(Value::as_str),
+                store.get("base_url").and_then(Value::as_str),
+            ) else {
+                return Json(json!({
+                    "ok": false,
+                    "status": "error",
+                    "detail": format!("stored grant for {account} is malformed — reconnect"),
+                }))
+                .into_response();
+            };
+            url = format!("{base_url}/api/v4/users/me");
+            token.to_string()
+        }
         Auth::OAuth2 { scopes, .. } => {
             // Mixpeek Google connectors mint an impersonated token via the
             // service-account domain-wide delegation (AMUX-3347) — no per-user
@@ -1203,9 +1987,42 @@ async fn test_connection(Path(id): Path<String>) -> Response {
                 .into_response()
         }
     };
+    // Telegram's Bot API puts the token IN THE URL PATH (`/bot<token>/getMe`),
+    // not an Authorization header — the one connector here where `bearer`
+    // isn't a header value, so it can't share the generic GET below (an empty
+    // `test_url` there would hit `client.get("")`, a malformed-URL error that
+    // reads as "could not reach the provider" — true of the request, false of
+    // the actual cause).
+    if id == "telegram" {
+        let started = std::time::Instant::now();
+        let resp = client.get(format!("https://api.telegram.org/bot{bearer}/getMe")).send().await;
+        let ms = started.elapsed().as_millis();
+        return match resp {
+            Ok(r) => {
+                let code = r.status().as_u16();
+                let body: Value = r.json().await.unwrap_or_default();
+                let ok = body.get("ok").and_then(Value::as_bool) == Some(true);
+                tracing::info!("connector_test: telegram -> {code} ({ok}) in {ms}ms");
+                Json(json!({
+                    "ok": ok,
+                    "status": if ok { "connected" } else { "error" },
+                    "http_status": code,
+                    "elapsed_ms": ms,
+                    "detail": if ok {
+                        format!("live: bot @{} in {ms}ms", body.get("result").and_then(|r| r.get("username")).and_then(Value::as_str).unwrap_or("?"))
+                    } else {
+                        format!("Telegram rejected the token: {body}")
+                    },
+                }))
+                .into_response()
+            }
+            Err(e) => Json(json!({"ok": false, "status": "error", "detail": format!("could not reach Telegram: {e}")}))
+                .into_response(),
+        };
+    }
     let started = std::time::Instant::now();
     let resp = client
-        .get(p.test_url)
+        .get(&url)
         .header("Authorization", format!("Bearer {bearer}"))
         .send()
         .await;
@@ -1289,6 +2106,56 @@ async fn mint_connector_token(
         )
             .into_response();
     };
+    // LoginPassword's mint has nothing in common with the Google-SA-impersonation
+    // machinery the rest of this function is built around (no scopes, no
+    // impersonation subject) — resolved and returned here directly rather than
+    // falling through to it.
+    if let Auth::LoginPassword { .. } = p.auth {
+        let req_account = q.get("account").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let stored = store_accounts(&ctx.home, p.id);
+        let account = match req_account {
+            Some(a) if stored.contains(&a) => a,
+            Some(a) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "ok": false,
+                        "status": "needs_auth",
+                        "detail": format!("no stored grant for account '{a}'"),
+                        "stored_accounts": stored,
+                    })),
+                )
+                    .into_response();
+            }
+            None => match stored.first() {
+                Some(a) => a.clone(),
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "ok": false,
+                            "status": "needs_auth",
+                            "detail": "not connected yet",
+                            "connect": format!("POST /api/connectors/{id}/auth (with the credentials already pasted)"),
+                        })),
+                    )
+                        .into_response();
+                }
+            },
+        };
+        let store: Value = std::fs::read_to_string(store_path(&ctx.home, p.id, &account))
+            .ok()
+            .and_then(|r| serde_json::from_str(&r).ok())
+            .unwrap_or(json!({}));
+        return match store.get("token").and_then(Value::as_str) {
+            Some(token) => Json(json!({"ok": true, "account": account, "token": token})).into_response(),
+            None => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "status": "error", "detail": format!("stored grant for {account} is malformed — reconnect")})),
+            )
+                .into_response(),
+        };
+    }
     let default_scopes = match p.auth {
         Auth::OAuth2 { scopes, .. } => scopes,
         Auth::ApiKey { .. } => {
@@ -1302,6 +2169,7 @@ async fn mint_connector_token(
             )
                 .into_response();
         }
+        Auth::LoginPassword { .. } => unreachable!("handled above"),
     };
     let scope = q
         .get("scopes")
@@ -1659,7 +2527,7 @@ pub(crate) async fn accounts_rollup(http: &Arc<dyn HttpTransport>, home: &std::p
     }
     // Family stores. Google health: fresh expires_at is ok on its face; stale
     // exercises the refresh token — the needs_reauth discriminator.
-    for family in ["google", "slack"] {
+    for family in ["google", "slack", "mattermost"] {
         for a in store_accounts(home, family) {
             let path = store_path(home, family, &a);
             let tf: Value = std::fs::read_to_string(&path)
@@ -1667,9 +2535,10 @@ pub(crate) async fn accounts_rollup(http: &Arc<dyn HttpTransport>, home: &std::p
                 .and_then(|r| serde_json::from_str(&r).ok())
                 .unwrap_or(json!({}));
             let health = if family != "google" {
-                // Slack bot tokens do not expire; presence says nothing about
-                // whether the workspace still honors it — the canary below is
-                // the live check.
+                // Slack bot tokens do not expire; Mattermost session tokens
+                // can be revoked server-side with no local signal — for both,
+                // presence says nothing about whether the token still works.
+                // The canary below is the live check.
                 "ok".to_string()
             } else if tf.get("expires_at").and_then(Value::as_f64).is_some_and(|e| e - now_ts() > 60.0) {
                 "ok".to_string()
@@ -1680,9 +2549,13 @@ pub(crate) async fn accounts_rollup(http: &Arc<dyn HttpTransport>, home: &std::p
             let legs = canaries.entry(a.clone()).or_default();
             if family == "google" {
                 canary_google_legs(http, &path, &health, legacy_gmail.contains(&a), legs).await;
-            } else if health == "ok" {
+            } else if family == "slack" && health == "ok" {
                 let token = tf.get("token").and_then(Value::as_str).unwrap_or("");
                 legs.insert("slack".into(), canary_slack_leg(http, token).await);
+            } else if family == "mattermost" && health == "ok" {
+                let token = tf.get("token").and_then(Value::as_str).unwrap_or("");
+                let base_url = tf.get("base_url").and_then(Value::as_str).unwrap_or("");
+                legs.insert("mattermost".into(), canary_mattermost_leg(http, base_url, token).await);
             }
         }
     }
@@ -1844,6 +2717,22 @@ async fn canary_slack_leg(http: &Arc<dyn HttpTransport>, token: &str) -> Value {
     }
 }
 
+/// Mattermost canary: `GET /api/v4/users/me` is the cheapest authenticated
+/// call — a dead session token answers 401, distinct from the store simply
+/// existing (a session that has since expired or been revoked server-side).
+async fn canary_mattermost_leg(http: &Arc<dyn HttpTransport>, base_url: &str, token: &str) -> Value {
+    match http.get(&format!("{base_url}/api/v4/users/me"), Some(token)).await {
+        Ok((st, _)) if st < 400 => json!({"status": "ok", "checked_at": now_ts()}),
+        Ok((st, body)) => json!({
+            "status": "api_error",
+            "http": st,
+            "detail": body.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+            "checked_at": now_ts(),
+        }),
+        Err(e) => json!({"status": "unreachable", "detail": e, "checked_at": now_ts()}),
+    }
+}
+
 async fn accounts_view(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
     Json(accounts_rollup(&ctx.http, &ctx.home, false).await).into_response()
 }
@@ -1854,7 +2743,8 @@ pub fn routes() -> Router<AppState> {
 
 pub fn routes_with(ctx: Arc<ConnectorsCtx>) -> Router<AppState> {
     Router::new()
-        .route("/api/connectors", get(list))
+        .route("/api/connectors", get(list).post(create_connector))
+        .route("/api/connectors/{id}", axum::routing::delete(delete_connector))
         .route("/api/connectors/accounts", get(accounts_view))
         .route("/api/connectors/{id}/credentials", post(set_credentials))
         .route("/api/connectors/{id}/auth", post(begin_auth))
@@ -1873,6 +2763,197 @@ pub fn callback_routes_with(ctx: Arc<ConnectorsCtx>) -> Router<AppState> {
     Router::new()
         .route("/api/connectors/{family}/callback", get(callback))
         .layer(Extension(ctx))
+}
+
+#[cfg(test)]
+mod declared_connector_tests {
+    use super::*;
+
+    /// Declaring a connector must not require a rebuild (AMUX-3993).
+    ///
+    /// Before this, the registry was a const table and the module header called
+    /// adding a row "trivial" — but it is a code edit, a commit and a deploy
+    /// before Ethan can paste a key. These cells pin the runtime path.
+    fn home() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn a_declared_api_key_connector_round_trips_through_the_store() {
+        let h = home();
+        let list = vec![CustomProvider {
+            id: "acme".into(),
+            label: "Acme".into(),
+            category: String::new(),
+            kind: "api_key".into(),
+            key_env: "ACME_API_KEY".into(),
+            client_id_env: String::new(),
+            client_secret_env: String::new(),
+            authorize_url: String::new(),
+            token_url: String::new(),
+            scopes: String::new(),
+            setup_note: String::new(),
+            docs: String::new(),
+            test_url: String::new(),
+        }];
+        save_custom(h.path(), &list).expect("save");
+        let d = def_of(h.path(), "acme").expect("declared connector must resolve");
+        assert_eq!(d.env_keys, vec!["ACME_API_KEY".to_string()]);
+        assert_eq!(d.kind, "api_key");
+        assert!(!d.builtin, "a declared row must not claim to be builtin");
+        assert_eq!(d.category, "Custom", "an empty category gets a default, not an empty column");
+    }
+
+    /// THE SEAM IS ONE SEAM. A builtin and a declared row must both resolve
+    /// through `def_of`, or the tab has two lists with two sets of rules — the
+    /// mistake this module's header warns about.
+    #[test]
+    fn builtins_and_declared_rows_resolve_through_the_same_function() {
+        let h = home();
+        save_custom(
+            h.path(),
+            &[CustomProvider {
+                id: "acme".into(),
+                label: "Acme".into(),
+                category: String::new(),
+                kind: "api_key".into(),
+                key_env: "ACME_API_KEY".into(),
+                client_id_env: String::new(),
+                client_secret_env: String::new(),
+                authorize_url: String::new(),
+                token_url: String::new(),
+                scopes: String::new(),
+                setup_note: String::new(),
+                docs: String::new(),
+                test_url: String::new(),
+            }],
+        )
+        .unwrap();
+        let all = defs(h.path());
+        assert!(all.iter().any(|d| d.id == "granola" && d.builtin), "builtins must be present");
+        assert!(all.iter().any(|d| d.id == "acme" && !d.builtin), "declared rows must be present");
+        // And a builtin still resolves with the SAME call the declared one uses.
+        assert!(def_of(h.path(), "granola").is_some_and(|d| d.builtin));
+    }
+
+    /// Ids are REJECTED, never rewritten. A silently-sanitised id is one the
+    /// caller cannot find again, and it is used as a path component under
+    /// ~/.amux/connectors/.
+    #[test]
+    fn ids_and_env_names_are_rejected_rather_than_sanitised() {
+        assert!(valid_connector_id("acme-corp_1"));
+        assert!(!valid_connector_id(""), "empty");
+        assert!(!valid_connector_id("Acme"), "uppercase");
+        assert!(!valid_connector_id("../etc/passwd"), "path traversal");
+        assert!(!valid_connector_id("a b"), "space");
+        assert!(!valid_connector_id(&"x".repeat(65)), "over length");
+
+        assert!(valid_env_name("ACME_API_KEY"));
+        assert!(!valid_env_name("acme_api_key"), "lowercase");
+        assert!(!valid_env_name("1ACME"), "leading digit");
+        assert!(!valid_env_name("ACME-KEY"), "hyphen is not legal in an env name");
+        assert!(!valid_env_name(""), "empty");
+    }
+
+    /// CONTROL for the cell above: the validators must ACCEPT the shape the tab
+    /// actually sends, or "reject everything" would pass every assertion there.
+    #[test]
+    fn the_validators_accept_a_realistic_declaration() {
+        assert!(valid_connector_id("linear"));
+        assert!(valid_connector_id("openai"));
+        assert!(valid_env_name("LINEAR_API_KEY"));
+        assert!(valid_env_name("OPENAI_API_KEY"));
+    }
+
+    /// An OAuth row exposes the two env names the paste is restricted to, and an
+    /// api_key row exposes one. `set_credentials` derives its allow-list from
+    /// exactly this, so a wrong shape here is a wrong write restriction there.
+    #[test]
+    fn oauth_declares_two_env_keys_and_api_key_declares_one() {
+        let oauth = CustomProvider {
+            id: "vend".into(),
+            label: "Vend".into(),
+            category: String::new(),
+            kind: "oauth2".into(),
+            key_env: String::new(),
+            client_id_env: "VEND_CLIENT_ID".into(),
+            client_secret_env: "VEND_CLIENT_SECRET".into(),
+            authorize_url: "https://vend.example/authorize".into(),
+            token_url: "https://vend.example/token".into(),
+            scopes: "read".into(),
+            setup_note: String::new(),
+            docs: String::new(),
+            test_url: String::new(),
+        };
+        let d = Def::from(&oauth);
+        assert_eq!(d.kind, "oauth2");
+        assert_eq!(d.env_keys, vec!["VEND_CLIENT_ID".to_string(), "VEND_CLIENT_SECRET".to_string()]);
+        assert_eq!(d.authorize_url, "https://vend.example/authorize");
+    }
+
+    /// The store holds NAMES ONLY. If a credential value ever reaches it, this
+    /// file becomes a secret store sitting unencrypted next to the token dir,
+    /// which is the one thing the design forbids.
+    #[test]
+    fn the_definition_store_never_contains_a_credential_value() {
+        let h = home();
+        save_custom(
+            h.path(),
+            &[CustomProvider {
+                id: "acme".into(),
+                label: "Acme".into(),
+                category: String::new(),
+                kind: "api_key".into(),
+                key_env: "ACME_API_KEY".into(),
+                client_id_env: String::new(),
+                client_secret_env: String::new(),
+                authorize_url: String::new(),
+                token_url: String::new(),
+                scopes: String::new(),
+                setup_note: String::new(),
+                docs: String::new(),
+                test_url: String::new(),
+            }],
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(custom_store_path(h.path())).unwrap();
+        assert!(raw.contains("ACME_API_KEY"), "the NAME is stored: {raw}");
+        // Assert the SHAPE, not a substring. My first version grepped for
+        // "secret" and failed on the field NAME `client_secret_env`, which is
+        // exactly the name-vs-value confusion this cell exists to police.
+        //
+        // Every key in the serialised form must be one of the known name-only
+        // fields. A new field carrying a VALUE would have to be added here
+        // deliberately, which is the review moment.
+        const NAME_ONLY_FIELDS: &[&str] = &[
+            "id", "label", "category", "kind", "key_env", "client_id_env",
+            "client_secret_env", "authorize_url", "token_url", "scopes",
+            "setup_note", "docs", "test_url",
+        ];
+        let rows: Vec<serde_json::Map<String, Value>> = serde_json::from_str(&raw).unwrap();
+        for row in &rows {
+            for k in row.keys() {
+                assert!(
+                    NAME_ONLY_FIELDS.contains(&k.as_str()),
+                    "unknown field '{k}' in the definition store — if it carries a credential \
+                     VALUE it belongs in server.env, not here"
+                );
+            }
+        }
+        // And the *_env fields hold NAMES: an env var name, never something that
+        // looks like a pasted secret.
+        for row in &rows {
+            for (k, v) in row.iter() {
+                if k.ends_with("_env") {
+                    let val = v.as_str().unwrap_or_default();
+                    assert!(
+                        val.is_empty() || valid_env_name(val),
+                        "{k} must hold an env var NAME, got '{val}'"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1944,6 +3025,24 @@ mod tests {
             assert!(seen.insert(p.id), "duplicate connector id {}", p.id);
             assert!(!env_keys(p).is_empty(), "{} declares no env keys", p.id);
         }
+    }
+
+    #[test]
+    fn mattermost_declares_login_password_and_a_configurable_server_url() {
+        // No hardcoded host (self-hosted, unlike Slack/Google) and 3 fields,
+        // not 1 (ApiKey) or 2 (OAuth2) — base_url is not optional, since
+        // without it there is nowhere to send the login POST.
+        let mm = REGISTRY.iter().find(|p| p.id == "mattermost").expect("mattermost not registered");
+        assert!(mm.test_url.is_empty(), "test_url should be built from the stored grant, not a fixed host");
+        match mm.auth {
+            Auth::LoginPassword { username_env, password_env, base_url_env } => {
+                assert_eq!(base_url_env, "MATTERMOST_URL");
+                assert_eq!(username_env, "MATTERMOST_LOGIN");
+                assert_eq!(password_env, "MATTERMOST_PASSWORD");
+            }
+            _ => panic!("mattermost should be Auth::LoginPassword"),
+        }
+        assert_eq!(env_keys(mm), vec!["MATTERMOST_URL", "MATTERMOST_LOGIN", "MATTERMOST_PASSWORD"]);
     }
 
     #[test]
@@ -2022,6 +3121,13 @@ mod tests {
     struct MockHttp {
         calls: Mutex<Vec<RecordedCall>>,
         script: Mutex<Vec<(String, String, u16, Value)>>,
+        // (url_substring, header_name, header_value) — scripted for
+        // `post_json_with_header` only (Mattermost login), kept separate from
+        // `script` above rather than widening its tuple, so every existing
+        // `MockHttp::new(vec![("GET", ...), ...])` call site keeps compiling
+        // unchanged. Pushed via `with_header` AFTER construction (the Mutex
+        // gives interior mutability through the `Arc<Self>` `new` returns).
+        headers: Mutex<Vec<(String, String, String)>>,
     }
 
     impl MockHttp {
@@ -2031,7 +3137,17 @@ mod tests {
                 script: Mutex::new(
                     script.into_iter().map(|(m, u, s, v)| (m.into(), u.into(), s, v)).collect(),
                 ),
+                headers: Mutex::new(Vec::new()),
             })
+        }
+        /// Scripts a response header for the next `post_json_with_header`
+        /// call whose URL contains `url_substring`.
+        fn with_header(&self, url_substring: &str, header_name: &str, header_value: &str) {
+            self.headers.lock().unwrap().push((
+                url_substring.into(),
+                header_name.into(),
+                header_value.into(),
+            ));
         }
         fn answer(
             &self,
@@ -2081,6 +3197,22 @@ mod tests {
             let v = Value::Object(form.iter().map(|(k, val)| (k.clone(), json!(val))).collect());
             self.answer("FORM", url, None, Some(&v))
         }
+        async fn post_json_with_header(
+            &self,
+            url: &str,
+            body: &Value,
+            header_name: &str,
+        ) -> Result<(u16, Value, Option<String>), String> {
+            let (status, resp_body) = self.answer("POST", url, None, Some(body))?;
+            let header = self
+                .headers
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(sub, name, _)| url.contains(sub.as_str()) && name == header_name)
+                .map(|(_, _, val)| val.clone());
+            Ok((status, resp_body, header))
+        }
     }
 
     const ACCT: &str = "hello@amux.io";
@@ -2108,6 +3240,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let router = Router::new()
             .merge(routes_with(ctx.clone()))
@@ -2335,6 +3468,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let gapp = Router::new()
             .merge(crate::api::gmail_auth::callback_routes_with(gctx))
@@ -2600,5 +3734,154 @@ mod tests {
         .unwrap();
         assert_eq!(persisted["accounts"][ACCT]["calendar"]["status"], json!("api_error"));
         assert!(persisted["checked_at"].as_f64().unwrap() > 0.0);
+    }
+
+    /// Review finding (esteininger, PR #164, 2026-08-30): `Auth::LoginPassword`
+    /// had zero coverage despite the harness for exactly this existing
+    /// (`MockHttp`/`app_with`). Exercises `begin_auth`'s LoginPassword branch
+    /// end to end: credentials in server.env, a scripted login response WITH
+    /// the `Token` header (via `post_json_with_header`, added alongside this
+    /// test — the prior raw-`reqwest` `mattermost_login` sat outside the one
+    /// seam `MockHttp` can intercept), and the resulting store file.
+    #[tokio::test]
+    async fn login_password_success_stores_token_and_user_id() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("server.env"),
+            "MATTERMOST_URL=https://chat.example.com\n\
+             MATTERMOST_LOGIN=alice\n\
+             MATTERMOST_PASSWORD=PLACEHOLDER_PW\n",
+        )
+        .unwrap();
+        let http = MockHttp::new(vec![(
+            "POST",
+            "chat.example.com/api/v4/users/login",
+            200,
+            json!({ "id": "USER123", "username": "alice" }),
+        )]);
+        http.with_header("chat.example.com/api/v4/users/login", "Token", "PLACEHOLDER_SESSION_TOKEN");
+        let (app, _d) = app_with(http.clone(), home.path());
+
+        let (st, v) = send_json(&app, "POST", "/api/connectors/mattermost/auth?account=alice").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["account"], json!("alice"), "{v}");
+
+        // The call actually went through the transport (proves the branch is
+        // reachable via MockHttp, not just that begin_auth returned 200).
+        let calls = http.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].1.contains("/api/v4/users/login"), "{calls:?}");
+        assert_eq!(calls[0].3, Some(json!({ "login_id": "alice", "password": "PLACEHOLDER_PW" })));
+
+        let stored: Value = serde_json::from_str(
+            &std::fs::read_to_string(store_path(home.path(), "mattermost", "alice")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored["token"], json!("PLACEHOLDER_SESSION_TOKEN"));
+        assert_eq!(stored["user_id"], json!("USER123"));
+        assert_eq!(stored["base_url"], json!("https://chat.example.com"));
+    }
+
+    /// The failure half of the same branch: a rejected login must surface the
+    /// server's own message and must NOT write a store file (a partial/absent
+    /// token on disk would read as "connected" on the next status check).
+    #[tokio::test]
+    async fn login_password_failure_surfaces_error_and_stores_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("server.env"),
+            "MATTERMOST_URL=https://chat.example.com\n\
+             MATTERMOST_LOGIN=alice\n\
+             MATTERMOST_PASSWORD=PLACEHOLDER_WRONG\n",
+        )
+        .unwrap();
+        let http = MockHttp::new(vec![(
+            "POST",
+            "chat.example.com/api/v4/users/login",
+            401,
+            json!({ "message": "Invalid or expired session, please login again." }),
+        )]);
+        let (app, _d) = app_with(http, home.path());
+
+        let (st, v) = send_json(&app, "POST", "/api/connectors/mattermost/auth?account=alice").await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "{v}");
+        assert_eq!(v["ok"], json!(false), "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("Invalid or expired session"),
+            "{v}"
+        );
+        assert!(
+            !store_path(home.path(), "mattermost", "alice").exists(),
+            "a failed login must not leave a store file behind"
+        );
+    }
+
+    /// THE CELL THIS EXISTS FOR (AF-500). Connecting GMAIL, for email, also
+    /// requests full Drive — the union grant — and the disclosure has to say so
+    /// in the same breath, because that is the capability that deleted a user's
+    /// shared Sheet while they watched.
+    #[test]
+    fn a_gmail_grant_discloses_that_it_also_hands_over_full_drive() {
+        let gmail = REGISTRY.iter().find(|p| p.id == "google-gmail").expect("google-gmail provider");
+        let scope = google_union_scopes(gmail);
+        assert!(
+            scope.contains("https://www.googleapis.com/auth/drive"),
+            "the union no longer carries full Drive; this cell's premise moved: {scope}"
+        );
+        let d = describe_grant(&scope);
+        let destructive = d["destructive"].as_array().expect("destructive list");
+        assert!(
+            destructive.iter().any(|x| x.as_str().unwrap_or("").contains("PERMANENTLY DELETE")),
+            "a grant carrying full Drive does not disclose deletion: {d:#}"
+        );
+        assert!(
+            d["summary"].as_str().unwrap_or("").contains("DESTRUCTIVE"),
+            "the summary does not warn at all: {d:#}"
+        );
+    }
+
+    /// The narrower scope reads DIFFERENTLY. Without this the disclosure could
+    /// be a constant that warns whatever it is handed, which would be exactly as
+    /// green over a grant that is genuinely safe — and it is the check that
+    /// would notice if `drive` were ever narrowed to `drive.file`.
+    #[test]
+    fn the_narrow_drive_scope_is_not_reported_as_destructive() {
+        let d = describe_grant("https://www.googleapis.com/auth/drive.file");
+        assert_eq!(d["destructive"].as_array().map(Vec::len), Some(0), "{d:#}");
+        assert!(
+            d["summary"].as_str().unwrap_or("").contains("no destructive action"),
+            "{d:#}"
+        );
+        assert!(
+            d["permits"][0].as_str().unwrap_or("").contains("cannot see or delete anything else"),
+            "{d:#}"
+        );
+    }
+
+    /// A scope amux has no words for must still be LISTED. Dropping it would
+    /// understate the grant in the one direction that matters, and would happen
+    /// silently the next time a provider gains a scope (ethos rule 4).
+    #[test]
+    fn a_scope_with_no_description_is_still_disclosed() {
+        let d = describe_grant("https://example.com/auth/something-new");
+        assert_eq!(d["scope_count"], 1);
+        assert_eq!(d["permits"].as_array().map(Vec::len), Some(1), "{d:#}");
+        assert!(
+            d["permits"][0].as_str().unwrap_or("").contains("something-new"),
+            "the unknown scope vanished from the disclosure: {d:#}"
+        );
+    }
+
+    /// `permits` is complete: one line per scope, so its length is a real
+    /// denominator rather than a filtered list.
+    #[test]
+    fn every_scope_produces_exactly_one_line() {
+        let gmail = REGISTRY.iter().find(|p| p.id == "google-gmail").expect("google-gmail provider");
+        let scope = google_union_scopes(gmail);
+        let n = scope.split_whitespace().count();
+        let d = describe_grant(&scope);
+        assert_eq!(d["scope_count"], n);
+        assert_eq!(d["permits"].as_array().map(Vec::len), Some(n), "{d:#}");
     }
 }

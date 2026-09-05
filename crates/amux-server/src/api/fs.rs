@@ -538,10 +538,105 @@ async fn mkdir(req: Request) -> Response {
 // POST /api/fs/open (py:68339-68367) — reveal in native file manager
 // ---------------------------------------------------------------------------
 
+
+/// Is the BROWSER that sent this request running on the same machine as this
+/// server? (AF-282)
+///
+/// Only the server can answer this, and the client had been guessing. `app.js`
+/// tested `location.hostname !== 'localhost' && !== '127.0.0.1' && !endsWith('.local')`
+/// and called anything else REMOTE — so reaching your own desktop by its
+/// Tailscale name (`desktop.tail5ce8f5.ts.net`) classified as remote, and the
+/// "open in Finder" button emitted `sftp://<host><path>`. Chrome handed that to
+/// whatever registered the scheme (VLC, here) and it failed; macOS Finder has no
+/// `sftp://` handler either, so that branch was broken for genuinely-remote too.
+///
+/// THE DISCRIMINATOR IS THE PAIR (peer IP, Host header). A browser on this
+/// machine reaches the server either over loopback, or over the very interface
+/// whose address the hostname resolves to — so its peer IP is one of the
+/// addresses that hostname resolves to. A browser elsewhere on the tailnet
+/// carries a different one. Measured on the live store, 24h:
+///
+/// ```text
+/// 100.108.219.90  94252   <- this machine's own tailnet IP == same machine
+/// 127.0.0.1       34689   <- loopback
+/// 100.66.26.84    10255   <- a different node: genuinely remote
+/// 100.71.171.37    8354   <- ditto
+/// ```
+///
+/// Resolution failure returns false: refusing to open is recoverable (the path
+/// is in the response), opening a Finder window on someone else's desktop is not.
+fn browser_is_on_this_machine(peer: Option<std::net::IpAddr>, host_header: Option<&str>) -> bool {
+    browser_is_on_this_machine_with(peer, host_header, |h| {
+        std::net::ToSocketAddrs::to_socket_addrs(&(h, 0u16))
+            .map(|it| it.map(|a| a.ip()).collect())
+            .unwrap_or_default()
+    })
+}
+
+/// The decision, with DNS injected so the incident is testable offline.
+///
+/// The case that motivated this resolves a Tailscale name to a non-loopback
+/// address, which no hermetic test can produce from the real resolver — so a
+/// cell written against it would have had to assert something weaker than the
+/// bug. Injecting the lookup lets the test pin the ACTUAL scenario: peer
+/// 100.108.219.90 reaching `desktop.tail5ce8f5.ts.net`, which is the pair that
+/// classified as REMOTE and produced the `sftp://` link.
+fn browser_is_on_this_machine_with(
+    peer: Option<std::net::IpAddr>,
+    host_header: Option<&str>,
+    resolve: impl Fn(&str) -> Vec<std::net::IpAddr>,
+) -> bool {
+    let Some(peer) = peer else { return false };
+    if peer.is_loopback() {
+        return true;
+    }
+    let Some(h) = host_header else { return false };
+    // Strip the port, and the brackets an IPv6 authority carries.
+    let hostname = if let Some(rest) = h.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest).to_string()
+    } else {
+        h.rsplit_once(':').map_or(h, |(a, _)| a).to_string()
+    };
+    if hostname.is_empty() {
+        return false;
+    }
+    resolve(&hostname).into_iter().any(|ip| ip == peer)
+}
+
+
+/// The authority the client addressed, from EITHER protocol version.
+///
+/// HTTP/2 HAS NO `Host` HEADER (RFC 9113 §8.3.1): the authority travels as the
+/// `:authority` pseudo-header, which axum surfaces on the URI. This server
+/// negotiates h2 by default, so browsers — the only client that matters for
+/// this endpoint — never send `Host`, and reading the header alone returned
+/// None for every real request.
+///
+/// Found by testing the shipped endpoint rather than the function: under
+/// `--http1.1` the same call answered `local:true`, and unforced it answered
+/// 409. The unit cells passed a Host string straight in, so they proved the
+/// DECISION and could not see the EXTRACTION. A guard tested against a fixture
+/// proves it can fail, not that it is wired to what ships.
+fn request_authority(req: &Request) -> Option<String> {
+    req.headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| req.uri().authority().map(|a| a.to_string()))
+}
+
 async fn open_native(req: Request) -> Response {
     if req.method() != Method::POST {
         return not_found().await;
     }
+    // Read the connection facts BEFORE the body is consumed — `into_body()`
+    // takes `req` by value and the extensions go with it.
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let host_header = request_authority(&req);
+    let local_browser = browser_is_on_this_machine(peer, host_header.as_deref());
     let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
         Ok(b) => b,
         Err(e) => return j(500, json!({"error": e.to_string()})),
@@ -563,6 +658,24 @@ async fn open_native(req: Request) -> Response {
     if target.is_file() {
         target = target.parent().map(Path::to_path_buf).unwrap_or(target);
     }
+    // A REMOTE BROWSER MUST NOT SPAWN A WINDOW HERE. `open` runs on the SERVER,
+    // so honouring this for an off-machine caller pops a Finder window on a
+    // desktop nobody is watching and reports success to someone who sees
+    // nothing. Refuse, and hand back the path so the caller can act on it.
+    if !local_browser {
+        return j(
+            409,
+            json!({
+                "ok": false,
+                "error": "remote browser — this folder is on the amux server's machine, \
+                          and opening it here would put a window on that desktop rather \
+                          than yours",
+                "path": pystr(&target),
+                "hint": "copy the path, or browse it in the Files tab",
+                "local": false,
+            }),
+        );
+    }
     let cmd = match std::env::consts::OS {
         "macos" => "open",
         "linux" => "xdg-open",
@@ -570,7 +683,7 @@ async fn open_native(req: Request) -> Response {
         other => return j(400, json!({"error": format!("unsupported platform: {other}")})),
     };
     match std::process::Command::new(cmd).arg(&target).spawn() {
-        Ok(_) => j(200, json!({"ok": true, "path": pystr(&target)})),
+        Ok(_) => j(200, json!({"ok": true, "path": pystr(&target), "local": true})),
         Err(e) => j(500, json!({"error": e.to_string()})),
     }
 }
@@ -1412,6 +1525,241 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
 // an empty array, never an error (the input keeps working mid-keystroke).
 // ---------------------------------------------------------------------------
 
+/// Directory names that swallow a scan and never hold a project. Skipped at
+/// every depth, so `~/Library` alone does not turn a name search into a
+/// filesystem walk. Not a security boundary — `is_path_allowed` is that.
+const SCAN_SKIP: &[&str] = &[
+    "library", "applications", "node_modules", "music", "pictures", "movies",
+    "photos", ".trash", "target", "venv", ".venv", "dist", "build",
+];
+
+/// How many directory entries one name search may look at. A budget rather
+/// than a depth alone, because one directory with 20k children costs the same
+/// as a deep tree. Hit means the answer may be incomplete, which is WARNed.
+const SCAN_BUDGET: usize = 6000;
+
+/// Roots a bare-name search starts from: the home directory itself and the
+/// conventional places a checkout lives. Missing ones are skipped silently —
+/// this is a suggestion list, not an inventory.
+fn name_search_roots() -> Vec<PathBuf> {
+    let home = home_dir();
+    let mut roots = vec![home.clone()];
+    for c in ["Dev", "dev", "Projects", "projects", "src", "code", "Code", "Documents", "repos"] {
+        let p = home.join(c);
+        if p.is_dir() {
+            roots.push(p);
+        }
+    }
+    roots
+}
+
+/// Directories whose NAME contains `needle`, found by a bounded scan.
+///
+/// AF-496's sibling (AF-501). `autocomplete_dir` above completes a PATH: it
+/// splits the query on `/`, takes the parent, and matches the last component
+/// against that parent's entries. It can therefore only help someone who
+/// already knows where the directory IS. Measured in a live onboarding session
+/// (2026-09-04): the user knew the repo's NAME and not its path, typed it, got
+/// nothing, could not find it in Finder either, and said "I should be able to
+/// do this without you" — three minutes of a one-hour call spent hunting for a
+/// string the machine could have produced. Ethan's reply was "this is table
+/// stakes".
+///
+/// Two extra sources are deliberately NOT here: the dirs of existing workers
+/// and the human's recents. The client holds both already and can match them
+/// with no round trip, so duplicating them server-side would make the fast
+/// answer wait on the slow one.
+///
+/// Returns (results, budget_exhausted) so the caller can say whether the search
+/// was complete rather than letting a truncated scan read as "nothing matched"
+/// (ethos rule 4).
+fn dirs_matching_name(needle: &str, roots: &[PathBuf], limit: usize) -> (Vec<String>, bool) {
+    dirs_matching_name_budgeted(needle, roots, limit, SCAN_BUDGET)
+}
+
+/// `dirs_matching_name` with the entry budget as an ARGUMENT.
+///
+/// It is an argument because otherwise nothing can test the exhausted arm: a
+/// cell would need 6000 real directories to reach it. Measured — the first
+/// version of this had a cell named for budget exhaustion which never exhausted
+/// anything, and a mutation flipping the truncation flag to `false` stayed
+/// GREEN. The test asserted the arm it could reach and read as covering the one
+/// it could not.
+fn dirs_matching_name_budgeted(
+    needle: &str,
+    roots: &[PathBuf],
+    limit: usize,
+    mut budget: usize,
+) -> (Vec<String>, bool) {
+    let needle = needle.to_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // Breadth-first, so a match two levels down never waits behind a deep
+    // subtree: the shallow candidates are the likely ones.
+    let mut frontier: Vec<PathBuf> = roots.to_vec();
+    let mut depth = 0usize;
+    while depth < 3 && !frontier.is_empty() && out.len() < limit {
+        let mut next: Vec<PathBuf> = Vec::new();
+        for dir in frontier.drain(..) {
+            if budget == 0 {
+                return (out, true);
+            }
+            let Ok(rd) = retry_eintr(|| std::fs::read_dir(&dir)) else { continue };
+            let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for item in entries {
+                if budget == 0 {
+                    return (out, true);
+                }
+                budget -= 1;
+                let name = match item.file_name() {
+                    Some(n) => n.to_string_lossy().into_owned(),
+                    None => continue,
+                };
+                let lower = name.to_lowercase();
+                if name.starts_with('.') || SCAN_SKIP.contains(&lower.as_str()) {
+                    continue;
+                }
+                if !item.is_dir() || !is_path_allowed(&item) {
+                    continue;
+                }
+                if lower.contains(&needle) && seen.insert(item.clone()) {
+                    out.push(format!("{}/", pystr(&item)));
+                    if out.len() >= limit {
+                        return (out, false);
+                    }
+                }
+                next.push(item);
+            }
+        }
+        frontier = next;
+        depth += 1;
+    }
+    (out, false)
+}
+
+
+#[cfg(test)]
+mod name_search_tests {
+    use super::*;
+
+    /// A tree shaped like the specimen: the human knows the repo is called
+    /// "amux-gtm" and does not know it lives two levels down.
+    fn tree() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        for p in [
+            "Dev/amux",
+            "Dev/amux-gtm/gtm",
+            "Dev/mixpeek",
+            "Documents/notes",
+            ".hidden/amux-gtm-secret",
+            "Library/Caches/amux-gtm-cache",
+        ] {
+            std::fs::create_dir_all(r.join(p)).unwrap();
+        }
+        d
+    }
+
+    /// THE CELL THIS EXISTS FOR: a bare NAME finds the directory. The old
+    /// path-completer returned nothing for this query, which is the whole card.
+    #[test]
+    fn a_bare_name_finds_a_directory_the_typist_could_not_locate() {
+        let d = tree();
+        let (hits, exhausted) = dirs_matching_name("amux-gtm", &[d.path().to_path_buf()], 10);
+        assert!(!exhausted);
+        assert!(
+            hits.iter().any(|h| h.ends_with("Dev/amux-gtm/")),
+            "the name search did not find Dev/amux-gtm: {hits:?}"
+        );
+    }
+
+    /// A substring, not a prefix. "gtm" is what someone types when they half
+    /// remember the name; a prefix matcher would miss `amux-gtm` entirely.
+    #[test]
+    fn matching_is_by_substring_because_people_half_remember_names() {
+        let d = tree();
+        let (hits, _) = dirs_matching_name("gtm", &[d.path().to_path_buf()], 10);
+        assert!(
+            hits.iter().any(|h| h.ends_with("Dev/amux-gtm/")),
+            "a mid-name fragment found nothing: {hits:?}"
+        );
+    }
+
+    /// Dot directories and the scan-skip list stay out. `~/Library` alone would
+    /// otherwise turn every keystroke into a filesystem walk, and a hidden dir
+    /// is not somewhere a human means to put a project.
+    #[test]
+    fn hidden_and_heavy_directories_are_never_offered() {
+        let d = tree();
+        let (hits, _) = dirs_matching_name("amux-gtm", &[d.path().to_path_buf()], 10);
+        assert!(
+            !hits.iter().any(|h| h.contains("/.hidden/")),
+            "a dot directory was offered: {hits:?}"
+        );
+        assert!(
+            !hits.iter().any(|h| h.contains("/Library/")),
+            "the scan descended into Library: {hits:?}"
+        );
+    }
+
+    /// The budget is REPORTED, not silently swallowed. A truncated scan and a
+    /// scan that genuinely found nothing both hand back a short list, and they
+    /// need opposite responses (ethos rule 4).
+    ///
+    /// Both arms, over the SAME tree, so the flag is the only thing that
+    /// differs. The first version of this cell only had the second arm and a
+    /// mutation returning `false` from the exhausted branch stayed green.
+    #[test]
+    fn exhausting_the_budget_is_distinguishable_from_finding_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..40 {
+            std::fs::create_dir_all(d.path().join(format!("dir{i}"))).unwrap();
+        }
+        let roots = [d.path().to_path_buf()];
+        // TRUNCATED: the scan gave up before it could have seen everything.
+        let (hits, exhausted) = dirs_matching_name_budgeted("zzzz", &roots, 10, 5);
+        assert!(hits.is_empty());
+        assert!(exhausted, "a scan that ran out of budget must say so");
+        // COMPLETE: same tree, same query, budget that covers it.
+        let (hits, exhausted) = dirs_matching_name_budgeted("zzzz", &roots, 10, 6000);
+        assert!(hits.is_empty());
+        assert!(!exhausted, "a complete search that found nothing must not claim truncation");
+    }
+
+    /// A limit that is reached is not the same as a budget that ran out: the
+    /// caller asked for 2 and got 2, so nothing is missing from its point of
+    /// view.
+    #[test]
+    fn hitting_the_result_limit_is_not_reported_as_truncation() {
+        let d = tree();
+        let (hits, exhausted) = dirs_matching_name("amux", &[d.path().to_path_buf()], 2);
+        assert_eq!(hits.len(), 2);
+        assert!(!exhausted);
+    }
+
+
+    /// Not an assertion about speed on any particular machine — a FLOOR under
+    /// the thing that would make this route unusable. It runs on every keystroke
+    /// in the new-worker field, over the REAL home directory.
+    #[test]
+    fn a_name_search_over_the_real_home_directory_finishes_promptly() {
+        let t0 = std::time::Instant::now();
+        let roots = name_search_roots();
+        let (hits, exhausted) = dirs_matching_name("amux", &roots, 10);
+        let ms = t0.elapsed().as_millis();
+        println!("name search over {} root(s): {} hit(s), exhausted={exhausted}, {ms}ms", roots.len(), hits.len());
+        assert!(ms < 5000, "a per-keystroke search took {ms}ms over the real home dir");
+    }
+
+    #[test]
+    fn the_home_directory_is_always_a_root_and_the_missing_ones_are_skipped() {
+        let roots = name_search_roots();
+        assert_eq!(roots.first(), Some(&home_dir()), "home must be searched");
+        assert!(roots.iter().all(|r| r.is_dir()), "a root that does not exist was kept: {roots:?}");
+    }
+}
+
 pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response {
     if method != Method::GET {
         return not_found().await;
@@ -1420,6 +1768,32 @@ pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response
     let query = qs_get(&qs, "q").unwrap_or("").to_string();
     if query.is_empty() {
         return j(200, json!([]));
+    }
+    // A BARE NAME IS A SEARCH, NOT A PATH (AF-501). Everything below completes a
+    // path: it splits on `/`, takes the parent, and matches the last component
+    // against that parent's entries — which only helps someone who already knows
+    // where the directory is. A query with no `/` and no `~` is someone typing
+    // what the folder is CALLED, and that used to return [] every time.
+    if !query.contains('/') && !query.starts_with('~') && query.len() >= 2 {
+        let roots = name_search_roots();
+        let (hits, exhausted) = dirs_matching_name(&query, &roots, 10);
+        if exhausted {
+            // The contract here is a bare array whose every failure is `[]`, so
+            // a truncated search cannot announce itself IN the payload. It
+            // announces itself in the log instead, which is where a "why did it
+            // not find my repo" question gets answered.
+            tracing::warn!(
+                query = %query,
+                found = hits.len(),
+                budget = SCAN_BUDGET,
+                "autocomplete: name search hit its entry budget — results may be incomplete (AF-501)"
+            );
+        }
+        if !hits.is_empty() {
+            return j(200, json!(hits));
+        }
+        // No name match: fall through, so a bare name that IS a real relative
+        // path still completes the way it always did.
     }
     let p = expanduser(&query);
     if !is_path_allowed(&p) {
@@ -1571,6 +1945,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -2007,5 +2382,122 @@ mod tests {
         let (st, v) = call(&app, "GET", "/api/fs/search?q=x", None, vec![]).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "missing 'path'");
+    }
+}
+
+#[cfg(test)]
+mod open_native_locality_tests {
+    use super::browser_is_on_this_machine_with;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr { s.parse().unwrap() }
+
+    /// THE INCIDENT, 2026-08-28. Ethan opened a folder from the dashboard he
+    /// reaches at `desktop.tail5ce8f5.ts.net` — his OWN machine — and got
+    /// "Open VLC?" followed by "VLC is unable to open the MRL
+    /// 'sftp://desktop.tail5ce8f5.ts.net/Users/ethan/Dev/mixpeek/research/...'".
+    ///
+    /// The old client-side test was `hostname !== 'localhost' && !== '127.0.0.1'
+    /// && !endsWith('.local')`, so a Tailscale name classified as REMOTE on a
+    /// LOCAL machine and the button emitted an `sftp://` URL that no macOS
+    /// handler accepts. Both halves are pinned here: the same-machine pair must
+    /// read local, and a different tailnet node must not.
+    #[test]
+    fn a_tailscale_name_for_your_own_machine_is_local_and_another_node_is_not() {
+        let own = ip("100.108.219.90");   // this host's tailnet address
+        let host = Some("desktop.tail5ce8f5.ts.net:8824");
+        let dns = |_h: &str| vec![own];
+
+        assert!(
+            browser_is_on_this_machine_with(Some(own), host, dns),
+            "a browser on THIS machine reaching it by its tailnet name is LOCAL — \
+             classifying it remote is what produced the sftp:// link"
+        );
+        // The control. Without it, `always true` passes the assertion above and
+        // pops a Finder window on someone else's desktop.
+        assert!(
+            !browser_is_on_this_machine_with(Some(ip("100.66.26.84")), host, dns),
+            "a DIFFERENT tailnet node reaching the same host is REMOTE"
+        );
+    }
+
+    /// HTTP/2 CARRIES NO `Host` HEADER, and this endpoint's only real client
+    /// speaks h2. The first version of this fix read the header alone, so every
+    /// browser request resolved an authority of None and refused as remote —
+    /// the four cells above all passed, because they hand a Host string
+    /// straight to the decision and never touch the extraction.
+    ///
+    /// Caught by curling the SHIPPED endpoint: `--http1.1` answered
+    /// {"local":true}, unforced answered 409, and the server negotiates h2 by
+    /// default. This cell pins the extraction so the two protocol shapes cannot
+    /// diverge again.
+    #[test]
+    fn the_authority_is_read_from_h2_as_well_as_from_the_host_header() {
+        use axum::http::Request as HttpRequest;
+
+        // HTTP/1.1: authority in the Host header, URI is origin-form.
+        let h1 = HttpRequest::builder()
+            .uri("/api/fs/open")
+            .header("host", "desktop.tail5ce8f5.ts.net:8824")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            super::request_authority(&h1).as_deref(),
+            Some("desktop.tail5ce8f5.ts.net:8824"),
+            "HTTP/1.1 puts it in the Host header"
+        );
+
+        // HTTP/2: no Host header at all; :authority lands on the URI.
+        let h2 = HttpRequest::builder()
+            .uri("https://desktop.tail5ce8f5.ts.net:8824/api/fs/open")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(h2.headers().get(axum::http::header::HOST).is_none(), "fixture must have NO Host");
+        assert_eq!(
+            super::request_authority(&h2).as_deref(),
+            Some("desktop.tail5ce8f5.ts.net:8824"),
+            "h2 carries it as :authority on the URI — reading the header alone refuses \
+             every browser request as remote"
+        );
+
+        // Neither: still None, so the caller's fail-safe (remote) applies.
+        let bare = HttpRequest::builder().uri("/api/fs/open").body(axum::body::Body::empty()).unwrap();
+        assert_eq!(super::request_authority(&bare), None);
+    }
+
+    /// Loopback short-circuits before DNS: a resolver that answers nothing must
+    /// not turn `localhost` into a remote browser.
+    #[test]
+    fn loopback_is_local_without_consulting_dns() {
+        let never = |_h: &str| Vec::new();
+        assert!(browser_is_on_this_machine_with(Some(ip("127.0.0.1")), Some("localhost:8824"), never));
+        assert!(browser_is_on_this_machine_with(Some(ip("::1")), None, never));
+    }
+
+    /// FAIL SAFE. No peer (ConnectInfo absent, as in router-level tests), an
+    /// absent Host, or a resolver that errors must all read REMOTE — refusing to
+    /// open is recoverable because the response carries the path; opening a
+    /// window on a stranger's desktop is not.
+    #[test]
+    fn unknown_reads_remote_rather_than_local() {
+        let own = ip("100.108.219.90");
+        assert!(!browser_is_on_this_machine_with(None, Some("desktop:8824"), |_| vec![own]));
+        assert!(!browser_is_on_this_machine_with(Some(own), None, |_| vec![own]));
+        assert!(!browser_is_on_this_machine_with(Some(own), Some("desktop:8824"), |_| Vec::new()));
+    }
+
+    /// The authority is parsed, not pattern-matched: a port must be stripped and
+    /// an IPv6 authority's brackets removed, or the lookup is of a string that
+    /// is not a hostname and every remote browser silently reads remote for the
+    /// WRONG reason.
+    #[test]
+    fn the_host_authority_is_parsed() {
+        let own = ip("100.108.219.90");
+        let seen = std::cell::RefCell::new(String::new());
+        let spy = |h: &str| { *seen.borrow_mut() = h.to_string(); vec![own] };
+        assert!(browser_is_on_this_machine_with(Some(own), Some("desktop.tail5ce8f5.ts.net:8824"), spy));
+        assert_eq!(seen.borrow().as_str(), "desktop.tail5ce8f5.ts.net", "port stripped");
+        assert!(browser_is_on_this_machine_with(Some(own), Some("[fd7a::1]:8824"), spy));
+        assert_eq!(seen.borrow().as_str(), "fd7a::1", "IPv6 brackets stripped");
     }
 }

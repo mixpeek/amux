@@ -85,6 +85,28 @@ pub struct ScopeCap {
     /// The per-worker "why did I get this value" endpoint. Carried in the
     /// descriptor as documentation (Python keeps it there too and, like us,
     /// never emits it in the read payload).
+    ///
+    /// `env` NOW ANSWERS; `memory` and `rules` STILL DO NOT (AF-295).
+    ///
+    /// All three pointed at a 501 until 2026-08-28. `env-explain` is
+    /// implemented: it walks `scope_env_layers`, the same ordered list every
+    /// consumer reads, and reports which layer supplied the value. It returns
+    /// key names and never values, because these files are 0600 and carry
+    /// credentials; an explain that echoed them would be a credential read over
+    /// HTTP.
+    ///
+    /// `memory` and `rules` keep pointing at `memory-explain`, which is still
+    /// 501 — now for a stated reason rather than a port gap. The composition it
+    /// would explain is itself incomplete: these caps advertise a `group` level
+    /// and `write_claude_memory` reads only global + worker, so
+    /// `memory/tags/<group>.md` is written here and consumed by nothing
+    /// (AF-296). An explain built on that would report a defect rather than
+    /// explain a behaviour. Fix the composition first.
+    ///
+    /// Bounded either way, and checked rather than assumed: this field never
+    /// reaches a consumer — nothing in the read payload carries it, verified
+    /// against the live endpoint — so the only reader misled is someone reading
+    /// this table, and the table now says so (ethos rule 6).
     pub explain: &'static str,
 }
 
@@ -897,50 +919,32 @@ fn write_memory(
 /// (null deletes a key). 0600 — env files carry credentials.
 fn write_env(home: &Path, level: &str, name: &str, value: &Value) -> Result<(), (u16, String)> {
     let f = env_file(home, level, name);
-    if let Some(parent) = f.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| (500, e.to_string()))?;
-    }
-    let text = match value {
+    match value {
         Value::String(s) => {
-            if s.ends_with('\n') {
+            let text = if s.ends_with('\n') {
                 s.clone()
             } else {
                 format!("{s}\n")
-            }
+            };
+            crate::api::session_verbs::EnvFile::replace_text(&f, &text)
+                .map_err(|e| (500, e.to_string()))?;
         }
         _ => {
-            let mut cur: std::collections::BTreeMap<String, String> = if f.exists() {
-                crate::config::parse_env_file(&f).into_iter().collect()
-            } else {
-                Default::default()
-            };
+            let mut updates = Vec::new();
             if let Some(obj) = value.as_object() {
                 for (k, v) in obj {
-                    match v {
-                        Value::Null => {
-                            cur.remove(k);
-                        }
-                        // Python str(): strings bare, bools Title-case.
-                        Value::String(s) => {
-                            cur.insert(k.clone(), s.clone());
-                        }
-                        Value::Bool(b) => {
-                            cur.insert(k.clone(), if *b { "True".into() } else { "False".into() });
-                        }
-                        other => {
-                            cur.insert(k.clone(), other.to_string());
-                        }
-                    }
+                    let value = match v {
+                        Value::Null => None,
+                        Value::String(s) => Some(s.clone()),
+                        Value::Bool(b) => Some(if *b { "True".into() } else { "False".into() }),
+                        other => Some(other.to_string()),
+                    };
+                    updates.push((k.clone(), value));
                 }
             }
-            cur.iter().map(|(k, v)| format!("{k}={v}\n")).collect()
+            crate::api::session_verbs::EnvFile::merge_plain(&f, &updates)
+                .map_err(|e| (500, e.to_string()))?;
         }
-    };
-    std::fs::write(&f, text).map_err(|e| (500, e.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
 }
@@ -1183,6 +1187,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 

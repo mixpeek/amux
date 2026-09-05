@@ -16,10 +16,11 @@
 //!   go file-first instead: a non-empty server.env value wins, then process
 //!   env, then the default. Observable behavior matches Python: a PATCH is
 //!   immediately visible to the next GET without a restart.
-//! - The Python ANTHROPIC_API_KEY PATCH also re-inits claude config and
-//!   pushes the key into every running tmux session. That is the Python
-//!   server's runtime to manage — while it owns the tmux fleet (Phase 11
-//!   cutover pending), duplicating the push here would race it. Not ported.
+//! - Rust never mutates the process-global environment after startup. New
+//!   workers and web terminals resolve provider credentials from `server.env`
+//!   at launch instead, so a PATCH has live effect without a process restart
+//!   or a process-wide `set_var` race. Already-running workers still need an
+//!   explicit restart before they can inherit a changed credential.
 //! - `defaults.env` writes are atomic with mode 0600 (Python's
 //!   `_atomic_write_secure`); `server.env` writes are plain rewrites
 //!   (Python's are too).
@@ -467,8 +468,22 @@ async fn patch_task_guard(Json(body): Json<Value>) -> Response {
 
 /// The only keys the settings UI may read (masked) or write. Fixed array,
 /// not a set: response key order is stable.
-const ALLOWED_ENV_KEYS: [&str; 4] =
+pub(crate) const PROVIDER_ENV_KEYS: [&str; 4] =
     ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"];
+
+/// Provider credentials a newly spawned process should inherit.
+///
+/// Keep this derived from the settings allow-list: a key that the UI says it
+/// saved but no worker/terminal launch reads is the exact false-success shape
+/// this API must avoid. Values are never logged or returned by this helper.
+pub(crate) fn runtime_provider_env(home: &Path) -> Vec<(String, String)> {
+    PROVIDER_ENV_KEYS
+        .iter()
+        .filter_map(|key| {
+            effective_env(home, key).map(|value| ((*key).to_string(), value))
+        })
+        .collect()
+}
 
 /// Python's mask: >8 chars shows stars + last 4; short-but-set shows "set";
 /// unset shows "". Never the value itself.
@@ -487,7 +502,7 @@ pub(crate) fn mask_secret(v: &str) -> String {
 async fn get_env() -> Response {
     let home = amux_home();
     let mut out = Map::new();
-    for k in ALLOWED_ENV_KEYS {
+    for k in PROVIDER_ENV_KEYS {
         let v = effective_env(&home, k).unwrap_or_default();
         out.insert(k.to_string(), Value::String(mask_secret(&v)));
     }
@@ -499,7 +514,7 @@ async fn patch_env(Json(body): Json<Value>) -> Response {
         .as_object()
         .map(|o| {
             o.iter()
-                .filter(|(k, v)| ALLOWED_ENV_KEYS.contains(&k.as_str()) && v.is_string())
+                .filter(|(k, v)| PROVIDER_ENV_KEYS.contains(&k.as_str()) && v.is_string())
                 .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
                 .collect()
         })
@@ -513,8 +528,8 @@ async fn patch_env(Json(body): Json<Value>) -> Response {
             return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
         }
     }
-    // Python also mutates os.environ and pushes ANTHROPIC_API_KEY into
-    // running tmux sessions; see the module doc for why neither is ported.
+    // Consumers read server.env at process launch through runtime_provider_env;
+    // no process-global environment mutation is needed here.
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -961,6 +976,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let router = Router::new().nest("/api/settings", routes()).with_state(state);
         (router, dir)
@@ -1048,6 +1064,28 @@ mod tests {
         assert_eq!(mask_secret("short"), "set");
         assert_eq!(mask_secret("12345678"), "set");
         assert_eq!(mask_secret("sk-ant-api03-abcd"), "*************abcd");
+    }
+
+    #[test]
+    fn runtime_provider_env_reads_fresh_file_values_and_honours_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        set_server_env_key(home, "OPENAI_API_KEY", "fixture-openai-value").unwrap();
+        // An explicit empty value is a clear, even when the process running the
+        // test happens to have a same-named key in its ambient environment.
+        set_server_env_key(home, "GOOGLE_API_KEY", "").unwrap();
+        set_server_env_key(home, "NOT_A_PROVIDER_KEY", "must-not-escape").unwrap();
+
+        let values = runtime_provider_env(home);
+        assert_eq!(
+            values
+                .iter()
+                .find(|(key, _)| key == "OPENAI_API_KEY")
+                .map(|(_, value)| value.as_str()),
+            Some("fixture-openai-value")
+        );
+        assert!(!values.iter().any(|(key, _)| key == "GOOGLE_API_KEY"));
+        assert!(!values.iter().any(|(key, _)| key == "NOT_A_PROVIDER_KEY"));
     }
 
     #[test]

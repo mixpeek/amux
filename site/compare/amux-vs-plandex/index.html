@@ -45,7 +45,7 @@
     "description": "Compare amux's open-source multi-agent control plane with Plandex's long-running single-task AI coding engine. Parallel fleet vs sequential execution, mobile-first vs CLI-only.",
     "url": "https://amux.io/compare/amux-vs-plandex/",
     "datePublished": "2026-07-08",
-    "dateModified": "2026-07-08",
+    "dateModified": "2026-08-28",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -104,6 +104,14 @@
           "@type": "Answer",
           "text": "Both are open-source and free to self-host. With amux you pay only for the AI API calls your agents make (Anthropic, OpenAI, or Google). With Plandex you similarly pay only for LLM API usage. The difference is that amux's parallel fleet model can process many tasks per hour, while Plandex's sequential model processes one deep task at a time."
         }
+      },
+      {
+        "@type": "Question",
+        "name": "Can amux manage agents on a remote server?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux-remote (shipped August 2026) lets you connect to a remote amux server over Tailscale or SSH. Configure AMUX_URL and your auth token on your local machine and you can manage that remote fleet from your laptop or phone. Plandex is a local CLI only — there is no remote server mode."
+        }
       }
     ]
   }
@@ -126,7 +134,21 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Plandex</span></div>
 
     <h1>amux vs Plandex</h1>
-    <p class="subtitle">AI coding agent fleet vs. single-task coding engine — two different problems, two different tools. <em>Updated July 2026.</em></p>
+    <p class="subtitle">AI coding agent fleet vs. single-task coding engine — two different problems, two different tools. <em>Updated August 2026.</em></p>
+
+    <!-- EXP-066: plandex compare top-of-page green CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-066">
+      <div>
+        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Run your entire AI engineering team overnight — not just one task</div>
+        <div style="color:#a7f3d0;font-size:0.875rem">amux orchestrates dozens of Claude Code, Codex &amp; Gemini CLI agents in parallel — open source, MIT licensed, 373+ stars.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp066_plandex_compare_topofpage_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
+        View amux on GitHub ★
+      </a>
+    </div>
 
     <p>If you want to run <strong>one complex, multi-file coding task carefully</strong> with staged review and rollback, Plandex is purpose-built for that. If you want to run <strong>10-50 coding tasks in parallel overnight</strong>, check results from your phone in the morning, and manage agents alongside CRM and email — that's amux. Both are open source. They are not direct competitors; they solve different layers of the AI coding problem.</p>
 
@@ -154,6 +176,9 @@
         <tr><td>Staged diff review</td><td>No (agents push directly)</td><td>Yes — sandbox + review before apply</td></tr>
         <tr><td>Rollback</td><td>Git-based (agent opens PRs)</td><td>Built-in undo/rewind</td></tr>
         <tr><td>Overnight runs</td><td>Primary use case (self-healing)</td><td>Possible but requires staying at terminal</td></tr>
+        <tr><td>Session cloning</td><td>Clone any live session via dashboard or <code>POST /api/sessions/&lt;name&gt;/clone</code></td><td>No session cloning</td></tr>
+        <tr><td>Isolated workers</td><td>ISOLATED option at create time — stripped worker with no harness tools injected</td><td>N/A (single terminal session)</td></tr>
+        <tr><td>Remote management</td><td>amux-remote: connect to a remote amux server over Tailscale or SSH</td><td>Local CLI only</td></tr>
         <tr><td>License</td><td>MIT + Commons Clause</td><td>MIT</td></tr>
         <tr><td>Infrastructure</td><td>Single Rust binary, self-hosted</td><td>CLI binary, optional server mode</td></tr>
         <tr><td>Cost</td><td>LLM API costs only</td><td>LLM API costs only</td></tr>
@@ -227,6 +252,14 @@
     </ul>
     <p><strong>Use both if:</strong> You want Plandex for high-risk single jobs and amux for fleet-parallel feature work. They are complementary, not mutually exclusive.</p>
 
+    <h2>What's new in amux — August 2026</h2>
+    <ul>
+      <li><strong>Session cloning</strong> — duplicate any live session via the dashboard "Duplicate" button or <code>POST /api/sessions/&lt;name&gt;/clone</code>. Use it for A/B testing two implementation approaches, parallel experiments, or task splitting without losing context.</li>
+      <li><strong>ISOLATED session option</strong> — create a stripped-down worker at session create time with no harness tools injected. Useful for running Plandex or other tools inside amux's monitoring layer without amux's own tools interfering.</li>
+      <li><strong>amux-remote (Phase 1)</strong> — connect to a remote amux server over Tailscale or SSH. Set <code>AMUX_URL</code> to the remote server's address and manage that fleet from your local machine or phone. Run agents on a dedicated server overnight, manage from your laptop in the morning.</li>
+      <li><strong>amux-worker cross-CLI client</strong> — a cross-CLI amux API client for fleet operations from any terminal, even one that doesn't have a local amux install.</li>
+    </ul>
+
     <h2>Frequently asked questions</h2>
     <details>
       <summary><strong>Is Plandex still actively maintained in 2026?</strong></summary>
@@ -242,15 +275,14 @@
     </details>
     <details>
       <summary><strong>What is the quickest way to get started with amux?</strong></summary>
-      <p>Clone the repo, run the install script (requires Python 3 and tmux), register a project, and start a session. The whole process takes under 5 minutes. See the <a href="/guides/getting-started/">getting started guide</a>.</p>
+      <p>Install via <code>brew install amux</code> or download the single Rust binary from GitHub releases. Register a project, start a session, and run <code>amux serve</code> to open the dashboard. The whole process takes under 5 minutes. See the <a href="/guides/getting-started/">getting started guide</a>.</p>
     </details>
 
     <div class="cta-box">
       <h3>Try amux — run your AI engineering team tonight</h3>
-      <p>Open source, MIT licensed, single Rust binary, zero external dependencies. Runs on any Mac or Linux machine with Python 3 and tmux.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+      <p>Open source, MIT licensed, single Rust binary, zero external dependencies. Runs on any Mac or Linux machine.</p>
+      <pre><code>brew install amux
 amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">⭐ Star on GitHub</a>

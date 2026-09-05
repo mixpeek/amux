@@ -1,0 +1,15 @@
+-- Track the session an @-mention last routed a chat's message INTO, separately
+-- from the chat's /link'd default session.
+--
+-- Bug (found 2026-08-30): the @lane feature (migration-free, telegram_poll.rs)
+-- lets a message route to ANY lane ("@frontstage status" -> frontstage's pane),
+-- but the auto-relay job (0036_telegram_relay.sql) only ever watches
+-- `telegram_mappings.session` — the one /link'd default. A reply typed by a lane
+-- reached only via @-mention was never observed by the relay, so it never made
+-- it back to Telegram. `last_routed_session` closes that gap: telegram_poll.rs
+-- stamps it on every inbound message (default or @lane), and telegram_relay.rs
+-- watches THIS session instead of the static `session` column when it is set.
+--
+-- NULL means "same as the default `session`" (the common case, no @lane in
+-- play yet) — relay callers must COALESCE(last_routed_session, session).
+ALTER TABLE telegram_mappings ADD COLUMN last_routed_session TEXT;

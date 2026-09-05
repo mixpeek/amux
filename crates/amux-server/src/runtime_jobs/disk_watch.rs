@@ -40,7 +40,7 @@ use crate::db::board_store as bs;
 use serde_json::json;
 
 /// Registry id. `spawn_periodic` derives this job's kill switch from the name.
-const JOB: &str = "disk-watch";
+const JOB: &str = super::registry::ids::DISK_WATCH;
 
 /// How often the job wakes. Not how often it scans — see the module docs.
 const TICK_SECS: u64 = 3600;
@@ -275,78 +275,118 @@ fn already_filed(conn: &rusqlite::Connection, scan_id: &str) -> bool {
     .is_ok()
 }
 
-/// Hourly size sample of the regenerable paths amux itself mandates, so growth
-/// is visible as a SERIES rather than as two spot readings after the fact.
+/// Size sample of the regenerable paths amux itself mandates, PERSISTED, so the
+/// growth series survives the server re-execing under it.
 ///
-/// # Why this exists next to the full scan rather than instead of it
+/// # The bug this shape exists to prevent, which I shipped and had to fix
 ///
-/// The full reclaim scan is the better instrument and it is not being replaced.
-/// But measured 2026-08-25, it has completed ONCE in its lifetime — `reclaim_scans`
-/// reads `{done: 1, interrupted: 2, cancelled: 2, stalled: 1}`. It walks every root
-/// in 6-35 minutes while this server re-execs to adopt new builds every 22.8
-/// minutes on average (66 starts in 25h), so most scans lose that race by
-/// construction and `api/reclaim.rs` marks them `interrupted` at the next startup.
-/// Last completed scan was 2026-08-21, four days before the volume hit 100%.
+/// The first version kept the previous reading in a process-local `static`. This
+/// server re-execs to adopt new builds every ~23 minutes, and far more often
+/// during a commit burst from ~50 lanes. `spawn_periodic` fires its first tick
+/// immediately on spawn. So:
 ///
-/// The consequence was concrete: `~/.amux/rust-build-target` went from 40 GB to
-/// 97 GB in 19 hours and nothing said so. That growth is exactly what the scan
-/// exists to surface (DESKT-26/27).
+///   - every re-exec launched a FULL tree walk. Ten of them fired between
+///     22:44:32 and 22:46:41 on 2026-08-28 — inside two minutes — against a tree
+///     that had grown to 201 GB / 553,847 entries, where one walk costs 49
+///     SECONDS. It cost 9s when I measured it to justify the design. That is
+///     what put amux-server-rs at 95.7% CPU on a box already at 94% memory: a
+///     detector paying its cost in the resource it measures (ethos rule 7).
+///   - the reading was wiped every time, so 139 log lines said "baseline"
+///     against 34 with a delta. The series it exists to produce was not produced
+///     four times out of five.
 ///
-/// This is the cheap half that cannot lose the race. One known directory instead
-/// of every root: measured at **9 seconds** for 323,855 files, against the full
-/// scan's 6-35 minutes. It fits inside the restart window with three orders of
-/// magnitude to spare, so it produces a reading every hour whatever the fleet is
-/// doing.
+/// Both fixes are the same one: keep the sample in the DATABASE. The reading
+/// survives the re-exec so deltas are real, and the walk is skipped outright
+/// when the last persisted sample is younger than the interval, so a restart
+/// storm cannot become a walk storm.
 ///
-/// # Hardlink accounting, because it produced a real contradiction
-///
-/// Sizes are summed ONCE PER INODE, which is what `du` does. A naive per-file sum
-/// of this same directory reports 252.7 GB where `du` reports 97 GB, because cargo
-/// hardlinks artifacts heavily. Both numbers are "right" and only one matches the
-/// free space a reader is comparing against, so the wrong one reads as a 2.6x
-/// discrepancy and invites the conclusion that the measurement is broken.
-fn report_regenerable_growth() {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    static LAST: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+/// `ethos.md` records this exact lesson from the report-endpoint work ("In-memory
+/// state is fiction. The report table lived only in memory, and this process
+/// re-execs on every save"). I re-made it anyway.
+fn report_regenerable_growth(store: &crate::db::SharedStore) {
+    let now = crate::runtime_jobs::registry::unix_now();
+    let min_interval = sample_interval_secs() as f64;
 
-    let mut now_sizes: HashMap<String, u64> = HashMap::new();
     for path in watched_regenerable_paths() {
-        let Some((bytes, files)) = du_bytes(&path) else { continue };
         let key = path.to_string_lossy().to_string();
+        let prev = last_sample(store, &key);
+
+        // THE GATE. Without it, every re-exec walks the tree again.
+        if let Some((prev_ts, _, _)) = prev {
+            if now - prev_ts < min_interval {
+                tracing::debug!(
+                    job = JOB, path = %key, age_s = (now - prev_ts).round(),
+                    "regenerable sample still fresh — skipping the walk"
+                );
+                continue;
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let Some((bytes, files)) = du_bytes(&path) else { continue };
+        let walk_s = started.elapsed().as_secs_f64();
         let gb = bytes as f64 / 1_073_741_824.0;
 
-        let prev = LAST
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().and_then(|m| m.get(&key).copied()));
         match prev {
-            // First reading of a path is a BASELINE, not growth — the same rule
-            // the scan-diff path already follows (see the test named for it).
             None => tracing::info!(
-                job = JOB,
-                path = %key,
-                gb = format!("{gb:.1}"),
-                files,
+                job = JOB, path = %key, gb = format!("{gb:.1}"), files,
+                walk_s = format!("{walk_s:.1}"),
                 "regenerable path baseline"
             ),
-            Some(p) => {
-                let delta = gb - (p as f64 / 1_073_741_824.0);
+            Some((_, prev_bytes, _)) => {
+                let delta = gb - (prev_bytes as f64 / 1_073_741_824.0);
                 tracing::info!(
-                    job = JOB,
-                    path = %key,
-                    gb = format!("{gb:.1}"),
-                    delta_gb = format!("{delta:+.1}"),
-                    files,
+                    job = JOB, path = %key, gb = format!("{gb:.1}"),
+                    delta_gb = format!("{delta:+.1}"), files,
+                    walk_s = format!("{walk_s:.1}"),
                     "regenerable path size"
                 );
             }
         }
-        now_sizes.insert(key, bytes);
+        record_sample(store, &key, now, bytes, files);
     }
-    if let Ok(mut g) = LAST.lock() {
-        *g = Some(now_sizes);
-    }
+}
+
+/// Minimum seconds between walks of the SAME path. Enforced against the
+/// persisted sample, so it holds across re-exec.
+fn sample_interval_secs() -> u64 {
+    std::env::var("AMUX_REGENERABLE_SAMPLE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(3600)
+        .max(60)
+}
+
+/// `(ts, bytes, file_count)` of the newest persisted sample for `path`.
+fn last_sample(store: &crate::db::SharedStore, path: &str) -> Option<(f64, u64, u64)> {
+    let conn = store.read().ok()?;
+    conn.query_row(
+        "SELECT ts, bytes, file_count FROM regenerable_samples
+          WHERE path = ?1 ORDER BY ts DESC LIMIT 1",
+        rusqlite::params![path],
+        |r| {
+            Ok((
+                r.get::<_, f64>(0)?,
+                r.get::<_, i64>(1)?.max(0) as u64,
+                r.get::<_, i64>(2)?.max(0) as u64,
+            ))
+        },
+    )
+    .ok()
+}
+
+fn record_sample(store: &crate::db::SharedStore, path: &str, ts: f64, bytes: u64, files: u64) {
+    let (path, bytes, files) = (path.to_string(), bytes as i64, files as i64);
+    let _ = store.write(move |c| {
+        c.execute(
+            "INSERT OR REPLACE INTO regenerable_samples (path, ts, bytes, file_count)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![path, ts, bytes, files],
+        )?;
+        // Never bump the global revision from a measurement — SSE delta-sync
+        // hangs off it, and nothing user-visible changed.
+        Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+    });
 }
 
 /// The regenerable paths amux itself creates or mandates, so watching them is
@@ -445,7 +485,7 @@ fn report_disk_pressure() {
 
 async fn tick(state: AppState) {
     report_disk_pressure();
-    report_regenerable_growth();
+    report_regenerable_growth(&state.store);
     let (scans, running) = {
         let Ok(conn) = state.store.read() else { return };
         let running: i64 = conn
@@ -554,6 +594,17 @@ async fn tick(state: AppState) {
                 gate: vec![],
                 depends_on: vec![],
                 tags: vec!["disk".into(), "reclaim".into()],
+                // Not an ask: this producer files ordinary cards, and a card
+                // filed into needsyou without one is what AMUX-3929 is about.
+                ask_type: None,
+                ask_question: None,
+                ask_unblocks: None,
+                ask_actor: None,
+                // AF-367: filed by the disk watcher.
+                source: Some("disk_watch".into()),
+                requested_by: None,
+                callback_session: None,
+                callback_prompt: None,
             };
             let row = bs::create_issue(conn, &new, crate::api::reclaim::now_secs())?;
             conn.execute(
@@ -808,6 +859,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let now = crate::api::reclaim::now_secs();
         seed_scan(&s, "S1", "done", now);
@@ -975,5 +1027,84 @@ mod tests {
             !rows.iter().any(|g| g.path == "/b"),
             "/b was never visited by the current scan, so it must not appear at all"
         );
+    }
+
+    // ---- the re-exec storm bug (2026-08-28), pinned ----
+
+    fn samples_db() -> (crate::db::SharedStore, tempfile::TempDir) {
+        let (s, d) = store();
+        s.write(|c| {
+            crate::db::migrate::apply_one(
+                c,
+                include_str!("../../migrations/0035_regenerable_samples.sql"),
+            )
+            .unwrap();
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
+        (s, d)
+    }
+
+    /// THE REGRESSION TEST. A fresh sample must suppress the walk, because
+    /// spawn_periodic fires immediately on every spawn and this server re-execs
+    /// every ~23 minutes. Without this gate, ten full 49-second walks fired
+    /// inside two minutes on 2026-08-28 and took the server to 95.7% CPU.
+    #[test]
+    fn a_fresh_persisted_sample_suppresses_the_walk() {
+        let (s, _d) = samples_db();
+        let now = crate::runtime_jobs::registry::unix_now();
+        record_sample(&s, "/some/tree", now - 10.0, 42, 7);
+
+        let got = last_sample(&s, "/some/tree").expect("sample persisted");
+        assert_eq!(got.1, 42, "bytes round-trip");
+        assert!(
+            now - got.0 < sample_interval_secs() as f64,
+            "a 10s-old sample must read as fresh, so the tick skips the walk"
+        );
+    }
+
+    /// And the mirror: a sample older than the interval must NOT suppress it, or
+    /// the gate would freeze the series forever.
+    #[test]
+    fn a_stale_sample_lets_the_walk_run_again() {
+        let (s, _d) = samples_db();
+        let now = crate::runtime_jobs::registry::unix_now();
+        record_sample(&s, "/some/tree", now - (sample_interval_secs() as f64 + 60.0), 42, 7);
+        let (ts, _, _) = last_sample(&s, "/some/tree").unwrap();
+        assert!(now - ts >= sample_interval_secs() as f64, "must read as stale");
+    }
+
+    /// The persistence is the whole point: the reading has to OUTLIVE the
+    /// process. A store reopened from the same file stands in for the re-exec
+    /// that was wiping the old in-memory cache 4 times out of 5.
+    #[test]
+    fn the_sample_survives_a_process_restart() {
+        let (s, dir) = samples_db();
+        record_sample(&s, "/tree", 1000.0, 999, 3);
+        drop(s);
+
+        // A NEW store over the same file — what a re-exec actually produces.
+        let s2 = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let got = last_sample(&s2, "/tree").expect("sample must survive the restart");
+        assert_eq!((got.0, got.1, got.2), (1000.0, 999, 3));
+    }
+
+    /// The newest sample wins, so a delta compares against the last reading
+    /// rather than an arbitrary older one.
+    #[test]
+    fn the_newest_sample_is_the_one_compared_against() {
+        let (s, _d) = samples_db();
+        record_sample(&s, "/tree", 100.0, 10, 1);
+        record_sample(&s, "/tree", 200.0, 20, 2);
+        record_sample(&s, "/tree", 150.0, 15, 3);
+        assert_eq!(last_sample(&s, "/tree").unwrap(), (200.0, 20, 2));
+    }
+
+    /// A path never sampled has no previous reading — reported as a baseline,
+    /// never as growth from zero.
+    #[test]
+    fn an_unsampled_path_has_no_previous_reading() {
+        let (s, _d) = samples_db();
+        assert!(last_sample(&s, "/never/seen").is_none());
     }
 }

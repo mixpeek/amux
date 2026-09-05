@@ -82,13 +82,29 @@ test('system jobs render with real data, separated from user schedules', async (
     expect(j.purpose, `${id} has no purpose text`).toBeTruthy();
   }
 
-  // No mutation affordances: these are machinery, not user data.
-  // Asserted on BUTTONS, not on the word: `getByText('Delete')` matched the
-  // section's own note ("you cannot edit or delete them"), which would have
-  // failed forever on prose that is doing exactly the right thing.
+  // This harness has a throwaway AMUX_HOME but shares the host's tmux socket,
+  // process table and hook files. Every internal loop is therefore registered
+  // inert under the process-wide isolation switch. Visibility is preserved;
+  // host-wide effects are not.
+  const isolated = jobs.jobs.filter((x: any) => x.disabled_reason === 'AMUX_ISOLATED=1');
+  expect(isolated.length, 'test-server jobs must be visibly fleet-isolated').toBeGreaterThanOrEqual(10);
+  const selfAdopt = jobs.jobs.find((x: any) => x.id === 'self-adoption');
+  expect(selfAdopt?.status).toBe('disabled');
+  expect(selfAdopt?.disabled_reason).toBe('AMUX_NO_SELF_ADOPT');
+
+  // No edit/delete affordances: these are machinery, not user data. A later
+  // requested capability added one narrow control per row: Run now wakes a
+  // triggerable job without changing its definition. The old blanket
+  // `button === 0` assertion therefore failed on all three browser projects
+  // while the UI was doing exactly what the server contract requested.
   const sysSection = page.locator('.sysjob-section');
-  await expect(sysSection.locator('button')).toHaveCount(0);
+  const runButtons = sysSection.locator('button.sysjob-run');
+  await expect(runButtons).toHaveCount(jobs.jobs.length);
+  await expect(sysSection.locator('button:not(.sysjob-run)')).toHaveCount(0);
   await expect(sysSection.locator('.sched-action-btn')).toHaveCount(0);
+  const triggerable = jobs.jobs.filter((j: any) => j.triggerable).length;
+  await expect(sysSection.locator('button.sysjob-run:enabled')).toHaveCount(triggerable);
+  await expect(sysSection.locator('button.sysjob-run:disabled')).toHaveCount(jobs.jobs.length - triggerable);
 
   // Exactly one live switch — the autofix pref, which the server re-reads on
   // every tick. Env vars render as readouts; a checkbox over one would claim

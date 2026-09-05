@@ -17,6 +17,9 @@
 #
 # IDEMPOTENT: re-running rebuilds and upgrades the binaries + agents in
 # place. It NEVER writes into existing ~/.amux data (DB, sessions, tokens).
+# It also merges amux's five Claude lifecycle hooks into ~/.claude/settings.json,
+# preserving unrelated settings and hooks, so status reporting is actually
+# connected rather than merely copied to disk.
 #
 # Overridable (used by the e2e self-test to install against a throwaway
 # prefix without touching the live service — and handy for parallel installs):
@@ -288,6 +291,23 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/hook-report.sh" ]]; then
   _rep_sha="$(shasum -a 256 "$AMUX_HOME/hook-report.sh" | cut -d' ' -f1)"
   printf '%s  hook-report.sh\n' "$_rep_sha" > "$AMUX_HOME/hook-report.sh.sha256"
   say "report hook: $AMUX_HOME/hook-report.sh (sha ${_rep_sha:0:12})"
+
+  # Copying a hook that settings.json never invokes is an inert installation.
+  # Wire the real lifecycle: prompt -> active, tool -> heartbeat, stop -> idle,
+  # and explicit subagent start/stop counts. Do this only for the canonical
+  # AMUX_HOME; hermetic/test installs deliberately must not mutate the operator's
+  # real Claude settings. AMUX_CLAUDE_SETTINGS is the explicit test/custom escape.
+  if [[ "$AMUX_HOME" == "$HOME/.amux" || -n "${AMUX_CLAUDE_SETTINGS:-}" ]]; then
+    _claude_settings="${AMUX_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+    if /usr/bin/python3 "$SCRIPT_DIR/scripts/hooks/install-claude-status-hooks.py" \
+      --settings "$_claude_settings" --hook-path '$HOME/.amux/hook-report.sh'; then
+      say "Claude status hooks: $_claude_settings"
+    else
+      warn "could not wire Claude status hooks; the report-hook invariant will remain unhealthy"
+    fi
+  else
+    say "Claude status hooks: skipped for non-default AMUX_HOME"
+  fi
 fi
 
 # ── 5. Service ──────────────────────────────────────────────────────────────
@@ -316,6 +336,32 @@ if [[ "$OS" == "Linux" ]] && command -v systemctl &>/dev/null; then
   envsubst < "$SCRIPT_DIR/scripts/amux-builder.timer.template" \
     > "$SYSTEMD_DIR/amux-builder.timer" || die "failed to create amux-builder.timer"
 
+  # Xvfb: the virtual display every playwright-mcp lane launches Chromium
+  # against. No variables to fill (fixed ExecStart), but still routed
+  # through the template convention for consistency and so a fresh install
+  # gets it automatically instead of Xvfb being a silent prerequisite nobody
+  # wrote down (FRONT-4, 2026-08-31 — it had NO supervision anywhere before
+  # this, not a unit, not a cron, nothing; "something restarts it" turned out
+  # to mean nothing did, reliably).
+  envsubst < "$SCRIPT_DIR/scripts/amux-xvfb.service.template" \
+    > "$SYSTEMD_DIR/amux-xvfb.service" || die "failed to create amux-xvfb.service"
+
+  # playwright-mcp: a template unit (%i = "<lane>-<port>"), one instance per
+  # browser-automation lane. envsubst only needs to fill $SCRIPT_DIR here —
+  # the wrapper script (amux-playwright-mcp.sh) resolves %i into a port and
+  # a per-lane profile dir at run time.
+  envsubst '$SCRIPT_DIR' < "$SCRIPT_DIR/scripts/amux-playwright-mcp@.service.template" \
+    > "$SYSTEMD_DIR/amux-playwright-mcp@.service" || die "failed to create amux-playwright-mcp@.service"
+  chmod +x "$SCRIPT_DIR/scripts/amux-playwright-mcp.sh"
+
+  # worker-start: brings every registered lane back after a reboot, not just
+  # one hardcoded lane (AMUX-49, 2026-08-31) -- ExecStart points straight at
+  # the repo copy (ships on save, same convention as the playwright wrapper
+  # above), no separate ~/.local/bin copy to fall out of sync.
+  envsubst '$BIN_DIR $SCRIPT_DIR' < "$SCRIPT_DIR/scripts/amux-worker-start.service.template" \
+    > "$SYSTEMD_DIR/amux-worker-start.service" || die "failed to create amux-worker-start.service"
+  chmod +x "$SCRIPT_DIR/scripts/amux-start-worker.sh"
+
   # Reload systemd to recognize the new units.
   systemctl --user daemon-reload || die "systemctl daemon-reload failed"
 
@@ -323,11 +369,21 @@ if [[ "$OS" == "Linux" ]] && command -v systemctl &>/dev/null; then
   say "  $SYSTEMD_DIR/amux-server.service"
   say "  $SYSTEMD_DIR/amux-builder.service"
   say "  $SYSTEMD_DIR/amux-builder.timer"
+  say "  $SYSTEMD_DIR/amux-xvfb.service (virtual desktop: Xvfb + VNC + openbox, for headed browser automation and human viewing)"
+  say "  $SYSTEMD_DIR/amux-playwright-mcp@.service (template — one instance per lane)"
+  say "  $SYSTEMD_DIR/amux-worker-start.service (starts every registered lane on boot)"
   echo ""
   say "Next: enable and start the services"
   echo "  ${DIM}systemctl --user enable amux-server${RESET}"
   echo "  ${DIM}systemctl --user enable amux-builder.timer${RESET}"
+  echo "  ${DIM}systemctl --user enable amux-worker-start${RESET}"
   echo "  ${DIM}systemctl --user start amux-server${RESET}"
+  echo ""
+  say "Playwright MCP lanes (edit ports/lanes to match your fleet):"
+  echo "  ${DIM}systemctl --user enable --now amux-xvfb${RESET}"
+  echo "  ${DIM}for i in frontstage-8931 synthesia-8932 backstage-8933 amux-8934 infra-8935; do${RESET}"
+  echo "  ${DIM}  systemctl --user enable --now amux-playwright-mcp@\$i.service${RESET}"
+  echo "  ${DIM}done${RESET}"
   echo ""
   say "View logs: ${DIM}journalctl --user -u amux-server -f${RESET}"
   echo ""
@@ -365,6 +421,29 @@ mkdir -p "$PLIST_DIR"
 UID_N="$(id -u)"
 SERVER_PLIST="$PLIST_DIR/$LABEL.plist"
 
+# `launchctl bootout` can return before launchd has fully released the label.
+# On a busy host an immediate bootstrap then fails with opaque error 5 even
+# though the same command succeeds a few seconds later.  Installer runs are
+# upgrades, so make that teardown race self-healing and bounded rather than
+# leaving the freshly installed binary offline until a human retries it.
+launchctl_reload_agent() {
+  local label="$1" plist="$2" domain="gui/$UID_N" attempt err=""
+  launchctl bootout "$domain/$label" 2>/dev/null || true
+  for attempt in 1 2 3 4 5 6; do
+    if err="$(launchctl bootstrap "$domain" "$plist" 2>&1)"; then
+      return 0
+    fi
+    if (( attempt == 1 )); then
+      warn "launchd is still releasing $label; retrying bootstrap"
+    fi
+    if (( attempt < 6 )); then
+      sleep "$attempt"
+    fi
+  done
+  echo "$err" >&2
+  return 1
+}
+
 # launchd does NOT inherit a shell PATH — a thrice-hit incident class in this
 # repo (restic, the rust builder, the server itself): every subprocess the
 # server spawns (tmux, claude, herdr, git) must be reachable from the PATH
@@ -396,8 +475,7 @@ cat > "$SERVER_PLIST" <<PLIST
 PLIST
 
 # (Re)load: bootout is a no-op complaint when the label isn't loaded yet.
-launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_N" "$SERVER_PLIST"
+launchctl_reload_agent "$LABEL" "$SERVER_PLIST"
 say "launchd agent loaded: $LABEL"
 
 if [[ "${AMUX_NO_BUILDER:-}" != "1" ]]; then
@@ -418,9 +496,63 @@ if [[ "${AMUX_NO_BUILDER:-}" != "1" ]]; then
 </dict>
 </plist>
 PLIST
-  launchctl bootout "gui/$UID_N/$BUILDER_LABEL" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID_N" "$BUILDER_PLIST"
+  launchctl_reload_agent "$BUILDER_LABEL" "$BUILDER_PLIST"
   say "launchd agent loaded: $BUILDER_LABEL (rebuilds + redeploys on new commits in $SCRIPT_DIR)"
+fi
+
+# ── Fleet cold-start ────────────────────────────────────────────────────────
+#
+# launchd brought back the SERVER after a reboot and nothing brought back the
+# WORKERS. On 2026-08-29 a restart left 56 of 58 non-archived workers down,
+# holding 69 cards in `doing`, until a human noticed hours later and started
+# them by hand. Every service in this installer had an owner at boot except the
+# processes the whole system exists to run (AMUX-3887).
+#
+# RunAtLoad + no KeepAlive: this is a cold-start, not a supervisor. A worker a
+# human deliberately stopped must stay stopped (ethos rule 8), and the watchdog
+# deliberately owns liveness for the server alone. Set AMUX_NO_FLEET_START=1 to
+# skip installing it.
+if [[ "${AMUX_NO_FLEET_START:-}" != "1" ]]; then
+  FLEET_LABEL="com.amux.fleet-start"
+  FLEET_PLIST="$PLIST_DIR/$FLEET_LABEL.plist"
+  cat > "$FLEET_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$FLEET_LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>$SCRIPT_DIR/scripts/fleet-boot.sh</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AMUX_BIN</key><string>$SCRIPT_DIR/amux</string>
+    <key>AMUX_HOME</key><string>$AMUX_HOME</string>
+    <key>HOME</key><string>$HOME</string>
+    <key>PATH</key><string>$LAUNCHD_PATH</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>$AMUX_HOME/logs/fleet-boot.log</string>
+  <key>StandardErrorPath</key><string>$AMUX_HOME/logs/fleet-boot.log</string>
+</dict>
+</plist>
+PLIST
+  launchctl_reload_agent "$FLEET_LABEL" "$FLEET_PLIST"
+  say "launchd agent loaded: $FLEET_LABEL (starts every non-archived worker at login; log: $AMUX_HOME/logs/fleet-boot.log)"
+  # AF-498: say what "at login" EXCLUDES. A LaunchAgent loads when a human logs
+  # into the GUI, so an UNATTENDED reboot — an OS auto-update at 2am is the
+  # specimen — brings the machine back with the whole fleet down and starts
+  # nothing until someone sits down. Reported live: "an iOS update automatically
+  # at like 2 a.m. So everything stopped." Nobody reading "starts at login" hears
+  # "and not after an overnight update", so it is said here rather than left to
+  # be discovered. Automatic login is the fix and it is a MACHINE setting with a
+  # real trade-off (an unattended Mac boots to an unlocked desktop), so it is
+  # named as the human's choice, not turned on.
+  say "  NOTE: launchd agents load at GUI LOGIN, not at boot. After an unattended"
+  say "  reboot (an overnight OS update) the fleet stays down until you log in."
+  say "  fleet-boot logs the size of that window every time it runs. To close it,"
+  say "  enable automatic login in System Settings > Users & Groups — your call:"
+  say "  it means this Mac boots to an unlocked desktop."
 fi
 
 # ── 6. Wait for /health ─────────────────────────────────────────────────────

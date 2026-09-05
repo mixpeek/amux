@@ -1,0 +1,144 @@
+# Woodpecker CI pipeline for amux's Rust workspace.
+#
+# Exists to replace the ad-hoc, hand-rolled `docker --context <host> build`
+# invocations this session ran directly against a remote Docker host all day
+# (see frustrations.md / CLAUDE.local.md, 2026-09-01) with a real, repeatable
+# pipeline: same steps every time, no scratch Dockerfiles, no forgetting to
+# clean up afterward.
+#
+# PREREQUISITE on whatever host runs the Woodpecker agent for this repo:
+# the `amux-rust-base` image must already exist there (built once from
+# Dockerfile.rust-base at the repo root — see that file's own header). This
+# pipeline does NOT build it itself: baking the toolchain + a warm dependency
+# cache into every run is the exact slowness this pipeline exists to avoid.
+# Rebuild it manually whenever Cargo.lock changes enough that the cache goes
+# meaningfully stale.
+#
+# Structural advantages over the ad-hoc `docker build` approach it replaces,
+# worth naming explicitly since they're not obvious from the YAML alone:
+#   - Woodpecker checks out the repo itself (a clean `git clone`), so a step
+#     never sees a machine-local, gitignored file like .cargo/config.toml --
+#     that whole "rm -f .cargo/config.toml" step earlier Dockerfiles needed
+#     is structurally impossible to forget here, because there is nothing to
+#     forget to exclude.
+#   - The checkout is a WORKSPACE VOLUME shared across steps, not re-COPYing
+#     the whole tree into a fresh build context per step -- steps start
+#     instantly instead of paying a multi-second COPY every time.
+#   - Steps run sequentially and stop on first failure by default, so this
+#     mirrors CLAUDE.md's own "Syntax gates... Before push: clippy... Tests"
+#     ordering (cheapest, most-likely-to-fail check first) without extra
+#     config.
+#
+# Left deliberately OUT of this first version, on purpose, not by oversight:
+#   - Any GitHub (or other forge) webhook trigger -- how this pipeline gets
+#     invoked is still an open decision (see the board card this shipped
+#     with). This file works identically whether that ends up being a GitHub
+#     App, a local polling trigger matching rust-auto-build.sh's model, or
+#     both.
+#   - The secret-scan / client-JS-version-bump / CLI-syntax gates
+#     .github/workflows/checks.yml also runs. Kept to the Rust gates only
+#     for this first pass so the "offload the builder" ask lands fast and
+#     small; folding the rest in is a real, separate follow-up, not
+#     forgotten.
+#   - Release-profile build. check + clippy + test cover correctness; a
+#     release build for actual deploy is a distinct pipeline (or a later
+#     step here) once the trigger question is settled, since ONLY that
+#     question determines whether this ever produces a binary meant to be
+#     installed anywhere.
+
+# Explicit event filter, workflow-wide, per the linter's own bad_habit warning
+# (https://woodpecker-ci.org/docs/usage/linter#event-filter-for-all-steps).
+# Covers every trigger mechanism this pipeline is meant to work under (see
+# the "Left deliberately OUT" note above): push and pull_request for whatever
+# forge trigger gets wired up, manual for the API-triggered runs used to
+# stand this up and sanity-check it (confirmed working 2026-09-01 via
+# POST /api/repos?forge_remote_id=... then POST /api/repos/{id}/pipelines,
+# no browser step needed after the token exists).
+when:
+  event: [push, pull_request, manual]
+
+# Steer scheduling away from build-02.baar -- confirmed live 2026-09-01 (see
+# the clone-fix comment below) that host's own network egress stalls
+# completely on anything past a couple hundred MB, which a git clone of
+# this repo's ~150MB packed .git reliably triggers. build.home/build.virt04
+# came online the same day with none of that problem (13s clone, vs. 10+
+# minutes hanging on build-02.baar). Every Woodpecker agent auto-provides a
+# `hostname` label; pinning to build.virt04 specifically for now (higher
+# capacity: 4 vs build.home's 2, and it's the one already confirmed working
+# end to end). Woodpecker's label match is a single equality/wildcard per
+# key, not a list -- can't express "either build.home or build.virt04, but
+# not build-02.baar" in one line. If infra adds a shared custom label (e.g.
+# WOODPECKER_AGENT_LABELS="tier=fast") to both good hosts, switch this to
+# `tier: fast` instead so load balances across both and any future
+# fast node picks it up automatically without another edit here.
+labels:
+  hostname: build.virt04
+
+# Found live 2026-09-01, pipeline #1: Woodpecker's default checkout path is
+# /woodpecker/src/<forge-url>, while Dockerfile.rust-base bakes
+# amux-rust-base's warm, already-compiled dependency tree at /build/target
+# (COPY . . at WORKDIR /build, then `cargo build --release -p amux-server`
+# right there). Tried a `workspace: {base: /build, path: .}` override to
+# align them -- turned out not to matter and actively broke the clone step
+# (git init landed at /woodpecker/.git regardless of the override; per
+# Woodpecker's own docs, "plugins maintain the workspace base at /woodpecker
+# regardless of custom configuration"). Removed. It doesn't matter because
+# cargo's cache identity for REGISTRY-sourced deps (axum/tokio/reqwest/etc,
+# the expensive 99% of the tree) is keyed by crate name+version+features,
+# not by the local checkout's absolute path -- pointing CARGO_TARGET_DIR at
+# /build/target (below) is sufficient on its own for those to be found and
+# reused. Only amux's OWN crates (path-sourced, so their cache identity DOES
+# include the absolute path) miss the cache and get freshly compiled every
+# run -- which they need to be anyway, since their source changes every
+# commit, and they're a small fraction of total build time.
+#
+# Shallow, non-partial clone -- pipeline #1 sat in `clone` alone for 10+
+# minutes (consistent with CLAUDE.local.md's note that this build fleet's
+# `.baar` hosts sit behind a slower/less reliable link than
+# `atlantis`/`home`); pipeline #2's plain `depth: 1` used a partial
+# (`--filter=tree:0`) fetch by default, which then needs a SECOND
+# lazy-fetch round-trip for tree objects on `git reset --hard` -- that
+# second round-trip is what actually failed ("could not fetch ... from
+# promisor remote", RPC timeout, confirmed live from pipeline #2's log).
+# `partial: false` fetches everything in the one shallow request instead of
+# a two-phase dance, trading a bit more upfront data for one fewer
+# round-trip to time out on.
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    settings:
+      depth: 1
+      partial: false
+
+steps:
+  # Cheapest, most-likely-to-fail-fast check first (matches CLAUDE.md's own
+  # local ordering: "Syntax gates: cargo check --workspace").
+  - name: check
+    image: amux-rust-base
+    environment:
+      CARGO_TARGET_DIR: /build/target
+    commands:
+      # Woodpecker's docker backend runs step commands via `/bin/sh` (dash on
+      # this base image), not bash -- `source` is a bash builtin and fails
+      # there with "source: not found" (confirmed live, pipeline #7). The
+      # POSIX `.` builtin does the same job and works in both.
+      - . /root/.cargo/env
+      - cargo check --workspace --all-targets
+
+  - name: clippy
+    image: amux-rust-base
+    environment:
+      CARGO_TARGET_DIR: /build/target
+    commands:
+      - . /root/.cargo/env
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  # amux-server only, matching CLAUDE.md's own documented test command --
+  # amux-core/amux-cli have no meaningful test suite of their own yet.
+  - name: test
+    image: amux-rust-base
+    environment:
+      CARGO_TARGET_DIR: /build/target
+    commands:
+      - . /root/.cargo/env
+      - cargo test -p amux-server --lib

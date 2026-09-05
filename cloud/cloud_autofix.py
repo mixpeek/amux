@@ -155,13 +155,25 @@ print("restored %%d keys" %% len(merged))
 
 
 def fix_logs():
+    # `truncate -s 0`, NOT open(f,"w").close(). Replacing the file contents out
+    # from under the docker daemon WEDGES `docker logs` for that container until
+    # it is restarted — measured 2026-08-27: an open()-truncate of 7 live json
+    # logs left all 7 `docker logs` hanging, which crashed the backup-freshness
+    # sweep. `truncate` keeps the same inode/offset the daemon is tracking, so the
+    # log reader stays healthy. journald vacuum is unaffected.
+    # Also truncate /var/log/*.log — the biggest single reclaimable log on this
+    # host is /var/log/amux-gateway.log (~52MB), which the container-json glob
+    # missed, so the automatic path freed less than a hand-truncation did and the
+    # disk kept climbing (AC-414). truncate -s 0 is inode-safe here too: a process
+    # holding the fd open for append keeps writing at its old offset (sparse
+    # regrow), and df is relieved immediately.
     out = ssh(r'''
 import subprocess, glob, os
 n = 0
-for f in glob.glob("/var/lib/docker/containers/*/*-json.log"):
+for f in glob.glob("/var/lib/docker/containers/*/*-json.log") + glob.glob("/var/log/*.log"):
     try:
         if os.path.getsize(f) > 20*1024*1024:
-            open(f, "w").close(); n += 1
+            subprocess.run(["truncate", "-s", "0", f], timeout=10); n += 1
     except Exception: pass
 subprocess.run(["journalctl", "--vacuum-size=100M"], capture_output=True)
 print("truncated %d logs" % n)
@@ -182,17 +194,52 @@ def restart_gateway():
 def escalate_board(summary, detail):
     """Board-only escalation: for problems worth a human's queue but not the owner
     fire-alarm (e.g. cloud serves traffic fine but the env-check instrument is down).
-    escalate() layers the alert on top of this for real outages."""
+    escalate() layers the alert on top of this for real outages.
+
+    DEDUPED by title-prefix: a persistent condition (a multi-day CI freeze, a
+    standing warn) must UPDATE its existing open card, not file a new one every
+    daily run — otherwise the sweep accumulates instead of discriminating (ethos
+    rule 5; the AC-344 freeze escalation would have spawned one card per day)."""
     trace("escalate_board", summary, None)
+    title = "cloud-autofix: %s" % summary
+    # A stable key: the summary up to its first em-dash/number so "FROZEN — 4
+    # commits" and "FROZEN — 5 commits" collapse to one running card.
+    key = title.split("—")[0].strip().rstrip("0123456789 ")
     try:
         base = subprocess.run(["amux", "url"], capture_output=True, text=True, timeout=10).stdout.strip()
-        subprocess.run(["curl", "-sk", "-X", "POST", "-H", "Content-Type: application/json",
-                        "-H", "X-Amux-Session:%s" % os.environ.get("AMUX_SESSION", "cloud-autofix"),
-                        "-d", json.dumps({"title": "cloud-autofix: %s" % summary, "desc": detail,
-                                          "status": "needsyou", "session": "amux-cloud"}),
-                        "%s/api/board" % base], capture_output=True, text=True, timeout=15)
-    except Exception:
-        pass
+        existing = None
+        rows = subprocess.run(["curl", "-sk", "%s/api/board" % base],
+                              capture_output=True, text=True, timeout=15).stdout
+        for it in json.loads(rows):
+            t = it.get("title") or ""
+            if t.split("—")[0].strip().rstrip("0123456789 ") == key and it.get("status") in ("needsyou", "todo", "doing"):
+                existing = it.get("id"); break
+        if existing:
+            # Refresh title + append a dated line; keep the human's context intact.
+            out = subprocess.run(["curl", "-sk", "-X", "PATCH", "-H", "Content-Type: application/json",
+                                  "-H", "X-Amux-Session:%s" % os.environ.get("AMUX_SESSION", "cloud-autofix"),
+                                  "-d", json.dumps({"title": title,
+                                                    "desc_append": "\n\n[autofix re-observed %d] %s" % (int(time.time()), detail)}),
+                                  "%s/api/board/%s" % (base, existing)], capture_output=True, text=True, timeout=15).stdout
+        else:
+            # status "todo", not "needsyou": the board refuses an untyped needsyou
+            # (needsyou_requires_ask_type) and this caller has no typed human ask —
+            # the condition is work for whoever owns it, not a question for Ethan.
+            # The 09-01 FROZEN escalation was silently refused on exactly this.
+            out = subprocess.run(["curl", "-sk", "-X", "POST", "-H", "Content-Type: application/json",
+                                  "-H", "X-Amux-Session:%s" % os.environ.get("AMUX_SESSION", "cloud-autofix"),
+                                  "-d", json.dumps({"title": title, "desc": detail,
+                                                    "status": "todo", "session": "amux-cloud"}),
+                                  "%s/api/board" % base], capture_output=True, text=True, timeout=15).stdout
+        # Read the answer, never assume it (ethos rule 4: a card id beside
+        # "escalated"). A gate refusal is a 200-shaped JSON with ok:false/error.
+        resp = json.loads(out) if out.strip() else {}
+        if resp.get("ok") is False or resp.get("error"):
+            trace("escalate_board", "BOARD WRITE REFUSED: %s" % (resp.get("code") or resp.get("error") or "?")[:80], False)
+        else:
+            trace("escalate_board", "card %s" % (resp.get("id") or existing or "?"), True)
+    except Exception as e:
+        trace("escalate_board", "BOARD WRITE FAILED: %s" % str(e)[:80], False)
 
 
 def escalate(summary, detail):
@@ -240,6 +287,121 @@ def check_envs(retries=1):
     return last
 
 
+def restart_stopped_workers(env_result):
+    """Restart plan-declared workers a recreate left stopped (AC-407).
+
+    A container recreate — deploy `recreate=yes`, a per-workspace admin recreate,
+    or a host reboot — stops every tmux session, and the rust server does not
+    restore them (it has no AMUX_AUTOSTART_SESSIONS). Until the server grows that,
+    the persona suite is the only thing that notices, and it only WARNs. This
+    restarts exactly the DECLARED workers that are present-but-stopped, which
+    restores the env's OWN configured set rather than imposing one (ethos rule 8:
+    a declared persona a recreate knocked down is continuity, not a new decision),
+    over the container's internal API via SSH. Returns [(worker, http_code)].
+
+    Verified by hand 2026-09-01 on capital-express (org_37aa…, recreated 17:14 by a
+    non-deploy op): POST /api/sessions/<name>/start -> 202, workers returned to idle."""
+    org = env_result.get("org_id")
+    stopped = [p["name"] for p in env_result.get("personas", [])
+               if p.get("present") and not p.get("running")]
+    if not org or not stopped:
+        return []
+    c = "amux-user-%s" % org
+    done = []
+    for name in stopped:
+        # Internal rust port is 8822 in every container (compose maps <ext>:8822).
+        out = ssh(
+            "import subprocess;"
+            "print(subprocess.run(['docker','exec',%r,'bash','-lc',"
+            "'curl -sk -o /dev/null -w \"%%{http_code}\" -X POST "
+            "https://localhost:8822/api/sessions/%s/start'],"
+            "capture_output=True,text=True,timeout=30).stdout.strip())" % (c, name),
+            timeout=45)
+        done.append((name, (out or "").strip()[:12]))
+    return done
+
+
+def check_deploy_freshness():
+    """Is the cloud image behind origin/main, and WHY (AC-344). The auto-deploy
+    (deploy-cloud.yml) is gated on green rust CI via workflow_run, so when main CI
+    is RED the deploy shows 'skipped' — byte-identical to 'nothing to deploy'. The
+    image then freezes and falls behind, invisibly, until a human notices; the card
+    records this happening 3x, each caught by hand. This joins the three signals no
+    single view joins — last successful deploy sha, origin/main tip, and rust CI
+    status — and names the cause: FROZEN (behind + CI red) vs normal lag (behind +
+    CI green, auto-deploy will catch up) vs current. Runs locally (gh + git)."""
+    def sh(*a):
+        try:
+            return subprocess.run(a, capture_output=True, text=True, timeout=30, cwd=REPO).stdout.strip()
+        except Exception:
+            return ""
+    sh("git", "fetch", "origin", "-q")
+    deployed = sh("gh", "run", "list", "--workflow=deploy-cloud.yml", "-L", "20",
+                  "--json", "headSha,conclusion", "-q",
+                  'map(select(.conclusion=="success"))[0].headSha')
+    if not deployed:
+        return {"error": "no successful deploy-cloud run found (gh failed?)"}
+    behind = sh("git", "rev-list", "--count", "%s..origin/main" % deployed)
+    behind = int(behind) if behind.isdigit() else -1
+    res = {"deployed": deployed[:12], "behind": behind}
+    if behind <= 0:
+        res["state"] = "current"
+        return res
+    # Behind — is main CI red (frozen) or green (normal lag)?
+    ci = sh("gh", "run", "list", "--workflow=rust.yml", "--branch=main", "-L", "1",
+            "--json", "conclusion,headSha,status", "-q", ".[0]")
+    try:
+        ci = json.loads(ci) if ci else {}
+    except Exception:
+        ci = {}
+    concl = ci.get("conclusion")
+    res["ci_conclusion"] = concl
+    if concl == "failure":
+        res["state"] = "FROZEN"  # behind AND CI red -> auto-deploy is silently skipping
+    elif ci.get("status") in ("in_progress", "queued"):
+        res["state"] = "deploying"  # CI running, catch-up in flight
+    else:
+        res["state"] = "lag"  # behind but CI green -> normal, will catch up
+    return res
+
+
+def check_disk():
+    """Root-disk usage AND a breakdown of the top consumers when it is high.
+    AC-348: the disk-full alarm fires but names no cause, so every incident meant
+    SSHing to run du/docker-system-df by hand (2026-08-27: 94% full, and the 6.7G
+    the tools called 'reclaimable' was actually pinned to running containers, so
+    the honest remedy was not a prune). This makes the NEXT climb self-explain:
+    when disk >= 85% it reports docker image/volume reclaimable, oversized logs,
+    and the same-host backup dir, so a human sees WHERE before deciding what is
+    safe to touch (volumes may be customer data — never auto-pruned, ethos 8)."""
+    out = ssh(r'''
+import json, subprocess, os
+def run(*a):
+    try: return subprocess.run(a, capture_output=True, text=True, timeout=40).stdout.strip()
+    except Exception: return ""
+st = os.statvfs("/")
+pct = round(100.0 * (st.f_blocks - st.f_bfree) / st.f_blocks, 1)
+free_gb = round(st.f_bavail * st.f_frsize / 1e9, 1)
+res = {"pct": pct, "free_gb": free_gb}
+if pct >= 85:
+    top = {}
+    for line in run("docker","system","df","--format","{{.Type}}\t{{.Reclaimable}}").splitlines():
+        p = line.split("\t")
+        if len(p) == 2: top[p[0]] = p[1]
+    res["docker_reclaimable"] = top
+    bk = run("du","-sh","/var/amux/backups")
+    res["backups_dir"] = bk.split()[0] if bk else "0"
+    big = [l for l in run("bash","-c",
+        "find /var/lib/docker/containers -name '*-json.log' -size +20M -exec du -h {} + 2>/dev/null | sort -rh | head -3").splitlines()]
+    res["oversized_logs"] = big
+print(json.dumps(res))
+''', timeout=60)
+    try:
+        return json.loads(out)
+    except Exception:
+        return {"error": (out.strip()[:100] if out and out.strip() else "ssh returned no output (host unreachable or command produced nothing)")}
+
+
 def check_backups():
     """Litestream replication freshness for every RUNNING env. Litestream->S3 is
     the real backup of customer DBs (the nightly backup-cloud.yml workflow made
@@ -259,9 +421,18 @@ now = datetime.datetime.now(datetime.timezone.utc)
 for n in running:
     env = n[len("amux-user-"):]
     ls = "amux-litestream-" + env
-    # litestream logs go to stderr — capture both streams
-    tail = subprocess.run(["docker","logs","--tail","40",ls], capture_output=True, text=True, timeout=30)
-    text = (tail.stdout or "") + (tail.stderr or "")
+    # litestream logs go to stderr — capture both streams. GUARD the call: a
+    # single container whose `docker logs` HANGS (a truncated json-log can wedge
+    # docker's log reader) must not crash the whole sweep — before this guard one
+    # hung sidecar raised TimeoutExpired here and the entire check returned empty,
+    # so 7 healthy envs went unreported (2026-08-27). Short 10s timeout so 8
+    # containers stay well inside the ssh budget.
+    try:
+        tail = subprocess.run(["docker","logs","--tail","40",ls], capture_output=True, text=True, timeout=10)
+        text = (tail.stdout or "") + (tail.stderr or "")
+    except Exception:
+        stale.append(env + " (docker logs timed out — sidecar log reader wedged, restart it)")
+        continue
     if "No such container" in text or not text.strip():
         stale.append(env + " (no litestream sidecar)")
         continue
@@ -286,7 +457,7 @@ print(json.dumps({"running": len(running), "fresh": fresh, "stale": stale}))
     try:
         return json.loads(out)
     except Exception:
-        return {"error": (out or "")[:100]}
+        return {"error": (out.strip()[:100] if out and out.strip() else "ssh returned no output (host unreachable or command produced nothing)")}
 
 
 def check_orphans():
@@ -335,13 +506,47 @@ except Exception as e:
     try:
         return json.loads(out)
     except Exception:
-        return {"error": (out or "")[:100]}
+        return {"error": (out.strip()[:100] if out and out.strip() else "ssh returned no output (host unreachable or command produced nothing)")}
 
 
 def main():
     no_fix = "--no-fix" in sys.argv
     as_json = "--json" in sys.argv
+    disk_only = "--disk-only" in sys.argv
     result = {"trace": TRACE, "healthy": False}
+
+    # --disk-only: a LIGHTWEIGHT stopgap (AC-414). The full sweep runs once a day
+    # (SCHED-356), but a net-negative disk gains ~100MB/h and would hit 100%
+    # between daily runs — so this fast path (check_disk + preventive fix_logs,
+    # skipping the slow persona/deploy/orphan checks) is scheduled every 2h to
+    # hold the disk below 100% until the host disk is resized. It is deliberately
+    # SILENT on the board: AC-414 already carries the escalation, so this must not
+    # file a card every 2h. Retire the schedule when AC-414 is resolved.
+    if disk_only:
+        _disk = check_disk()
+        result["disk"] = _disk
+        if _disk.get("error"):
+            trace("disk", "ERROR: %s" % _disk["error"], False)
+            result["healthy"] = False
+        else:
+            trace("disk", "root %.1f%% used, %.1fGB free" % (_disk.get("pct", 0), _disk.get("free_gb", 0)),
+                  _disk.get("pct", 0) < 90)
+            if _disk.get("pct", 0) >= 95 and not no_fix:
+                _fb = _disk.get("free_gb", 0)
+                fix_logs()
+                _disk = check_disk(); result["disk"] = _disk
+                trace("disk_preventive", "after truncate: %.1f%% used, %.1fGB free (was %.1fGB)"
+                      % (_disk.get("pct", 0), _disk.get("free_gb", 0), _fb), _disk.get("pct", 100) < 95)
+            result["healthy"] = _disk.get("pct", 100) < 98
+        ssh("import json; open('/var/log/cloud-autofix.jsonl','a').write(%r+chr(10))"
+            % json.dumps({"ts": int(time.time()), "disk_only": True, "trace": TRACE}), timeout=20)
+        if as_json:
+            print(json.dumps(result, indent=2))
+        else:
+            print("cloud-autofix --disk-only: disk %.1f%% used (%.1fGB free) -> %s"
+                  % (result["disk"].get("pct", 0), result["disk"].get("free_gb", 0),
+                     "ok" if result["healthy"] else "CRITICAL"))
+        sys.exit(0 if result["healthy"] else 1)
 
     status = probe_cloud()
     result["cloud_status"] = status
@@ -370,6 +575,18 @@ def main():
                 _bad = ["%s (%s)" % (r0.get("env"), "; ".join(r0.get("reasons") or []))
                         for r0 in _env.get("results", []) if r0.get("status") == "FAIL"]
                 env_problem = ("%d customer env FAILURE(s)" % _failed, " | ".join(_bad)[:600])
+            # SELF-HEAL: a recreate left declared workers stopped (AC-407). Restart
+            # them here rather than only WARNing, so a per-workspace recreate no
+            # longer needs a hand on the box. Runs unless --no-fix; a no-op when
+            # every declared worker is already running.
+            if not no_fix:
+                for r0 in _env.get("results", []):
+                    restarted = restart_stopped_workers(r0)
+                    if restarted:
+                        ok_ct = sum(1 for _, code in restarted if code in ("200", "202"))
+                        trace("restart_workers", "%s: %s" % (
+                            r0.get("stem"), ", ".join("%s->%s" % (n, c) for n, c in restarted)),
+                            ok_ct == len(restarted))
         # Orphaned (DB-less) running containers — a deploy resurrection self-announces here.
         result["orphans"] = check_orphans()
         _orph = result["orphans"].get("orphans") or []
@@ -389,6 +606,61 @@ def main():
         # Backup freshness (AMUX-2802): litestream->S3 is the real customer-DB
         # backup; nine days of silent backup absence is the incident this check
         # exists to make impossible to repeat.
+        # Deploy freshness + WHY-behind (AC-344): a silent freeze self-announces.
+        result["deploy"] = check_deploy_freshness()
+        _dep = result["deploy"]
+        if _dep.get("error"):
+            trace("deploy", "freshness probe: %s" % _dep["error"], None)
+        else:
+            trace("deploy", "deployed=%s behind=%s state=%s%s" % (
+                _dep.get("deployed"), _dep.get("behind"), _dep.get("state"),
+                (" ci=%s" % _dep.get("ci_conclusion")) if _dep.get("ci_conclusion") else ""),
+                _dep.get("state") != "FROZEN")
+            if _dep.get("state") == "FROZEN" and not env_problem:
+                env_problem = ("cloud image FROZEN — %s commits behind, main CI is RED" % _dep.get("behind"),
+                               "deploy-cloud auto-deploy is gated on green rust CI, so a red main freezes the "
+                               "image and shows 'skipped' (looks like nothing-to-deploy). deployed=%s, behind=%s, "
+                               "rust.yml main conclusion=failure. Fix the red main, or dispatch deploy-cloud manually "
+                               "once it is green. This is AC-344's exact failure, now self-announcing."
+                               % (_dep.get("deployed"), _dep.get("behind")))
+
+        # Root-disk usage + top-consumer breakdown when high (AC-348).
+        result["disk"] = check_disk()
+        _disk = result["disk"]
+        if _disk.get("error"):
+            trace("disk", "ERROR: %s" % _disk["error"], False)
+        else:
+            extra = ""
+            if _disk.get("docker_reclaimable"):
+                extra = " | docker=%s backups=%s" % (_disk.get("docker_reclaimable"), _disk.get("backups_dir"))
+            trace("disk", "root %.1f%% used, %.1fGB free%s" % (_disk.get("pct", 0), _disk.get("free_gb", 0), extra),
+                  _disk.get("pct", 0) < 90)
+            # PREVENTIVE self-heal (AC-414): fix_logs previously ran ONLY on the
+            # DOWN path, so on the healthy path the disk was allowed to climb to
+            # 100% and truncate gateway.env before a single log was freed — a
+            # preventable outage. Truncate oversized logs here, while cloud is
+            # still UP, whenever the disk is critically full, then re-measure so
+            # the escalation below carries the POST-truncation number (naming that
+            # self-help was tried, and whether it was enough).
+            _truncated_this_tick = False
+            if _disk.get("pct", 0) >= 95 and not no_fix:
+                _free_before = _disk.get("free_gb", 0)
+                _truncated_this_tick = fix_logs()
+                _disk = check_disk()
+                result["disk"] = _disk
+                trace("disk_preventive", "after truncate: %.1f%% used, %.1fGB free (was %.1fGB)"
+                      % (_disk.get("pct", 0), _disk.get("free_gb", 0), _free_before),
+                      _disk.get("pct", 100) < 95)
+            hi = _disk.get("pct", 0) >= 90
+            if hi and not env_problem:
+                _tried = " (logs already truncated this tick — this is the net-negative disk, only a resize or deprovision fixes it)" \
+                    if _truncated_this_tick else ""
+                env_problem = ("root disk at %.1f%% (%.1fGB free)%s" % (_disk.get("pct"), _disk.get("free_gb"), _tried),
+                               "Top consumers — docker reclaimable: %s; same-host backups: %s; oversized logs: %s. "
+                               "NOTE: 'reclaimable' images may be pinned to running containers (freed only by a "
+                               "recreate), and unused VOLUMES may be customer data — never auto-prune volumes (ethos 8)."
+                               % (_disk.get("docker_reclaimable"), _disk.get("backups_dir"), _disk.get("oversized_logs")))
+
         result["backups"] = check_backups()
         _stale = result["backups"].get("stale") or []
         if result["backups"].get("error"):
@@ -422,12 +694,19 @@ def main():
             trace("no_fix", "dry run — skipping repairs", None)
         else:
             fixed_something = False
-            # Repair 1: truncated gateway.env (the incident's real blocker).
-            if d.get("env_missing") and d.get("env_backup"):
-                fixed_something |= fix_gateway_env(d["env_backup"])
-            # Repair 2: disk full of reclaimable LOGS.
+            # Repair 1: FREE DISK FIRST. fix_gateway_env writes a tempfile under
+            # /etc/amux, which FAILS on a 100%-full disk — so restoring before
+            # freeing space silently no-ops and leaves prod down. That is exactly
+            # what happened 2026-09-03 (AC-414): disk 100% -> gateway.env truncated
+            # -> restore ran first, could not write, failed -> 502 stood until a
+            # human restored by hand. Truncate logs BEFORE the env restore so the
+            # restore has room, and the whole outage self-heals in one pass.
             if (d.get("disk_pct", 0) >= 95) and d.get("reclaimable_log_mb", 0) >= 300:
                 fixed_something |= fix_logs()
+            # Repair 2: truncated gateway.env (the incident's real blocker) — now
+            # with space to write its atomic tempfile.
+            if d.get("env_missing") and d.get("env_backup"):
+                fixed_something |= fix_gateway_env(d["env_backup"])
             # Repair 3: bring the gateway up (covers crash-loop + post-repair).
             restart_gateway()
             # Re-probe.

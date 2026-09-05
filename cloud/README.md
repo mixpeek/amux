@@ -220,9 +220,9 @@ and every endpoint they call is routed on the rust server (checked against
   human clicking hits immediately. Needs the container's chromium, which the
   image now ships.
 * **`tests/e2e_smoke.py`** — Clerk user → gateway auth → sessions per provider →
-  BYO key → logout. ⚠ it exercises Codex and Gemini; the image only installs the
-  **claude** CLI, so those two arms fail on a missing binary until `@openai/codex`
-  and `@google/gemini-cli` are added to the Dockerfile.
+  BYO key → verified model reply → logout. The image installs and build-checks
+  Claude, Codex, and Gemini; the test treats a missing binary, auth/onboarding
+  screen, unconfirmed submission, or missing deterministic reply as a failure.
 * **`tests/e2e_trial.py`** — trial provisioning, invite acceptance, budget 402 +
   session stop, pro upgrade. Purely gateway-level.
 * **`tests/godmode_walkthrough.py`** — signs in as an admin and collects evidence

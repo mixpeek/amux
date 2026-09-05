@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Server Sizing Guide — RAM, CPU &amp; Disk Requirements for 2026</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How much RAM, CPU, and disk do you need to run AI coding agents? Sizing guide for 5, 10, 20, and 50+ parallel Claude Code, Codex, or Gemini CLI agents — with amux OOM protection explained.">
+  <meta name="keywords" content="AI agent server requirements, how much RAM for AI agents, Claude Code server spec, amux server requirements, AI coding agent hardware, run AI agents on VPS, AI agent memory requirements 2026">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-server-sizing/">
+  <meta property="og:title" content="AI Agent Server Sizing Guide — RAM, CPU &amp; Disk Requirements for 2026">
+  <meta property="og:description" content="How much RAM, CPU, and disk do you need to run AI coding agents? Sizing guide for 5 to 50+ parallel agents, cloud VM recommendations, and amux OOM protection explained.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-server-sizing/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "AI Agent Server Sizing", "item": "https://amux.io/guides/ai-agent-server-sizing/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Agent Server Sizing Guide — RAM, CPU and Disk Requirements (2026)",
+    "description": "How much RAM, CPU, and disk do you need to run AI coding agents? Sizing guide for 5 to 50+ parallel Claude Code, Codex, or Gemini CLI agents, plus amux OOM protection explained.",
+    "url": "https://amux.io/guides/ai-agent-server-sizing/",
+    "datePublished": "2026-08-29",
+    "dateModified": "2026-08-29",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "Size Your Server for AI Coding Agents",
+    "description": "Calculate the RAM, CPU, and disk you need to run a fleet of parallel AI coding agents reliably overnight.",
+    "totalTime": "PT10M",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Calculate total RAM",
+        "text": "Budget 300-500 MB RAM per agent plus 1-2 GB for the OS and amux dashboard. For 10 agents: 5-7 GB. For 50 agents: 26-27 GB minimum."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Choose CPU and disk",
+        "text": "Agents spend most of their time waiting for API responses, so CPU is rarely the bottleneck. 4-8 cores handles 50 agents. Use SSD for disk — agents write frequently to the codebase. Budget 50-100 GB per large codebase with multiple worktrees."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Enable amux OOM protection",
+        "text": "amux (August 2026) refuses to admit new workers when the host is out of memory headroom. This prevents the server from thrashing when you start too many agents. No config required — the health gate fires automatically."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Pick a cloud VM or use your MacBook",
+        "text": "A MacBook Pro (16 GB) reliably runs 20-25 agents. For 50+ agents, use a dedicated cloud VM: AWS c6a.4xlarge (32 GB, 16 vCPU, ~$0.62/hr) or Hetzner CX42 (16 GB, 8 vCPU, ~€0.28/hr). amux runs identically on both."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Monitor with the health invariants endpoint",
+        "text": "Check GET /api/health/invariants for failing invariants including memory headroom. The amux dashboard shows live memory status on the fleet view. If workers are being refused, the dashboard surfaces the refusal reason."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How much RAM do I need to run AI coding agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Budget 300-500 MB RAM per agent, plus 1-2 GB for the OS and amux dashboard. Practical minimums: 5 agents = 4 GB RAM, 10 agents = 6-8 GB RAM, 20 agents = 12-14 GB RAM, 50 agents = 26-28 GB RAM. A MacBook Pro with 16 GB handles 20-25 agents reliably. For 50+ agents, use a dedicated cloud VM with 32 GB RAM."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens when my server runs out of RAM while running AI agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Without protection, the OS starts swapping memory to disk, agent processes slow to a crawl, and eventually crash. amux (August 2026) adds OOM protection: the server checks available memory headroom before admitting each new worker. If headroom is too low, amux refuses to start the new session and surfaces the refusal reason in the dashboard. Existing agents continue running — only new sessions are blocked until memory frees up."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I run AI coding agents on a MacBook?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. A MacBook Pro with 16 GB RAM reliably runs 20-25 parallel agents. A 32 GB MacBook Pro handles 50+ agents. amux runs identically on macOS and Linux — single Rust binary, no external dependencies. For overnight runs where you want your laptop free, use a cloud VM or remote server and connect via amux-remote."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What cloud VM should I use for running AI agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "For 10-25 agents: Hetzner CX32 (8 GB, 4 vCPU, ~€0.13/hr) or AWS t3.large (8 GB, 2 vCPU, ~$0.08/hr). For 50 agents: Hetzner CX42 (16 GB, 8 vCPU, ~€0.28/hr) or AWS c6a.4xlarge (32 GB, 16 vCPU, ~$0.62/hr). CPU is rarely the bottleneck — agents wait on API responses. RAM and SSD disk speed matter most."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How much disk space do AI agents need?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Each agent running on the same codebase shares a single git checkout, so disk usage is dominated by the codebase size, not agent count. A typical repo is 100 MB-5 GB including history. If you use git worktrees for agent isolation (recommended for parallel feature work), budget 500 MB-2 GB per worktree. The amux disk watchdog monitors disk usage and surfaces alerts when you're running low."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux protect against out-of-memory crashes?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. As of August 2026, amux refuses to admit new workers when the host is out of memory headroom. The health check fires before each new session starts and blocks it if RAM is critically low. You can monitor memory headroom via GET /api/health/invariants and in the fleet health view on the dashboard. Existing agents are never stopped by this gate — only new session creation is blocked."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Server Sizing</span></div>
+
+    <h1>AI Agent Server Sizing Guide</h1>
+    <p class="subtitle"><span class="updated-badge">August 2026</span> — RAM, CPU, and disk requirements for 5 to 50+ parallel Claude Code, Codex, or Gemini CLI agents, plus amux OOM protection.</p>
+
+    <!-- EXP-069: ai-agent-server-sizing top-of-page green CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-069">
+      <div>
+        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Run your AI engineering team overnight — with built-in OOM protection</div>
+        <div style="color:#a7f3d0;font-size:0.875rem">amux refuses to start new agents when your server is running low on memory — so a runaway fleet can't crash your machine at 3am. Open source, MIT licensed, 374+ stars.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp069_server_sizing_guide_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
+        View amux on GitHub ★
+      </a>
+    </div>
+
+    <p>Running a fleet of AI coding agents overnight is practical on almost any modern server — but getting the sizing right prevents the 3am crash that wipes out your agents' work. This guide covers the numbers you need: how much RAM per agent, when to move from your laptop to a cloud VM, and how amux's new OOM protection prevents resource exhaustion from taking down your fleet.</p>
+
+    <h2>The Short Answer: RAM is the Constraint</h2>
+    <p>CPU is rarely the bottleneck when running AI coding agents. Agents spend the vast majority of their time waiting for API responses from Anthropic, OpenAI, or Google — not doing compute work on your server. The real constraints are:</p>
+    <ul>
+      <li><strong>RAM</strong> — each agent process consumes 300-500 MB. This is the primary scaling constraint.</li>
+      <li><strong>Disk I/O</strong> — agents write frequently to the codebase. SSD matters more than total disk size.</li>
+      <li><strong>Network</strong> — API calls are the critical path. Low-latency internet access to the provider matters.</li>
+    </ul>
+    <p>CPU: budget 0.1-0.2 vCPU per active agent. 4 vCPUs handles 20-40 agents with headroom.</p>
+
+    <h2>RAM Requirements by Fleet Size</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Fleet size</th>
+            <th style="padding:10px 16px;text-align:left;">Minimum RAM</th>
+            <th style="padding:10px 16px;text-align:left;">Recommended RAM</th>
+            <th style="padding:10px 16px;text-align:left;">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">1-5 agents</td>
+            <td style="padding:10px 16px;">4 GB</td>
+            <td style="padding:10px 16px;">8 GB</td>
+            <td style="padding:10px 16px;">MacBook Air or any modern laptop</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">5-10 agents</td>
+            <td style="padding:10px 16px;">6 GB</td>
+            <td style="padding:10px 16px;">16 GB</td>
+            <td style="padding:10px 16px;">MacBook Pro 16 GB handles this comfortably</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">10-25 agents</td>
+            <td style="padding:10px 16px;">8 GB</td>
+            <td style="padding:10px 16px;">16-32 GB</td>
+            <td style="padding:10px 16px;">32 GB MacBook Pro or small cloud VM</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">25-50 agents</td>
+            <td style="padding:10px 16px;">16 GB</td>
+            <td style="padding:10px 16px;">32 GB</td>
+            <td style="padding:10px 16px;">Dedicated cloud VM recommended</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">50+ agents</td>
+            <td style="padding:10px 16px;">32 GB</td>
+            <td style="padding:10px 16px;">64 GB+</td>
+            <td style="padding:10px 16px;">Multi-VM setup or high-memory instance</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Cloud VM Recommendations</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Instance</th>
+            <th style="padding:10px 16px;text-align:left;">RAM / vCPU</th>
+            <th style="padding:10px 16px;text-align:left;">Price/hr</th>
+            <th style="padding:10px 16px;text-align:left;">Best for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Hetzner CX22</td>
+            <td style="padding:10px 16px;">4 GB / 2 vCPU</td>
+            <td style="padding:10px 16px;">~€0.07/hr</td>
+            <td style="padding:10px 16px;">5-8 agents, budget overnight runs</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Hetzner CX32</td>
+            <td style="padding:10px 16px;">8 GB / 4 vCPU</td>
+            <td style="padding:10px 16px;">~€0.13/hr</td>
+            <td style="padding:10px 16px;">10-15 agents, best price/performance</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Hetzner CX42</td>
+            <td style="padding:10px 16px;">16 GB / 8 vCPU</td>
+            <td style="padding:10px 16px;">~€0.28/hr</td>
+            <td style="padding:10px 16px;">20-30 agents, primary dev server</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AWS c6a.2xlarge</td>
+            <td style="padding:10px 16px;">16 GB / 8 vCPU</td>
+            <td style="padding:10px 16px;">~$0.31/hr</td>
+            <td style="padding:10px 16px;">20-30 agents, AWS ecosystem</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AWS c6a.4xlarge</td>
+            <td style="padding:10px 16px;">32 GB / 16 vCPU</td>
+            <td style="padding:10px 16px;">~$0.62/hr</td>
+            <td style="padding:10px 16px;">50 agents, production fleet server</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">AWS r6a.2xlarge</td>
+            <td style="padding:10px 16px;">64 GB / 8 vCPU</td>
+            <td style="padding:10px 16px;">~$0.54/hr</td>
+            <td style="padding:10px 16px;">50+ agents on memory-intensive codebases</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Prices are approximate as of August 2026. Hetzner wins on price/performance for most amux deployments; AWS and GCP are preferable when your codebase or CI/CD already lives in those clouds.</p>
+
+    <h2>amux OOM Protection (August 2026)</h2>
+    <p>The most common fleet failure mode is starting too many agents: you queue 30 tasks, start them all at once, and at 2am your server runs out of RAM. Every agent starts swapping, they all slow to a crawl, and some crash with context errors.</p>
+    <p>amux now prevents this. Before admitting each new worker, the server checks available memory headroom. If RAM is critically low, the server refuses to start the new session and surfaces the refusal reason in the dashboard and via <code>GET /api/health/invariants</code>. Existing agents continue running — only new session creation is blocked until memory frees up.</p>
+    <pre><code># Check fleet health including memory headroom
+curl -sk https://localhost:8824/api/health/invariants | python3 -c "
+import json, sys
+for inv in json.load(sys.stdin)['failing']:
+    print('FAIL:', inv['name'], '—', inv['message'])
+"</code></pre>
+    <p>The OOM gate fires automatically with no configuration required. If you want to override it for a specific session (not recommended), set <code>AMUX_SKIP_OOM_GATE=1</code> in the session environment.</p>
+
+    <h2>Disk Requirements</h2>
+    <p>Agents running on the same codebase share a single git checkout, so disk usage scales with the codebase rather than agent count. Key considerations:</p>
+    <ul>
+      <li><strong>Codebase size</strong> — most repos are 100 MB-5 GB including git history. SSD is strongly recommended; HDD latency causes noticeable slowdown when agents write frequently.</li>
+      <li><strong>Git worktrees</strong> — for true parallel isolation (agents working on different branches simultaneously), each worktree is a full working tree checkout. Budget 500 MB-2 GB per worktree for typical monorepos. See the <a href="/guides/parallel-security-audit/">git worktree isolation guide</a>.</li>
+      <li><strong>Agent scratch space</strong> — amux agents can write intermediate files to a configurable scratch directory. Budget 1-5 GB for a 50-agent fleet with heavy tool use.</li>
+      <li><strong>Disk watchdog</strong> — amux monitors disk usage and surfaces alerts in the dashboard and invariants endpoint when the agent scratch root is filling up.</li>
+    </ul>
+
+    <h2>Running Agents Remotely</h2>
+    <p>If your local machine is underpowered, you don't need to run amux on it. amux-remote (shipped August 2026) lets your local amux CLI connect to a remote amux server over Tailscale or SSH. You manage the fleet from your laptop or phone while all agents run on a more powerful remote machine.</p>
+    <p>See the <a href="/guides/run-ai-agents-remotely/">full remote setup guide</a> for step-by-step instructions.</p>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How much RAM do I need to run AI coding agents?</summary>
+      <p style="margin:0.8rem 0 0;">Budget 300-500 MB RAM per agent plus 1-2 GB for the OS and amux dashboard. For 10 agents: 6-8 GB. For 50 agents: 26-28 GB minimum. A MacBook Pro with 16 GB handles 20-25 agents reliably; a 32 GB model handles 50+. For larger fleets, use a dedicated cloud VM.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What happens when my server runs out of RAM while running AI agents?</summary>
+      <p style="margin:0.8rem 0 0;">Without protection, the OS swaps to disk, agents slow dramatically, and eventually crash. amux (August 2026) adds OOM protection: new worker admission is refused when memory headroom is critically low. Existing agents keep running. The refusal reason appears in the dashboard and in <code>GET /api/health/invariants</code>.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I run AI coding agents on a MacBook?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. A MacBook Pro with 16 GB RAM reliably runs 20-25 parallel agents. A 32 GB MacBook Pro handles 50+. amux is a single Rust binary with no external dependencies — it runs identically on macOS and Linux. For overnight runs where you want your laptop free, connect to a remote server via amux-remote instead.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What cloud VM should I use for 10-50 AI agents?</summary>
+      <p style="margin:0.8rem 0 0;">For 10-25 agents: Hetzner CX32 (8 GB, 4 vCPU, ~€0.13/hr) offers the best price/performance outside AWS. For 50 agents: Hetzner CX42 (16 GB) or AWS c6a.4xlarge (32 GB). CPU is rarely the bottleneck — agents wait on API responses. Prioritize RAM and SSD storage over CPU core count.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How much disk space do AI agents need?</summary>
+      <p style="margin:0.8rem 0 0;">Disk usage is dominated by the codebase size, not agent count — all agents on the same task share one git checkout. For git worktree isolation (parallel branch work), budget 500 MB-2 GB per worktree for a typical monorepo. Use SSD: agents write frequently and HDD latency compounds across 20+ simultaneous writers.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux protect against out-of-memory crashes?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. amux (August 2026) checks available memory headroom before starting each new worker. If RAM is critically low, new session creation is refused and the reason surfaces in the dashboard and invariants API. Existing agents are never stopped by this gate — only new sessions are blocked until memory frees up. No configuration required.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run an AI engineering team overnight with resource protection</h3>
+      <p>amux is the open-source control plane for running dozens of parallel Claude Code, Codex, or Gemini CLI agents — with built-in OOM protection, self-healing, kanban board, and phone monitoring. Single Rust binary, MIT licensed.</p>
+      <pre><code>brew install amux
+amux serve  # → https://localhost:8824</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/scaling-to-50-agents/" style="margin-left:0.75rem;">Scaling to 50 agents →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related guides:</strong>
+      <a href="/guides/scaling-to-50-agents/">Scaling to 50 agents</a> ·
+      <a href="/guides/running-10-plus-agents/">Running 10+ agents</a> ·
+      <a href="/guides/run-ai-agents-remotely/">Run agents remotely</a> ·
+      <a href="/guides/ai-coding-agents-overnight/">Overnight agent guide</a> ·
+      <a href="/guides/self-healing-configuration/">Self-healing configuration</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Guides</div>
+          <ul>
+            <li><a href="/guides/scaling-to-50-agents/">Scale to 50 agents</a></li>
+            <li><a href="/guides/run-ai-agents-remotely/">Remote agents</a></li>
+            <li><a href="/guides/ai-coding-agents-overnight/">Overnight agents</a></li>
+            <li><a href="/guides/">All guides</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/compare/">Comparisons</a></li>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

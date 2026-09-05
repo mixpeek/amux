@@ -66,6 +66,32 @@ If commits you did not write are listed, confirm with their author before pushin
 | `site/` | The marketing site (deployed separately) |
 | `ios/`, `android/`, `desktop/` | Native wrappers |
 
+## Adding a database migration
+
+`crates/amux-server/migrations/NNNN_name.sql`, plus an entry in the `MIGRATIONS`
+list in `crates/amux-server/src/db/migrate.rs`. A guard
+(`versions_are_dense_and_match_their_filenames`) requires the versions to be
+**dense and ascending** and each filename to start with its own zero-padded
+version, so `0036_thing.sql` must be registered as `version: 36` in the 36th
+position.
+
+**If your number collides with one you could not see, that is ours to fix, not
+yours.** Pick the next free number against `origin/main` and open the PR. The
+maintainer's `main` runs ahead of `origin/main` — often by dozens of commits —
+so a number that is genuinely free from where you stand can already be taken in
+unpushed work. Nothing you can run detects that: CI builds your branch against
+`origin/main`, where there is no conflict, so the collision surfaces only when a
+maintainer merges.
+
+This has already happened twice on one PR (#160). The second time, the
+contributor had renumbered correctly against `origin/main` and a maintainer took
+the new number hours later. Renumbering is a one-line change we can make at merge
+time; discovering the rule by having a PR bounce twice is not a reasonable thing
+to ask of you.
+
+So: do not hunt for a "safe" high number, and do not treat a renumber request as
+a mistake you made. If we ask, it is bookkeeping.
+
 ## Making changes
 
 1. **Branch** off `main`; keep the change focused — one logical change per PR.

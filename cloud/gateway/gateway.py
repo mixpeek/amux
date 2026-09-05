@@ -5,7 +5,7 @@ Verifies Clerk JWTs, starts/stops Docker containers per user, reverse-proxies re
 """
 
 import os, json, time, sqlite3, subprocess, threading, urllib.request, urllib.error, base64
-import hmac, hashlib, secrets, re, ssl, queue as _queue
+import hmac, hashlib, secrets, re, ssl, socket, queue as _queue
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -26,6 +26,21 @@ STRIPE_PRO_PRICE_ID     = os.environ.get("STRIPE_PRO_PRICE_ID", "")      # month
 STRIPE_ANNUAL_PRICE_ID  = os.environ.get("STRIPE_ANNUAL_PRICE_ID", "")   # annual
 STRIPE_PLATFORM_FEE_PRICE_ID = os.environ.get("STRIPE_PLATFORM_FEE_PRICE_ID", "")  # one-time onboarding fee
 STRIPE_PLATFORM_PRICE_ID = os.environ.get("STRIPE_PLATFORM_PRICE_ID", "")          # $5k/mo platform plan (the only plan shown)
+# NEVER PROVISION the ids in PROVISION_DENYLIST (SP-615 / MF-816). A conceded
+# fraud dispute means the customer is being made whole via the chargeback, so
+# provisioning Pro on their account — no matter what a webhook replays or an
+# invoice re-sends — is the worst-ordered outcome (compute granted to an account
+# we just refunded for fraud). Matched against the event's customer id AND its
+# client_reference_id / org id, because a checkout keys on the ref and
+# invoice.paid keys on the customer. A denied provision logs loudly; the
+# downgrade branches are unaffected (setting free is always safe).
+#
+# The VALUES are customer PII (Stripe customer/sub ids, an internal user id) and
+# this repo is PUBLIC, so they live ONLY in the host gateway.env as
+# PROVISION_DENYLIST=cus_x,user_y,sub_z — never hardcoded here. Empty default
+# means the committed code denies no one; the host env is the source of truth.
+PROVISION_DENYLIST = set(filter(None,
+    os.environ.get("PROVISION_DENYLIST", "").replace(" ", "").split(",")))
 TRIAL_DAYS              = int(os.environ.get("TRIAL_DAYS", "7"))
 TRIAL_BUDGET_USD        = float(os.environ.get("TRIAL_BUDGET_USD", "5"))  # default spend cap for provisioned trials
 REFERRAL_BONUS_DAYS     = int(os.environ.get("REFERRAL_BONUS_DAYS", "7"))
@@ -922,6 +937,25 @@ def get_db():
     return conn
 
 # ── Port allocation ────────────────────────────────────────────────────────────
+def _host_port_free(port):
+    """True if nothing on the host is bound to this TCP port.
+
+    AC-345 (spec 3): a ZOMBIE container whose org row was deleted still PUBLISHES
+    its port, but that port is gone from the DB `used` set below — so alloc_port
+    would hand the live port to a new org and the gateway would route that org
+    straight into the zombie. A plain bind() is the authoritative host-level check:
+    docker-proxy holds a published port, so bind() raises EADDRINUSE while it is
+    taken. Conservative on error (treat as taken) — skipping a maybe-free port just
+    picks the next one, whereas assigning a taken port is the bug we are fixing."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
 def alloc_port(db):
     used = {r[0] for r in db.execute("SELECT port FROM orgs WHERE port IS NOT NULL")}
     # Also check legacy users table for transition period
@@ -930,7 +964,10 @@ def alloc_port(db):
     except sqlite3.OperationalError:
         pass
     p = PORT_BASE
-    while p in used:
+    # Skip DB-assigned ports AND ports actually BOUND on the host. Checking only
+    # the DB let a zombie container's reused port be handed to a new org (AC-345):
+    # its row is gone from `used`, but the port is still live on the host.
+    while p in used or not _host_port_free(p):
         p += 1
     return p
 
@@ -1037,9 +1074,15 @@ def _push_key_to_container(ctr_name, api_key):
         subprocess.run(
             ["docker", "exec", "-i", ctr_name, "sh", "-c", "cat > /root/.amux/server.env"],
             input=content.encode(), capture_output=True)
+        # server.env is read into the process environment at startup and the rust
+        # server binary is read-only inside the container, so the old python
+        # `touch /app/amux-server.py` hot-reload did NOTHING here (AMUX-2779) — the
+        # key was written and silently never applied. Restart the container so the
+        # new key reaches the process, the same mechanism the admin refresh-auth
+        # path uses (see /api/gateway/admin/orgs/<id>/refresh-auth).
         subprocess.run(
-            ["docker", "exec", ctr_name, "touch", "/app/amux-server.py"],
-            capture_output=True)
+            ["docker", "restart", ctr_name],
+            capture_output=True, timeout=90)
         return True
     except Exception:
         return False
@@ -1610,6 +1653,38 @@ def _clerk_get_email(user_id):
     except Exception:
         return ""
 
+def _detect_zombie_containers(db):
+    """LOG (do not stop) running workspace containers that no longer map to a DB
+    row — AC-345 orphans. Provision writes the org row before starting the
+    container (inside _db_lock), so a running amux-user-<id> with no org AND no
+    user row means the org was deleted and the container is a zombie still holding
+    its host port. alloc_port() now refuses a host-bound port, so a zombie can no
+    longer capture a NEW org; this surfaces the existing ones for a human to reap
+    in a careful window. Auto-stop is DEFERRED deliberately: a wrong stop kills a
+    live workspace, so the stop step waits until this detection log has confirmed
+    it only ever flags true zombies. Returns the orphan container names."""
+    r = subprocess.run(
+        ["docker", "ps", "--filter", "name=amux-user-", "--format", "{{.Names}}"],
+        capture_output=True, text=True, timeout=10)
+    names = [n for n in r.stdout.split() if n and "amux-user-" in n]
+    org_ids = {row["id"] for row in db.execute("SELECT id FROM orgs")}
+    try:
+        user_ids = {row["id"] for row in db.execute("SELECT id FROM users")}
+    except sqlite3.OperationalError:
+        user_ids = set()
+    orphans = []
+    for name in names:
+        uid = name.split("amux-user-", 1)[1]   # handles <hash>_amux-user-<id> too
+        if uid in org_ids or uid in user_ids:
+            continue
+        orphans.append(name)
+        print(f"[reaper] ZOMBIE-DETECT orphan {name!r} (id={uid}) — no org/user row, "
+              f"holding its host port; reap candidate (AC-345)", flush=True)
+    if names:
+        print(f"[reaper] zombie-detect: {len(orphans)}/{len(names)} amux-user "
+              f"container(s) are orphans", flush=True)
+    return orphans
+
 # ── Idle reaper ────────────────────────────────────────────────────────────────
 def _reaper():
     while True:
@@ -1640,6 +1715,11 @@ def _reaper():
                 if container_running(uid):
                     print(f"[reaper] stopping idle container for {uid} (last_seen before cutoff)", flush=True)
                     stop_container(uid)
+            # AC-345: surface (do not stop) orphan zombie containers each cycle.
+            try:
+                _detect_zombie_containers(db)
+            except Exception as e:
+                print(f"[reaper] zombie-detect error: {e}", flush=True)
         except Exception as e:
             print(f"[reaper] error: {e}", flush=True)
 
@@ -2171,16 +2251,28 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 import stripe
                 stripe.api_key = STRIPE_SECRET_KEY
-                event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+                # construct_event does ONE job here: verify the signature. It raises
+                # on a bad signature -> 400. We do NOT read fields off its return
+                # value: stripe>=8 returns StripeObjects whose `.get()` raises
+                # AttributeError('get') and whose dict() raises KeyError, which
+                # crashed the handler on EVERY real event (SP-615 — the webhook was
+                # never wired until now, so it never surfaced; wiring it alone would
+                # have provisioned NOBODY). Read fields off the raw JSON instead.
+                stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
             except Exception as e:
                 return self._json({"error": f"webhook verify failed: {e}"}, 400)
             db = get_db()
+            event = json.loads(payload)            # plain dict — safe .get() below
             etype = event["type"]
             obj = event["data"]["object"]
             if etype == "checkout.session.completed":
                 cust_id = obj.get("customer")
                 ref_id = obj.get("client_reference_id")  # org_id (or legacy user_id)
                 sub_id = obj.get("subscription")
+                if PROVISION_DENYLIST & {cust_id, ref_id, sub_id}:
+                    print(f"[stripe] DENYLIST: refusing to provision ref={ref_id} cust={cust_id} "
+                          f"sub={sub_id} — account is on the no-provision list (conceded dispute, SP-615)", flush=True)
+                    return self._json({"ok": True, "provisioned": False, "reason": "denylist"})
                 if ref_id and cust_id:
                     trial_end = None
                     if sub_id:
@@ -2230,6 +2322,10 @@ class Handler(BaseHTTPRequestHandler):
                         print(f"[stripe] WARN provisioned NOTHING for paid checkout ref={ref_id} cust={cust_id} sub={sub_id} — no orgs row matched directly or via membership/owner; customer CHARGED but on free plan", flush=True)
             elif etype == "invoice.paid":
                 cust_id = obj.get("customer")
+                if cust_id in PROVISION_DENYLIST:
+                    print(f"[stripe] DENYLIST: refusing invoice.paid provision for cust={cust_id} "
+                          f"(conceded dispute, SP-615)", flush=True)
+                    return self._json({"ok": True, "provisioned": False, "reason": "denylist"})
                 if cust_id:
                     with _db_lock:
                         db.execute("UPDATE orgs SET plan='pro' WHERE stripe_customer_id=?", (cust_id,))

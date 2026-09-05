@@ -60,6 +60,9 @@ pub fn routes_with(ctx: Arc<EmailCtx>) -> Router<AppState> {
         .route("/approve/{id}", post(approve))
         .route("/reject/{id}", post(reject))
         .route("/approvals", get(list_approvals))
+        // AMUX-3998: the ranked inbox + owner themes, nested here so they get the
+        // same EmailCtx rather than opening a second client.
+        .merge(super::email_intel::nested_routes())
         .layer(Extension(ctx))
 }
 
@@ -67,6 +70,67 @@ pub fn routes_with(ctx: Arc<EmailCtx>) -> Router<AppState> {
 
 fn err(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
+}
+
+/// The OAuth error CODE carried inside a token-refresh failure, or `None`.
+///
+/// The message shape is `token refresh failed (400): {"error":"invalid_grant",...}`,
+/// so the code is inside an embedded JSON body — `connectors::delegation_refusal`
+/// splits on the LEADING token and would never see it. Parsing the JSON rather
+/// than searching the string for "invalid_grant" is deliberate: a genuine
+/// upstream fault whose body merely MENTIONS a refusal code must stay a 502, and
+/// substring matching cannot tell those apart.
+fn oauth_refusal_code(e: &str) -> Option<String> {
+    let start = e.find('{')?;
+    let v: Value = serde_json::from_str(e.get(start..)?).ok()?;
+    let code = v.get("error")?.as_str()?.trim().to_string();
+    (!code.is_empty()).then_some(code)
+}
+
+/// A dead credential is amux DECLINING, not amux FAILING (AMUX-3809).
+///
+/// `GET /api/email/inbox` answered 502 with
+/// `invalid_grant: Token has been expired or revoked` — a revoked Google refresh
+/// token. Nothing in amux is broken: the account needs re-consent. A 502 says
+/// the opposite, and it says it to the 5xx detector too, which is why this
+/// arrived as an automated fault card.
+///
+/// Same fix as AMUX-3738 shipped for `/api/connectors` this morning, one path
+/// over, and it REUSES that module's refusal list rather than restating it —
+/// two spellings of "which OAuth codes are refusals" would drift, and this file
+/// spent today watching exactly that happen elsewhere.
+fn email_err(e: &str) -> Response {
+    email_err_with(e, json!({}))
+}
+
+/// [`email_err`] with caller-supplied fields merged into the body — the approval
+/// path must keep its `approval_id` so a caller can retry the same approval.
+fn email_err_with(e: &str, extra: Value) -> Response {
+    let merge = |mut base: Value| -> Value {
+        if let (Some(b), Some(x)) = (base.as_object_mut(), extra.as_object()) {
+            for (k, v) in x {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        base
+    };
+    if let Some(code) = oauth_refusal_code(e) {
+        if crate::api::connectors::delegation_refusal(&code) {
+            return err(
+                StatusCode::FORBIDDEN,
+                merge(json!({
+                    "error": e,
+                    "needs_auth": true,
+                    "oauth_error": code,
+                    "fix": "re-consent the account: GET /api/gmail/auth?account=<email>, open the \
+                            URL, approve. If the SAME account cycles back within ~8 days the \
+                            consent screen is still in Testing mode and its refresh tokens \
+                            hard-expire after 7 — publish the OAuth app to Production (AMUX-3747).",
+                })),
+            );
+        }
+    }
+    err(StatusCode::BAD_GATEWAY, merge(json!({ "error": e })))
 }
 
 /// Python `_hdr_worker`: X-Amux-Worker is canonical, X-Amux-Session still
@@ -357,7 +421,7 @@ pub async fn send(
             &connected,
         );
         if !externals.is_empty()
-            && !crate::api::email_approval::exempt_sessions(&home).contains(&lane.to_lowercase())
+            && !crate::api::email_approval::external_email_allowed(&home, &lane)
         {
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
@@ -473,7 +537,7 @@ pub async fn send(
             .await;
         report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
         return match res {
-            Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+            Err(e) => email_err(&e),
             Ok(res) => {
                 email_log(
                     ctx.client.home(),
@@ -584,15 +648,14 @@ pub async fn reply(
         // runs), classify, and freeze for a human if anyone external is on it.
         if let Some(lane) = hdr_worker(&headers) {
             let home = ctx.client.home().to_path_buf();
-            if !crate::api::email_approval::exempt_sessions(&home).contains(&lane.to_lowercase())
-            {
+            if !crate::api::email_approval::external_email_allowed(&home, &lane) {
                 let (r_to, r_cc, r_subject) = match ctx
                     .client
                     .resolve_reply_recipients(&gmail_from, &message_id, reply_all, allow_self)
                     .await
                 {
                     Ok(v) => v,
-                    Err(e) => return err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+                    Err(e) => return email_err(&e),
                 };
                 let externals = crate::api::email_approval::external_recipients(
                     &format!("{r_to},{r_cc}"),
@@ -647,7 +710,7 @@ pub async fn reply(
             .await;
         report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
         return match res {
-            Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+            Err(e) => email_err(&e),
             Ok(res) => {
                 email_log(
                     ctx.client.home(),
@@ -971,7 +1034,10 @@ pub async fn approve(
     };
     report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
     match res {
-        Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e, "approval_id": id })),
+        // Same classification as every other path (AMUX-3809): a revoked token is
+        // a refusal here too. `approval_id` is merged in so the caller keeps the
+        // handle it needs to retry.
+        Err(e) => email_err_with(&e, json!({ "approval_id": id })),
         Ok(res) => {
             // The audit answers "who approved this", not only "which worker
             // sent it" (autodesk's point 5). The approver is the dashboard
@@ -1051,7 +1117,7 @@ pub async fn inbox(
         let res = ctx.client.inbox_messages(&account_filter, count, "", lookback_days).await;
         report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
         return match res {
-            Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+            Err(e) => email_err(&e),
             Ok(v) => reply_shape(
                 v.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(),
                 v.get("truncated").and_then(Value::as_bool).unwrap_or(false),
@@ -1203,7 +1269,7 @@ pub async fn message(
                             }
                         }
                     }
-                    Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+                    Err(e) => email_err(&e),
                 };
             }
         }
@@ -1255,7 +1321,7 @@ pub async fn message_attachment(
                         )
                             .into_response()
                     }
-                    Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+                    Err(e) => email_err(&e),
                 };
             }
         }
@@ -1297,7 +1363,7 @@ pub async fn search(
         let res = ctx.client.inbox_messages(&account, limit, &gq, 0.0).await;
         report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
         return match res {
-            Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
+            Err(e) => email_err(&e),
             Ok(v) => Json(v.get("messages").cloned().unwrap_or(json!([]))).into_response(),
         };
     }
@@ -1533,6 +1599,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let registry = Arc::new(IntegrationRegistry::new());
         let ctx = Arc::new(EmailCtx {
@@ -1567,6 +1634,31 @@ mod tests {
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
+    }
+
+    /// AMUX-3809: a dead credential is a REFUSAL (403), a real upstream fault is
+    /// still a FAULT (502), and the classifier must not confuse them.
+    ///
+    /// The last two cells are the controls and they are the reason this parses
+    /// JSON instead of searching for "invalid_grant". A 502 whose body merely
+    /// MENTIONS a refusal code is still amux failing, and a substring match
+    /// would hand it a 403 and stop the 5xx detector ever seeing it again.
+    #[test]
+    fn a_revoked_token_is_403_but_a_real_fault_stays_502() {
+        let revoked = r#"token refresh failed (400): {"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#;
+        assert_eq!(oauth_refusal_code(revoked).as_deref(), Some("invalid_grant"));
+        assert_eq!(email_err(revoked).status(), StatusCode::FORBIDDEN);
+
+        // CONTROL 1: an upstream 5xx with no OAuth code is a genuine fault.
+        let boom = "gmail API returned 503: backend unavailable";
+        assert_eq!(oauth_refusal_code(boom), None);
+        assert_eq!(email_err(boom).status(), StatusCode::BAD_GATEWAY);
+
+        // CONTROL 2: a fault whose body MENTIONS a refusal code, without it
+        // being the error, must stay 502. Substring matching fails this.
+        let mentions = r#"gmail API returned 500: {"error":"internal","detail":"not invalid_grant"}"#;
+        assert_eq!(oauth_refusal_code(mentions).as_deref(), Some("internal"));
+        assert_eq!(email_err(mentions).status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
@@ -1882,7 +1974,13 @@ mod tests {
             &[],
         )
         .await;
-        assert_eq!(st, StatusCode::BAD_GATEWAY, "{e}");
+        // 403, not 502 (AMUX-3809). This test is named for the REGISTRY half —
+        // that an auth failure marks email Unavailable — and its status
+        // assertion was incidental. A revoked refresh token is amux DECLINING:
+        // nothing here is broken, the account needs re-consent. Asserting 502
+        // encoded the defect the 5xx detector then filed a card about.
+        assert_eq!(st, StatusCode::FORBIDDEN, "{e}");
+        assert_eq!(e["needs_auth"], json!(true), "and it must say what is needed: {e}");
         match reg.get("email") {
             Some(IntegrationState::Unavailable { reason }) => {
                 assert!(reason.contains("invalid_grant"), "{reason}");
@@ -1989,6 +2087,33 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{res}");
+
+        // First-class worker configuration: the same scoped key exposed in
+        // Configurations reaches this actual send gate immediately.
+        let home3 = temp_home();
+        std::fs::create_dir_all(home3.path().join("sessions")).unwrap();
+        std::fs::write(
+            home3.path().join("sessions/campaign.env"),
+            "AMUX_EMAIL_EXTERNAL_ALLOW=1\n",
+        )
+        .unwrap();
+        let http3 = MockHttp::new(vec![
+            ("GET", "/messages?q=", 200, json!({ "messages": [] })),
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 200, json!({ "id": "m11", "threadId": "t11" })),
+        ]);
+        let (app3, _d3, _r3) = app_with(http3, home3.path());
+        let (st, res) = send_req(
+            &app3,
+            "POST",
+            "/api/email/send",
+            Some(json!({ "to": "lead@prospect.com", "subject": "Hi", "body": "b",
+                         "from": ACCT, "force_new_thread": true })),
+            &[("x-amux-session", "campaign")],
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{res}");
+        assert_eq!(res["id"], json!("m11"));
     }
 
     /// AMUX-3698: a human can DISCARD a held draft, and it is recorded.

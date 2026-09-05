@@ -81,6 +81,26 @@ pub struct RescueReport {
     /// population a stripped-ANSI reader mistook for stuck messages; if this
     /// number is large and `rescued` is zero, the sweep is working.
     pub placeholders: usize,
+    /// Lanes whose composer holds a COLLAPSED PASTE CHIP — Claude Code's
+    /// `[Pasted text #N +M lines]` — rather than readable text.
+    ///
+    /// This is a subset of `left_alone` and it is called out separately
+    /// because the reason the sweep cannot claim it is different in kind, and
+    /// worse. For ordinary text the discriminator READ the content and decided
+    /// it was not ours. Here the content is not on screen at all: the TUI
+    /// replaced it with a summary, so the `[H:MM AM]` prefix that
+    /// [`is_amux_ghost`] looks for is inside the chip and unreadable by
+    /// construction. Every amux message over ~400 chars goes out through
+    /// tmux `paste-buffer` and renders exactly like this, which means the
+    /// rescue is structurally blind to the LARGEST messages — and a larger
+    /// message is more keystrokes, so a wider window for the Enter to be lost.
+    ///
+    /// It is reported and NOT rescued, deliberately. A human pastes too, and
+    /// with the content hidden there is no evidence on screen that separates
+    /// amux's paste from theirs. Submitting on a guess is the false rescue
+    /// guard 1 exists to prevent, and choosing for the human is rule 8. So the
+    /// honest move is to make it loud and let a person or the sender decide.
+    pub chips: Vec<String>,
 }
 
 /// The pane operations a sweep needs. A trait so the guards can be tested
@@ -106,6 +126,31 @@ pub fn is_amux_ghost(pending: &str) -> bool {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(r"^\[\d{1,2}:\d{2}[AP]M\]").expect("ghost prefix regex"));
+    re.is_match(pending)
+}
+
+/// Is this composer showing a COLLAPSED PASTE rather than readable text?
+///
+/// Claude Code renders a large or multi-line paste as `[Pasted text #137 +44
+/// lines]` and keeps the real content off screen. Matched loosely on the two
+/// stable parts (the literal `Pasted text` and a `+<n> line` count) rather than
+/// the exact punctuation, because the chip is another program's UI string and
+/// pinning its spacing would make this silently stop matching on their next
+/// release — failing CLOSED, back to the silence this exists to end.
+pub fn is_collapsed_paste(pending: &str) -> bool {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        // WHITESPACE-OPTIONAL, and that is not defensive styling. The input is
+        // `composer_state`'s `Typed`, built with
+        // `plain.extend(p.split_whitespace())` — words concatenated with the
+        // separators DISCARDED — so the real specimen reaching this function is
+        // `[Pastedtext#137+44lines]`, not the `[Pasted text #137 +44 lines]`
+        // you read off the pane. A `\s+` here matches the string a human sees
+        // and never the string the code passes, which is a check that cannot
+        // fire, written against a paraphrase of its own input (ethos rule 7).
+        regex::Regex::new(r"(?i)pasted\s*text.*?\+\s*\d+\s*lines?").expect("paste chip regex")
+    });
     re.is_match(pending)
 }
 
@@ -174,6 +219,19 @@ pub async fn sweep<P: Pane>(sweeper: &Sweeper, pane: &P, state: Option<&AppState
         // Guard 1: the human-composing discriminator.
         if !is_amux_ghost(&ghost) {
             report.left_alone.push(lane.clone());
+            if is_collapsed_paste(&ghost) {
+                report.chips.push(lane.clone());
+                // ONE warning per stuck chip, not one every 15s, by reusing
+                // guard 4's own dedupe rather than a second cooldown. A lane
+                // holding a paste for an hour is 240 sweeps; this is the
+                // difference between a signal and a reason to filter the log.
+                if sweeper.claim(&lane, &ghost) {
+                    tracing::warn!(
+                        session = %lane, chip = %ghost,
+                        "[ghost-rescue] lane holds an UNSUBMITTED collapsed paste — the sweep cannot claim it (content hidden by the TUI, so ownership is unprovable) and will not submit on a guess"
+                    );
+                }
+            }
             continue;
         }
         // Guard 4: exactly once per (lane, text).
@@ -262,6 +320,30 @@ impl Pane for TmuxFleet {
 /// Spawn the sweep as an internal periodic job. Ephemeral by design (see
 /// `runtime_jobs`' module docs): no persistence, no audit — a maintenance loop
 /// must never masquerade as a user schedule.
+/// The last completed sweep, or None if it has never run — which is itself the
+/// answer to "is the rescue alive?".
+///
+/// This existed as a return value that only the tests read: the periodic job
+/// logged ONLY when it rescued something, so a sweep that saw a lane holding an
+/// unsubmitted message and correctly declined to claim it produced no log line,
+/// no counter and no endpoint. `left_alone`'s own docstring already claimed the
+/// gap was "visible instead of silent" and nothing anywhere read the field
+/// (ethos rule 1: it existed, it reached no one). A human had to notice a stuck
+/// pane by looking at it.
+static LAST_REPORT: std::sync::OnceLock<std::sync::RwLock<Option<RescueReport>>> =
+    std::sync::OnceLock::new();
+
+pub fn last_report() -> Option<RescueReport> {
+    LAST_REPORT.get()?.read().ok()?.clone()
+}
+
+fn publish(r: &RescueReport) {
+    let cell = LAST_REPORT.get_or_init(|| std::sync::RwLock::new(None));
+    if let Ok(mut slot) = cell.write() {
+        *slot = Some(r.clone());
+    }
+}
+
 pub fn spawn(state: AppState) -> super::PeriodicTask {
     let sweeper = std::sync::Arc::new(Sweeper::new());
     super::spawn_periodic("ghost-rescue", GHOST_RESCUE_SECS, move || {
@@ -270,6 +352,7 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
         async move {
             let st = fleet.state.clone();
             let report = sweep(&sweeper, &fleet, Some(&st)).await;
+            publish(&report);
             if !report.rescued.is_empty() {
                 tracing::warn!(
                     rescued = ?report.rescued,
@@ -283,6 +366,47 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+
+    /// The chip is what amux-cloud was holding when Ethan asked "why are you
+    /// sending unsubmitted text?" — a 44-line paste sitting in an idle lane's
+    /// composer, invisible to every instrument amux had.
+    #[test]
+    fn a_collapsed_paste_is_recognised_and_ordinary_text_is_not() {
+        // THE FORM THE CODE ACTUALLY RECEIVES. `composer_state` returns
+        // `Typed` with every separator stripped, so this — not the spaced
+        // version below — is the live amux-cloud specimen as this function
+        // sees it. Asserting only the pretty form is how a predicate ships
+        // green and matches nothing in production.
+        assert!(is_collapsed_paste("[Pastedtext#137+44lines]"));
+        assert!(is_collapsed_paste("[Pastedtext#2+1line]"));
+        // The pane-readable form still matches, for any caller that has not
+        // been through composer_state.
+        assert!(is_collapsed_paste("[Pasted text #137 +44 lines]"));
+        assert!(is_collapsed_paste("pasted text #9  + 12  Lines"));
+
+        // IT MUST BE ABLE TO SAY NO. A predicate that matched ordinary text
+        // would file every human mid-sentence as a stuck paste, and the
+        // warning would become noise nobody reads.
+        assert!(!is_collapsed_paste(""));
+        assert!(!is_collapsed_paste("[10:24AM]goaheadandlandit"));
+        assert!(!is_collapsed_paste("ipastedtheconfigintothefile"));
+        // Named the concept but carries no line count: not a chip.
+        assert!(!is_collapsed_paste("[Pastedtext#4]"));
+        // A line count with no paste: not a chip either.
+        assert!(!is_collapsed_paste("diffis+44lines"));
+    }
+
+    /// The two discriminators must not overlap: a chip can never satisfy the
+    /// `[H:MM AM]` prefix, which is the whole reason the rescue is blind to
+    /// large messages. If this ever fails, the blindness is gone and the chip
+    /// branch is dead code that should be removed rather than left to rot.
+    #[test]
+    fn the_prefix_discriminator_cannot_see_inside_a_chip() {
+        assert!(!is_amux_ghost("[Pastedtext#137+44lines]"));
+        // ... while the same message, rendered in full, IS claimable. This is
+        // the pair that shows the gap is about RENDERING, not about content.
+        assert!(is_amux_ghost("[10:24AM]thesamemessage,notcollapsed"));
+    }
     use super::*;
     use std::sync::Mutex as StdMutex;
 

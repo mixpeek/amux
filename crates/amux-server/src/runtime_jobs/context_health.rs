@@ -18,7 +18,7 @@
 
 use crate::api::session_verbs::{generation_census, is_degraded, GENERATIONS_WARN_AT};
 
-const JOB: &str = "context-health";
+const JOB: &str = super::registry::ids::CONTEXT_HEALTH;
 const TICK_SECS: u64 = 3600;
 
 /// One pass. Returns (measured, unmeasurable, over-threshold) so the test can

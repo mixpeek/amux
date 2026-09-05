@@ -150,6 +150,21 @@ pub struct BoardColumn {
     pub gate_criteria: Vec<GateCriterion>,
     /// Types this column's gate applies to; `None` = all.
     pub applies_to_types: Option<Vec<ItemType>>,
+    /// What this stage is for (human-readable, not enforced).
+    pub purpose: Option<String>,
+    /// Prose description of conditions for entering this stage, complementing
+    /// `gate_criteria` which are the machine-enforced subset.
+    pub entry_conditions: Option<String>,
+    /// Who is responsible for work in this stage (e.g. "engineer", "qa", "pm").
+    pub responsible_role: Option<String>,
+    /// What actions are allowed while a card is in this stage.
+    pub allowed_actions: Vec<String>,
+    /// What outputs the stage must produce before a card may leave.
+    pub required_outputs: Vec<String>,
+    /// Where a card goes if it fails this stage (e.g. back to "doing").
+    pub failure_transition: Option<ColumnId>,
+    /// Target time-in-stage in seconds; advisory, surfaced in dashboards.
+    pub target_sla_seconds: Option<i64>,
 }
 
 impl BoardColumn {
@@ -293,6 +308,13 @@ mod tests {
             terminal: term,
             gate_criteria: vec![],
             applies_to_types: None,
+            purpose: None,
+            entry_conditions: None,
+            responsible_role: None,
+            allowed_actions: vec![],
+            required_outputs: vec![],
+            failure_transition: None,
+            target_sla_seconds: None,
         }
     }
 

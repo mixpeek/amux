@@ -199,6 +199,7 @@ def main():
         return 0
     foreign = {}
     ordered = []
+    committed_here = {}   # sha -> Amux-Committer, present only on a mismatch (AF-479)
     try:
         for line in stdin_text.splitlines():
             parts = line.split()
@@ -248,8 +249,25 @@ def main():
             rng_args = [local_sha, "--not", "--remotes=origin"]
             if remote_sha != ZERO:
                 rng_args.append(remote_sha)
+            # THE COMMITTER FIELD IS READ HERE BECAUSE THIS IS WHERE IT PAYS
+            # (AF-479). prepare-commit-msg adds `Amux-Committer` only when the
+            # message ALREADY declared a different `Amux-Session` — a
+            # cherry-picked or grafted message keeping its original author, or a
+            # hand-typed stamp naming the wrong lane. Both land here as foreign,
+            # and for the second the advice this refusal gives is wrong: it tells
+            # you to record the consent of a lane that never wrote the commit.
             out = subprocess.run(
-                ["git", "log", "--format=%h%x1f%s%x1f%(trailers:key=Amux-Session,valueonly)"]
+                ["git", "log",
+                 # `separator=` OR THE ROW SPLITS IN HALF. A bare
+                 # `%(trailers:key=X,valueonly)` emits the trailer's own trailing
+                 # NEWLINE. That was invisible while the field was last (one
+                 # trailer, one line); put a second field after it and every
+                 # commit renders as two lines, the second holding the committer
+                 # and no sha. Caught by cell Q on the first run: the note never
+                 # printed and the row looked well-formed in the code.
+                 "--format=%h%x1f%s"
+                 "%x1f%(trailers:key=Amux-Session,valueonly,separator=)"
+                 "%x1f%(trailers:key=Amux-Committer,valueonly,separator=)"]
                 + rng_args,
                 capture_output=True, text=True, timeout=15).stdout
             for row in out.splitlines():
@@ -259,6 +277,9 @@ def main():
                 if len(bits) < 3:
                     continue
                 who = bits[2].strip()
+                cmtr = bits[3].strip() if len(bits) > 3 else ""
+                if cmtr:
+                    committed_here[bits[0]] = cmtr
                 ordered.append((bits[0], who))   # newest-first, for the escape below
                 if who and who != sess:
                     foreign.setdefault(who, []).append((bits[0], bits[1][:62]))
@@ -499,6 +520,39 @@ def main():
             w("    %s  %s\n" % (sha, subj))
         if len(foreign[who]) > 6:
             w("    ... and %d more\n" % (len(foreign[who]) - 6))
+    # SAY WHEN A "FOREIGN" COMMIT WAS ACTUALLY MADE IN THIS PANE (AF-479).
+    #
+    # Every exit below assumes the stamped session WROTE the commit. That is the
+    # normal case and stays the default. It is false for a commit whose message
+    # declared someone else and whose `Amux-Committer` is this session: the
+    # commit was created here, by this lane, carrying a stamp it inherited or a
+    # human typed. Measured 2026-09-04: ac550324 landed stamped `amux` from a
+    # hand-written trailer while the lane was `amux-frustrations`, and without
+    # this line the refusal would have sent me to ask a peer for consent to ship
+    # my own work.
+    #
+    # IT DOES NOT CLEAR THE COMMIT, deliberately. A cherry-pick of a peer's
+    # unpushed WIP is exactly this shape and is exactly what the guard exists to
+    # stop, so consent is still required; only the ROUTING advice changes. Naming
+    # the two cases is the whole contribution — the reader can tell them apart
+    # instantly and the guard cannot.
+    _mine_here = sorted(
+        (sha, who) for who in foreign for sha, _s in foreign[who]
+        if committed_here.get(sha) == sess)
+    if _mine_here:
+        w("\n  COMMITTED BY YOU, STAMPED TO ANOTHER LANE — %d of the above carry\n"
+          "  `Amux-Committer: %s`, meaning `git commit` ran in THIS session while the\n"
+          "  message already declared a different Amux-Session:\n" % (len(_mine_here), sess))
+        for sha, who in _mine_here[:6]:
+            w("    %s  stamped %s, committed by %s\n" % (sha, who, sess))
+        if len(_mine_here) > 6:
+            w("    ... and %d more\n" % (len(_mine_here) - 6))
+        w("  Two causes, and they need opposite actions:\n"
+          "    - you TYPED or templated the wrong session name. It is your commit. Amend\n"
+          "      the trailer rather than asking anyone:\n"
+          "        AMUX_AMEND_EXPECT=$(git rev-parse HEAD) git commit --amend -- <your paths>\n"
+          "    - you cherry-picked or replayed a PEER's commit. The stamp is right and the\n"
+          "      work is still theirs to ship. Consent below applies normally.\n")
     # NAME THE ESCAPE, and compute it (AMUX-2512). This refusal offered only "ask
     # that session" or the override, and said nothing about ORDER — so two sessions
     # with interleaved commits each blocked correctly and both stalled. That happened

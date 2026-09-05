@@ -1,0 +1,27 @@
+-- AMUX-3949: being blocked is a DIMENSION, not a position in the lifecycle.
+--
+-- `blocked` is one of the ten statuses, so a card blocked during `review` and
+-- one blocked during `doing` collapse to the same state and the lifecycle
+-- position is destroyed on the way in. Where the card was is exactly what you
+-- need to know when the block clears.
+--
+-- `blocked_on` is orthogonal to `status`: a card keeps its position and
+-- separately names what it is waiting for. NULL means not blocked.
+--
+-- NO EXISTING ROW IS REWRITTEN BY THIS MIGRATION, and that is deliberate.
+-- Measured before writing it: 67 cards carry `status='blocked'` fleet-wide, and
+-- 66 of them belong to OTHER LANES -- backend, tubescience, creative-dna,
+-- mixpeek-general, ts-gke. Exactly one (AMUX-3848) is this lane's. Rewriting
+-- another lane's cards is the thing ethos rule 8 exists to stop: whose data is
+-- this, and would they recognise the change as theirs.
+--
+-- The migration is also not free of judgement. 5 of the 67 have no inferable
+-- prior status -- their log never recorded a `X -> blocked` transition -- so even
+-- a sanctioned sweep has to park those and ask rather than guess, which is what
+-- the plan predicted and is a second reason it is not a mechanical step.
+--
+-- So the two spellings coexist on purpose: `blocked_on` is the forward path for
+-- new blocks, and `status='blocked'` is grandfathered. Every consumer that cares
+-- about blockedness must honour BOTH, or a legacy card silently becomes
+-- workable. The ready frontier does; see `ready_frontier`.
+ALTER TABLE issues ADD COLUMN blocked_on TEXT;

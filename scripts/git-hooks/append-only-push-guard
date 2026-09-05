@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# guard-features: resurrection retirement-guidance
+# guard-features: resurrection retirement-guidance substring-scope
+# guard-version: 1
+# (AF-431 / MR-44. A file declaring guard-features must carry exactly ONE
+#  anchored integer version so staleness is a NUMERIC comparison, not a
+#  substring hunt. Two spellings, per mixpeek-research's dc21a0d489: hooks
+#  that self-report at runtime use `GUARD_VERSION = N`; hooks with no runtime
+#  need use this line. Bump it whenever a guard-features token is added.)
 # (Feature tokens for install-hooks.sh: a repo with core.hooksPath tracks its
 #  own vendored copy, which may deliberately diverge. The installer greps that
 #  copy for each token to tell STALE — dark in the repo where it runs, the
@@ -236,22 +242,59 @@ check_pair() {
 import sys
 norm = lambda s: s.replace("- [x]", "- [ ]").replace("- [X]", "- [ ]")
 head = norm(open(sys.argv[2]).read())
+# WHOLE LINES of the pushed union, so an exact survival elsewhere (an archive
+# move, which is the union rule doing its job) can be told apart from a match
+# that is only a SUBSTRING of some longer line (AF-432).
+head_lines = set(head.split("\n"))
 cand = open(sys.argv[1]).read().splitlines()
-lost, edited = [], []
+lost, edited, sub = [], [], []
 for l in cand:
     if not l:
         continue
     nl = norm(l)
     if nl in head:
+        # Present, but HOW? A whole-line match somewhere else in the union is
+        # real survival. A substring match is not evidence about this line: it
+        # is the normal shape of an in-place extension AND the shape of a
+        # coincidental prefix (CARD: AF-10 inside CARD: AF-106), and nothing
+        # here can tell those apart. Counted rather than judged.
+        if nl not in head_lines:
+            sub.append(l)
         continue
     (edited if nl.strip()[:64] and nl.strip()[:64] in head else lost).append(l)
-sys.stdout.write("\n".join("L\t" + l for l in lost))
-if edited:
-    sys.stdout.write("\n" if lost else "")
-    sys.stdout.write("\n".join("E\t" + l for l in edited))
+out = ["L\t" + l for l in lost] + ["E\t" + l for l in edited] + ["S\t" + l for l in sub]
+sys.stdout.write("\n".join(out))
 ' /dev/fd/3 "$union_tmp" 3<<< "$missing") || _classified=""
     edited=$(printf '%s\n' "$_classified" | grep '^E	' | cut -f2-)
+    substr=$(printf '%s\n' "$_classified" | grep '^S	' | cut -f2-)
     missing=$(printf '%s\n' "$_classified" | grep '^L	' | cut -f2-)
+    # AF-432. A line matched only as a SUBSTRING was rescued SILENTLY, so this
+    # guard's exit 0 was an unqualified claim about the file while resting, for
+    # those lines, on no evidence at all. Found when a deletion dropped
+    # `CARD: AF-10` — a line in no other file — and the guard passed without a
+    # word, because `CARD: AF-106` contains it. Measured at HEAD: 122 of the
+    # ledger's 2470 distinct lines would be invisible if deleted, 118 via an
+    # identical line elsewhere and 4 via a longer one.
+    #
+    # REPORTED, NOT REFUSED, and the reason is that this check genuinely cannot
+    # tell the two cases apart: an in-place extension leaves the old line as a
+    # prefix of the new one, and so does a coincidental id. Refusing would fire
+    # on the routine edit these files get most, which is the exact trade the
+    # substring test was added to avoid. So it says what it could not express
+    # and leaves the judgement with the author.
+    if [ -n "$substr" ]; then
+      n=$(printf '%s\n' "$substr" | wc -l | tr -d ' ')
+      {
+        echo ""
+        echo "append-only guard: NOTE — $n published line(s) of $f were matched only as a"
+        echo "SUBSTRING of other content, not as whole lines in their own right. That is the"
+        echo "normal shape of an entry extended in place; it is also the shape of a line that"
+        echo "merely happens to be a prefix of another (CARD: AF-10 inside CARD: AF-106), and"
+        echo "this check cannot tell those apart. Exit 0 is not a claim about these:"
+        printf '%s\n' "$substr" | head -3 | cut -c1-100 | sed 's/^/    ? /'
+      } >&2
+      log_line "SUBSTR" "file=$f substring_only_lines=$n"
+    fi
     if [ -n "$edited" ]; then
       n=$(printf '%s\n' "$edited" | wc -l | tr -d ' ')
       {

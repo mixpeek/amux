@@ -24,6 +24,7 @@ async fn debug_scan_is_mounted_and_returns_200() {
         build_hash: "test".into(),
         // Public route (mounted outside require_bearer), and None disables auth.
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let res = app

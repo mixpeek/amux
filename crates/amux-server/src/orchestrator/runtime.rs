@@ -1182,8 +1182,8 @@ impl Runtime {
                 if let amux_core::protocol::WorkerCommand::DeliverMessage(msg_id) = &cmd.command {
                     // NO SILENT WORK (2026-08-09 adherence audit; Python
                     // `_autotask_from_command` parity): a prompt delivered
-                    // straight to a worker that holds no open card is work
-                    // the board cannot see. Mint the ledger card at the
+                    // straight to a worker is work the board cannot see. Mint
+                    // the ledger card at the
                     // moment the worker actually receives the prompt.
                     if let Some(body) = delivered_body.take() {
                         if let Err(e) = self.capture_prompt_card(&worker, &body, now).await {
@@ -1278,10 +1278,9 @@ impl Runtime {
     ///   (`amux_core::board::title_from_prompt`) — never a model call
     ///   (ethos rule 2); control words / `[no-board]` / bare slash commands
     ///   return None and mint nothing;
-    /// - a worker with an OPEN card (non-terminal, agent-owned) gets no new
-    ///   card — the prompt is steering the work in flight (folding beyond
-    ///   that is the Python system's job; a second heuristic here would
-    ///   drift from it);
+    /// - every distinct durable message gets a card. Command idempotency already
+    ///   dedupes transport retries by message id; a second message with the same
+    ///   text may be intentional and is left for the model to relate or merge;
     /// - the card lands in `doing`, attributed to the worker's display name,
     ///   with the durable `capture: session prompt` log marker (the same
     ///   marker Python's dedupe and not-a-task guards key on), and
@@ -1313,6 +1312,13 @@ impl Runtime {
         let Some(title) = amux_core::board::title_from_prompt(body) else {
             return Ok(()); // steering, not a task
         };
+        if amux_core::board::is_informational_query(body) {
+            tracing::info!(
+                worker = %worker,
+                "ledger: informational prompt not carded by orchestrator (message retained)"
+            );
+            return Ok(());
+        }
         // AMUX-2604: a prompt is spoken INTO a context capture cannot see, so
         // "This should be one row" mints a card no one can dispatch later. The
         // check is COMPUTED here (never a model call — ethos rule 2) and the
@@ -1321,6 +1327,8 @@ impl Runtime {
         let needs_self_desc = amux_core::board::title_needs_self_description(&title);
         let wid = worker.to_string();
         let body = body.to_string();
+        let desc_body: String = body.chars().take(300).collect();
+        let captured_desc = format!("**Prompt:** {desc_body}");
         // Carries (card id, session name) out of the writer so the nudge can
         // be addressed AFTER the card exists — the consequence hangs off the
         // write that already happens, with a named consumer and a durable
@@ -1343,22 +1351,11 @@ impl Runtime {
                         "worker has no display name; no ledger card minted");
                     return Ok(WriteOutcome { applied: false, events: vec![] });
                 }
-                let open: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM issues WHERE session = ?1 AND deleted IS NULL
-                     AND owner_type = 'agent'
-                     AND status NOT IN ('done','verified','discarded')",
-                    params![name],
-                    |r| r.get(0),
-                )?;
-                if open > 0 {
-                    return Ok(WriteOutcome { applied: false, events: vec![] });
-                }
-                let desc_body: String = body.chars().take(300).collect();
                 let mut row = crate::db::board_store::create_issue(
                     conn,
                     &crate::db::board_store::NewIssue {
                         title,
-                        desc: format!("**Prompt:** {desc_body}"),
+                        desc: captured_desc,
                         // In flight, not queued: see the doc comment — a
                         // `todo` mint was re-dispatched by the planner,
                         // double-running every direct prompt.
@@ -1384,6 +1381,17 @@ impl Runtime {
                         } else {
                             vec![]
                         },
+                        // Not an ask: this producer files ordinary cards, and a card
+                        // filed into needsyou without one is what AMUX-3929 is about.
+                        ask_type: None,
+                        ask_question: None,
+                        ask_unblocks: None,
+                        ask_actor: None,
+                        // AF-367: minted by the orchestrator runtime.
+                        source: Some("orchestrator".into()),
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
                     },
                     now.timestamp(),
                 )?;
@@ -1927,6 +1935,15 @@ mod adherence_tests {
                         gate: vec![],
                         depends_on: vec![],
                         tags: vec![],
+                        ask_type: None,
+                        ask_question: None,
+                        ask_unblocks: None,
+                        ask_actor: None,
+                        // AF-367: minted by the orchestrator runtime.
+                        source: Some("orchestrator".into()),
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
                     },
                     1_700_000_000,
                 )?;
@@ -2152,6 +2169,42 @@ mod adherence_tests {
         assert!(!sem.is_empty());
     }
 
+    #[tokio::test]
+    async fn delivered_informational_question_stays_message_only() {
+        let store = store();
+        let worker = seed_worker(&store, 4, "alpha");
+        let protocol = Arc::new(MockProtocol::new());
+        protocol.register(worker.clone(), AgentState::Idle);
+        let message = MessageId::from_ulid(ulid::Ulid::new());
+        seed_message(
+            &store,
+            &message,
+            "What is the difference between todo and backlog? Please answer only; do not change anything.",
+        );
+        enqueue_deliver(&store, &worker, &message, "info-k1");
+
+        runtime(store.clone(), Some(protocol.clone()), false)
+            .pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(&protocol.calls()[..], [RecordedCall::DeliverMessage { .. }]),
+            "the question still reaches the worker: {:?}",
+            protocol.calls()
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM issues"),
+            0,
+            "conversation-only answers must not consume a board id or WIP slot"
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM _amux_messages"),
+            1,
+            "the source message remains durable when no task is minted"
+        );
+    }
+
     /// AMUX-2613 E2E regression: the ledger card minted from a delivered
     /// prompt must NOT be picked up by the planner and redelivered as an
     /// ExecuteTask — pre-fix (status "todo") the next tick assigned it and
@@ -2300,33 +2353,49 @@ mod adherence_tests {
         );
     }
 
-    /// M5 guards: steering words mint nothing, and an OPEN card means the
-    /// prompt is steering the work already in flight — no duplicate card.
+    /// M5 guards: steering words mint nothing, but every durable command cards
+    /// even while other work is open. Command/message idempotency owns transport
+    /// retries; text equality is not enough to erase an intentional repeat.
     #[tokio::test]
-    async fn steering_and_open_card_prompts_mint_no_ledger_card() {
+    async fn steering_skips_but_open_work_and_repeated_commands_still_card() {
         let store = store();
         let w = seed_worker(&store, 4, "alpha");
-        let protocol = Arc::new(MockProtocol::new());
-        protocol.register(w.clone(), AgentState::Idle);
-        let rt = runtime(store.clone(), Some(protocol.clone()), false);
+        let rt = runtime(store.clone(), None, false);
 
-        // Control word: delivered, but not a task.
-        let m1 = MessageId::from_ulid(ulid::Ulid::new());
-        seed_message(&store, &m1, "continue");
-        enqueue_deliver(&store, &w, &m1, "cap-k2");
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        // Control word: retained as a message by the caller, but not a task.
+        let now = Utc::now();
+        rt.capture_prompt_card(&w, "continue", now).await.unwrap();
         assert_eq!(count(&store, "SELECT COUNT(*) FROM issues"), 0, "steering mints nothing");
 
-        // Open card: the prompt lands on the in-flight work, not a new card.
+        // Open card: a DISTINCT prompt is still distinct work.
         seed_issue(&store, "already in flight", "alpha", "doing");
-        let m2 = MessageId::from_ulid(ulid::Ulid::new());
-        seed_message(&store, &m2, "also handle the retry path in the same module please");
-        enqueue_deliver(&store, &w, &m2, "cap-k3");
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        rt.capture_prompt_card(
+            &w,
+            "also handle the retry path in the same module please",
+            now,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             count(&store, "SELECT COUNT(*) FROM issues"),
-            1,
-            "an open card absorbs steering; no duplicate mint"
+            2,
+            "an open card must not absorb a different command before the model can classify it"
+        );
+
+        // A second durable message with identical text may be intentional. The
+        // transport layer dedupes retries by message id, so capture must not add
+        // a second, capability-reducing text heuristic.
+        rt.capture_prompt_card(
+            &w,
+            "also handle the retry path in the same module please",
+            now + chrono::Duration::seconds(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM issues"),
+            3,
+            "a separate durable command must remain visible to the model"
         );
     }
 

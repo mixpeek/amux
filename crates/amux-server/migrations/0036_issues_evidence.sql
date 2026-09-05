@@ -1,0 +1,14 @@
+-- AF-321: `done` needs evidence that is distinguishable from the card's own
+-- problem statement.
+--
+-- The `done_requires_asset_link` gate (Ethan, 2026-08-17) already refuses
+-- "implemented" — but it is a SHAPE check over the whole desc, so it is
+-- satisfied by any path-, sha-, URL- or #N-shaped token anywhere in the card,
+-- including the filing itself. Measured on the live board 2026-08-29: 843 of
+-- 1372 open cards (61%) already satisfy it on their current text, with no work
+-- done. A card that names the file it intends to edit passes its own done gate
+-- before anyone touches that file.
+--
+-- Evidence therefore needs its own column. A field nobody has written yet
+-- cannot be filled by the statement of the problem.
+ALTER TABLE issues ADD COLUMN evidence TEXT;

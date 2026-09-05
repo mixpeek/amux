@@ -25,6 +25,12 @@ fn rig() -> Rig {
     // Replay round-trip exercises the event log, not the global done-link gate
     // (which has its own coverage), so pin it OFF.
     std::env::set_var("AMUX_DONE_LINK_REQUIRED", "0");
+    std::env::set_var("AMUX_DONE_EVIDENCE_REQUIRED", "0");
+    // Same reason, for the AF-317/AF-318 status gates: these rigs exercise the
+    // lifecycle state machine, and each gate has its own coverage in board_api.
+    std::env::set_var("AMUX_BLOCKED_NEEDS_WATCH", "0");
+    std::env::set_var("AMUX_NEEDSYOU_ASK_REQUIRED", "0");
+    std::env::set_var("AMUX_TODO_WIP_LIMIT", "0");
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("replay-test.db");
     let store = Arc::new(Store::open(&db_path).unwrap());
@@ -33,6 +39,7 @@ fn rig() -> Rig {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     Rig {
         app: router(state),

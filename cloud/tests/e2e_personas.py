@@ -112,6 +112,25 @@ def _evidence_for(cookie, org, worker):
     clean = re.sub(r"\x1b\[[0-9;]*m", "", hist)
     tool_calls = len(re.findall(r"⏺\s+\*?\*?(Read|Edit|Write|Bash|Grep|Glob)", clean))
     hist_lines = d.get("history_lines") if isinstance(d, dict) else 0
+    # A prompt DELIVERED but never SUBMITTED sits in the TUI's input box (`❯ ...`)
+    # with an empty history — the send reported 200, the Enter was swallowed by a
+    # boot/welcome modal, and every counter above reads 0. capital-express's
+    # compliance-audit sat like that for 10 days (AC-405); three daily WARNs said
+    # "no logs and no files" without once naming the cause, which was VISIBLE in
+    # the viewport the whole time. Read the current frame for it, so the verdict
+    # names the mechanism instead of the absence.
+    viewport = (d.get("output") or "") if isinstance(d, dict) else ""
+    vclean = re.sub(r"\x1b\[[0-9;]*m", "", viewport)
+    stuck_input = None
+    for m in re.finditer(r"^\s*❯\s+(\S.{14,})$", vclean, re.M):
+        cand = m.group(1).strip()
+        # An idle input box shows a grey placeholder (`Try "edit <filepath> to..."`)
+        # and captures can carry box-drawing runs — neither is typed text. Real
+        # stuck input is prose: mostly letters, not a Try-hint.
+        if cand.startswith('Try "') or sum(c.isalnum() for c in cand) < 10:
+            continue
+        stuck_input = cand[:80]
+        break
     files = 0
     if worker.get("dir"):
         st2, fl = gm.get(cookie, f"/api/fs/list?path={worker['dir']}", org)
@@ -120,7 +139,8 @@ def _evidence_for(cookie, org, worker):
                 if isinstance(fl.get(k), list):
                     files = len(fl[k])
                     break
-    return {"history_lines": hist_lines or 0, "tool_calls": tool_calls, "files": files}
+    return {"history_lines": hist_lines or 0, "tool_calls": tool_calls, "files": files,
+            "stuck_input": stuck_input}
 
 
 def _send_probe(cookie, org, name):
@@ -167,10 +187,15 @@ def check_env(cookie, plan, org_id, send_probe):
         res["reasons"].append(f"/api/sessions did not return a list (HTTP {st})")
         return res
     present = {s.get("name") for s in sessions}
+    # running flag by name: a recreate/restart stops every worker and rust does
+    # not restart them (the tick's own warning), so a stopped worker is a
+    # distinct failure from a stuck prompt and must not be misread as one.
+    running_by_name = {s.get("name"): bool(s.get("running")) for s in sessions}
 
     # ASSERTION 2 + per-persona: every expected worker exists and shows evidence of work.
     for w in plan["workers"]:
         p = {"name": w["name"], "present": w["name"] in present,
+             "running": running_by_name.get(w["name"], False),
              "evidence": None, "probe": None}
         if p["present"]:
             p["evidence"] = _evidence_for(cookie, org_id, w)
@@ -204,7 +229,30 @@ def check_env(cookie, plan, org_id, send_probe):
         res["reasons"].append(f"personas did not reply to a user message: {probe_fail}")
     elif no_evidence:
         res["status"] = "WARN"
-        res["reasons"].append(f"personas present but show no logs and no files: {no_evidence}")
+        # THREE distinct causes, and confusing them sends the wrong repair. A
+        # STOPPED worker (running=False) needs a start, not an Enter — a recreate
+        # stops every worker and rust does not restart them (2026-09-01: this very
+        # instrument reported "send Enter to recover" for three workers a recreate
+        # had stopped, which Enter could never have fixed). Only a RUNNING worker
+        # with an unsubmitted prompt is the send-Enter case (AC-405). The rest are
+        # genuinely quiet. Order matters: not-running is checked first so a stopped
+        # worker never reads as a stuck prompt just because its stale viewport
+        # still shows one.
+        by_name = {p["name"]: p for p in res["personas"]}
+        stopped = [n for n in no_evidence if not by_name[n].get("running")]
+        stuck = [n for n in no_evidence if n not in stopped
+                 and by_name[n]["evidence"].get("stuck_input")]
+        quiet = [n for n in no_evidence if n not in stopped and n not in stuck]
+        if stopped:
+            res["reasons"].append(
+                f"worker present but NOT RUNNING — a recreate/restart stops workers and "
+                f"rust does not restart them (POST /api/sessions/<name>/start to recover): {stopped}")
+        if stuck:
+            res["reasons"].append(
+                f"prompt delivered but never SUBMITTED — text sitting in the input box "
+                f"with empty history (send Enter to recover): {stuck}")
+        if quiet:
+            res["reasons"].append(f"personas present but show no logs and no files: {quiet}")
     else:
         res["status"] = "PASS"
     return res

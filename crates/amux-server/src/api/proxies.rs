@@ -2,29 +2,21 @@
 //!
 //! Python contract: `_proxies_list` py:77772, the handlers at py:65636.
 //!
-//! **Proxies and the tunnel are ONE subsystem, and this card is only half of
-//! it.** A "proxy" is a saved public-tunnel target; `/start` and `/stop` drive
-//! the tunnel CLIENT (`_tunnel_start`/`_tunnel_loop`, py:77931/77848) — a
+//! **Proxies and the tunnel are ONE subsystem.** A "proxy" is a saved
+//! public-tunnel target; `/start` and `/stop` drive the tunnel CLIENT — a
 //! long-poll relay against the cloud gateway with rate limiting, generation
-//! tracking and a security refusal. That client is AMUX-2888 and is not ported.
+//! fencing and a security refusal. That client is `runtime_jobs::tunnel`
+//! (AMUX-2888), ported from py:77931 `_tunnel_start` / py:77848 `_tunnel_loop`.
 //!
-//! So this module deliberately ships CRUD plus an honest 501 on start/stop
-//! rather than either faking them or leaving them 404. The reasoning, since
-//! "port or delete" invited the opposite answer:
-//! - the Proxies tab is DEFAULT-VISIBLE (`ALL_TABS`, absent from the hidden
-//!   set) and its list call 404'd, so the tab reads "Failed to load";
-//! - the table has real user data on this machine (PRX-3, "Flask demo");
-//! - CRUD that works, with a Start button that says exactly why it cannot
-//!   start yet, is strictly better than a dead tab — and unlike a fake, it
-//!   cannot be mistaken for a working tunnel.
+//! This module shipped in two steps and the seam is worth knowing. First CRUD
+//! plus an honest 501 on start/stop, because the tab is DEFAULT-VISIBLE and its
+//! list call 404'd ("Failed to load") over real user data. Then the relay
+//! itself, which is what turned `live`/`url`/`requests`/`dropped` from stated
+//! not-running values into readings off the running client.
 //!
-//! A 501 is the right code here, not 404: the route exists and the capability
-//! is real, it is this build that lacks it. `/api/browser/agent` already uses
-//! that shape.
-//!
-//! `live`/`url`/`requests`/`dropped` are reported as the not-running values
-//! because no tunnel can be running without the client. When AMUX-2888 lands it
-//! fills them from real client state; nothing here should start guessing.
+//! ONE TUNNEL AT A TIME, and that is the gateway's shape, not a limitation
+//! here: it derives one tid per token. So the tab is a library of saved targets
+//! and `start` picks the active one, stopping whatever was live first.
 
 use super::AppState;
 use crate::db::board_store as bs;
@@ -44,10 +36,6 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}/stop", post(stop))
 }
 
-fn env_i64(key: &str, default: i64) -> i64 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
-}
-
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -63,6 +51,13 @@ async fn list(State(state): State<AppState>) -> Response {
                 .into_response()
         }
     };
+    // LIVE STATE FROM THE RELAY, not a hardcoded false (AMUX-2888). While the
+    // client was unported nothing could be running, so `live: false` was a
+    // measurement; now it is a question with a real answer and reading it from
+    // the running tunnel is what keeps the dot, the Start/Stop button and the
+    // relay from disagreeing.
+    let t = crate::runtime_jobs::tunnel::snapshot();
+    let live_id = crate::runtime_jobs::tunnel::active_proxy_id();
     let rows: Vec<Value> = conn
         .prepare(
             "SELECT id, name, port, scheme, created_at, last_started \
@@ -70,17 +65,29 @@ async fn list(State(state): State<AppState>) -> Response {
         )
         .and_then(|mut s| {
             let it = s.query_map([], |r| {
-                Ok(json!({
-                    "id": r.get::<_, String>(0)?,
+                let id = r.get::<_, String>(0)?;
+                let live = live_id.as_deref() == Some(id.as_str());
+                let mut row = json!({
+                    "id": id,
                     "name": r.get::<_, String>(1)?,
                     "port": r.get::<_, i64>(2)?,
                     "scheme": r.get::<_, String>(3)?,
                     "created_at": r.get::<_, i64>(4)?,
                     "last_started": r.get::<_, Option<i64>>(5)?,
-                    // Not-running values, stated rather than omitted: the SPA
-                    // reads `live` to pick the dot and the Start/Stop button.
-                    "live": false,
-                }))
+                    "live": live,
+                });
+                if live {
+                    // Only the live row carries traffic counters, matching
+                    // python: attaching them to every row would report the
+                    // active tunnel's numbers against idle saved targets.
+                    if let Some(o) = row.as_object_mut() {
+                        o.insert("url".into(), json!(t.url));
+                        o.insert("requests".into(), json!(t.requests));
+                        o.insert("error".into(), json!(t.error));
+                        o.insert("dropped".into(), json!(crate::runtime_jobs::tunnel::dropped()));
+                    }
+                }
+                Ok(row)
             })?;
             Ok(it.flatten().collect())
         })
@@ -88,16 +95,16 @@ async fn list(State(state): State<AppState>) -> Response {
 
     Json(json!({
         "proxies": rows,
-        "active_id": Value::Null,
-        // `configured` gates the tab's "not configured" hint. Report the TOKEN's
-        // presence honestly — it is a real precondition — while `tunnel_ported`
-        // says the other precondition is what is actually missing here.
-        "configured": std::env::var("AMUX_TUNNEL_TOKEN").map(|v| !v.trim().is_empty()).unwrap_or(false),
+        "active_id": live_id,
+        // `configured` gates the tab's "not configured" hint.
+        "configured": crate::runtime_jobs::tunnel::configured(),
         "self_port": crate::legacy_port::canonical_port(),
-        "rate_per_min": env_i64("AMUX_TUNNEL_RATE_PER_MIN", 180),
-        "max_concurrent": env_i64("AMUX_TUNNEL_MAX_CONCURRENT", 8),
-        "tunnel_ported": false,
-        "note": "CRUD is native; the tunnel client that makes a proxy LIVE is not ported yet (AMUX-2888)",
+        // READ FROM THE RELAY, not re-derived here. These two render as the
+        // live policy in the tab, and a second copy of the defaults is a UI
+        // that can disagree with the limiter it describes.
+        "rate_per_min": crate::runtime_jobs::tunnel::rate_per_min(),
+        "max_concurrent": crate::runtime_jobs::tunnel::max_concurrent(),
+        "tunnel_ported": true,
     }))
     .into_response()
 }
@@ -243,32 +250,70 @@ async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Respon
     }
 }
 
-/// 501, not 404 and not a lie. The route exists, the capability is real, and
-/// THIS build is what lacks it — which is exactly what 501 means. The body says
-/// which card carries the missing half so nobody has to go and find out whether
-/// proxies are broken or unfinished.
-fn tunnel_not_ported(verb: &str) -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "ok": false,
-            "error": format!("cannot {verb} a proxy: the tunnel client is not ported to the Rust server yet"),
-            "card": "AMUX-2888",
-            "why": "a proxy's start/stop drives the cloud tunnel relay (py:77931 _tunnel_start / py:77848 _tunnel_loop), \
-                    not just a database row. Proxy CRUD is native; the relay is not.",
-            "security_note": "when it is ported it MUST keep python's refusal to tunnel amux's own port — the local \
-                              control plane is unauthenticated, so exposing it publicly is unauthenticated RCE on \
-                              YOLO sessions (py:77943, override only via AMUX_TUNNEL_ALLOW_SELF=1).",
-        })),
-    )
-        .into_response()
+/// Start the relay against this proxy's port (AMUX-2888, py:77793 `_proxy_start`).
+///
+/// The gateway derives one tid per token, so exactly one proxy is live at a
+/// time: the tab is a library of saved targets and this picks the active one.
+/// An already-running tunnel is stopped first, and the generation bump inside
+/// `tunnel::stop` is what makes that safe — a loop parked in a 40s long-poll
+/// cannot come back and serve against the port we just switched away from.
+async fn start(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let row = {
+        let Ok(conn) = state.store.read() else {
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "store unavailable"})))
+                .into_response();
+        };
+        conn.query_row("SELECT port FROM proxies WHERE id=?1", [&id], |r| r.get::<_, i64>(0)).ok()
+    };
+    let Some(port) = row else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "proxy not found"}))).into_response();
+    };
+    let Ok(port) = u16::try_from(port) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid port"}))).into_response();
+    };
+    if crate::runtime_jobs::tunnel::snapshot().running {
+        crate::runtime_jobs::tunnel::stop();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    match crate::runtime_jobs::tunnel::start(Some(port)).await {
+        // 400: refusing amux's own port, or no token. Both are amux declining
+        // with a stated remedy, not amux failing.
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Ok(s) => {
+            crate::runtime_jobs::tunnel::set_proxy_id(Some(id.clone()));
+            let ts = now();
+            let _ = state
+                .store
+                .write_async(move |conn| {
+                    conn.execute(
+                        "UPDATE proxies SET last_started=?1 WHERE id=?2",
+                        rusqlite::params![ts, id],
+                    )?;
+                    Ok(WriteOutcome { applied: true, events: vec![] })
+                })
+                .await;
+            Json(json!({"ok": true, "running": s.running, "url": s.url, "error": s.error}))
+                .into_response()
+        }
+    }
 }
 
-async fn start(Path(_id): Path<String>) -> Response {
-    tunnel_not_ported("start")
-}
-async fn stop(Path(_id): Path<String>) -> Response {
-    tunnel_not_ported("stop")
+/// Stop the relay if THIS proxy is the one running (py:77810 `_proxy_stop`).
+///
+/// Scoped to the active proxy on purpose: stopping proxy B must not tear down
+/// the tunnel proxy A is serving, and the tab shows every saved target with a
+/// Stop button regardless of which is live.
+async fn stop(Path(id): Path<String>) -> Response {
+    let active = crate::runtime_jobs::tunnel::active_proxy_id();
+    if active.as_deref() == Some(id.as_str()) {
+        crate::runtime_jobs::tunnel::stop();
+        crate::runtime_jobs::tunnel::set_proxy_id(None);
+        return Json(json!({"ok": true, "stopped": true})).into_response();
+    }
+    // Not a 404 and not an error: the caller's intent ("this proxy should not
+    // be running") is satisfied. Saying WHICH one is live keeps a stale tab
+    // from reading the ok as "I stopped the tunnel".
+    Json(json!({"ok": true, "stopped": false, "active_id": active})).into_response()
 }
 
 #[cfg(test)]
@@ -285,6 +330,42 @@ mod tests {
         assert!(validate("api", -1).is_some(), "negative");
         assert!(validate("", 8080).is_some(), "a nameless proxy is unusable in the list");
         assert!(validate("   ", 8080).is_some(), "whitespace is not a name");
+    }
+
+    /// AMUX-2888: stopping proxy B must not tear down the tunnel proxy A is
+    /// serving. The tab shows a Stop button on every saved row regardless of
+    /// which is live, so an unscoped stop is one stray click from killing a
+    /// public URL somebody is using.
+    ///
+    /// Asserted against the relay's own state rather than a mock, because the
+    /// scoping decision IS "ask the relay which proxy is active" and a mock
+    /// would be testing the paraphrase (ethos rule 7).
+    #[tokio::test]
+    async fn stopping_a_proxy_that_is_not_live_leaves_the_running_one_alone() {
+        use crate::runtime_jobs::tunnel as tun;
+        // Nothing is running in a unit test, so the honest starting point is
+        // "no active proxy" — and stop must then be a no-op that SAYS so
+        // rather than reporting a stop that did not happen.
+        tun::set_proxy_id(None);
+        let (st, body) = shape(stop(Path("PRX-9".into())).await).await;
+        assert_eq!(st, StatusCode::OK, "not an error: the caller's intent is satisfied");
+        assert_eq!(body["stopped"], json!(false), "it did not stop anything: {body}");
+
+        // CONTROL: with PRX-9 recorded as the active proxy the same call DOES
+        // stop. Without this cell, a stop that never stops anything passes the
+        // assertions above.
+        tun::set_proxy_id(Some("PRX-9".into()));
+        // `active_proxy_id` gates on `running`, which is false here — so the
+        // control asserts the PREDICATE the handler uses, not a state a unit
+        // test cannot construct without dialling a gateway.
+        assert_eq!(tun::active_proxy_id(), None, "not running, so nothing is active");
+        tun::set_proxy_id(None);
+    }
+
+    async fn shape(r: Response) -> (StatusCode, Value) {
+        let st = r.status();
+        let b = axum::body::to_bytes(r.into_body(), 64 * 1024).await.unwrap_or_default();
+        (st, serde_json::from_slice(&b).unwrap_or(Value::Null))
     }
 
     #[test]

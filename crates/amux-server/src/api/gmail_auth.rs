@@ -83,6 +83,43 @@ pub fn gmail_redirect_uri() -> String {
             )
         })
 }
+/// Whose mailbox a freshly-exchanged token can actually act on (AMUX-3839).
+///
+/// Deliberately the Gmail profile and not a userinfo lookup: the question the
+/// token file's name makes a claim about is "whose mail will amux read and send
+/// as", and this endpoint answers exactly that under a scope the flow already
+/// requires. Who clicked the consent button is a weaker fact.
+const GMAIL_PROFILE_URL: &str = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
+
+async fn granted_mailbox(
+    http: &dyn crate::integrations::email::HttpTransport,
+    access: &str,
+) -> Result<String, String> {
+    let (status, body) = http.get(GMAIL_PROFILE_URL, Some(access)).await?;
+    if status >= 400 {
+        return Err(format!("HTTP {status} from the mailbox profile"));
+    }
+    let addr = body.get("emailAddress").and_then(Value::as_str).unwrap_or("").trim();
+    if addr.is_empty() {
+        // A 200 with no address is not a match and not a mismatch. Returning
+        // Err keeps it in the "could not verify" arm, which says so, rather than
+        // comparing the requested account against an empty string and refusing.
+        return Err("the mailbox profile carried no emailAddress".into());
+    }
+    Ok(addr.to_string())
+}
+
+/// Is the granted mailbox the one that was asked for?
+///
+/// Case-insensitive, because Google addresses are. Deliberately NOT
+/// dot-normalising or stripping `+tags`: those are gmail.com delivery
+/// conveniences, they do not hold for Workspace domains, and a comparison
+/// clever enough to call two different strings equal is exactly how a real
+/// mismatch gets waved through.
+fn identity_matches(requested: &str, granted: &str) -> bool {
+    requested.trim().eq_ignore_ascii_case(granted.trim())
+}
+
 const DEFAULT_AUTH_URI: &str = "https://accounts.google.com/o/oauth2/auth";
 const PENDING_TTL_S: f64 = 3600.0;
 const HEALTH_TTL_S: u64 = 300;
@@ -197,6 +234,39 @@ fn client_config(home: &Path) -> Result<ClientConfig, String> {
 /// own OAuth flow and presence/masking only, never emitted raw.
 pub(crate) fn google_oauth_client_file(home: &Path) -> Option<(String, String)> {
     client_config(home).ok().map(|c| (c.client_id, c.client_secret))
+}
+
+/// Was a consent for this account STARTED and never completed (AMUX-3839)?
+/// Returns the age in seconds of the most recent such attempt.
+///
+/// A pending entry that is still on disk means a URL was minted and the callback
+/// never arrived to consume it: `pending_take` is single-use, so a completed
+/// flow removes its own entry. That is a DIFFERENT state from an expired refresh
+/// token, and telling them apart is the whole point of this function.
+///
+/// On 2026-08-28 an operator re-authed an account, saw the same `invalid_grant`
+/// as before, and concluded the Testing-mode 7-day expiry had bitten again. It
+/// had not. No callback had reached this server since 08-24: the redirect was
+/// upgraded to https by the browser and stopped at the self-signed cert. The
+/// error message could not express the difference, so the diagnosis went to the
+/// wrong subsystem and stayed there until someone read the request log.
+///
+/// Pure over the parsed file so the rule has cells without a filesystem.
+fn abandoned_consent_age_s(pending: &Value, account: &str, now: f64) -> Option<f64> {
+    pending
+        .as_object()?
+        .values()
+        .filter(|e| {
+            e.get("account").and_then(Value::as_str).is_some_and(|a| {
+                a.trim().eq_ignore_ascii_case(account.trim())
+            })
+        })
+        .filter_map(|e| e.get("ts").and_then(Value::as_f64))
+        // Entries older than the TTL are already dead and pruned on the next
+        // save; reporting one would point at an attempt nobody can complete.
+        .filter(|ts| now - ts < PENDING_TTL_S)
+        .map(|ts| (now - ts).max(0.0))
+        .reduce(f64::min)
 }
 
 fn pending_path(home: &Path) -> PathBuf {
@@ -314,6 +384,11 @@ pub async fn auth_url(
         urlencode(&redirect_uri),
         urlencode(&account),
     );
+    // BEFORE we write our own entry, is there an abandoned one? (AMUX-3839)
+    let abandoned = std::fs::read_to_string(pending_path(&ctx.home))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v| abandoned_consent_age_s(&v, &account, now_ts()));
     if let Err(e) = pending_save(&ctx.home, &state, &account, &verifier) {
         // Without the pending entry the callback CANNOT succeed — failing
         // loudly beats handing out a URL that dead-ends (ethos rule 3).
@@ -384,6 +459,17 @@ pub async fn auth_url(
         "url": url,
         "account": account,
         "prerequisite": oauth_prerequisite(&cfg.client_id, &redirect_uri),
+        // Present ONLY when there is one, so its absence is not a claim either
+        // way. This is the field that would have redirected 2026-08-28's
+        // diagnosis from "the token expired again" to "your callback is not
+        // arriving".
+        "previous_attempt_never_completed": abandoned.map(|age| json!({
+            "minutes_ago": (age / 60.0).round(),
+            "meaning": "a consent URL was minted for this account and no callback ever \
+                        reached this server. The token did not expire; the redirect did not \
+                        arrive. Check that the callback lands: GET /api/gmail/callback should \
+                        appear in the request log right after you approve.",
+        })),
     }))
     .into_response()
 }
@@ -522,6 +608,59 @@ pub async fn callback(
             ),
         );
     }
+    // WHOSE MAILBOX IS THIS, ACTUALLY (AMUX-3839).
+    //
+    // `account` comes from the pending state minted at /api/gmail/auth, and the
+    // token file is named after it. Nothing compared it to the identity Google
+    // consented as. `login_hint` is set, but login_hint is a HINT: a browser
+    // with several Google accounts signed in can consent as a different one, and
+    // the callback then carries `authuser=2`. Observed live 2026-08-28 on
+    // Ethan's own re-auth for esteininger21@gmail.com.
+    //
+    // The consequence is silent and total: amux acts as the wrong identity under
+    // the right filename, and every downstream consumer trusts the filename.
+    // Sending mail, reading an inbox or writing a calendar as an account the
+    // operator did not intend, with nothing anywhere able to notice.
+    //
+    // The oracle is the MAILBOX, not the sign-in. `users/me/profile` answers
+    // "whose mail can this token act on", which is exactly what the filename
+    // claims; a userinfo lookup would answer the weaker question of who clicked.
+    let granted = granted_mailbox(ctx.http.as_ref(), access).await;
+    match &granted {
+        Ok(got) if !identity_matches(&account, got) => {
+            tracing::warn!(
+                requested = %account, granted = %got,
+                "gmail callback: REFUSED — the consent was granted by a different account than \
+                 the one requested, so the token was NOT written (AMUX-3839). This is the \
+                 authuser=N case: the browser had another Google account signed in."
+            );
+            return html(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "<html><body><h2>Wrong Google account</h2>\
+                     <p>You asked to connect <b>{}</b>, but the consent was granted by \
+                     <b>{}</b>.</p>\
+                     <p>Nothing was saved. Sign out of the other accounts, or use the account \
+                     chooser to pick the right one, then run the connect again.</p>\
+                     </body></html>",
+                    html_escape(&account),
+                    html_escape(got)
+                ),
+            );
+        }
+        Ok(_) => {}
+        // THE CHECK COULD NOT RUN. Distinct from a match, and said out loud
+        // rather than folded into success (ethos rule 4). Refusing here would
+        // break every connect on a transient network blip, which is worse than
+        // the risk it guards; proceeding SILENTLY would restore the exact bug.
+        Err(e) => tracing::warn!(
+            requested = %account, error = %e,
+            "gmail callback: identity NOT verified — the mailbox lookup failed, so the token \
+             is being written on the requested name alone (AMUX-3839). If this account starts \
+             behaving as someone else, this is where it happened."
+        ),
+    }
+
     // Python's exact token-file shape — the one integrations/email.rs
     // `load_token_file` reads. The formats must be ONE.
     let tokens_dir = ctx.home.join("gmail-tokens");
@@ -534,13 +673,29 @@ pub async fn callback(
             ),
         );
     }
-    let token_file = json!({
+    let mut token_file = json!({
         "token": access,
         "refresh_token": body.get("refresh_token").cloned().unwrap_or(Value::Null),
         "token_uri": cfg.token_uri,
         "client_id": cfg.client_id,
         "client_secret": cfg.client_secret,
     });
+    // A FAIL-OPEN WRITE SELF-ANNOUNCES (amux-cloud's review of AMUX-3839).
+    //
+    // Their point, and it is right: the Err arm's safety rested entirely on a
+    // `tracing::warn!` that nothing surfaces to a consumer. A token written
+    // without an identity check was honest in server-rs.log and invisible
+    // everywhere a human or a health check looks, which is the tag-in-a-store-
+    // nobody-reads shape (ethos rule 4).
+    //
+    // Only the UNVERIFIED case is stamped. Adding `identity_verified: true` to
+    // every file would change the shape that `load_token_file` and the Python
+    // round-trip test pin, for no gain: the ordinary file staying byte-identical
+    // is what keeps the formats ONE.
+    if let Err(why) = &granted {
+        token_file["identity_unverified"] = json!(true);
+        token_file["identity_unverified_why"] = json!(why);
+    }
     if let Err(e) = std::fs::write(tokens_dir.join(format!("{account}.json")), token_file.to_string())
     {
         return html(
@@ -564,22 +719,70 @@ pub async fn callback(
 
 pub async fn accounts(Extension(ctx): Extension<Arc<GmailAuthCtx>>) -> Response {
     let accts = connected_accounts_in(&ctx.home);
+    // Bounded-concurrency health probes (AMUX-84): the previous serial
+    // for-loop did N sequential real Google `getProfile` round trips on
+    // every cache miss (account_health's TTL is 300s) -- the same N+1-shaped
+    // bug AMUX-66 already fixed for /gmail/inbox's batch_metadata. Worst
+    // measured: 24.3s across 3 connected accounts. buffered(8) matches that
+    // fix's own concurrency cap and, being `buffered` (not `buffer_unordered`),
+    // preserves `accts`' own order in the results -- same output shape as the
+    // serial loop, just not serially awaited.
+    use futures::stream::{self, StreamExt};
+    let results: Vec<(String, String)> = stream::iter(accts.iter().cloned().map(|a| {
+        let ctx = ctx.clone();
+        async move {
+            let state = account_health(&ctx, &a).await;
+            (a, state)
+        }
+    }))
+    .buffered(8)
+    .collect()
+    .await;
+
     let mut health: Map<String, Value> = Map::new();
     let mut needs_reauth: Vec<String> = Vec::new();
-    for a in &accts {
-        let state = account_health(&ctx, a).await;
+    for (a, state) in results {
         if state == "needs_reauth" {
             needs_reauth.push(a.clone());
         }
-        health.insert(a.clone(), json!(state));
+        health.insert(a, json!(state));
     }
+    // SURFACE THE FAIL-OPEN WRITES (amux-cloud's review of AMUX-3839). The
+    // callback stamps a token it could not identity-check; without this the
+    // stamp lives only in a file nobody opens, which is the defect it was added
+    // to fix rather than a fix for it.
+    let unverified: Vec<Value> = accts
+        .iter()
+        .filter_map(|a| {
+            let raw = std::fs::read_to_string(
+                ctx.home.join("gmail-tokens").join(format!("{a}.json")),
+            )
+            .ok()?;
+            let v: Value = serde_json::from_str(&raw).ok()?;
+            v.get("identity_unverified")
+                .and_then(Value::as_bool)
+                .filter(|b| *b)
+                .map(|_| {
+                    json!({
+                        "account": a,
+                        "why": v.get("identity_unverified_why").cloned().unwrap_or(Value::Null),
+                    })
+                })
+        })
+        .collect();
     Json(json!({
         "accounts": accts,
         "health": health,
         "needs_reauth": needs_reauth,
+        // Empty is a real answer here, not a missing one: every account's token
+        // file was read, so [] means all of them carried a verified identity.
+        "identity_unverified": unverified,
         "note": "`accounts` = a token file exists. `health` = the token still works. \
                  A revoked token stays in `accounts` and fails every read, so check \
-                 `health` before concluding a mailbox is usable.",
+                 `health` before concluding a mailbox is usable. `identity_unverified` \
+                 lists accounts whose token was stored WITHOUT confirming which Google \
+                 account granted it (the mailbox lookup failed at consent time) — those \
+                 may be acting as someone else and should be reconnected.",
         "reauth": "GET /api/gmail/auth?account=<email>, open the url, approve",
     }))
     .into_response()
@@ -839,6 +1042,7 @@ mod tests {
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
                 auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
             dir,
         )
@@ -943,16 +1147,248 @@ mod tests {
         assert!(v["error"].as_str().unwrap().contains("client_secret"), "{v}");
     }
 
+    /// AMUX-3839. "Your token expired" and "your consent never came back" are
+    /// different states with different fixes, and on 2026-08-28 the second wore
+    /// the first's error for hours.
+    #[test]
+    fn an_abandoned_consent_is_told_apart_from_an_expired_token() {
+        let now = 1_000_000.0;
+        let pending = json!({
+            "st1": {"account": "hello@amux.io", "verifier": "v", "ts": now - 600.0},
+            "st2": {"account": "hello@amux.io", "verifier": "v", "ts": now - 120.0},
+            "st3": {"account": "other@amux.io", "verifier": "v", "ts": now - 60.0},
+            "st4": {"account": "hello@amux.io", "verifier": "v", "ts": now - 7200.0},
+        });
+        // The MOST RECENT live attempt for this account, in seconds.
+        assert_eq!(abandoned_consent_age_s(&pending, "hello@amux.io", now), Some(120.0));
+        assert!(abandoned_consent_age_s(&pending, "HELLO@AMUX.IO", now).is_some(), "case");
+        // ANOTHER ACCOUNT'S abandoned consent is not this account's problem.
+        assert_eq!(abandoned_consent_age_s(&pending, "other@amux.io", now), Some(60.0));
+        // NOBODY'S. An account with no pending entry gets no claim made about it.
+        assert_eq!(abandoned_consent_age_s(&pending, "nobody@amux.io", now), None);
+        // PAST THE TTL IS NOT AN ATTEMPT ANYONE CAN COMPLETE. st4 is 2h old and
+        // must not be reported; without this the field would point at a dead
+        // entry the next save prunes.
+        let only_old = json!({"st4": {"account": "z@amux.io", "ts": now - 7200.0}});
+        assert_eq!(abandoned_consent_age_s(&only_old, "z@amux.io", now), None);
+        // A COMPLETED flow removes its own entry (pending_take is single-use),
+        // so an empty file means nothing is outstanding.
+        assert_eq!(abandoned_consent_age_s(&json!({}), "hello@amux.io", now), None);
+        assert_eq!(abandoned_consent_age_s(&json!("not an object"), "a@b.c", now), None);
+    }
+
+    /// The shipped path: the field appears when a mint was abandoned and is
+    /// ABSENT otherwise, so its absence is not a claim either way.
     #[tokio::test]
-    async fn callback_exchanges_code_and_writes_the_one_token_format() {
+    async fn the_auth_mint_reports_a_previous_consent_that_never_came_back() {
         let home = home_with_client_config();
+        let http = MockHttp::new(vec![]);
+        let (app, _d) = app_with(http.clone(), home.path());
+
+        // FIRST mint: nothing outstanding yet, so no claim is made.
+        let (_, v1) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        assert!(
+            v1.get("previous_attempt_never_completed").is_none_or(Value::is_null),
+            "a first mint must not invent an abandoned attempt: {v1}"
+        );
+
+        // SECOND mint with no callback in between: the first one is abandoned.
+        let (_, v2) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        let note = &v2["previous_attempt_never_completed"];
+        assert!(!note.is_null(), "the abandoned first mint must be reported: {v2}");
+        assert!(
+            note["meaning"].as_str().unwrap_or_default().contains("did not expire"),
+            "and it must name the WRONG conclusion it exists to prevent: {note}"
+        );
+
+        // A DIFFERENT ACCOUNT is unaffected — the control that a blanket
+        // "something is pending" flag would fail.
+        let (_, v3) = send_json(&app, "GET", "/api/gmail/auth?account=other%40amux.io").await;
+        assert!(
+            v3.get("previous_attempt_never_completed").is_none_or(Value::is_null),
+            "another account's abandoned consent is not this one's: {v3}"
+        );
+    }
+
+    /// amux-cloud's review of AMUX-3839: a fail-open write must SELF-ANNOUNCE.
+    /// Their point was that the Err arm's safety rested on a `tracing::warn!`
+    /// nothing surfaces, so a token stored without an identity check was honest
+    /// in the log and invisible everywhere a human or a health check looks.
+    #[tokio::test]
+    async fn a_token_stored_without_an_identity_check_says_so_where_someone_looks() {
+        let home = home_with_client_config();
+        // No profile answer scripted: the lookup fails, so the write is fail-open.
         let http = MockHttp::new(vec![(
             "FORM",
             "oauth2.googleapis.com/token",
             200,
-            json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT",
-                     "expires_in": 3599, "scope": "openid" }),
+            json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT" }),
         )]);
+        let (app, _d) = app_with(http.clone(), home.path());
+        let (_, v) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        let state = qparam(v["url"].as_str().unwrap(), "state").unwrap().to_string();
+        let (st, _) =
+            send(&app, "GET", &format!("/api/gmail/callback?code=authcode123&state={state}")).await;
+        assert_eq!(st, StatusCode::OK);
+
+        // ON DISK.
+        let tok: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("gmail-tokens").join(format!("{ACCT}.json")))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tok["identity_unverified"], json!(true), "the file must carry the stamp: {tok}");
+        assert!(tok["identity_unverified_why"].is_string(), "with the reason: {tok}");
+
+        // AND WHERE SOMEONE LOOKS. The stamp existing only in the file would be
+        // the same defect one layer down.
+        let (_, acc) = send_json(&app, "GET", "/api/gmail/accounts").await;
+        let flagged = acc["identity_unverified"].as_array().expect("array");
+        assert_eq!(flagged.len(), 1, "the account must be listed: {acc}");
+        assert_eq!(flagged[0]["account"], json!(ACCT));
+    }
+
+    /// THE CONTROL for the test above: a VERIFIED write carries no stamp and the
+    /// accounts list is empty. Without this, a version that stamped every token
+    /// would pass, and the field would flag everything and mean nothing.
+    #[tokio::test]
+    async fn a_verified_token_carries_no_stamp_and_the_list_stays_empty() {
+        let home = home_with_client_config();
+        let http = MockHttp::new(vec![
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT" }),
+            ),
+            ("GET", "users/me/profile", 200, json!({ "emailAddress": ACCT })),
+        ]);
+        let (app, _d) = app_with(http.clone(), home.path());
+        let (_, v) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        let state = qparam(v["url"].as_str().unwrap(), "state").unwrap().to_string();
+        send(&app, "GET", &format!("/api/gmail/callback?code=authcode123&state={state}")).await;
+
+        let tok: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("gmail-tokens").join(format!("{ACCT}.json")))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(tok.get("identity_unverified").is_none(), "a verified write is unstamped: {tok}");
+        // And the ordinary file shape stays byte-identical to what
+        // `load_token_file` and the Python round-trip pin.
+        assert_eq!(tok.as_object().unwrap().len(), 5, "no extra keys on the happy path: {tok}");
+
+        let (_, acc) = send_json(&app, "GET", "/api/gmail/accounts").await;
+        assert_eq!(
+            acc["identity_unverified"].as_array().map(Vec::len),
+            Some(0),
+            "nothing to flag: {acc}"
+        );
+    }
+
+    /// AMUX-3839. The comparison, on its own, before the flow around it.
+    #[test]
+    fn the_identity_comparison_is_case_insensitive_and_nothing_cleverer() {
+        assert!(identity_matches("hello@amux.io", "hello@amux.io"));
+        assert!(identity_matches("Hello@Amux.IO", "hello@amux.io"), "addresses are case-insensitive");
+        assert!(identity_matches(" hello@amux.io ", "hello@amux.io"), "surrounding space is noise");
+        // THE CASE THAT MATTERS: two different accounts are two different
+        // accounts. This is the authuser=N case.
+        assert!(!identity_matches("esteininger21@gmail.com", "ethan@mixpeek.com"));
+        // AND THE CLEVERNESS THAT WOULD WAVE A MISMATCH THROUGH. Dot-insensitivity
+        // and +tag stripping are gmail.com delivery conveniences that do not hold
+        // for Workspace domains, so they must NOT match here.
+        assert!(!identity_matches("e.steininger21@gmail.com", "esteininger21@gmail.com"));
+        assert!(!identity_matches("hello+x@amux.io", "hello@amux.io"));
+        assert!(!identity_matches("", "hello@amux.io"), "an empty request matches nothing");
+    }
+
+    /// AMUX-3839, the shipped path: a consent granted by a DIFFERENT account
+    /// writes nothing and says whose it was.
+    ///
+    /// Observed live 2026-08-28: Ethan's callback for esteininger21@gmail.com
+    /// came back with `authuser=2`, meaning the third Google account in his
+    /// browser consented. `login_hint` is a hint, not a constraint, so before
+    /// this the token would have been written under the requested filename and
+    /// amux would have acted as the wrong identity with nothing able to notice.
+    #[tokio::test]
+    async fn a_consent_from_the_wrong_google_account_is_refused_and_nothing_is_written() {
+        let home = home_with_client_config();
+        let http = MockHttp::new(vec![
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT" }),
+            ),
+            // Google consented as somebody else.
+            ("GET", "users/me/profile", 200, json!({ "emailAddress": "someone.else@gmail.com" })),
+        ]);
+        let (app, _d) = app_with(http.clone(), home.path());
+        let (_, v) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        let state = qparam(v["url"].as_str().unwrap(), "state").unwrap().to_string();
+
+        let (st, page) =
+            send(&app, "GET", &format!("/api/gmail/callback?code=authcode123&state={state}")).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{page}");
+        assert!(page.contains("someone.else@gmail.com"), "it names who DID consent: {page}");
+        assert!(page.contains(ACCT), "and who was asked for: {page}");
+        assert!(!page.contains("connected!"), "it must not report success: {page}");
+        // THE LOAD-BEARING ASSERTION. A version that showed the warning and
+        // wrote the file anyway would pass every assertion above.
+        assert!(
+            !home.path().join("gmail-tokens").join(format!("{ACCT}.json")).exists(),
+            "a refused consent must leave no token behind"
+        );
+    }
+
+    /// AMUX-3839. A lookup that cannot answer is NOT a mismatch: it writes the
+    /// token, because refusing on a transient network blip would break every
+    /// connect, and that is worse than the risk it guards.
+    ///
+    /// The control is the test above. If this arm ever swallowed a real
+    /// mismatch, that test goes red — which is the only reason this fail-open
+    /// is defensible.
+    #[tokio::test]
+    async fn an_unanswerable_identity_check_still_connects_rather_than_blocking_everyone() {
+        let home = home_with_client_config();
+        // No profile answer scripted at all: the mock errors, exactly like a
+        // network failure.
+        let http = MockHttp::new(vec![(
+            "FORM",
+            "oauth2.googleapis.com/token",
+            200,
+            json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT" }),
+        )]);
+        let (app, _d) = app_with(http.clone(), home.path());
+        let (_, v) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        let state = qparam(v["url"].as_str().unwrap(), "state").unwrap().to_string();
+        let (st, page) =
+            send(&app, "GET", &format!("/api/gmail/callback?code=authcode123&state={state}")).await;
+        assert_eq!(st, StatusCode::OK, "{page}");
+        assert!(
+            home.path().join("gmail-tokens").join(format!("{ACCT}.json")).exists(),
+            "a transient lookup failure must not block the connect"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_exchanges_code_and_writes_the_one_token_format() {
+        let home = home_with_client_config();
+        let http = MockHttp::new(vec![
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT",
+                         "expires_in": 3599, "scope": "openid" }),
+            ),
+            // The identity check (AMUX-3839). Scripted so this test exercises
+            // the VERIFIED path; without it the callback falls into the
+            // could-not-verify arm and the test would no longer be able to tell
+            // the two apart.
+            ("GET", "users/me/profile", 200, json!({ "emailAddress": ACCT })),
+        ]);
         let (app, _d) = app_with(http.clone(), home.path());
 
         // Mint the URL (writes pending), then hit the callback like Google's
@@ -1106,6 +1542,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: Some("SECRET_BEARER".into()),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let app = crate::api::router(state);
 

@@ -170,7 +170,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
      (AMUX-3510). Global strip so a pending approval is visible on every tab;
      the approve POST comes from this browser (no worker origin), which is
      exactly what the gate defines as the human context. -->
-<div id="email-approvals-banner" style="display:none;background:#7c2d12;border-bottom:1px solid #f97316;color:#ffedd5;padding:8px 16px;font-size:0.84rem;z-index:200;position:relative;"></div>
+<!-- z-index 90 is DELIBERATE and must stay under 100 (AF-390). This is an
+     in-flow strip at the top of the document; .overlay (peek) is fixed at
+     z-index 100 and #board-detail-overlay at 150, both in the root stacking
+     context, so at 200 this painted OVER them. It occupies the same screen
+     band as the overlay, and once the strip grew past the overlay tab bar it
+     swallowed clicks on #peek-tab-customize: measured with elementFromPoint,
+     banner 246px, button at y=145, hit = a banner DIV. 10 golden e2e
+     scenarios red. AMUX-3997 is what made it grow, by putting grants in the
+     same strip as email approvals.
+     "Visible on every tab" still holds; an overlay is not a tab. If it must
+     show OVER an overlay, raising this is the wrong fix -- the overlays have
+     to start BELOW the banner instead of under it. -->
+<div id="email-approvals-banner" style="display:none;background:#7c2d12;border-bottom:1px solid #f97316;color:#ffedd5;padding:8px 16px;font-size:0.84rem;z-index:90;position:relative;"></div>
 <div id="chrome-tabs-bar" class="chrome-tabs-bar"></div>
 <div id="chrome-tab-frames" class="chrome-tab-frames"></div>
 <div class="header-row">
@@ -282,7 +294,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 50%</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 15% remaining</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">YOLO by default for new workers</span>
             <label class="theme-toggle">
@@ -291,6 +303,24 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </label>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Every new worker starts in YOLO mode (skips permission prompts). Default OFF. You can still toggle YOLO per worker from its &#x22EF; menu.</div>
+          <!-- AMUX-4018: the fleet-wide cross-group default. Per-worker lives on
+               the card menu; this is the "everyone, unless overridden" layer. -->
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
+            <span style="font-size:0.85rem;">Workers may message across groups</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="crossgroup-default-checkbox" onchange="toggleCrossGroupDefault(this.checked)" checked>
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Default ON: workers can discover and message every non-isolated peer without per-message approval. A worker/group/global configuration may opt out; isolated raw workers stay unreachable.</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
+            <span style="font-size:0.85rem;">Auto-drain backlog for all workers</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="board-drain-default-checkbox" onchange="toggleBoardDrainDefault(this.checked)" checked>
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Default ON: when To Do is empty, promote the oldest eligible Backlog card and keep driving it. Human-owned, triggered, epic, watch, and tripwire cards remain parked; a group or worker configuration can opt out.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
             <label class="theme-toggle">
@@ -328,6 +358,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <option value="haiku">haiku</option>
             <option value="claude-opus-5">claude-opus-5</option>
             <option value="claude-opus-5[1m]">claude-opus-5 [1M]</option>
+            <option value="claude-fable-5-1">claude-fable-5-1</option>
             <option value="claude-fable-5">claude-fable-5</option>
             <option value="claude-opus-4-8">claude-opus-4-8</option>
             <option value="claude-opus-4-8[1m]">claude-opus-4-8 [1M]</option>
@@ -527,6 +558,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-files" onclick="switchView('files')"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
   <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
+  <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-logs" onclick="switchView('logs')"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span></button>
   <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
@@ -604,6 +636,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button id="bv-list" class="bv-btn" onclick="setBoardView('list')" title="Dense list grouped by status">&#x2630;</button>
         <button id="bv-session" class="bv-btn" onclick="setBoardView('worker')" title="Group by worker">&#x25A4;</button>
       <button id="bv-status" class="bv-btn" onclick="setBoardView('status')" title="Group by status">&#x2630;</button>
+    </div>
+    <!-- Export the CURRENT view. Reuses .board-view-toggle so it inherits the
+         group styling and the 44px mobile touch targets already tuned for it,
+         rather than introducing a second control shape in the same toolbar. -->
+    <div class="board-view-toggle" id="board-export">
+      <button class="bv-btn" onclick="exportBoard('md')" title="Export the issues currently shown (filters applied) as Markdown">MD</button>
+      <button class="bv-btn" onclick="exportBoard('json')" title="Export the issues currently shown (filters applied) as JSON">JSON</button>
+    </div>
+    <!-- Nudges toggle — sets CC_STANDING_ORDERS at global/group/worker scope -->
+    <div class="board-view-toggle" style="position:relative;">
+      <button class="bv-btn" id="nudges-btn" onclick="_nudgesTogglePanel(event)" title="Enable or disable board nudges fleet-wide or per scope">Nudges</button>
+      <div id="nudges-panel" style="display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;min-width:220px;box-shadow:0 4px 16px rgba(0,0,0,0.25);font-size:0.78rem;"></div>
     </div>
   </div>
   <div class="board-views" id="board-views"></div>
@@ -880,6 +924,27 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<div id="email-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
+  <div style="padding:12px 16px;">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <div style="font-size:1.05rem;font-weight:700;">Email</div>
+      <button class="btn" onclick="_emailLoad()">Refresh</button>
+      <button class="btn" onclick="_emailThemesRefresh(this)" title="Re-infer what matters to you from your recent messages to amux">Re-learn priorities</button>
+    </div>
+    <div style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
+      Ranked by what amux infers you care about, learned from the messages you send it and
+      recomputed periodically with the <b>Meta-task model</b> from Settings. Scoring itself is
+      arithmetic over those themes, so opening this costs nothing.
+    </div>
+    <!-- The inference's own provenance, beside the list rather than implied by
+         it: an all-zero ranking means something different when the themes have
+         never been computed. -->
+    <div id="email-themes" class="conn-origin"></div>
+    <div id="email-subtabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;"></div>
+    <div id="email-folders" style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;"></div>
+    <div id="email-list"></div>
+  </div>
+</div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div style="max-width:760px;width:100%;margin:0 auto;padding:16px 16px 40px;">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
@@ -891,6 +956,58 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       values are written to <code>~/.amux/server.env</code> and never shown again. Adding a new connector is one registry row.
     </div>
     <div id="connectors-accounts"></div>
+    <!-- AMUX-3993: declare a connector without a rebuild. The registry is a const
+         table in connectors.rs; adding a row there needs a commit and a deploy
+         before a key can be pasted. This form writes the DEFINITION (names only)
+         and then sets scope through the existing /api/scope capability. -->
+    <div class="conn-add">
+      <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()">＋ Add connector</button>
+      <div id="conn-add-form" style="display:none;margin-top:10px;">
+        <div class="conn-add-grid">
+          <label>Name <input id="conn-new-label" placeholder="Linear"></label>
+          <label>Id <input id="conn-new-id" placeholder="linear"></label>
+          <label>Kind
+            <select id="conn-new-kind" onchange="_connAddKind()">
+              <option value="api_key">API key</option>
+              <option value="oauth2">OAuth2</option>
+            </select>
+          </label>
+          <label>Scope
+            <select id="conn-new-scope-level" onchange="_connAddScope()">
+              <option value="global" selected>Global (all workers)</option>
+              <option value="group">Group</option>
+              <option value="worker">Worker</option>
+            </select>
+          </label>
+          <label id="conn-new-scope-name-wrap" style="display:none;">Group / worker
+            <input id="conn-new-scope-name" placeholder="amux">
+          </label>
+        </div>
+        <div class="conn-add-grid" id="conn-new-apikey">
+          <label>Env var <input id="conn-new-key-env" placeholder="LINEAR_API_KEY"></label>
+          <label>Test URL (optional) <input id="conn-new-test-url" placeholder="https://api.linear.app/graphql"></label>
+        </div>
+        <div class="conn-add-grid" id="conn-new-oauth" style="display:none;">
+          <label>Client id env <input id="conn-new-cid-env" placeholder="LINEAR_CLIENT_ID"></label>
+          <label>Client secret env <input id="conn-new-csec-env" placeholder="LINEAR_CLIENT_SECRET"></label>
+          <label>Authorize URL <input id="conn-new-auth-url" placeholder="https://linear.app/oauth/authorize"></label>
+          <label>Token URL <input id="conn-new-token-url" placeholder="https://api.linear.app/oauth/token"></label>
+          <label>Scopes <input id="conn-new-scopes" placeholder="read,write"></label>
+        </div>
+        <div class="conn-add-grid">
+          <label>Setup note (optional) <input id="conn-new-note" placeholder="Create the key under Settings → API"></label>
+          <label>Docs URL (optional) <input id="conn-new-docs" placeholder="https://developers.linear.app"></label>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+          <button class="btn" onclick="_connCreate()">Create</button>
+          <span id="conn-add-msg" class="dim"></span>
+        </div>
+        <div class="dim" style="margin-top:6px;font-size:.85em;">
+          Names only — no secret is entered here. After creating, paste the value in the
+          connector's own row; it goes to <code>~/.amux/server.env</code> and is never shown again.
+        </div>
+      </div>
+    </div>
     <div id="connectors-list"></div>
   </div>
 </div>
@@ -1382,6 +1499,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="bw-btn primary" onclick="_bwGo()">Go</button>
     <button id="bw-live-btn" class="bw-btn" onclick="_bwToggleLive()" title="Live auto-refresh">&#9658; Live</button>
     <button class="bw-btn" onclick="_bwScreenshot()" title="Snapshot">&#128247;</button>
+    <button class="bw-btn" onclick="_bwIdentify()" title="AF-496 — amux opens a SECOND Chrome beside your own and they look identical. This raises the amux one and draws a blue bar across it naming its profile.">&#128269; Which window?</button>
     <button class="bw-btn" onclick="_bwNewProfile()" title="Create a profile and sign in to it">&#43; Profile</button>
     <button class="bw-btn" onclick="_bwSaveProfile()" title="Register current site to a profile">&#128190; Save</button>
   </div>
@@ -1782,24 +1900,31 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn" onclick="closeBoardDetail()">&#x2190; Back</button>
       <span id="bd-key" class="board-detail-key" onclick="_bdCopyLink()" title="Copy link to this card"></span>
     </div>
-    <button class="btn" onclick="boardDetailDelete()" style="color:var(--red);border-color:rgba(248,81,73,0.3);">Delete</button>
+    <button id="bd-delete" class="btn" onclick="boardDetailDelete()" style="display:none;color:var(--red);border-color:rgba(248,81,73,0.3);">Delete</button>
   </div>
   <div class="board-detail-body">
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <div id="bd-status-banner" class="bd-status-banner" style="display:none;"></div>
     <div class="board-detail-status-row" id="bd-status-row"></div>
-    <div class="board-detail-row" id="bd-session-row">
+    <div class="board-detail-tabs">
+      <button class="board-detail-tab active" id="bd-tab-preview" onclick="boardDetailTab('preview')">Details</button>
+      <button class="board-detail-tab" id="bd-tab-history" onclick="boardDetailTab('history')">Worker actions<span id="bd-hist-n" class="bd-hist-n"></span></button>
+      <button class="board-detail-tab" id="bd-tab-edit" onclick="boardDetailTab('edit')">Edit</button>
+    </div>
+    <div class="board-detail-meta" id="bd-meta"></div>
+    <div id="bd-edit-fields" style="display:none;">
+      <div class="board-detail-row" id="bd-session-row">
       <span style="font-size:0.78rem;color:var(--dim);">Worker:</span>
       <select id="bd-session" class="board-detail-session-select"></select>
         <button id="bd-goto-session" class="btn" style="display:none;flex:0 0 auto;min-height:44px;font-size:0.78rem;" title="Open this worker's live progress, searched to this card">&#x2192; worker</button>
 
-    </div>
-    <div class="board-detail-row">
+      </div>
+      <div class="board-detail-row">
       <span style="font-size:0.78rem;color:var(--dim);">Due:</span>
       <input type="date" id="bd-due" class="board-detail-session-select amux-dp" style="flex:1;cursor:pointer;">
       <input type="time" id="bd-due-time" class="board-detail-session-select" style="width:110px;cursor:pointer;" title="Time (optional — leave blank for all-day)">
-    </div>
-    <div class="board-detail-row" style="align-items:flex-start;">
+      </div>
+      <div class="board-detail-row" style="align-items:flex-start;">
       <span style="font-size:0.78rem;color:var(--dim);padding-top:7px;">Groups:</span>
       <div style="flex:1;">
         <div class="be-tag-wrap" id="bd-tag-wrap" onclick="document.getElementById('bd-tag-input').focus()">
@@ -1810,26 +1935,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
         <div id="bd-tag-suggestions" class="be-tag-suggestions"></div>
       </div>
-    </div>
-    <div class="board-detail-row" style="align-items:flex-start;">
-      <span style="font-size:0.78rem;color:var(--dim);padding-top:7px;">Gate:</span>
+      </div>
+      <div class="board-detail-row" style="align-items:flex-start;">
+      <span style="font-size:0.78rem;color:var(--dim);padding-top:7px;">Gate override:</span>
       <div style="flex:1;">
         <textarea id="bd-gate" class="board-detail-desc-input" style="min-height:56px;resize:vertical;" placeholder="Gate override — one criterion per line. Leave blank to use the status's default gate."></textarea>
       </div>
-    </div>
-    <div class="board-detail-tabs">
-      <button class="board-detail-tab" id="bd-tab-edit" onclick="boardDetailTab('edit')">Edit</button>
-      <button class="board-detail-tab active" id="bd-tab-preview" onclick="boardDetailTab('preview')">Preview</button>
-      <button class="board-detail-tab" id="bd-tab-history" onclick="boardDetailTab('history')">History<span id="bd-hist-n" class="bd-hist-n"></span></button>
-      <button class="board-detail-tab" id="bd-tab-lineage" onclick="boardDetailTab('lineage')">Lineage</button>
+      </div>
     </div>
     <textarea id="bd-desc" class="board-detail-desc-input" placeholder="Add notes, description, or context... (supports Markdown)"></textarea>
     <div id="bd-log" class="board-detail-log" style="display:none"></div>
-    <div id="bd-lineage" class="board-detail-lineage" style="display:none"></div>
     <div id="bd-preview" class="board-detail-preview md-content" style="display:none;"></div>
-    <div class="board-detail-meta" id="bd-meta"></div>
   </div>
-  <div class="board-detail-footer">
+  <div id="bd-edit-footer" class="board-detail-footer" style="display:none;">
     <span id="bd-save-status" style="font-size:0.78rem;color:var(--dim);"></span>
     <button class="btn primary" onclick="boardDetailSave()">Save</button>
   </div>
@@ -2072,11 +2190,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="peek-nav-btn" onclick="peekMsgNext()" title="Next message">&#x2193;</button>
       </div>
       <div class="peek-more-wrap">
-        <button class="btn" onclick="togglePeekMoreMenu()" id="peek-more-btn" title="More options">&#x22EE;</button>
-        <div class="peek-more-dropdown" id="peek-more-dropdown">
-          <div class="peek-more-item" id="peek-split-toggle" onclick="togglePeekMoreMenu();togglePeekSplit()"><span class="mi">&#x1F4C2;</span> File browser</div>
-          <div class="peek-more-item" id="peek-focus-btn" onclick="togglePeekMoreMenu();togglePeekFocus()"><span class="mi">&#x25B4;</span> Focus mode</div>
-        </div>
+        <button class="btn" onclick="togglePeekMoreMenu()" id="peek-worker-menu-btn" title="Worker actions">&#x22EE;</button>
+        <div class="peek-more-dropdown" id="peek-more-dropdown" role="menu"></div>
       </div>
       <button class="btn" id="peek-close-btn" onclick="closePeek()" title="Close" style="font-size:1.1rem;line-height:1;padding:4px 8px;">&#x2715;</button>
     </div>
@@ -2093,7 +2208,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')"><span class="tab-ico">⇉</span><span class="tab-lbl">Steering</span><span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')"><span class="tab-ico">⏱</span><span class="tab-lbl">Schedules</span><span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
-    <button class="peek-tab" id="peek-tab-scope" onclick="setPeekTab('scope')" title="What this worker operates under, and which scope layer set it"><span class="tab-ico">&#9707;</span><span class="tab-lbl">Scope</span></button>
+    <button class="peek-tab" id="peek-tab-scope" onclick="setPeekTab('scope')" title="Edit this worker's configuration and see which layer supplies each value"><span class="tab-ico">&#9707;</span><span class="tab-lbl">Configurations</span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this worker"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span><span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
     <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span><span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
     <button class="peek-tab" id="peek-tab-readalouds" onclick="setPeekTab('readalouds')" title="Past read-alouds — replay any; auto-clears after 30 days"><span class="tab-ico">&#x1F50A;</span><span class="tab-lbl">Read alouds</span><span class="peek-tab-count" id="peek-tab-readalouds-count"></span></button>
@@ -2114,7 +2229,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Working directory bar -->
   <div class="peek-dir-bar">
     <span style="flex-shrink:0;opacity:0.6;">&#x1F4C1;</span>
-    <span id="peek-dir-text" onclick="peekSessionDir&&openExplore(peekSessionDir,peekSession)" title="Browse directory" style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--dim);text-underline-offset:2px;"></span>
+    <span id="peek-dir-text" onclick="peekSession&&_browseWorkerFiles(peekSession,'peek-directory')" title="Browse directory" style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--dim);text-underline-offset:2px;"></span>
     <span id="peek-dir-branch" class="peek-dir-branch" style="display:none;"></span>
     <span class="card-dir-edit" onclick="peekSessionDir&&_copyFileDeeplink(peekSessionDir)" title="Copy link to this directory" style="opacity:0.6;font-size:0.85rem;">&#x1F517;</span>
     <span class="card-dir-edit" id="peek-dir-edit" onclick="editField(peekSession,'dir',peekSessionDir)" title="Change directory">&#x270E;</span>
@@ -2181,7 +2296,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <input type="file" id="peek-file-input" multiple
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <div class="peek-more-wrap">
-          <button class="peek-attach-btn" id="peek-more-btn" title="Attach / history" onclick="_togglePeekMore(event)">&#x22EE;</button>
+          <button class="peek-attach-btn" id="peek-composer-more-btn" title="Attach / history" onclick="_togglePeekMore(event)">&#x22EE;</button>
           <div class="peek-more-menu" id="peek-more-menu">
             <button type="button" onclick="_peekMoreClose();document.getElementById('peek-file-input').click()">&#128206; Attach file</button>
             <button type="button" onclick="_peekMoreClose();openCmdHistoryModal(peekSession||'')">&#x1F551; Message history</button>
@@ -2190,6 +2305,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <button type="button" onclick="_peekMoreClose();setPeekTab('dictation')">&#128220; Dictation history</button>
             <button type="button" onclick="_peekMoreClose();_readLatestMessage(peekSession)" title="Read the worker's most recent full message aloud">&#x1F50A; Read aloud latest</button>
             <button type="button" onclick="_peekMoreClose();setPeekTab('readalouds')">&#x1F50A; Read-aloud history</button>
+            <!-- Last, and separated: the only DESTRUCTIVE entry in this menu.
+                 Everything above opens something; this throws work away, so it
+                 does not sit where a thumb lands by accident reaching for
+                 "Attach file" at the top. -->
+            <button type="button" class="peek-more-danger" onclick="_peekMoreClose();_peekClearInput()" title="Clear the composer: text, saved draft, and any staged attachments">&#x1F5D1; Clear input</button>
           </div>
           <!-- Compact recording popup: live volume bars + timer, right above the
                composer. Stop → transcribe → text lands in the input. -->
@@ -2298,6 +2418,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </div>
       <button id="piv-scope" class="btn" style="flex:0 0 auto;font-size:0.72rem;padding:4px 9px;" onclick="togglePeekIssuesAll()" title="Toggle between this worker's issues and all workers'">This worker</button>
       <span id="peek-issues-count" style="flex:0 0 auto;font-size:0.78rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
+      <!-- Export THIS worker's board, FULL descriptions, straight from the
+           server (AMUX-3868). Not the main Board tab's client-side export:
+           that one can only carry desc_head, because GET /api/board never
+           sends desc. Honours the "This worker / All workers" toggle above.
+           flex:0 0 auto like every other control here, so it wraps below 600px
+           rather than squeezing the search input. -->
+      <div class="board-view-toggle" id="peek-board-export" style="flex:0 0 auto;">
+        <button class="bv-btn" onclick="exportPeekBoard('md')" title="Export this worker's board as Markdown, with complete descriptions">MD</button>
+        <button class="bv-btn" onclick="exportPeekBoard('json')" title="Export this worker's board as JSON, with complete descriptions">JSON</button>
+      </div>
       <button id="piv-filter" class="btn pbt-compact" onclick="_bfOpenMenu(event,'peek')" title="Add a filter" style="flex:0 0 auto;font-size:0.72rem;padding:4px 9px;"><span class="pbt-text">+ Filter</span><span class="pbt-ico" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></span></button>
       <span class="board-search-wrap" style="flex:1 1 160px;min-width:0;display:flex;position:relative;">
         <input id="peek-issues-search" class="search-input" type="text" style="width:100%;min-width:0;"
@@ -2514,6 +2644,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <option value="haiku">haiku</option>
       <option value="claude-opus-5">claude-opus-5</option>
       <option value="claude-opus-5[1m]">claude-opus-5 [1M]</option>
+      <option value="claude-fable-5-1">claude-fable-5-1</option>
       <option value="claude-fable-5">claude-fable-5</option>
       <option value="claude-opus-4-8">claude-opus-4-8</option>
       <option value="claude-opus-4-8[1m]">claude-opus-4-8 [1M]</option>
@@ -2765,7 +2896,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <!-- Confirm / alert modal -->
-<!-- Scope editor: the REAL editor UX for a group/global capability (AMUX-2436).
+<!-- Configuration editor: one editor UX at global, group, and worker level (AMUX-2436).
      Same shape as the peek Memory panel — full-height textarea, Preview, Save —
      rather than the cramped inline box the tiles used to open. env and gates get
      a real editor here for the first time; before, the panel said "edited where

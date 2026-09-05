@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# guard-features: AMUX-2946
+# guard-features: AMUX-2946 AF-342 AF-414
 # (Drift token for install-hooks.sh — see append-only-push-guard's header for
 #  the mechanism. A vendored copy lacking a canonical token reads STALE.)
 # ============================================================================
@@ -37,12 +37,20 @@ import json, os, ssl, subprocess, sys, time, urllib.error, urllib.request
 
 # Bump on ANY change to this file, not only on a request/response contract
 # change. It is what the installed-copy inventory greps
-# (`grep -L 'GUARD_VERSION = 8' */.git/hooks/amux-staged-guard`), so a tracked
+# (`V=$(grep -m1 -o '^GUARD_VERSION = [0-9]*' scripts/git-hooks/amux-staged-guard)
+#   grep -L "$V" */.git/hooks/amux-staged-guard`), so a tracked
 # file that changed without moving this number makes every stale installed copy
 # read as current — the two-components-disagreeing shape this hook exists to
 # report. `scripts/install-hooks.sh` still compares bytes; this is the cheap
 # read for "which checkouts are behind".
-GUARD_VERSION = 10
+# The inventory command above DERIVES this number rather than repeating it. The
+# comment used to name `= 8` as a literal while this said 11, so the documented
+# way to find stale copies would have listed every one of them as current: the
+# instruction for auditing the guard would itself have been the stale thing.
+# `^`-anchored, because an unanchored match now finds the comment line first
+# (checked: it returned empty, which would have made `grep -L` match nothing and
+# report a clean fleet).
+GUARD_VERSION = 13
 
 
 def amux_base_url():
@@ -387,6 +395,86 @@ def _derive_session_from_tmux():
     return name[len("amux-"):] if name.startswith("amux-") else ""
 
 
+def _orphan_deletions(staged):
+    """Staged DELETIONS whose top-level directory appears nowhere else in the
+    commit, as `[(path, top)]` (AF-357).
+
+    THE SHAPE THIS CATCHES. A peer's `git add` sweeping a DELETION into an
+    unrelated commit. Measured specimen `26c45798`: one `D` on
+    crates/amux-server/migrations/0035_reclaim_skipped_hits_repair.sql inside a
+    commit whose other seven files are all under `site/` and whose subject is
+    "feat(seo): parallel-feature-dev rewrite". The removal was correct and needed
+    doing, so nothing broke; the cost is deferred and total, because `git log` on
+    that path now names a commit whose message cannot account for it.
+
+    A DELETION IS THE HARD DIRECTION. Every other entry in this class is about a
+    peer's work being ADDED to your commit, where the content is at least present
+    to be noticed. A removed file is not there to look at, and the co-edit notice
+    above cannot see it either: that notice fires on files a peer EDITED, and
+    nobody has an edit record for a file they merely deleted.
+
+    WHY TOP-LEVEL DIRECTORY, and why this is not noise. Measured over the last 500
+    commits: only TWO contain a deletion at all, and this predicate fires on
+    exactly one of them, which is the incident. Deletions are 0.4% of commits
+    here, so a check scoped to them is cheap by construction, and the discriminator
+    that the deleted path shares no top-level directory with anything else in the
+    commit is what separates "I removed a file while working in that area" from
+    "this arrived from somewhere else".
+
+    Takes the staged list as an argument rather than shelling out, so the decision
+    is testable without a git fixture (the same reason `_render_split_risk` is its
+    own function).
+    """
+    dels = [p for st, p in staged if st.startswith("D")]
+    if not dels:
+        return []
+    others = {p.split("/")[0] for st, p in staged if not st.startswith("D")}
+    if not others:
+        # A commit that is ONLY deletions is a deliberate removal, not a sweep.
+        return []
+    return [(p, p.split("/")[0]) for p in dels if p.split("/")[0] not in others]
+
+
+def _render_orphan_deletions(staged, w):
+    """Print the above, or nothing. Silence is the normal case by design."""
+    orphans = _orphan_deletions(staged)
+    if not orphans:
+        return
+    w("\namux staged-guard: DELETION FROM AN UNRELATED AREA (AF-357)\n")
+    for path, topdir in orphans:
+        w("  %s\n" % path)
+        w("      nothing else in this commit touches `%s/`\n" % topdir)
+    w("  A deletion is the direction nobody notices: the file is not there to\n"
+      "  read, and the co-edit notice cannot see it because nobody holds an edit\n"
+      "  record for a file they only removed.\n")
+    # AF-420. This block offered `git restore --staged` and NOTHING ELSE, while
+    # the two other remedy blocks in this file (unclaimed-staged, foreign) both
+    # lead with the pathspec commit and mark the restore as the one that edits
+    # shared state. The reasoning was already written down for the foreign case
+    # and simply never carried here, so the dangerous exit was the ONLY exit on
+    # the one notice that fires about work you cannot see.
+    #
+    # It also contradicted the fleet's own instructions. ~/.claude/CLAUDE.md,
+    # shared-checkouts section: "When you must commit while a peer has work
+    # staged, commit by pathspec... `git restore --staged <their files>` edits
+    # state that belongs to them." A guard that recommends the thing the
+    # instructions forbid teaches the wrong habit at the moment of most pressure.
+    #
+    # For a staged DELETION the pathspec exit is quieter still: you decline it by
+    # not naming the path, so nothing of theirs is touched and no index is edited.
+    w("\n  IF THIS IS NOT YOURS, the safe exit is to leave it alone. A pathspec\n"
+      "  commit ignores the index for everything it does not name, so simply not\n"
+      "  naming this path declines the deletion and touches nothing of theirs:\n")
+    w("      git commit <your paths> -m ...\n")
+    w("\n  Or unstage it — but note this EDITS THE SHARED INDEX, which is their\n"
+      "  state, not yours:\n")
+    for path, _ in orphans:
+        w("      git restore --staged %s\n" % path)
+    w("  If it IS yours, say so in the message. `git log` on that path will name\n"
+      "  this commit forever, and a subject that cannot account for a removed file\n"
+      "  costs the next reader the afternoon it cost on 26c45798.\n")
+
+
 def _render_split_risk(d, w):
     """AF-190: this commit SPLITS a peer's work, so it can fail to build even
     though the tree it came from compiles.
@@ -408,8 +496,26 @@ def _render_split_risk(d, w):
     without first reading a claim about ownership.
     """
     for _sr in d.get("split_risk") or []:
-        w("\namux staged-guard: SPLIT COMMIT WARNING — %s's work is being cut in half:\n"
-          % _sr.get("owner", "?"))
+        # AF-414: the possessive header is an OWNERSHIP ASSERTION, and the server
+        # now says whether it can support one. `authored` is true only when the
+        # peer has transcript-backed content on BOTH sides of the split; an
+        # mtime-only record gets the same warning without the claim.
+        #
+        # This docstring already said the check is "a warning about a BUILD, not
+        # an assertion that the staged bytes are somebody else's" while the first
+        # line printed asserted exactly that. Measured 2026-09-02: it announced
+        # "amux's work is being cut in half" over a 368-insertion diff that was
+        # entirely the committer's own.
+        #
+        # Old servers send no `authored` key. `.get("authored", True)` keeps
+        # their behaviour unchanged rather than silently downgrading every
+        # warning against a server that cannot answer the question.
+        if _sr.get("authored", True):
+            w("\namux staged-guard: SPLIT COMMIT WARNING — %s's work is being cut in half:\n"
+              % _sr.get("owner", "?"))
+        else:
+            w("\namux staged-guard: SPLIT COMMIT WARNING — this commit leaves related "
+              "dirty files behind:\n")
         w("  in this commit:  %s\n" % ", ".join(_sr.get("staged") or []))
         w("  left behind, dirty and NOT committed:\n")
         for _p in _sr.get("left_dirty") or []:
@@ -421,6 +527,94 @@ def _render_split_risk(d, w):
         # and its author read past it, because 34 matched what they expected.
         # A number that agrees with you is exactly where a check gets skipped.
         w("  %s\n" % _sr.get("why", ""))
+
+
+def _never_wrote(path, session):
+    """Has this session EVER written this path, by commit trailer? (MC-1561)
+
+    Edit records cannot tell a READER from a WRITER. mixpeek-cicd was named three
+    times in one session as the co-editor of files it had never written, because
+    it had parsed one of them dozens of times building a coverage baseline,
+    extracted it into archives, and diffed it across nine commits. All of that is
+    activity in a shared cwd and none of it is authorship. That is the class
+    ~/Dev/mixpeek/CLAUDE.md already names: an owner derived from mtime reports
+    whoever was ACTIVE, not whoever WROTE.
+
+    The exact answer is already on every commit. Measured by mixpeek-cicd on
+    server/shared/ops/ownership_registry.yaml: 9 commits touching it that day, 9
+    carrying an Amux-Session trailer, 0 naming them, actual writers 7
+    mixpeek-observability and 2 mixpeek-funnel.
+
+    THREE ANSWERS, and the middle one is the one that matters. `True` means the
+    path has trailer-attributed history and none of it is theirs. `False` means it
+    is. `None` means the question could not be asked -- no history, or history
+    with no trailers at all -- and that must NOT read as "they never wrote it",
+    or every repo that does not use trailers would silently suppress every notice.
+    """
+    if not path or not session:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "log", "-n", "200",
+             "--format=%(trailers:key=Amux-Session,valueonly,separator=,)", "--", path],
+            capture_output=True, text=True, timeout=8)
+        if out.returncode != 0:
+            return None
+        lines = [l.strip() for l in (out.stdout or "").splitlines()]
+        if not lines:
+            return None                      # no history for this path
+        attributed = [l for l in lines if l]
+        if not attributed:
+            return None                      # history, but nothing carries a trailer
+        for l in attributed:
+            if session in [x.strip() for x in l.split(",")]:
+                return False                 # they have written it
+        return True
+    except Exception:
+        return None
+
+
+def _nothing_in_dispute(path):
+    """Are this path's on-disk bytes already inside a commit? (AF-391)
+
+    THE CLAIM THIS CORROBORATES. The co-edit warning below says a peer may have
+    uncommitted work in a file you are about to commit whole. When the worktree
+    bytes already equal a committed blob for the same path, there IS no
+    uncommitted work in it, so the warning is protecting nothing regardless of
+    who the attribution names. That holds whoever edited it, which is what makes
+    it stronger than the attribution it downgrades. Same reasoning as
+    `_content_is_committed` in ~/.amux/hooks/git-shared-guard.py (AMUX-3859) --
+    that guard has had this check since August and it reaches exactly one of its
+    two consumers, so the co-edit notice never got it.
+
+    WHY IT WAS WORTH ADDING. mixpeek-general, 2026-09-01: the guard named them
+    as the editor of server/.gcloudignore-ci, a file they had never opened, and
+    warned mixpeek-cicd symmetrically. They cleared it with four checks, the
+    first of which was this one: worktree identical to origin, no uncommitted
+    content at all. The guard says out loud that its claim is mtime-derived, and
+    on a shared checkout that makes the BUSIEST lane the default suspect for any
+    file whose mtime moves -- which is backwards, since that lane can least
+    afford the interruption and its own edits are elsewhere.
+
+    THREE ANSWERS, NOT TWO. `None` means the check could not run, and it must not
+    read as "there is content in dispute" nor as "there is not". A silent False
+    on a timeout is the failure this file records elsewhere (AMUX-3859's own
+    docstring makes the same point).
+    """
+    try:
+        wt = subprocess.run(["git", "hash-object", "--", path],
+                            capture_output=True, text=True, timeout=5)
+        blob = (wt.stdout or "").strip()
+        if wt.returncode != 0 or not blob:
+            return None, "could not hash the worktree copy"
+        for ref in ("HEAD", "origin/main"):
+            r = subprocess.run(["git", "rev-parse", "%s:%s" % (ref, path)],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and (r.stdout or "").strip() == blob:
+                return True, ref
+        return False, None
+    except Exception:
+        return None, "the check errored"
 
 
 def main():
@@ -622,6 +816,51 @@ def main():
         # right now. That is the FACT — someone has uncommitted work in a file
         # you are about to commit whole.
         _level = "WARNING" if f.get("has_unstaged_changes") else "NOTE"
+        # AF-391: DOWNGRADE, never suppress, when the attribution is mtime-derived
+        # AND nothing is in dispute. Two conditions, both required.
+        #
+        # `_mtime_claim` is true only when the server itself says one side's
+        # evidence is inferred: an ambiguous mtime echo (`co_signal`), or the two
+        # provenances disagreeing with one being "observed". A transcript-backed
+        # co-edit on both sides is never downgraded, because that claim is not the
+        # weak one.
+        #
+        # DOWNGRADE AND NOT SUPPRESS is the whole design. The file is still named
+        # on one line, so nothing the reader could have acted on disappears; what
+        # goes is the eight lines of remedy for a dispute that does not exist. A
+        # warning this guard itself labels unreliable cost two sessions a
+        # verification each, and the honest way to spend less is to say less, not
+        # to say nothing.
+        _mtime_claim = bool(f.get("co_signal")) or (
+            f.get("mine_provenance") and f.get("their_provenance")
+            and f.get("mine_provenance") != f.get("their_provenance")
+            and "observed" in (f.get("mine_provenance"), f.get("their_provenance")))
+        _quiet = None
+        if _mtime_claim:
+            _settled, _where = _nothing_in_dispute(f.get("path") or "")
+            if _settled:
+                _quiet = "its on-disk bytes are already in %s, so no uncommitted work " \
+                         "exists in it to absorb (AF-391)" % _where
+        # SECOND, INDEPENDENT CORROBORATION (MC-1561). AF-391 asks whether anything
+        # is in DISPUTE; this asks whether the named session is even a WRITER of
+        # this path. They are different questions and the second catches what the
+        # first cannot: a hot shared file has uncommitted content, so AF-391's
+        # check correctly declines to downgrade, while the lane being named has
+        # never written a line of it.
+        #
+        # Not gated on `_mtime_claim`. If the named session has trailer-attributed
+        # history on this path and none of it is theirs, naming them is wrong
+        # however the claim was derived.
+        if not _quiet:
+            _nw = _never_wrote(f.get("path") or "", (f.get("owner") or "").strip())
+            if _nw:
+                _quiet = "%s has no commit to this path carrying their Amux-Session " \
+                         "trailer, so the record is activity in a shared cwd rather " \
+                         "than authorship (MC-1561)" % (f.get("owner") or "that session")
+        if _quiet:
+            w("amux staged-guard: NOTE — %s carries an UNCORROBORATED co-edit claim: %s. "
+              "Not asking you to check anything.\n" % (f.get("path"), _quiet))
+            continue
         # RECIPE CORRECTED (AC-303). This printed `git diff -U0` + `git apply
         # --cached`, and that pairing produced FOUR unbuildable commits on
         # 2026-08-08 — all the same shape, a `try:` in main() whose body came
@@ -680,6 +919,62 @@ def main():
                 w("  Provenance: YOUR claim is a recorded write; THEIRS is an mtime their "
                   "Bash command saw move — possibly your own write, seen from their "
                   "window (AMUX-3662).\n")
+    # PRE-COMMIT MISATTRIBUTES A PEER'S WRITE TO AN INNOCENT HOOK (AF-327).
+    #
+    # `pre_commit/commands/run.py` decides a hook changed something with
+    #     diff_before = _get_diff(); <run hook>; diff_after = _get_diff()
+    #     files_modified = diff_before != diff_after
+    # and `_get_diff()` is a bare `git diff --no-ext-diff --no-textconv
+    # --ignore-submodules` over the WHOLE worktree — not the files it handed the
+    # hook. So ANY tracked file changing anywhere during a hook's runtime flips
+    # that hook to Failed with "- files were modified by this hook".
+    #
+    # On a checkout with ~50 concurrent sessions that fires constantly and blames
+    # whichever hook happened to be running. Measured on ~/Dev/mixpeek 2026-08-30
+    # 02:15-02:55: four failures, four different hooks named, one identical
+    # message, zero real findings — including `check-case-conflict`, which does
+    # not write files at all. Cost was ~25 minutes over five commit attempts, and
+    # the expensive part was not the time: each failure reads as a specific
+    # actionable claim about YOUR diff, so the first move is to go fix a case
+    # conflict or a missing newline that does not exist. Two dead-end
+    # investigations before the pattern was visible.
+    #
+    # We cannot fix pre-commit and we deliberately never write another repo's
+    # `pre-commit` (install-hooks.sh says so). What we CAN do is say this in the
+    # one place the reader is already looking, immediately before the confusing
+    # output appears.
+    #
+    # GATED, because a line on every commit is a line nobody reads. It prints
+    # only when this repo actually runs pre-commit AND the tree already has
+    # unstaged changes outside your staged set — which is the condition that
+    # makes a mid-run write likely, and is exactly when the reader is about to be
+    # misled.
+    try:
+        _top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+        if _top and os.path.exists(os.path.join(_top, ".pre-commit-config.yaml")):
+            _staged = set(subprocess.run(["git", "diff", "--cached", "--name-only"],
+                                         capture_output=True, text=True, timeout=5).stdout.split("\n"))
+            _dirty = [f for f in subprocess.run(["git", "diff", "--name-only"],
+                                                capture_output=True, text=True, timeout=5).stdout.split("\n")
+                      if f and f not in _staged]
+            if _dirty:
+                w("amux staged-guard: %d file(s) in this tree have unstaged changes that are NOT "
+                  "in your commit.\n" % len(_dirty))
+                w("  If a pre-commit hook below fails with \"files were modified by this hook\", "
+                  "READ IT AS A CONCURRENT WRITE, not as a finding about your diff.\n")
+                w("  pre-commit compares a WHOLE-WORKTREE `git diff` before and after each hook "
+                  "(run.py `_get_diff`), so a peer writing any tracked file during the run blames "
+                  "whichever hook was executing — including hooks that write nothing, like "
+                  "check-case-conflict.\n")
+                w("  Re-run the commit. Do NOT go looking for the defect the hook name implies "
+                  "until you have seen it fail twice on the same hook (AF-327).\n")
+                w("  Unstaged and not yours to fix: %s%s\n"
+                  % (", ".join(_dirty[:4]), "" if len(_dirty) <= 4 else " (+%d more)" % (len(_dirty) - 4)))
+    except Exception:
+        # Never let the advisory break a commit — it is a note, not a gate.
+        pass
+
     # THE BELT (AMUX-2443 / AF-19 residual / AC-297 — three sightings, one gap):
     # staged paths with NO edit record from ANY session in the window were
     # invisible to both classifications above, and a plain commit ships them
@@ -722,7 +1017,12 @@ def main():
               "staging a file makes it yours to commit. Scope the commit to your "
               "own paths and the shared index is never read:\n\n"
               "      git commit -m \"...\" -- <your paths>\n\n"
-              "  Or unstage what is not yours:  git restore --staged -- <path>\n"
+              # AF-420: the ordering here was already right; this only adds the
+              # same shared-index caveat the foreign block carries, so all three
+              # remedy blocks describe the restore identically.
+              "  Or unstage what is not yours — but note this EDITS THE SHARED "
+              "INDEX, which is their state, not yours:\n"
+              "      git restore --staged -- <path>\n"
               "  If you have checked and they ARE yours from earlier, "
               "AMUX_ALLOW_UNCLAIMED=1 proceeds.\n")
             return 1
@@ -745,7 +1045,37 @@ def main():
         w("  If these are yours via shell edits, proceed. If you do not recognize "
           "one, it is a peer's in-flight hunk riding your git add — stage "
           "per-hunk instead (git add -p %s).\n" % _ua.get("path", ""))
+    # AF-342. Only printed BESIDE a real list, never on its own.
+    #
+    # WHY THAT IS ALLOWED, and it is NOT the noise argument (amux, reviewing
+    # AF-342). On noise grounds alone this would fail ethos rule 4: a check that
+    # can read empty must publish whether it ran, and "no finding" and "could
+    # not check" would render identically here. What makes the suppression legal
+    # is that `degraded` and `unaccounted_undecidable` are in the API payload
+    # UNCONDITIONALLY, confirmed on a clean response carrying ok:true, no
+    # finding, and a populated `degraded`. The MEASUREMENT publishes its own
+    # partiality; this hook is only choosing presentation on top of it.
+    #
+    # So if you ever move either field behind a condition, this suppression
+    # becomes a rule-4 violation in the same edit, and nothing here will tell
+    # you. That coupling is the reason this paragraph exists.
+    #
+    # The noise argument is still true and still secondary: a "could not check"
+    # line on every commit is the same noise this fix removed wearing a
+    # different hat, and noise on the normal path is what let a sweep of 87
+    # lines of a peer's work go past this warning on 2026-08-30.
+    _und = d.get("unaccounted_undecidable") or []
+    if _und and (d.get("unaccounted") or []):
+        w("  (line accounting could not run on %d other path(s) — you also wrote "
+          "them in the window through something that records no content: %s)\n"
+          % (len(_und), ", ".join(str(_u.get("path", "?")) for _u in _und[:4])))
     _render_split_risk(d, w)
+    try:
+        _st = [(l.split("\t")[0].strip(), l.split("\t")[-1].strip())
+               for l in _git_lines(["diff", "--cached", "--name-status"]) if "\t" in l]
+        _render_orphan_deletions(_st, w)
+    except Exception:
+        pass
     foreign = d.get("foreign") or []
     _m = _read_marker(sess, top)
     if not foreign:
@@ -768,7 +1098,29 @@ def main():
         w("  %s   (edited by session '%s' %dm ago)%s\n"
           % (f.get("path"), f.get("owner"), mins,
              ("\n      %s" % _w) if _w else ""))
-    w("\nUnstage them:   git restore --staged "
+    # AF-365, technique found by `amux` on 2026-08-31 and it belongs FIRST because
+    # it is the only remedy here that touches nothing the peer owns.
+    #
+    # `git restore --staged` was the sole suggestion, and on a SHARED INDEX it
+    # mutates state that belongs to the other lane: their file was staged because
+    # THEY staged it, and unstaging is an edit to their in-flight work made by
+    # someone who cannot see what they intended. Committing by pathspec ignores
+    # the index for everything not named and leaves their entries exactly as they
+    # were, so both lanes commit whole, in either order.
+    #
+    # The near-miss that produced this: their checks.yml hunk sat unstaged at
+    # ~line 316 while a peer's hunk in the SAME FILE was staged at ~line 181.
+    # Committing that file would not have been plain absorption, it would have
+    # SPLIT the peer's change, landing their CI wiring under a stranger's message
+    # while the code it wired stayed uncommitted. Their own commit would then have
+    # wired nothing. `git add -p`, which this hook recommends two screens down for
+    # the partial-stage case, is the wrong tool for it: the problem is not which of
+    # YOUR hunks to take, it is that THEIRS are already staged.
+    w("\nCOMMIT ONLY YOUR OWN PATHS — leaves their staged entries untouched:\n"
+      "  git commit <your paths> -m ...   # a pathspec commit ignores the index for\n"
+      "                                   # everything it does not name\n")
+    w("\nOr unstage theirs — but note this EDITS THE SHARED INDEX, which is their\n"
+      "state, not yours:   git restore --staged "
       + " ".join(f.get("path", "") for f in foreign) + "\n")
     # AF-26. Two separate defects, both about an honest exit.
     #

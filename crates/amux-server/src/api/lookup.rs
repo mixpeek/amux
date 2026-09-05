@@ -302,6 +302,9 @@ pub(crate) async fn helper_answer(prompt: &str) -> Result<(String, String), (Sta
     }
     cmd.current_dir(std::env::temp_dir());
     cmd.stdin(std::process::Stdio::null());
+    // A fired timeout drops the future; without kill_on_drop the child is left
+    // unreaped (DESKT-30). A helper CLI that hangs is exactly when this fires.
+    cmd.kill_on_drop(true);
     match tokio::time::timeout(std::time::Duration::from_secs(LOOKUP_TIMEOUT_S), cmd.output()).await {
         Err(_) => {
             attempts.push(format!("cli:{cli} timed out at {LOOKUP_TIMEOUT_S}s"));

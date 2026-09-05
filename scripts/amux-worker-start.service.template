@@ -1,0 +1,17 @@
+[Unit]
+Description=Start every registered amux worker lane on boot
+Documentation=https://amux.dev/docs
+After=amux-server.service
+Wants=amux-server.service
+
+[Service]
+Type=oneshot
+Environment=PATH=$BIN_DIR:/usr/local/bin:/usr/bin:/bin
+ExecStart=$SCRIPT_DIR/scripts/amux-start-worker.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amux-worker-start
+
+[Install]
+WantedBy=default.target

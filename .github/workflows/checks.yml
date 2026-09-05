@@ -165,6 +165,82 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-frustration-scan.sh
+      # The THEME scanner's cells (AF-341). Wired in the same commit that adds the
+      # scanner, because the step above records what happens otherwise: that
+      # harness existed unwired and its 6 cells ran for nobody.
+      #
+      # This one reads TWO repos, and its worst failure is silent in a way the
+      # single-repo scanner's is not. The Mixpeek ledger is a checkbox format and
+      # the amux one is field-per-line, so they need separate parsers; if the
+      # Mixpeek parser stops matching, it returns [] and every cross-repo cluster
+      # quietly becomes amux-only. The report still prints, still says `measured`,
+      # and Mixpeek reads as clean, which is the precise failure the
+      # measured/n_considered contract exists to prevent, reappearing one layer
+      # up in the tool that measures it. Cells B and C are that gate.
+      - name: friction theme scanner reads BOTH repos, or says it could not (AF-341)
+        run: |
+          set -uo pipefail
+          ./scripts/test-friction-themes.sh
+      # AF-360. The dashboard stamps every outgoing message with the send time
+      # and had no guard against text that already carried one, so re-sending
+      # produced a nested stamp. Measured live on MSG-35221. The reader strips a
+      # SINGLE leading stamp, so the survivor is a stale timestamp that reaches
+      # the model looking exactly like a real one. Client-side and node-only, so
+      # it belongs here rather than in rust.yml; the cells drive the shipped
+      # functions extracted from app.js rather than a copy.
+      - name: the send-time stamp is applied exactly once (AF-360)
+        run: |
+          set -uo pipefail
+          ./scripts/test-send-time-stamp.sh
+      # AF-356. The contention wrapper measured ONE of the two ways a peer
+      # reddens your suite. Its clean verdict ("NOT build contention") read as
+      # "therefore your bug", while a peer's uncommitted source in the shared
+      # worktree produces the identical symptom. Cell (c2) is the load-bearing
+      # one: the worktree clause must print on the BUILDER arm too, since a
+      # caveat inside one branch is one the other branch's reader never sees.
+      - name: the contention wrapper reports the worktree, on both arms (AF-356)
+        run: |
+          set -uo pipefail
+          ./scripts/test-contended-worktree.sh
+      # AF-371. An mdai run is 82-127s of model calls whose whole product is the
+      # output the panel renders. The outbox queued it on a failed fetch and
+      # handed the panel a synthetic 202, which is `ok` with no error, so the
+      # panel reported a completed run that never left the browser. Reachable on
+      # the ordinary path: the auto-builder restarts the server on every commit.
+      # Cells 3-5 are the controls that stop an over-broad skip regex from
+      # disabling offline sync for the whole app while passing cell 1.
+      - name: an mdai run never enters the offline outbox (AF-371)
+        run: |
+          set -uo pipefail
+          ./scripts/test-mdai-outbox.sh
+      # AF-342. The staged-guard's SERVER decision has unit tests in
+      # git_guard.rs; what a lane actually experiences is what the hook prints,
+      # and that half had none. The defect was purely printing volume (93
+      # warning lines on a commit with no peer involved), so the behaviour worth
+      # pinning is "stays silent when it should" - which no Rust test can see,
+      # because the hook is a separate Python file that ships by install, not by
+      # build. Language-agnostic, so it belongs here rather than in rust.yml.
+      - name: staged-guard prints noise only when it has something to say (AF-342)
+        run: |
+          set -uo pipefail
+          ./scripts/test-staged-guard-render.sh
+          # AF-391: the co-edit warning is mtime-derived and says so, and on a
+          # shared checkout that makes the busiest lane the default suspect. It
+          # now downgrades when the claim is uncorroborated AND nothing is in
+          # dispute. Cells (b)(c)(d) are the load-bearing half: real uncommitted
+          # content, a two-sided transcript claim, and a check that could not
+          # run must all still print in full.
+          ./scripts/test-staged-guard-coedit.sh
+          ./scripts/test-commit-stamp.sh
+          ./scripts/test-mass-delete-gate.sh
+          ./scripts/test-observed-edits-walk.sh
+          ./scripts/test-hook-drift-notice.sh
+          # The shared-checkout guard's own 114-case matrix. It existed and ran
+          # NOWHERE: not in CI, not in pre-commit. A safety-critical guard whose
+          # suite nothing executes is a suite that cannot tell you it broke, and
+          # AMUX-3932 was a live bypass in it found by hand rather than by this
+          # file. Cheap (no cargo), so there is no reason it was not here.
+          python3 ./scripts/git-hooks/test_git_shared_guard.py
       # CLI dispatch tests (AEAB-17). Language-agnostic like the two steps above,
       # and they belong HERE rather than in rust.yml because rust.yml is
       # path-filtered to `crates/**`, `Cargo.*` and `e2e/**` — so a change to
@@ -189,6 +265,19 @@ jobs:
           set -uo pipefail
           ./scripts/test-board-add-flags.sh
           ./scripts/test-amux-url.sh
+      # AMUX-3891. The CLI is symlinked straight into the working tree and ~50
+      # lanes invoke it while it is being edited, so it MUST be parseable in one
+      # read: bash holds a byte offset, and a rewrite mid-invocation resumes it
+      # in the middle of different bytes. The observed cost was a `board retitle`
+      # whose write SUCCEEDED and which then exited 2 with a syntax error, which
+      # a caller checking exit codes retries — and retitle is not idempotent for
+      # a reader. This asserts the `{ ... }` wrapper and the trailing `exit`+`}`
+      # are still the file's shape. A race test cannot hold this line: a green
+      # race run is equally consistent with "the shape is gone and we got lucky".
+      - name: CLI is offset-safe under in-place rewrite (AMUX-3891)
+        run: |
+          set -uo pipefail
+          ./scripts/test-cli-offset-safe.sh
       # AEAB-22. Lives here, not in rust.yml, for the same reason as the other
       # CLI/asset gates: rust.yml is path-filtered to `crates/**` + `Cargo.*` +
       # `e2e/**`, and while app.js IS under crates/, this test also guards
@@ -218,12 +307,17 @@ jobs:
       # Its control (nothing cleared above the floor) and its last-resort case
       # (the shared dir must STILL be reachable) are what stop the fix becoming
       # either a no-op or a reintroduction of the disk-full outage.
-      - name: SessionStart freshness hook (AEAB-18) + build provenance (AEAB-12) + disk clear (AEAB-34)
+      - name: SessionStart freshness + deployment and watchdog recovery
         run: |
           set -uo pipefail
           ./scripts/test-session-freshness.sh
           ./scripts/test-build-provenance.sh
           ./scripts/test-build-disk-clear.sh
+          # A replacement is complete and signed before its one visible rename;
+          # persistent listener loss makes the external watchdog reload only the
+          # exact configured launch agent.
+          ./scripts/test-build-atomic-install.sh
+          python3 ./scripts/test-watchdog-recovery.py
           # AEAB-36: a board write that never reached the server must say so,
           # and must never be confused with one the server refused. Its (c)/(d)
           # controls are the load-bearing half — a CLI that shouted "cannot
@@ -255,6 +349,29 @@ jobs:
           # nobody sets is decoration (ethos rule 1), and an export placed after
           # serve-head.sh's `exec` would look correct in a diff and never run.
           ./scripts/test-e2e-no-self-adopt.sh
+          # AMUX-3965: `start-all` counts spawns that returned, not workers that
+          # came up, and fleet-boot.sh independently measures what is actually
+          # running. Both numbers were already in the script and nothing compared
+          # them, so the boot of 2026-08-30 exited 0 while its own log named six
+          # workers it had just reported as started. The cells run the SHIPPED
+          # fleet-boot.sh against a stub server; no real worker is started. Cell B
+          # is the control that keeps A honest (agreement must stay silent and
+          # green), and F separates a genuine `0 started` from a failed parse.
+          ./scripts/test-fleet-boot-divergence.sh
+          # AF-498: a LaunchAgent loads at GUI LOGIN, not at boot, so an
+          # unattended reboot (an OS auto-update overnight) leaves every worker
+          # down until a human sits down. fleet-boot's log begins when it RUNS,
+          # so that window used to leave no trace anywhere. The three cells drive
+          # the arms through AMUX_FLEET_BOOT_EPOCH; cell 2 is the control that
+          # keeps the warning from becoming a constant, and cell 3 keeps an
+          # unreadable boot time from reading as zero.
+          ./scripts/test-fleet-boot-login-gap.sh
+          # AMUX-3989: the playwright-mcp wrapper must name a VERSION. `@latest`
+          # put an upstream release on the fleet with no amux commit behind it —
+          # measured 08-31, the npx cache held 0.0.68 while @latest resolved to
+          # 0.0.79. Pure text inspection of the shipped script: no network, no
+          # npx, no browser, so it answers the same on a laptop and a runner.
+          ./scripts/test-playwright-mcp-pin.sh
           # AMUX-3782: a GRAFTED commit must be as attributable as a committed
           # one. Cell B is the control — every other cell asserts a trailer is
           # present, so without B a version that stamped nothing would pass.

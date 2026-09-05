@@ -1,0 +1,23 @@
+[Unit]
+Description=amux playwright MCP server (%i)
+Documentation=https://amux.dev/docs
+After=network.target amux-xvfb.service
+# NOT a hard Requires=: this unit's own wrapper script (amux-playwright-mcp.sh)
+# already sets DISPLAY=:0 as a setdefault, and a browser launch failing for a
+# genuinely-down Xvfb should surface as ITS OWN restart (Restart=always below)
+# rather than this unit refusing to even try. Wants= gets the ordering benefit
+# (start Xvfb first when both start together, e.g. on boot) without coupling
+# this unit's own up/down state to Xvfb's (FRONT-4, 2026-08-31).
+Wants=amux-xvfb.service
+
+[Service]
+Type=simple
+ExecStart=$SCRIPT_DIR/scripts/amux-playwright-mcp.sh %i
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amux-playwright-mcp-%i
+
+[Install]
+WantedBy=default.target

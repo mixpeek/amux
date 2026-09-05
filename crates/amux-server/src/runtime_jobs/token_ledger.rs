@@ -448,7 +448,7 @@ pub fn spawn(state: crate::api::AppState) -> Option<super::PeriodicTask> {
         return None;
     }
     let home = crate::api::settings::amux_home();
-    Some(super::spawn_periodic("token-ledger", secs, move || {
+    Some(super::spawn_periodic(super::registry::ids::TOKEN_LEDGER, secs, move || {
         let store = state.store.clone();
         let home = home.clone();
         async move {

@@ -129,6 +129,7 @@ fn rig() -> Rig {
         started: std::time::Instant::now(),
         build_hash: "golden-live-test".into(),
         auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     Rig { app: router(state), store, _dir: dir }
 }

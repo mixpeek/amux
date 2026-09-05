@@ -60,7 +60,13 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 # meta, and this must never depend on (or touch) the real ~/.amux.
 export AMUX_HOME="$D/amuxhome"
 mkdir -p "$AMUX_HOME/sessions"
-printf '{"cc_conversation_id":"conv-abc-123"}' > "$AMUX_HOME/sessions/testlane.meta.json"
+# CONFIRMED, with a fresh timestamp, because an UNCONFIRMED id is deliberately
+# not stamped (AMUX-3897) and this fixture predates that rule. It wrote the id
+# alone, the hook correctly refused it, and cell D failed on an empty string. The
+# hook was right and the fixture was stale; cell G below pins the other arm so a
+# future reader cannot "fix" D by making the hook stamp unconfirmed ids again.
+printf '{"cc_conversation_id":"conv-abc-123","cc_conversation_confirmed_at":%s}' "$(date +%s)" \
+  > "$AMUX_HOME/sessions/testlane.meta.json"
 export AMUX_SESSION=testlane
 
 git init -q "$D/r" || exit 1
@@ -135,6 +141,26 @@ C5=$(git commit-tree "$TREE" -p "$BASE" -F "$D/m5")
 [ "$(trailer "$C5" Amux-Session)" = "peer-lane" ] \
   && ok "F: an existing peer trailer is preserved, not overwritten" \
   || bad "F: expected 'peer-lane', got '$(trailer "$C5" Amux-Session)'"
+
+# ── G: THE OTHER ARM. An unconfirmed id is omitted here too ────────────────
+# D asserts the graft path stamps the conversation. On its own that is satisfied
+# by a hook that stamps ANY id it can find, which is exactly the behaviour
+# AMUX-3897 removed after a lane audited the wrong transcript and honestly
+# concluded its own commits were not its own. The two cells together say the
+# real rule: stamp a CONFIRMED id, omit an unconfirmed one, on the graft path as
+# much as the ordinary one.
+printf '{"cc_conversation_id":"conv-stale-999"}' > "$AMUX_HOME/sessions/testlane.meta.json"
+printf 'subject\n\nbody\n' > "$D/m6"
+.git/hooks/prepare-commit-msg "$D/m6"
+C6=$(git commit-tree "$TREE" -p "$BASE" -F "$D/m6")
+[ -z "$(trailer "$C6" Amux-Conversation)" ] \
+  && ok "G: an UNconfirmed conversation id is omitted, not guessed (AMUX-3897)" \
+  || bad "G: expected no trailer, got '$(trailer "$C6" Amux-Conversation)'"
+#    CONTROL: the session stamp must survive the conversation being dropped — the
+#    field that already works must not become conditional on the one that did not.
+[ "$(trailer "$C6" Amux-Session)" = "testlane" ] \
+  && ok "G-control: dropping the conversation does not cost the session stamp" \
+  || bad "G-control: expected 'testlane', got '$(trailer "$C6" Amux-Session)'"
 
 echo
 echo "pass=$PASS fail=$FAIL"

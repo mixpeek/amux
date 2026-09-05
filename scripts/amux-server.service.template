@@ -6,12 +6,36 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$BIN_DIR/amux-server-rs
+EnvironmentFile=$AMUX_HOME/server.env
 Environment="AMUX_RS_PORT=$PORT"
+Environment="AMUX_HOME=$AMUX_HOME"
 Environment="CARGO_TARGET_DIR=$HOME/.amux/rust-build-target"
 WorkingDirectory=$AMUX_HOME
+# The tmux server that hosts every worker session is spawned here
+# (ExecStartPre), on purpose, so it lives in THIS unit's cgroup from the
+# start rather than being created ad hoc later by whichever code path
+# first calls `tmux new-session`. Idempotent (has-session check) so a
+# restart never double-creates it.
+ExecStartPre=/bin/sh -c '/usr/bin/tmux has-session -t amux-init 2>/dev/null || /usr/bin/tmux new-session -d -s amux-init -c $SCRIPT_DIR'
+ExecStart=$BIN_DIR/amux-server-rs
 Restart=always
 RestartSec=5
+TimeoutStartSec=30
+# process, not the default `mixed`/`control-group`: the tmux server that
+# hosts every worker session is a child of ExecStartPre and never leaves
+# this unit's cgroup (cgroup membership is sticky across reparenting to
+# PID 1, even though tmux daemonizes). `mixed` SIGKILLs the whole cgroup on
+# every restart -- including ordinary auto-builder deploys, not just
+# reboots -- and takes the entire fleet's tmux sessions down with it, with
+# nothing but a boot-only oneshot unit to bring them back. `process` only
+# signals the main PID, which is what ExecStartPre's idempotent
+# has-session/new-session check already assumes. Root-caused 2026-08-30,
+# see INIT-1 and frustrations.md. This template used to omit both
+# ExecStartPre and KillMode=process — they were hand-patched onto the
+# already-installed unit on one box and never ported back here, which would
+# have silently reintroduced INIT-1 on any fresh install (found 2026-08-31,
+# see AMUX-49's investigation).
+KillMode=process
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=amux-server

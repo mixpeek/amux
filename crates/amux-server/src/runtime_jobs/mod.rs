@@ -49,6 +49,7 @@
 
 pub mod autofix;
 pub mod board_drive;
+pub mod browser_reaper;
 pub mod commit_mention_notes;
 pub mod commit_nudge;
 pub mod context_health;
@@ -56,13 +57,18 @@ pub mod status_history;
 pub mod disk_watch;
 pub mod ghost_rescue;
 pub mod heartbeat;
+pub mod mac_health;
 pub mod pane_size;
 /// The live registry of the jobs below — see [`registry`] for why it is
 /// derived from the spawn sites rather than declared alongside them.
+pub mod queue_disposition;
 pub mod registry;
 pub mod scheduler;
 pub mod storage;
 pub mod tailnet_watch;
+pub mod telegram_poll;
+pub mod telegram_relay;
+pub mod tunnel;
 pub mod token_ledger;
 
 pub use scheduler::{
@@ -133,7 +139,13 @@ where
 /// by `AMUX_PANE_SIZE_SECS` and `ghost-rescue` by `AMUX_GHOST_RESCUE_SECS`.
 /// Setting it to `0` disables that one loop; the global switches below disable
 /// every loop at once.
-fn per_job_disable_var(name: &str) -> String {
+/// `pub(crate)` so a job's own interval read can DERIVE this name instead of
+/// spelling it a second time (AF-437). `board-drive` and `autofix` each had the
+/// job name and the variable name written out independently, so a change to the
+/// convention above would have moved the gate without moving the reader: the
+/// same knob, split in two, with nothing red. Every other job already routes
+/// its name through a `JOB` const.
+pub(crate) fn per_job_disable_var(name: &str) -> String {
     format!("AMUX_{}_SECS", name.to_uppercase().replace('-', "_"))
 }
 
@@ -221,8 +233,30 @@ where
         // with a rapid-fire catch-up volley (the spin-catcher lesson — a
         // detector/maintainer must not amplify the load it exists to manage).
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // MANUAL TRIGGER (AMUX-4046). Ethan: "make it so i can manually run a
+        // system schedule right then and there so that i can test it."
+        //
+        // ONE seam for all 31 jobs. Because this is the only constructor of a
+        // PeriodicTask, selecting the trigger HERE makes every periodic job
+        // runnable on demand — including ones written years from now by
+        // someone who never reads this. The same argument the registration
+        // above already makes for visibility.
+        //
+        // The handle is cloned once, outside the loop: `notified()` must be
+        // created from a live `Notify`, and re-fetching it per iteration would
+        // race a trigger fired between the drop and the next lookup.
+        let trigger = registry::trigger_handle(&job_id);
         loop {
-            tick.tick().await;
+            tokio::select! {
+                _ = tick.tick() => {}
+                () = trigger.notified() => {
+                    // Say it was a person, not the clock. A tick that ran
+                    // because someone pressed a button and one that ran on
+                    // schedule are different facts, and a reader debugging a
+                    // job needs to tell them apart.
+                    tracing::info!(job = %job_id, "manual run requested");
+                }
+            }
             registry::tick_start(&job_id);
             f().await;
             registry::tick_end(&job_id);
@@ -305,6 +339,67 @@ mod tests {
     }
 
     // ---- Fleet isolation (AF-69) ------------------------------------------
+
+    /// NO JOB SPELLS ITS OWN GATE VARIABLE BY HAND (AF-437).
+    ///
+    /// `spawn_periodic` derives a job's fleet-isolation gate from the job NAME.
+    /// A module that also reads that variable for its own interval, by literal,
+    /// has written the same knob twice: change the convention above and the
+    /// gate moves while the reader does not, splitting one switch in two with
+    /// nothing red. `board-drive` and `autofix` both did this.
+    ///
+    /// Reads the SOURCE, because the defect is a spelling and there is no
+    /// runtime symptom until the convention changes — which is exactly when
+    /// nobody is looking for one. Scans the WHOLE file rather than stopping at
+    /// `#[cfg(test)]`: the survey that found this originally scanned only up to
+    /// the first test module and missed board_drive.rs, whose spawn call sits
+    /// 5000 lines after its tests.
+    #[test]
+    fn no_job_hand_types_the_gate_variable_its_own_name_derives() {
+        let files: &[(&str, &str)] = &[
+            ("board_drive.rs", include_str!("board_drive.rs")),
+            ("autofix.rs", include_str!("autofix.rs")),
+            ("ghost_rescue.rs", include_str!("ghost_rescue.rs")),
+            ("pane_size.rs", include_str!("pane_size.rs")),
+            ("storage.rs", include_str!("storage.rs")),
+            ("token_ledger.rs", include_str!("token_ledger.rs")),
+            ("heartbeat.rs", include_str!("heartbeat.rs")),
+            ("status_history.rs", include_str!("status_history.rs")),
+            ("commit_nudge.rs", include_str!("commit_nudge.rs")),
+        ];
+        // The control first: this cell is worthless unless the literal it looks
+        // for is one these files COULD contain, so prove the deriver produces
+        // exactly that shape for a name each file actually uses.
+        assert_eq!(per_job_disable_var("board-drive"), "AMUX_BOARD_DRIVE_SECS");
+        assert_eq!(per_job_disable_var("autofix"), "AMUX_AUTOFIX_SECS");
+
+        let mut offenders: Vec<String> = Vec::new();
+        for (name, src) in files {
+            // ONLY modules that actually go through the deriver. `commit_nudge`
+            // reads AMUX_COMMIT_NUDGE_SECS and spawns with a bare
+            // `tokio::spawn`, so nothing derives that name and its one spelling
+            // is the only one — flagging it would be telling a module to stop
+            // duplicating something it does not duplicate.
+            if !src.contains("spawn_periodic") {
+                continue;
+            }
+            let stem = name.trim_end_matches(".rs");
+            let mut cands: Vec<String> =
+                vec![per_job_disable_var(&stem.replace('_', "-")), per_job_disable_var(stem)];
+            cands.sort();
+            cands.dedup();
+            for cand in cands {
+                if src.contains(&format!("\"{cand}\"")) {
+                    offenders.push(format!("{name} hand-types {cand}"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these modules spell a gate variable their own job name already derives \
+             (use `super::per_job_disable_var(JOB)`): {offenders:?}"
+        );
+    }
 
     #[test]
     fn per_job_disable_var_matches_the_documented_convention() {

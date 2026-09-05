@@ -135,7 +135,16 @@ status field.
 
 **Some entries have no validatable author, and that is not yours to resolve.** A session
 that was a subagent, a one-off `claude` invocation, or a lane on another machine cannot
-sign anything off. Do not retire those on your own judgement — that is deciding another
+sign anything off. Neither can an **isolated raw-agent worker** (the harness is stripped;
+sends carrying a worker origin are refused and only the owner can reach it from the
+dashboard), and that fourth kind is the one that fools you: it is RUNNING and it is right
+there in `/api/sessions`, so the natural test — is the author still alive? — answers yes
+and you plan a handoff that cannot be delivered. LIVE IS NOT VALIDATABLE. The session
+payload already carries `isolated`; read it, or discover it from a refused send after you
+have written the message (amux-frustrations, 2026-08-28, four `desktop` entries).
+A CARD IS NOT A SUBSTITUTE: both of those read `verified`, set by the author themselves,
+and the rule above still stands — card status is not evidence. Do not retire those on your
+own judgement — that is deciding another
 party's work is finished (ethos rule 8). Surface them and let the owner decide.
 
 ## Then act on it

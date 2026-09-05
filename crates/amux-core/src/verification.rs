@@ -57,6 +57,9 @@ pub enum VerifierKind {
     HttpCheck { url: String, expected_status: u16 },
     /// Artifact exists on disk (`stat`). Free.
     FileExists { path: PathBuf },
+    /// Time gate: blocks until a date passes. Free (a clock read). Used for
+    /// release embargoes, scheduled transitions, and follow-up reminders.
+    Temporal { after: DateTime<Utc> },
     /// Browser assertion. Cheap — deterministic, but costs a browser.
     PlaywrightAssertion { script: String },
     /// Model judgment. Expensive, non-deterministic, runs LAST and only if
@@ -75,8 +78,9 @@ impl VerifierKind {
             VerifierKind::Command { .. } => 0,
             VerifierKind::HttpCheck { .. } => 1,
             VerifierKind::FileExists { .. } => 2,
-            VerifierKind::PlaywrightAssertion { .. } => 3,
-            VerifierKind::ModelJudgment { .. } => 4,
+            VerifierKind::Temporal { .. } => 3,
+            VerifierKind::PlaywrightAssertion { .. } => 4,
+            VerifierKind::ModelJudgment { .. } => 5,
         }
     }
 
@@ -84,7 +88,7 @@ impl VerifierKind {
     /// statuses, and `stat` cost nothing. A required free-verifier failure
     /// short-circuits the whole run.
     pub fn is_free(&self) -> bool {
-        self.cost_rank() <= 2
+        self.cost_rank() <= 3
     }
 
     /// Deterministic verifiers run before `ModelJudgment` (Invariant 18:
@@ -104,6 +108,7 @@ impl VerifierKind {
             VerifierKind::Command { .. } => EvidenceKind::CommandOutput,
             VerifierKind::HttpCheck { .. } => EvidenceKind::HttpResponse,
             VerifierKind::FileExists { .. } => EvidenceKind::FileStat,
+            VerifierKind::Temporal { .. } => EvidenceKind::TemporalCheck,
             VerifierKind::PlaywrightAssertion { .. } => EvidenceKind::PlaywrightArtifact,
             VerifierKind::ModelJudgment { .. } => EvidenceKind::ModelTranscript,
         }
@@ -124,6 +129,9 @@ impl VerifierKind {
                 "curl -s -o /dev/null -w '%{{http_code}}' '{url}'  # expect {expected_status}"
             )),
             VerifierKind::FileExists { path } => Some(format!("test -e '{}'", path.display())),
+            VerifierKind::Temporal { after } => {
+                Some(format!("date -d @{} '+%Y-%m-%dT%H:%M:%S'  # gate opens at this time", after.timestamp()))
+            }
             VerifierKind::PlaywrightAssertion { .. } => None,
             VerifierKind::ModelJudgment { .. } => None,
         }
@@ -139,6 +147,7 @@ pub enum EvidenceKind {
     CommandOutput,
     HttpResponse,
     FileStat,
+    TemporalCheck,
     PlaywrightArtifact,
     ModelTranscript,
 }
@@ -365,6 +374,11 @@ mod tests {
             path: PathBuf::from("/tmp/artifact.png"),
         }
     }
+    fn temporal() -> VerifierKind {
+        VerifierKind::Temporal {
+            after: t0(),
+        }
+    }
     fn playwright() -> VerifierKind {
         VerifierKind::PlaywrightAssertion {
             script: "expect(page.locator('#board')).toBeVisible()".into(),
@@ -385,16 +399,15 @@ mod tests {
     }
 
     #[test]
-    fn verifier_cost_order_is_command_http_file_playwright_model() {
-        let ordered = [command(), http(), file(), playwright(), model()];
+    fn verifier_cost_order_is_command_http_file_temporal_playwright_model() {
+        let ordered = [command(), http(), file(), temporal(), playwright(), model()];
         for pair in ordered.windows(2) {
-            // Explicit rank and derived Ord must agree — the derive follows
-            // declaration order, and cost_rank pins it against reordering.
             assert!(pair[0].cost_rank() < pair[1].cost_rank());
             assert!(pair[0] < pair[1]);
         }
-        assert!(command().is_free() && http().is_free() && file().is_free());
+        assert!(command().is_free() && http().is_free() && file().is_free() && temporal().is_free());
         assert!(!playwright().is_free() && !model().is_free());
+        assert!(temporal().is_deterministic());
         assert!(playwright().is_deterministic());
         assert!(!model().is_deterministic());
     }
@@ -404,6 +417,7 @@ mod tests {
         assert_eq!(command().evidence_kind(), EvidenceKind::CommandOutput);
         assert_eq!(http().evidence_kind(), EvidenceKind::HttpResponse);
         assert_eq!(file().evidence_kind(), EvidenceKind::FileStat);
+        assert_eq!(temporal().evidence_kind(), EvidenceKind::TemporalCheck);
         assert_eq!(
             playwright().evidence_kind(),
             EvidenceKind::PlaywrightArtifact

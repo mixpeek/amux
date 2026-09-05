@@ -118,6 +118,16 @@ jobs:
             echo "::error::amux-server.py is back in the repo — the python server was deleted in 792ce1f"
             fail=1
           fi
+          # AMUX-2779: the check above only sees the REPO ROOT. A python server
+          # committed into a subdir (e.g. cloud/docker/amux-server.py, which
+          # .gitignore hides from `git status`) would slip past it — a force-add is
+          # the only way it gets tracked. Fail on a tracked amux-server.py at ANY
+          # path. (A Dockerfile/compose COPY or mount of it is caught below.)
+          tracked=$(git ls-files '*amux-server.py')
+          if [ -n "$tracked" ]; then
+            echo "::error::a tracked amux-server.py exists — the python server must not be committed anywhere (AMUX-2779): $tracked"
+            fail=1
+          fi
           if ! grep -qE '^FROM rust:' cloud/docker/Dockerfile; then
             echo "::error::cloud/docker/Dockerfile does not start from a rust image"
             fail=1
@@ -360,6 +370,21 @@ jobs:
 
       - name: Deploy gateway.py + compose template + litestream config
         run: |
+          # AC-410: a gateway rsync OVERWRITES the host gateway.py from this
+          # origin checkout. When a fix was hand-deployed to the host AHEAD of
+          # origin (the legit emergency pattern when foreign commits block a push),
+          # this silently REVERTS it, and the revert left no signal — it cost a
+          # full cycle to notice by md5 (AC-409 materialized exactly this on
+          # 2026-09-02). Make it self-announcing: if the host's current gateway.py
+          # differs from the one we are about to ship, say so with both hashes, so
+          # a revert is visible in the deploy log instead of discovered later. Not
+          # a hard stop (a normal old-host->new-origin update also differs, and
+          # this job cannot tell that from a revert without the host file's git
+          # ancestry) — a loud line is the honest instrument here.
+          SHIP=$(md5sum cloud/gateway/gateway.py | cut -d' ' -f1)
+          if [ -n "${PRE_GW_PY:-}" ] && [ "$PRE_GW_PY" != "$SHIP" ]; then
+            echo "::warning title=gateway.py overwrite::host gateway.py ($PRE_GW_PY) differs from the version being deployed ($SHIP). If the host copy was a hand-deploy ahead of origin, this rsync REVERTS it (AC-410) — confirm origin carries the intended gateway.py."
+          fi
           rsync --inplace -e "ssh -i ~/.ssh/amux_cloud" cloud/gateway/gateway.py \
             "root@$CLOUD_HOST:/opt/amux-cloud/gateway/gateway.py"
           rsync -e "ssh -i ~/.ssh/amux_cloud" cloud/docker/docker-compose.template.yml \
@@ -559,6 +584,21 @@ jobs:
             set -u
             WANT=$(docker image inspect -f '{{.Id}}' ghcr.io/mixpeek/amux:latest)
             bad=0
+            # AC-407: a recreate stops every tmux session and the rust server does
+            # not restore them (no AMUX_AUTOSTART_SESSIONS). Capture which sessions
+            # were RUNNING per workspace BEFORE the recreate, so the restart below
+            # restores exactly that set — the customer's own running config, not an
+            # imposed one (ethos rule 8). A worker the customer had stopped stays
+            # stopped. Recorded before force-recreate; consumed after verify.
+            declare -A WAS_RUNNING
+            for d in /var/amux/users/*/; do
+              id=$(basename "$d")
+              c="amux-user-${id}"
+              docker ps --format '{{.Names}}' | grep -qx "$c" || continue
+              WAS_RUNNING[$id]=$(docker exec "$c" curl -sk --max-time 5 \
+                "https://localhost:8822/api/sessions" 2>/dev/null \
+                | python3 -c 'import json,sys; print(" ".join(s["name"] for s in json.load(sys.stdin) if s.get("running")))' 2>/dev/null || echo '')
+            done
             for d in /var/amux/users/*/; do
               id=$(basename "$d")
               docker ps --format '{{.Names}}' | grep -qx "amux-user-${id}" || continue
@@ -598,6 +638,27 @@ jobs:
               echo "$wedged" | sed 's/^/  /'
               bad=1
             fi
+            # AC-407: restore the sessions the recreate stopped. Only those that
+            # were running BEFORE (captured above), only on containers that just
+            # proved they serve rust — restarting into a wedged/old container would
+            # be pointless. A restart hiccup is reported but does NOT fail the
+            # deploy: the image swap succeeded, and cloud_autofix re-heals daily.
+            echo ""
+            echo "restoring sessions the recreate stopped (AC-407):"
+            for d in /var/amux/users/*/; do
+              id=$(basename "$d")
+              c="amux-user-${id}"
+              docker ps --format '{{.Names}}' | grep -qx "$c" || continue
+              have=$(docker inspect -f '{{.Image}}' "$c")
+              [ "$have" = "$WANT" ] || { echo "  $id: skipped (not on new image)"; continue; }
+              want_names="${WAS_RUNNING[$id]:-}"
+              [ -n "$want_names" ] || { echo "  $id: nothing was running"; continue; }
+              for name in $want_names; do
+                code=$(docker exec "$c" curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+                  -X POST "https://localhost:8822/api/sessions/${name}/start" 2>/dev/null || echo 000)
+                echo "  $id/$name -> $code"
+              done
+            done
             exit "$bad"
           ENDSSH
 

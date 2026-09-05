@@ -14,13 +14,17 @@
 //!   every mutation so SSE/delta-sync can publish revisioned StateEvents
 //!   (Invariant 35).
 
-pub mod commands;
+pub mod advance;
+pub mod artifact_store;
 pub mod board_store;
-pub mod workflow_store;
+pub mod commands;
 pub mod memories;
 pub mod migrate;
 pub mod queries;
 pub mod replay;
+pub mod telegram;
+pub mod verification_store;
+pub mod workflow_store;
 
 use amux_core::revision::{MutationKind, StateEvent, StateRevision};
 use r2d2_sqlite::SqliteConnectionManager;

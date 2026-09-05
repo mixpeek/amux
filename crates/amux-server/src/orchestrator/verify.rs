@@ -82,10 +82,19 @@ fn execute(kind: &VerifierKind, cwd: &str) -> VerificationResult {
                 }
             }
         }
-        // Not yet executable: FAIL with the reason named, never pass. A
-        // criterion that demands a browser assertion is not satisfied by
-        // our inability to run browsers (Invariant 7: verified is the
-        // HARNESS's conclusion, with evidence).
+        VerifierKind::Temporal { after } => {
+            if chrono::Utc::now() >= *after {
+                VerificationResult::Passed
+            } else {
+                VerificationResult::Failed {
+                    reason: format!(
+                        "temporal gate: not yet past {} (now: {})",
+                        after.to_rfc3339(),
+                        chrono::Utc::now().to_rfc3339()
+                    ),
+                }
+            }
+        }
         VerifierKind::PlaywrightAssertion { script } => VerificationResult::Failed {
             reason: format!(
                 "playwright verifier not yet executable in this phase (script: {script}) — \

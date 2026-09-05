@@ -22,15 +22,79 @@ use amux_server::db::Store;
 use std::path::Path;
 
 /// True when the real fast model can actually answer. A probe, not a guess.
+///
+/// THE PROBE MUST READ THE ANSWER, NOT JUST ITS LENGTH (2026-09-02). It asked
+/// for exactly the word "ok" and then accepted ANY non-empty string, so a CLI
+/// that answers without answering counted as available. Measured: with the
+/// account session-limited, `complete` returns `Ok("You've hit your session
+/// limit · resets 7pm (America/New_York)")` — non-empty, so the probe said
+/// available, both tests ran, and both failed comparing that sentence against
+/// expected content:
+///
+///   the connected source should reach the output; got: You've hit your session
+///   limit · resets 7pm (America/New_York)
+///
+/// That is a red suite reporting a quota state as a product defect, and the
+/// whole point of this gate is that CI without model credentials stays green.
+/// A refusal is exactly the case it exists to skip; it just arrives as `Ok`.
+///
+/// So: check for the token that was requested. Any other reply — a quota
+/// message, a policy refusal, a login prompt, an outage banner — is a model
+/// that cannot answer, which is the condition this function is named for. The
+/// reason is printed either way, so a skip is never silent.
 fn model_available() -> bool {
     let model = amux_server::api::mdai::resolve_model(None);
     match CliModel.complete(&model, "Reply with exactly the word: ok") {
-        Ok(s) => !s.trim().is_empty(),
+        Ok(s) => {
+            let ok = probe_answered(&s);
+            if !ok {
+                eprintln!(
+                    "SKIP mdai live e2e: the model replied but did not answer the probe \
+                     (asked for \"ok\", got: {}). Treating as unavailable — a quota message, \
+                     a refusal or a login prompt is not a working model.",
+                    s.trim().chars().take(120).collect::<String>()
+                );
+            }
+            ok
+        }
         Err(e) => {
             eprintln!("SKIP mdai live e2e: model not available ({e})");
             false
         }
     }
+}
+
+/// Did the reply actually answer the probe? Pure, so the SKIP path can be
+/// tested without a session limit to reproduce.
+///
+/// Substring, not equality: a live model may add punctuation or a trailing
+/// newline, and pinning exact bytes would skip on a model that answered
+/// correctly — the opposite failure and the more expensive one, since it would
+/// silently stop exercising the feature.
+fn probe_answered(reply: &str) -> bool {
+    reply.to_lowercase().contains("ok")
+}
+
+#[test]
+fn the_probe_reads_the_answer_rather_than_its_length() {
+    // THE SPECIMEN, verbatim from the failing run on 2026-09-02. Non-empty, so
+    // the old `!s.trim().is_empty()` called it available and ran both tests,
+    // which then failed comparing this sentence against expected content.
+    assert!(!probe_answered("You've hit your session limit · resets 7pm (America/New_York)"));
+
+    // Other ways a CLI answers without answering.
+    assert!(!probe_answered("Please run `claude login` to continue."));
+    assert!(!probe_answered("I can't help with that request."));
+    assert!(!probe_answered(""));
+    assert!(!probe_answered("   \n  "));
+
+    // CONTROLS — a real answer must still count, including the shapes a live
+    // model actually produces. Without these, `false` would pass every cell
+    // above and the gate would skip forever, silently retiring the feature.
+    assert!(probe_answered("ok"));
+    assert!(probe_answered("ok\n"));
+    assert!(probe_answered("OK."));
+    assert!(probe_answered("  Ok  "));
 }
 
 fn write(dir: &Path, name: &str, content: &str) {

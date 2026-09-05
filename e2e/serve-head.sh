@@ -29,6 +29,35 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # concurrent build WAIT and then find the work done, which is cheap.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 
+# FLEET ENV MUST NOT LEAK INTO THE THROWAWAY HOME (AC-404). Every fleet session
+# exports the shared ~/.amux/server.env into its shell (AMUX_TASK_GUARD=1 among
+# others), and the server's effective_env() falls back to the PROCESS env for any
+# key the throwaway home's server.env does not set. So a "fresh" e2e server
+# inherited the fleet's behavior toggles: settings_task_guard asserts default-OFF,
+# read ON, and reds LOCALLY for every session on this box while clean-env CI
+# passes — a red indistinguishable from a code regression (2026-09-01, found
+# during AC-403's sweep). Keep only what this harness is parameterized by:
+# AMUX_HOME + AMUX_RS_PORT + AMUX_RS_NO_LOOPBACK_BYPASS (per-project, from
+# playwright.config.ts's webServer env), AMUX_NO_SELF_ADOPT (pinned below), and
+# the AMUX_E2E_* opts. Announce the rest by name, since a scrub nobody can see
+# is indistinguishable from no scrub.
+#
+# THE ALLOWLIST MUST COVER EVERY KEY playwright.config.ts PASSES. The first
+# version of this scrub missed AMUX_RS_NO_LOOPBACK_BYPASS and ate it, so every
+# CI e2e server auth-bypassed loopback and 6 bad-token assertions became checks
+# that cannot pass (run 33525151971, the exact failure the config's own comment
+# warns about). tests/e2e_env_allowlist.rs now diffs the config's env keys
+# against this case line, so adding a key there without adding it here fails
+# the check job instead of failing six unrelated specs.
+_scrubbed=""
+for _k in ${!AMUX_@}; do
+  case "$_k" in
+    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_E2E_*) ;;
+    *) unset "$_k"; _scrubbed="$_scrubbed $_k" ;;
+  esac
+done
+[ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
+
 # AEAB-52. THIS SCRIPT EXISTS TO PIN A SPECIFIC BUILD, so a server that hot-swaps
 # itself mid-suite is running a different binary from the one the suite chose.
 #
@@ -57,6 +86,14 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 # shows `binary changed on disk`, check the run's created_at against this line's
 # commit before patching anything.
 export AMUX_NO_SELF_ADOPT=1
+
+# A throwaway home is not enough isolation: tmux, process tables, hook files and
+# provider credentials are host-wide. Without the process-wide fleet switch,
+# three browser-test servers run cleanup/autofix/invariant loops against the real
+# machine and write those findings into their temporary boards. The registry
+# keeps every suppressed job visible with this exact reason, so isolation does
+# not turn monitoring into a silent absence.
+export AMUX_ISOLATED=1
 
 dirty="$(git -C "$REPO" status --porcelain -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true)"
 

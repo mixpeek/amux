@@ -15,8 +15,18 @@ use axum::http::{header, HeaderMap, Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+/// Evidence that satisfies the global AF-321 `done` constraint.
+///
+/// The tests below assert about gate ACKS, retyping, reviewers and the
+/// lifecycle — not about evidence. They carry this so a constraint they are
+/// not testing does not decide their result, which is the same reason they
+/// already carry an asset link. The evidence gate has its own coverage in
+/// `done_requires_evidence_a_plan_cannot_supply`.
+const EV: &str = "ran `cargo test -p amux-server`";
+
 fn app_with_store() -> (axum::Router, std::sync::Arc<Store>, tempfile::TempDir) {
     std::env::set_var("AMUX_DONE_LINK_REQUIRED", "1");
+    std::env::set_var("AMUX_DONE_EVIDENCE_REQUIRED", "1");
     let dir = tempfile::tempdir().unwrap();
     let store = std::sync::Arc::new(Store::open(&dir.path().join("amux-test.db")).unwrap());
     let state = AppState {
@@ -24,6 +34,7 @@ fn app_with_store() -> (axum::Router, std::sync::Arc<Store>, tempfile::TempDir) 
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), store, dir)
 }
@@ -33,6 +44,7 @@ fn app() -> (axum::Router, tempfile::TempDir) {
     // on whether the real ~/.amux disables it): the gate tests here provide a
     // link where they reach done, and done_requires_an_asset_link asserts it.
     std::env::set_var("AMUX_DONE_LINK_REQUIRED", "1");
+    std::env::set_var("AMUX_DONE_EVIDENCE_REQUIRED", "1");
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("amux-test.db")).unwrap();
     let state = AppState {
@@ -40,6 +52,7 @@ fn app() -> (axum::Router, tempfile::TempDir) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), dir)
 }
@@ -163,6 +176,138 @@ async fn create_list_detail_lifecycle() {
     assert_eq!(v["creator"], json!("orch"));
 }
 
+#[tokio::test]
+async fn capture_decomposition_is_atomic_ordered_and_keeps_the_message_on_the_epic() {
+    let (app, store, _dir) = app_with_store();
+    store
+        .write(|conn| {
+            conn.execute(
+                "INSERT INTO issues \
+                 (id,title,desc,status,session,type,creator,owner_type,source,created,updated) \
+                 VALUES ('ATE-1','Captured request','**Prompt:** build and verify it', \
+                         'doing','amux-testing-e2e','code','amux','agent','capture',1,1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO cmd_history (id,text,type,session,ts,origin,card_id) \
+                 VALUES (39225,'build and verify it','user','amux-testing-e2e',1000,'browser','ATE-1')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO issue_counters (prefix,next_n) VALUES ('ATE',2)",
+                [],
+            )?;
+            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .unwrap();
+
+    let plan = json!({"tasks":[
+        {"title":"Implement the change","description":"Build the requested behavior.",
+         "type":"code","priority":0,"depends_on":[],"next_action":"Implement the requested behavior"},
+        {"title":"Verify the change","description":"Exercise the complete flow.",
+         "type":"investigation","priority":1,"depends_on":[1],"next_action":"Run the end to end verification"},
+        {"title":"Document the result","description":"Record the verified outcome.",
+         "type":"doc","priority":2,"depends_on":[2],"next_action":"Write the final result summary"}
+    ]});
+    let (st, _, made) = send_with(
+        &app,
+        "POST",
+        "/api/board/ATE-1/decompose",
+        Some(plan.clone()),
+        &[("X-Amux-Worker", "amux-testing-e2e")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{made}");
+    assert_eq!(made["epic"]["type"], json!("epic"));
+    let tasks = made["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks[0]["status"], json!("todo"));
+    assert_eq!(tasks[1]["status"], json!("backlog"));
+    assert_eq!(tasks[1]["depends_on"], json!([tasks[0]["id"].clone()]));
+    assert_eq!(tasks[2]["depends_on"], json!([tasks[1]["id"].clone()]));
+    assert_eq!(tasks[0]["tags"], json!(["p0"]));
+    assert_eq!(tasks[1]["epic"], json!("ATE-1"));
+    assert_eq!(tasks[0]["session"], json!("amux-testing-e2e"));
+
+    let (st, _, detail) = send(&app, "GET", "/api/board/ATE-1", None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(detail["children"].as_array().unwrap().len(), 3);
+    assert_eq!(detail["messages"][0]["id"], json!(39225));
+    assert_eq!(detail["messages"][0]["card_id"], json!("ATE-1"));
+
+    let first_id = tasks[0]["id"].as_str().unwrap();
+    let (st, _, artifact) = send(
+        &app,
+        "POST",
+        &format!("/api/board/{first_id}/artifacts"),
+        Some(json!({"kind":"implementation","ref":"/tmp/result.md","state":"created"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{artifact}");
+    let (_, _, child_detail) = send(&app, "GET", &format!("/api/board/{first_id}"), None).await;
+    assert_eq!(child_detail["epic"], json!("ATE-1"));
+    assert_eq!(child_detail["messages"][0]["id"], json!(39225));
+    assert_eq!(child_detail["artifacts"][0]["ref"], json!("/tmp/result.md"));
+    assert!(
+        child_detail["log"].as_str().unwrap().contains("artifact (api-anonymous): implementation/created /tmp/result.md"),
+        "artifact registration must be part of the task action history: {child_detail}"
+    );
+
+    // A retry is idempotent: it reports the existing plan instead of minting
+    // a second set of leaves after a client loses the first response.
+    let (st, _, retried) = send_with(
+        &app,
+        "POST",
+        "/api/board/ATE-1/decompose",
+        Some(plan),
+        &[("X-Amux-Worker", "amux-testing-e2e")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(retried["idempotent"], json!(true));
+    assert_eq!(retried["tasks"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn invalid_decomposition_creates_no_partial_children() {
+    let (app, store, _dir) = app_with_store();
+    store
+        .write(|conn| {
+            conn.execute(
+                "INSERT INTO issues \
+                 (id,title,desc,status,session,type,creator,owner_type,source,created,updated) \
+                 VALUES ('ATE-9','Captured request','**Prompt:** bad plan','doing','lane', \
+                         'code','amux','agent','capture',1,1)",
+                [],
+            )?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    let (st, _, body) = send_with(
+        &app,
+        "POST",
+        "/api/board/ATE-9/decompose",
+        Some(json!({"tasks":[
+            {"title":"First","priority":0,"depends_on":[],"next_action":"Implement the first step"},
+            {"title":"Second","priority":1,"depends_on":[2],"next_action":"Implement the second step"}
+        ]})),
+        &[("X-Amux-Worker", "lane")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    let children: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM issues WHERE epic='ATE-9'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(children, 0);
+}
+
 // ---- List payload shapes: slim by default, prose on request --------------
 //
 // History, because this contract moved TWICE and each move was deliberate.
@@ -195,8 +340,18 @@ async fn list_is_slim_by_default_and_serves_prose_only_on_request() {
     let item = &list.as_array().unwrap()[0];
     assert!(item.get("desc").is_none(), "default list must not carry desc");
     assert!(item.get("log").is_none(), "default list must not carry log");
-    assert!(item["desc_len"].as_u64().is_some());
-    assert!(item["log_n"].as_u64().is_some());
+    // `> 0`, not `is_some()` (AF-346). A blanked loader returns 0 for both, and
+    // `is_some()` is true of 0 — so the pair read as passing while every card on
+    // the board carried desc_len 0. The desc_head assertion below is what actually
+    // caught the 2026-08-30 regression; these two were present and could not have.
+    assert!(
+        item["desc_len"].as_u64().unwrap_or(0) > 0,
+        "a card created with a 300-char desc must report a non-zero desc_len"
+    );
+    assert!(
+        item["log_n"].as_u64().unwrap_or(0) > 0,
+        "the PATCH above appends a log line, so log_n must be non-zero"
+    );
     assert!(item["desc_head"].as_str().unwrap().starts_with("first line"));
     assert!(item.get("folded_n").is_some());
 
@@ -453,7 +608,7 @@ async fn gate_blocks_with_python_body_then_gate_checked_satisfies() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done" })),
+        Some(json!({ "status": "done", "evidence": EV })),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
@@ -484,7 +639,7 @@ async fn gate_blocks_with_python_body_then_gate_checked_satisfies() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "gate_checked": ["Implemented and merged"] })),
+        Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Implemented and merged"] })),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
@@ -497,7 +652,7 @@ async fn gate_blocks_with_python_body_then_gate_checked_satisfies() {
         "PATCH",
         &format!("/api/board/{id}"),
         Some(json!({
-            "status": "done",
+            "status": "done", "evidence": EV,
             "gate_checked": ["Implemented and merged", "Tests / lint pass"]
         })),
         &[("X-Amux-Session", "worker-1")],
@@ -527,7 +682,7 @@ async fn gates_derive_from_type_and_retyping_is_the_honest_exit() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done" })),
+        Some(json!({ "status": "done", "evidence": EV })),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
@@ -541,24 +696,43 @@ async fn gates_derive_from_type_and_retyping_is_the_honest_exit() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "gate_ack": true })),
+        Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["status"], json!("done"));
 
     // Unknown types are rejected at the door with the valid set — never
-    // silently mis-gated (the seven 'decision' cards incident).
+    // silently mis-gated.
+    //
+    // THE EXAMPLE USED TO BE `decision`, and swapping it is the point of AF-323
+    // rather than a detail. Refusing an UNLISTED type is correct and still
+    // asserted here; what was wrong was `decision` being unlisted while five
+    // live cards already stored it, so this test was pinning the defect. Its own
+    // comment tracked the count growing — "the seven 'decision' cards incident",
+    // filed at three — and a growing number in a test's prose is the tell that
+    // the test is describing a leak, not a guarantee.
+    //
+    // `task` carries the same provenance and is still genuinely unknown: the CLI
+    // advertised `task` and `decision` in its usage line until AMUX-2479, and
+    // neither was accepted. One of those two is now a real type; this is the
+    // other.
     let (st, _, v) = send(
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "type": "decision" })),
+        Some(json!({ "type": "task" })),
     )
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert!(v["error"].as_str().unwrap().contains("unknown type"));
     assert!(v["valid_types"].as_array().unwrap().contains(&json!("watch")));
+    // And the type this card family is named after is now IN that set, which is
+    // the half a "reject unknown types" test can never show on its own.
+    assert!(
+        v["valid_types"].as_array().unwrap().contains(&json!("decision")),
+        "decision must be offered as a valid type: {v}"
+    );
 }
 
 /// AMUX-3058: a gate OVERRIDE (`gate` field) pins the gate over the type, so
@@ -585,7 +759,7 @@ async fn retyping_clears_a_gate_override_so_the_gate_re_derives_from_the_new_typ
     let id = card["id"].as_str().unwrap().to_string();
 
     // Before the fix: done demanded the code override even for an investigation.
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done" }))).await;
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done", "evidence": EV }))).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(v["gate"], json!(["Implemented and merged", "Tests / lint pass"]), "the override pins code criteria pre-retype");
 
@@ -598,7 +772,7 @@ async fn retyping_clears_a_gate_override_so_the_gate_re_derives_from_the_new_typ
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "gate_checked": ["Outcome recorded in the item (what happened, and why it is closed)"] })),
+        Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Outcome recorded in the item (what happened, and why it is closed)"] })),
     )
     .await;
     assert_eq!(st, StatusCode::OK, "the type-derived chore gate must be satisfiable after retype: {v}");
@@ -612,7 +786,7 @@ async fn retyping_clears_a_gate_override_so_the_gate_re_derives_from_the_new_typ
         &app,
         "PATCH",
         &format!("/api/board/{cid}"),
-        Some(json!({ "status": "done", "gate_checked": ["Implemented and merged", "Tests / lint pass"] })),
+        Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Implemented and merged", "Tests / lint pass"] })),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "code criteria must NOT satisfy a chore gate: {v}");
@@ -1042,6 +1216,431 @@ async fn stale_expect_rev_is_409_with_current_rev() {
     assert_eq!(detail["desc"], json!("writer A"));
 }
 
+// ---- global done-evidence gate (AF-321): done needs proof, not a plan -----
+
+/// THE PROPERTY THIS GATE EXISTS FOR.
+///
+/// `done_requires_asset_link` is a shape check over the whole desc, so a card
+/// that merely NAMES the file it intends to edit satisfies it before anyone
+/// touches that file. Measured on the live board 2026-08-29: 843 of 1372 open
+/// cards (61%) passed it on their filed text with no work done.
+///
+/// So the test is not "does done refuse an empty card" — the older gate already
+/// did that. It is that a realistic, fully-linked PROBLEM STATEMENT, the exact
+/// text a card is filed with, still cannot close it.
+#[tokio::test]
+async fn done_requires_evidence_a_plan_cannot_supply() {
+    let (app, _dir) = app();
+    // A real filing: names the source file and the source doc. Both gates that
+    // read `desc` see artifact links here.
+    let card = create(
+        &app,
+        json!({
+            "title": "add the check",
+            "status": "doing",
+            "type": "chore",
+            "desc": "Location: crates/amux-server/src/api/board.rs — add the check there. \
+                     Source: docs/fleet-friction-review-2026-08-29.md Theme 4",
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // The OLD gate is satisfied by this text. Assert that directly, so the test
+    // below cannot pass for the wrong reason (a control that can distinguish
+    // "the new gate fired" from "the old gate fired").
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(
+        v["code"],
+        json!("done_requires_evidence"),
+        "the plan must get PAST the link gate and be stopped by the evidence gate: {v}"
+    );
+
+    // Prose is not evidence either.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "gate_ack": true, "evidence": "implemented" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("done_evidence_has_no_artifact"), "{v}");
+    // The refused text is handed back, so a caller can see what it sent.
+    assert_eq!(v["recorded_evidence"], json!("implemented"));
+
+    // Something a reader can re-run closes it.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "status": "done",
+            "gate_ack": true,
+            "evidence": "ran `cargo test -p amux-server --test board_api`, 51 passed",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], json!("done"));
+    // And it is READABLE afterwards: a gate whose input is not stored is a
+    // gate nobody can audit (ethos rule 6).
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert!(
+        detail["evidence"].as_str().unwrap_or("").contains("cargo test"),
+        "evidence must survive onto the card: {detail}"
+    );
+}
+
+// ---- todo WIP limit + blocked needs a watch (AF-317) ----------------------
+
+/// A lane's `todo` is a dispatch queue with a ceiling, and the refusal names
+/// the cards to close FIRST rather than saying "close something".
+#[tokio::test]
+async fn the_todo_wip_limit_refuses_the_next_card_and_names_what_to_close() {
+    let (app, _tmp) = app();
+    std::env::set_var("AMUX_TODO_WIP_LIMIT", "3");
+
+    let mk = |app: &axum::Router, n: usize| {
+        let app = app.clone();
+        async move {
+            create(
+                &app,
+                json!({"title": format!("queued work {n}"), "session": "wippy",
+                       "owner_type": "agent", "status": "todo"}),
+            )
+            .await
+        }
+    };
+    for n in 0..3 {
+        let c = mk(&app, n).await;
+        assert!(c["id"].as_str().is_some(), "card {n} must be creatable: {c}");
+    }
+
+    // The FOURTH is refused, on the CREATE path — which is the path `amux board
+    // add` uses and therefore the one that actually grew the queues.
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "one too many", "session": "wippy",
+                    "owner_type": "agent", "status": "todo"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("todo_wip_limit_reached"), "{v}");
+    assert_eq!(v["holding"], json!(3), "{v}");
+    assert_eq!(v["limit"], json!(3), "{v}");
+    // Not a generic "close something": the refusal carries specific cards.
+    let close = v["close_these_first"].as_array().expect("must name cards to close");
+    assert!(!close.is_empty(), "a limit with no list is an obstacle, not a fix: {v}");
+    assert!(close[0]["id"].as_str().is_some() && close[0]["days_since_touched"].is_number(), "{v}");
+
+    // `backlog` is the sanctioned exit and is NOT capped — the limit is a
+    // ceiling on QUEUEING, not on filing (ethos rule 3 wants a truthful path).
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "real but not next", "session": "wippy",
+                    "owner_type": "agent", "status": "backlog"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "backlog must stay unbounded: {v}");
+
+    // A DETECTOR's card is never refused for queue depth: it carries no
+    // session, so it is outside the count by construction rather than by an
+    // exemption someone has to remember.
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "disk is at 97%", "owner_type": "human", "status": "todo"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "a fault report must never be dropped for WIP: {v}");
+
+    std::env::remove_var("AMUX_TODO_WIP_LIMIT");
+}
+
+/// `blocked` has to name what would unblock it, or nobody is watching.
+#[tokio::test]
+async fn blocked_refuses_a_card_that_names_no_watch() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({"title": "waiting on something", "session": "w2"})).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"status": "blocked", "gate_ack": true})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("blocked_needs_a_watch"), "{v}");
+    // All three honest exits are offered, including the AF-318 one.
+    let fix = &v["how_to_fix"];
+    assert!(fix["on_another_card"].as_str().unwrap().contains("depends_on"), "{v}");
+    assert!(fix["on_a_condition"].as_str().unwrap().contains("--trigger"), "{v}");
+    assert!(fix["on_a_person"].as_str().unwrap().contains("needsyou"), "{v}");
+
+    // A dependency satisfies it.
+    let other = create(&app, json!({"title": "the thing that must land first"})).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"status": "blocked", "gate_ack": true,
+                    "depends_on": [other["id"].as_str().unwrap()]})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "a named dependency is a watch: {v}");
+}
+
+// ---- typed needsyou ask (AF-318): a park has to name the human act ---------
+
+/// THE PROPERTY. A card can be parked on a human only if it says which KIND of
+/// human act, what is being asked, and what ends the block.
+///
+/// The specimen is not an empty card — the old gates already caught those. It
+/// is a card whose title and desc are perfectly ordinary engineering work, the
+/// shape roughly half the live `needsyou` cards actually have ("Compute
+/// Utilization Audit", "Fix Namespace Pollution"). Those pass every other gate
+/// on the board and are exactly what makes the ~20 real asks unfindable.
+///
+/// The population is 389 live, not the 445 the filing card quoted: that query
+/// counted archived rows. The 51% share is unaffected, and the shape is what
+/// this test pins.
+#[tokio::test]
+async fn needsyou_refuses_a_park_that_names_no_human_act() {
+    let (app, _tmp) = app();
+    let c = create(
+        &app,
+        json!({
+            "title": "Compute Utilization Audit",
+            "desc": "Audit idle GPU hours across the fleet. See docs/compute.md.",
+        }),
+    )
+    .await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    // Untyped: refused, and the five types are IN the refusal so the reader
+    // does not have to go and find them (AF-112).
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "needsyou", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("needsyou_requires_ask_type"), "{v}");
+    let types: Vec<&str> =
+        v["ask_types"].as_array().unwrap().iter().map(|t| t["type"].as_str().unwrap()).collect();
+    assert_eq!(types, vec!["decision", "access", "credential", "external", "judgment"], "{v}");
+
+    // A type outside the closed vocabulary is refused too, or the vocabulary
+    // is decorative.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "needsyou", "gate_ack": true, "ask_actor": "Ethan", "ask_type": "blocked",
+                     "ask_question": "can someone look at this",
+                     "ask_unblocks": "someone looks at it" })),
+    )
+    .await;
+    assert_eq!(v["code"], json!("needsyou_ask_type_unknown"), "{v}");
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // "Blocked on Ethan" with no question: the exact phrasing the rules call
+    // out as not-an-ask.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "needsyou", "gate_ack": true, "ask_actor": "Ethan", "ask_type": "decision",
+                     "ask_question": "blocked", "ask_unblocks": "Ethan answers this question" })),
+    )
+    .await;
+    assert_eq!(v["code"], json!("needsyou_ask_has_no_question"), "{v}");
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // A question with no exit condition. This is the half that makes an ask
+    // falsifiable, so it is refused separately rather than folded in.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "needsyou", "gate_ack": true, "ask_actor": "Ethan", "ask_type": "decision",
+                     "ask_question": "Should idle GPU hours be reclaimed automatically?",
+                     "ask_unblocks": "yes" })),
+    )
+    .await;
+    assert_eq!(v["code"], json!("needsyou_ask_has_no_exit"), "{v}");
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    // All four, and it parks.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "needsyou", "gate_ack": true, "ask_actor": "Ethan", "ask_type": "decision",
+                     "ask_question": "Should idle GPU hours be reclaimed automatically?",
+                     "ask_unblocks": "a yes or no from the owner on auto-reclaim" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // And the ask is READABLE afterwards — a gate whose input is not stored is
+    // a gate nobody can audit (ethos rule 6), and the owner view ranks on it.
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(got["ask_type"], json!("decision"));
+    assert!(got["ask_unblocks"].as_str().unwrap().contains("auto-reclaim"), "{got}");
+}
+
+/// The ask survives a transition that a DIFFERENT gate refuses.
+///
+/// Same two-write property as `evidence`: a PATCH is atomic, so sending the ask
+/// together with the status means a 409 rolls the ask back and the retry has
+/// nothing to satisfy the gate that just refused it.
+#[tokio::test]
+async fn a_refused_park_does_not_discard_the_ask_it_asked_for() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({ "title": "park me", "type": "code" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    // Written on its own, with no status change at all.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "ask_actor": "platform-admin", "ask_type": "access", "ask_question": "Who owns the staging console?",
+                     "ask_unblocks": "a name, or an invite to the console" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(got["ask_type"], json!("access"), "the ask must persist without a transition");
+    assert_eq!(got["status"], json!("todo"), "writing an ask must not move the card");
+}
+
+/// THE OWNER VIEW: capped, ranked by what clearing it releases, and honest
+/// about the remainder.
+#[tokio::test]
+async fn the_needsyou_view_is_capped_and_ranks_by_blast_radius_not_age_alone() {
+    let (app, _tmp) = app();
+    let park = |app: &axum::Router, id: String| {
+        let app = app.clone();
+        async move {
+            send(
+                &app,
+                "PATCH",
+                &format!("/api/board/{id}"),
+                Some(json!({ "status": "needsyou", "gate_ack": true, "ask_actor": "Ethan", "ask_type": "decision",
+                             "ask_question": "Which way should this go?",
+                             "ask_unblocks": "a direction from the owner" })),
+            )
+            .await
+        }
+    };
+
+    // Two parked cards. `blocker` has an open card depending on it; `lonely`
+    // has none. Both are the same age, so age alone cannot separate them and
+    // any ordering difference is the blast radius doing the work.
+    let blocker = create(&app, json!({"title": "three lanes wait on this"})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let lonely = create(&app, json!({"title": "nobody waits on this"})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    create(&app, json!({"title": "waiting behind the blocker", "depends_on": [blocker.clone()]}))
+        .await;
+    assert_eq!(park(&app, blocker.clone()).await.0, StatusCode::OK);
+    assert_eq!(park(&app, lonely.clone()).await.0, StatusCode::OK);
+
+    let (st, _, v) = send(&app, "GET", "/api/board/needsyou", None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let ids: Vec<&str> =
+        v["queue"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids.first(),
+        Some(&blocker.as_str()),
+        "the card others are blocked behind must outrank the one nobody waits on, at equal \
+         age — otherwise this is the same list sorted by age: {v}"
+    );
+    assert_eq!(v["queue"][0]["blast_radius"], json!(1), "{v}");
+    assert_eq!(v["queue"][1]["blast_radius"], json!(0), "{v}");
+
+    // AF-320 contract, since this is a diagnostic-shaped read.
+    assert_eq!(v["measured"], json!(true), "{v}");
+    assert_eq!(v["n_considered"], json!(2), "{v}");
+
+    // THE CAP, and the honesty about what it hides. A view that hid rows with
+    // no way to ask for them would be an instrument lying about its own
+    // population.
+    let (_, _, capped) = send(&app, "GET", "/api/board/needsyou?limit=1", None).await;
+    assert_eq!(capped["shown"], json!(1), "{capped}");
+    assert_eq!(capped["hidden"], json!(1), "{capped}");
+    assert_eq!(capped["total"], json!(2), "{capped}");
+    let (_, _, all) = send(&app, "GET", "/api/board/needsyou?limit=1&all=1", None).await;
+    assert_eq!(all["shown"], json!(2), "?all=1 must reach the remainder: {all}");
+    assert_eq!(all["hidden"], json!(0), "{all}");
+}
+
+/// The no-artifact escape is real, and it is not a shrug. Both halves matter:
+/// without the first, an escalation that closed because the owner decided has
+/// no truthful path to done (ethos rule 3); without the second, `none:` is a
+/// blanket bypass and the gate means nothing.
+#[tokio::test]
+async fn none_needs_a_reason_and_then_it_is_accepted_and_stored() {
+    let (app, _dir) = app();
+    let card = create(
+        &app,
+        json!({ "title": "stand down", "status": "doing", "type": "escalation",
+                "desc": "raised in docs/x.md" }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "gate_ack": true, "evidence": "none: n/a" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("done_evidence_none_unexplained"), "{v}");
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "status": "done", "gate_ack": true,
+            "evidence": "none: owner decided to stand this down, nothing was built",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    // Stored verbatim, so `evidence LIKE 'none:%'` counts the escapes. An escape
+    // nobody can count is the blind spot the escape was meant not to be.
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert!(detail["evidence"].as_str().unwrap_or("").starts_with("none: owner decided"));
+}
+
 // ---- global done-link gate (AMUX-3275): done needs a real asset link ------
 
 /// The done-link gate is validated against the card text, so a full gate_ack
@@ -1052,7 +1651,10 @@ async fn stale_expect_rev_is_409_with_current_rev() {
 #[tokio::test]
 async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
     let (app, _dir) = app();
-    // No link in the desc: no session, so the global default applies.
+    // No link anywhere: prose desc, and evidence that is prose too. Both of the
+    // places this gate reads are empty of anything checkable, so it refuses.
+    // `PROSE_EV` keeps the first refusal about completely unstructured prose.
+    const PROSE_EV: &str = "implemented it and it works";
     let card = create(
         &app,
         json!({ "title": "linkless", "status": "doing", "type": "chore", "desc": "just prose, nothing produced" }),
@@ -1063,17 +1665,120 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "gate_ack": true })),
+        Some(json!({ "status": "done", "evidence": PROSE_EV, "gate_ack": true })),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], json!("done_requires_asset_link"));
 
-    // Add a real artifact link; the same ack now reaches done.
-    let (st, _, _) = send(
+    // A reproducible command satisfies the evidence gate, but it is not a
+    // produced asset. Keeping these predicates separate prevents `cargo test`
+    // from being presented as the file/URL/commit the card created.
+    let (st, _, v) = send(
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "a command is evidence, not an asset: {v}");
+    assert_eq!(v["code"], json!("done_requires_asset_link"));
+
+    // The structured artifact registry is canonical and sufficient by itself;
+    // workers must not have to duplicate a successful artifact write into card
+    // prose. The single-card response also publishes the ref for a clickable UI.
+    let (st, _, artifact) = send(
+        &app,
+        "POST",
+        &format!("/api/board/{id}/artifacts"),
+        Some(json!({
+            "kind": "doc",
+            "ref": "summary.md",
+            "state": "created",
+            "description": "run summary"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "artifact registration failed: {artifact}");
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "a registered artifact must satisfy the asset gate: {v}");
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(detail["artifacts"][0]["ref"], json!("summary.md"), "{detail}");
+
+    // Evidence that actually names an artifact remains a direct path, with the
+    // description still containing only prose.
+    let linked = create(
+        &app,
+        json!({ "title": "linked evidence", "status": "doing", "type": "chore", "desc": "prose only" }),
+    )
+    .await;
+    let linked_id = linked["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{linked_id}"),
+        Some(json!({
+            "status": "done",
+            "evidence": "created video-moderation-launch.mp4",
+            "gate_ack": true
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "a bare produced filename is a real asset ref: {v}");
+
+    // THE DOCUMENTED ESCAPE ACTUALLY WORKS NOW. CLAUDE.md says `none: <reason>`
+    // "is stored and counted, not a bypass"; this gate used to refuse it, so an
+    // honest close of a card that genuinely produced nothing had to go through
+    // `--force` and was logged as an override. Two such closes are on record.
+    let noart = create(
+        &app,
+        json!({ "title": "self-cleared", "status": "doing", "type": "chore", "desc": "a report that resolved itself" }),
+    )
+    .await;
+    let nid = noart["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{nid}"),
+        Some(json!({
+            "status": "done",
+            "evidence": "none: the rate limit reset on its own and no artifact was produced",
+            "gate_ack": true
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "`none: <reason>` must close without --force: {v}");
+
+    // CONTROL: a bare `none:` is still refused. The escape is a reason, not a
+    // shrug, and an unexplained one is exactly what it exists to prevent — so
+    // the arm above must not have opened a hole.
+    let shrug = create(
+        &app,
+        json!({ "title": "shrug", "status": "doing", "type": "chore", "desc": "prose only" }),
+    )
+    .await;
+    let sid = shrug["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{sid}"),
+        Some(json!({ "status": "done", "evidence": "none:", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "an unexplained `none:` must not pass: {v}");
+
+    // And the original path still works: an artifact link in the DESC, which is
+    // what this gate has always read.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{sid}"),
         Some(json!({ "desc": "shipped in crates/amux-server/src/api/board.rs" })),
     )
     .await;
@@ -1081,12 +1786,95 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
     let (st, _, v) = send(
         &app,
         "PATCH",
-        &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "gate_ack": true })),
+        &format!("/api/board/{sid}"),
+        Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["status"], json!("done"));
+}
+
+/// AMUX-3929, reported and measured by mixpeek-general. The typed-ask gate held
+/// on the TRANSITION door and creation walked past it.
+///
+/// `POST /api/board {"status":"needsyou"}` returned 201 with ask_type NULL while
+/// `PATCH {"status":"needsyou"}` on the same card was refused. Creation is the
+/// door most of this traffic uses, because "I found something the human must
+/// decide" is naturally expressed by filing the card already parked.
+///
+/// Live measurement at the time: 491 in needsyou, 68 typed, 423 untyped (86%),
+/// untyped median age 16 days, oldest 59 — and still leaking, 13 untyped created
+/// in 24h against 15 typed, across every lane.
+///
+/// The typed control is the half that matters. A gate that refused every
+/// needsyou creation would push lanes to file in `todo` and transition, which is
+/// the same hole one step later; the point is that a REAL ask must sail through.
+#[tokio::test]
+async fn creating_a_needsyou_card_needs_a_typed_ask_just_like_the_transition_does() {
+    let (app, _dir) = app();
+
+    // The hole: parked at birth, no ask.
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({ "title": "parked at birth", "status": "needsyou", "type": "chore" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "creation must be gated like the transition: {v}");
+    assert_eq!(v["code"], json!("needsyou_requires_ask_type"));
+
+    // CONTROL: a REAL ask is created, not refused. Without this the fix would be
+    // indistinguishable from banning needsyou creation outright, which just moves
+    // the untyped cards to a two-step path.
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({
+            "title": "a real ask",
+            "status": "needsyou",
+            "type": "chore",
+            "ask_actor": "Ethan",
+            "ask_type": "decision",
+            "ask_question": "Should we raise the browser profile TTL above 30 days?",
+            "ask_unblocks": "A yes or no from Ethan; either answer closes this.",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "a typed ask must be creatable: {v}");
+    assert_eq!(v["status"], json!("needsyou"));
+    assert_eq!(v["ask_type"], json!("decision"));
+
+    // CONTROL: the vocabulary stays closed at this door too, with the same code
+    // the transition door uses — one contract, whichever door you arrive at.
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({
+            "title": "invented type",
+            "status": "needsyou",
+            "type": "chore",
+            "ask_actor": "Ethan",
+            "ask_type": "vibes",
+            "ask_question": "Is this ok?",
+            "ask_unblocks": "Someone says yes.",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("needsyou_ask_type_unknown"));
+
+    // CONTROL: an ordinary card is untouched. The gate must not tax todo.
+    let (st, _, _) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({ "title": "ordinary", "type": "chore" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "a normal create must not be gated");
 }
 
 // ---- full lifecycle through the named transitions ------------------------
@@ -1094,8 +1882,9 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
 #[tokio::test]
 async fn lifecycle_todo_doing_review_done_verified_via_state_machine() {
     let (app, _dir) = app();
-    // desc carries an artifact link for the global done-link gate (AMUX-3275);
-    // this test is about the lifecycle state machine, not the link gate.
+    // desc carries an artifact link for the global done-link gate (AMUX-3275),
+    // and the body below carries evidence for the AF-321 one; this test is about
+    // the lifecycle state machine, not about either global constraint.
     let card = create(
         &app,
         json!({ "title": "full run", "type": "chore", "desc": "artifact: crates/amux-server/src/api/board.rs" }),
@@ -1114,7 +1903,7 @@ async fn lifecycle_todo_doing_review_done_verified_via_state_machine() {
             &app,
             "PATCH",
             &format!("/api/board/{id}"),
-            Some(json!({ "status": target, "gate_ack": true })),
+            Some(json!({ "status": target, "gate_ack": true, "evidence": EV })),
             &[("X-Amux-Session", "runner")],
         )
         .await;
@@ -1284,6 +2073,7 @@ async fn board_routes_sit_behind_auth_when_token_configured() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: Some("sekrit".into()),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
     let (st, _, _) = send(&app, "GET", "/api/board", None).await;
@@ -2125,7 +2915,7 @@ async fn a_gate_without_a_named_peer_criterion_needs_no_reviewer() {
         "PATCH",
         &format!("/api/board/{id}"),
         Some(json!({
-            "status": "done",
+            "status": "done", "evidence": EV,
             "gate_checked": ["Implemented and merged", "Tests / lint pass"]
         })),
         &[("X-Amux-Session", "amux")],
@@ -2158,7 +2948,7 @@ async fn the_retype_hint_prints_only_when_retyping_would_actually_help() {
         "desc": "artifact: crates/amux-server/src/api/board.rs",
     })).await;
     let id = card["id"].as_str().unwrap().to_string();
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done" }))).await;
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done", "evidence": EV }))).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert!(
         v["how_to_ack"]["wrong_type?"].is_string(),
@@ -2179,7 +2969,7 @@ async fn the_retype_hint_prints_only_when_retyping_would_actually_help() {
     )
     .await;
     let sid = scoped["id"].as_str().unwrap().to_string();
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{sid}"), Some(json!({ "status": "done" }))).await;
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{sid}"), Some(json!({ "status": "done", "evidence": EV }))).await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert!(
         v["how_to_ack"]["wrong_type?"].is_null(),
@@ -2466,6 +3256,718 @@ async fn the_contract_names_a_worker_scoped_gate_before_you_trip_it() {
 
 // ---- AMUX-3686: a --trigger must not eat an autofix dedupe signature -------
 //
+// AF-459. A trigger replacing a trigger is ALLOWED (the test below this one
+// pins that, and it is correct). What was missing is that it left no record of
+// what it destroyed: the PATCH log builds one line per patch out of a Vec of
+// FIELD NAMES, so an overwrite rendered as the bare word "source_ref".
+//
+// gtm-engine lost a five-item inventory from 2026-08-09 that way, probing
+// whether --trigger works on an archived card. It does. They recovered four
+// items from a prefix they happened to have printed earlier in their own
+// transcript; the fifth is gone. /api/history carries no row with the value
+// either, so the column that got written was the only copy that existed.
+//
+// Driven through the real router for the same reason as the test below: the
+// decision lives in the handler.
+#[tokio::test]
+async fn overwriting_a_trigger_records_the_value_it_destroyed() {
+    let (app, _dir) = app();
+
+    let (_s, _h, created) = send_with(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "parked card", "status": "todo", "session": "amux"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // The value that must survive its own replacement. Long on purpose: it is
+    // an inventory, which is what the real loss was.
+    let original = "inventory 2026-08-09: (1) shard roll evidence (2) warm-search p50 \
+                    (3) tenant caps (4) scheduler breach counts (5) eviction gap notes";
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": original})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success());
+
+    // THE SPECIMEN: a second trigger replaces the first. Allowed, and it must
+    // not be silent.
+    let replacement = "the next ts-engine roll";
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": replacement})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success(), "replacing a trigger with a trigger stays allowed");
+
+    let (_s, _h, detail) = send_with(&app, "GET", &format!("/api/board/{id}"), None, &[]).await;
+    let log = detail["log"].as_str().unwrap_or("");
+
+    // 1. THE DESTROYED VALUE IS RECOVERABLE FROM THE CARD. This is the whole
+    //    card: not that the field moved, but what it moved FROM.
+    assert!(
+        log.contains("eviction gap notes"),
+        "the overwritten trigger must be recoverable from the card log, \
+         otherwise the write is the only copy and it is gone: {log}"
+    );
+    // 2. Kept LONG. A truncated sole copy reproduces the exact partial recovery
+    //    gtm-engine got by accident — they retrieved a prefix and lost the tail.
+    //    The fifth item is the tail, which is why it is the one asserted above.
+    assert!(
+        log.contains("shard roll evidence") && log.contains("scheduler breach"),
+        "head AND tail of the destroyed value must survive, not just a prefix: {log}"
+    );
+    // 2b. THIS FIXTURE IS 132 CHARACTERS AND THE CAP WAS 200, so the assertion
+    //     above is satisfied by ANY cap at or above 132 and cannot see the
+    //     boundary at all (gtm-engine, 2026-09-04, refusing to validate the
+    //     entry this test was written for). Mutating the cap to 60 reddens it;
+    //     mutating it to 201, the shipped value, does not. Their real loss was
+    //     366 characters, which the fix head-truncated to 201 exactly as before.
+    //
+    //     A fixture that cannot cross the boundary cannot test it, so the cell
+    //     below builds one that must. It is asserted through the ELISION MARKER
+    //     rather than through a constant this integration target cannot see: if
+    //     the fixture ever stops crossing, the marker is absent and this fails,
+    //     so the cell cannot go quietly vacuous the way the one above did.
+    let long_head = "HEADSENTINEL-inventory-2026-09-04";
+    let long_tail = "TAILSENTINEL-the-fifth-item-that-was-lost";
+    let long_original =
+        format!("{long_head}{}{long_tail}", "x".repeat(2600));
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": long_original})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success());
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": "a third trigger, replacing the long one"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success());
+    let (_s, _h, detail) = send_with(&app, "GET", &format!("/api/board/{id}"), None, &[]).await;
+    let log = detail["log"].as_str().unwrap_or("");
+    // SELECT THE LINE WHERE IT IS THE *DESTROYED* VALUE, not the one where it
+    // ARRIVED. Both mention the fixture, and the arriving side is truncated at
+    // 60 by design — a whole-log `contains` would read the wrong record and
+    // this cell would be asserting the wrong half. The discriminator is the
+    // arriving value on the NEXT write, which is unique.
+    let was_line = log
+        .lines()
+        .find(|l| l.contains("a third trigger, replacing the long one"))
+        .unwrap_or_else(|| panic!("the over-long destroyed value must be logged: {log}"));
+    assert!(
+        was_line.contains("chars elided"),
+        "premise: the fixture must EXCEED the bound, or this cell measures nothing: {was_line}"
+    );
+    assert!(
+        was_line.contains(long_tail),
+        "the TAIL of an over-long destroyed value must survive: a prefix is the \
+         failure this card exists for, and the tail is the item gtm-engine lost: {was_line}"
+    );
+    assert!(
+        was_line.contains(long_head),
+        "and the head, so the elision is a middle rather than a suffix: {was_line}"
+    );
+
+    // 2c. gtm-engine's ACTUAL value size, which the previous fix silently cut.
+    //     366 characters must come back WHOLE, with no elision marker at all.
+    let real_case = format!("REALHEAD{}REALTAIL", "y".repeat(350));
+    assert_eq!(real_case.chars().count(), 366, "premise: their measured size");
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": real_case})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success());
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": "a fourth trigger"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success());
+    let (_s, _h, detail) = send_with(&app, "GET", &format!("/api/board/{id}"), None, &[]).await;
+    let log = detail["log"].as_str().unwrap_or("");
+    let line = log
+        .lines()
+        .find(|l| l.contains("-> a fourth trigger"))
+        .unwrap_or_else(|| panic!("the 366-char destroyed value must be logged: {log}"));
+    assert!(
+        line.contains(&real_case),
+        "a 366-character trigger is gtm-engine's real loss and must survive WHOLE: {line}"
+    );
+    assert!(
+        !line.contains("chars elided"),
+        "and must not be elided at all, or the fix is a bigger version of the bug: {line}"
+    );
+    // 3. It says WAS, so a reader can tell the old value from the new one.
+    assert!(
+        log.contains("source_ref: WAS"),
+        "the log must mark which side is the destroyed value: {log}"
+    );
+    assert!(
+        log.contains(replacement),
+        "the arriving value is still named: {log}"
+    );
+
+    // 4. NEGATIVE ARM: a FIRST write destroys nothing, so it must not claim to.
+    //    Without this the check would pass on an implementation that printed
+    //    "WAS" unconditionally, which would read as data loss on every create.
+    let (_s, _h, c2) = send_with(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "fresh card", "status": "todo", "session": "amux"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    let id2 = c2["id"].as_str().unwrap().to_string();
+    let (_s, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id2}"),
+        Some(json!({"source_ref": "first trigger ever"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    let (_s, _h, d2) = send_with(&app, "GET", &format!("/api/board/{id2}"), None, &[]).await;
+    let log2 = d2["log"].as_str().unwrap_or("");
+    assert!(
+        !log2.contains("WAS"),
+        "a first write overwrote nothing and must not imply it did: {log2}"
+    );
+    assert!(
+        log2.contains("first trigger ever"),
+        "a first write still names the value it set: {log2}"
+    );
+}
+
+// AF-469. A trigger with no verification time re-drains FOREVER, and nothing said
+// so. board_drive's idle gate is "source_ref is empty OR last_verified_at is older
+// than 24h", so a card parked with source_ref alone reads as a trigger nobody has
+// re-checked on every single tick.
+//
+// `amux board <status> --trigger` stamps BOTH fields. A raw PATCH — the shape the
+// CLAUDE.md board recipes teach — sets only source_ref. The two calls do the same
+// visible thing and the operator sees a 200 either way.
+//
+// Measured 2026-09-04 by ts-gke on themselves: TG-3239 parked by raw PATCH was
+// served four times in one session while eleven cards parked with the CLI stayed
+// quiet. They filed a dispatch-ORDERING report on the strength of it — wrong
+// population, wrong conclusion, wrong recommendation, sent to a peer — and the
+// whole split was which call recorded the same act.
+#[tokio::test]
+async fn parking_with_a_trigger_and_no_verification_time_warns_the_caller() {
+    let (app, _dir) = app();
+    let mk = |title: &str| {
+        let app = &app;
+        let t = title.to_string();
+        async move {
+            let (_s, _h, c) = send_with(app, "POST", "/api/board",
+                Some(json!({"title": t, "status": "todo", "session": "amux"})),
+                &[("X-Amux-Session", "amux")]).await;
+            c["id"].as_str().unwrap().to_string()
+        }
+    };
+
+    // THE FOOT-GUN: source_ref alone, exactly as a raw curl PATCH sends it.
+    let id = mk("parked by raw patch").await;
+    let (st, _h, body) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"source_ref": "the next ts-engine roll"})),
+        &[("X-Amux-Session", "amux")]).await;
+    assert!(st.is_success(), "the write must still succeed: {body}");
+    // `advisories`, NOT `diverted_fields`. The first version of this fix put the
+    // note in `diverted`, and the control in
+    // a_trigger_cannot_overwrite_an_autofix_signature_but_can_replace_a_trigger
+    // caught it — that control asserts an ordinary trigger write reports NO
+    // diversion, and exists so an advisory cannot fire on every source_ref write
+    // and train readers to ignore it. A diversion means "the key you named is not
+    // the key that changed"; nothing was diverted here.
+    let warned = body["advisories"].as_array().map(|a| a.iter().any(|d| {
+        d["field"] == "last_verified_at" && d["why"].as_str().unwrap_or("").contains("re-offer it")
+    })).unwrap_or(false);
+    assert!(warned, "a trigger with no last_verified_at must warn the caller: {body}");
+
+    // AND IT NAMES THE FIX, because a warning that does not is a warning that gets
+    // read once and ignored.
+    let why = body["advisories"][0]["why"].as_str().unwrap_or("");
+    assert!(why.contains("--trigger"), "the warning must name the verb that stamps both: {why}");
+
+    // THE CLI's SHAPE: both fields together. Must stay SILENT, or the warning fires
+    // on the correct path and becomes noise on every park.
+    let id2 = mk("parked by the CLI").await;
+    let (_s, _h, body2) = send_with(&app, "PATCH", &format!("/api/board/{id2}"),
+        Some(json!({"source_ref": "the next ts-engine roll", "last_verified_at": 1788510477i64})),
+        &[("X-Amux-Session", "amux")]).await;
+    let quiet = body2["advisories"].as_array().map(|a| a.iter().all(|d| d["field"] != "last_verified_at")).unwrap_or(true);
+    assert!(quiet, "the CLI shape stamps both and must not warn: {body2}");
+
+    // CLEARING a trigger is not parking, so it must stay silent too.
+    let (_s, _h, body3) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"source_ref": ""})), &[("X-Amux-Session", "amux")]).await;
+    let quiet3 = body3["advisories"].as_array().map(|a| a.iter().all(|d| d["field"] != "last_verified_at")).unwrap_or(true);
+    assert!(quiet3, "clearing a trigger must not warn about verification time: {body3}");
+}
+
+// AF-475. Posting an artifact to a card that does not exist answered
+// `500 Query returned no rows` — the raw rusqlite error as the entire body.
+//
+// Found by the 2026-09-04 log sweep: one row, mixpeek-cicd, 0.25ms latency. The
+// cost is not the wrong code, it is that the sweep's own contract says a 500 is
+// ALWAYS a finding, so a client error wearing a 500 buys a real investigation
+// every time it shows up in /api/logs/analyze.
+#[tokio::test]
+async fn an_artifact_on_a_missing_card_is_404_not_a_raw_db_error() {
+    let (app, _dir) = app();
+    // `implementation`, not `commit`: kind validation runs BEFORE the card
+    // lookup, so an invalid kind 400s and never reaches the arm under test.
+    let body = json!({"kind": "implementation", "ref": "deadbeef"});
+
+    let (st, _h, b) = send_with(&app, "POST", "/api/board/NOPE-999/artifacts",
+        Some(body.clone()), &[("X-Amux-Session", "amux")]).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a missing card is a client error: {b}");
+    assert_eq!(b["error"], "no such task", "and it must say which fault: {b}");
+    assert!(!b.to_string().contains("Query returned no rows"),
+        "the raw storage error must not reach the caller: {b}");
+
+    // THE OTHER ARM: a real card still succeeds. Without this the test passes on
+    // a handler that 404s everything.
+    let (_s, _h, c) = send_with(&app, "POST", "/api/board",
+        Some(json!({"title": "has artifacts", "status": "todo", "session": "amux"})),
+        &[("X-Amux-Session", "amux")]).await;
+    let id = c["id"].as_str().unwrap().to_string();
+    let (st2, _h, b2) = send_with(&app, "POST", &format!("/api/board/{id}/artifacts"),
+        Some(body), &[("X-Amux-Session", "amux")]).await;
+    assert_eq!(st2, StatusCode::CREATED, "an artifact on a real card still lands: {b2}");
+}
+
+/// A worker-authored output is already attributed to one exact card. Capture
+/// its produced refs there once, through the common board API every provider
+/// uses, rather than scraping four provider-specific terminal formats.
+#[tokio::test]
+async fn worker_outputs_auto_register_every_provider_artifact_and_survive_done() {
+    let (app, _dir) = app();
+    let cases = [
+        ("claude", "claude-output.md"),
+        ("codex", "codex-output.png"),
+        ("gemini", "https://example.test/gemini-output"),
+        ("opencode", "53a868f"),
+    ];
+
+    for (provider, artifact_ref) in cases {
+        let lane = format!("provider-{provider}");
+        let (_st, _, made) = send_with(
+            &app,
+            "POST",
+            "/api/board",
+            Some(json!({
+                "title": format!("{provider} output capture"),
+                "status": "doing",
+                "type": "chore",
+                "session": lane,
+            })),
+            &[("X-Amux-Worker", lane.as_str())],
+        )
+        .await;
+        let id = made["id"].as_str().unwrap().to_string();
+        let update = json!({"text": format!("Produced {artifact_ref}; ready for review.")});
+
+        for _ in 0..2 {
+            let (st, _, body) = send_with(
+                &app,
+                "POST",
+                &format!("/api/board/{id}/status-update"),
+                Some(update.clone()),
+                &[("X-Amux-Worker", lane.as_str())],
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK, "{provider} status update failed: {body}");
+        }
+
+        let (_, _, before) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+        let artifacts = before["artifacts"].as_array().unwrap();
+        assert_eq!(artifacts.len(), 1, "capture must be idempotent for {provider}: {before}");
+        assert_eq!(artifacts[0]["task_id"], json!(id), "artifact leaked off {provider}'s card");
+        assert_eq!(artifacts[0]["ref"], json!(artifact_ref));
+        assert!(
+            artifacts[0]["description"].as_str().unwrap_or("").contains(&lane),
+            "the automatic registration must retain its provider lane attribution: {before}"
+        );
+
+        let (st, _, done) = send_with(
+            &app,
+            "PATCH",
+            &format!("/api/board/{id}"),
+            Some(json!({
+                "status": "done",
+                "evidence": "ran `cargo test -p amux-server`",
+                "gate_ack": true,
+            })),
+            &[("X-Amux-Worker", lane.as_str())],
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "terminal transition failed for {provider}: {done}");
+        let (_, _, after) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+        assert_eq!(after["status"], json!("done"));
+        assert_eq!(after["artifacts"][0]["ref"], json!(artifact_ref), "done lost {provider}'s artifact");
+    }
+}
+
+/// GCA-153: the provider-independent status endpoint must turn a worker's
+/// exact actionable card into current work. A stale source ref is provenance,
+/// not an eternal trigger block.
+#[tokio::test]
+async fn own_status_update_claims_exact_todo_or_backlog_for_every_provider() {
+    let (app, store, _dir) = app_with_store();
+    for (provider, initial) in [
+        ("claude", "todo"), ("codex", "backlog"),
+        ("gemini", "todo"), ("opencode", "backlog"),
+    ] {
+        let lane = format!("claim-{provider}");
+        let made = create(&app, json!({
+            "title": format!("{provider} exact-card claim"),
+            "status": initial, "session": lane,
+            "desc": "Implement the exact-card status claim."
+        })).await;
+        let id = made["id"].as_str().unwrap().to_string();
+        let id_for_db = id.clone();
+        store.write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET source_ref='message:153', last_verified_at=NULL WHERE id=?1",
+                [&id_for_db],
+            )?;
+            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let (st, _, body) = send_with(
+            &app, "POST", &format!("/api/board/{id}/status-update"),
+            Some(json!({"text": format!("{provider} is implementing {id}")})),
+            &[("X-Amux-Worker", lane.as_str())],
+        ).await;
+        assert_eq!(st, StatusCode::OK, "{provider}: {body}");
+        assert_eq!(body["claimed"], json!(true), "{provider}: {body}");
+        assert_eq!(body["claim_verdict"], json!("claimed"), "{provider}: {body}");
+        assert_eq!(body["status"], json!("doing"), "{provider}: {body}");
+
+        let conn = store.read().unwrap();
+        let (status, owner, log): (String, String, String) = conn.query_row(
+            "SELECT status, COALESCE(session,''), COALESCE(log,'') FROM issues WHERE id=?1",
+            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(status, "doing");
+        assert_eq!(owner, lane);
+        assert!(log.contains("Claimed by status update"), "{log}");
+        assert!(log.contains(&format!("STATUS ({lane})")), "{log}");
+    }
+}
+
+/// Refused claims preserve their progress note without stealing ownership,
+/// bypassing blockers/dependencies/WIP, or moving later states backward.
+#[tokio::test]
+async fn status_update_refuses_cross_worker_blocked_dependency_wip_and_later_states() {
+    let (app, store, _dir) = app_with_store();
+
+    let cross = create(&app, json!({
+        "title":"owned elsewhere", "status":"todo", "session":"owner-lane"
+    })).await;
+    let cross_id = cross["id"].as_str().unwrap().to_string();
+    let (_, _, body) = send_with(
+        &app, "POST", &format!("/api/board/{cross_id}/status-update"),
+        Some(json!({"text":"cross-worker note must survive"})),
+        &[("X-Amux-Worker", "other-lane")],
+    ).await;
+    assert_eq!(body["claim_verdict"], json!("owner_mismatch"));
+
+    let blocked = create(&app, json!({
+        "title":"blocked card", "status":"todo", "session":"blocked-lane"
+    })).await;
+    let blocked_id = blocked["id"].as_str().unwrap().to_string();
+    let blocked_for_db = blocked_id.clone();
+    store.write(move |conn| {
+        conn.execute("UPDATE issues SET blocked_on='network' WHERE id=?1", [&blocked_for_db])?;
+        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+    }).unwrap();
+    let (_, _, body) = send_with(
+        &app, "POST", &format!("/api/board/{blocked_id}/status-update"),
+        Some(json!({"text":"still investigating the blocker"})),
+        &[("X-Amux-Worker", "blocked-lane")],
+    ).await;
+    assert_eq!(body["claim_verdict"], json!("blocked"));
+
+    let dep = create(&app, json!({
+        "title":"open dependency", "status":"backlog", "session":"dep-lane"
+    })).await;
+    let dependent = create(&app, json!({
+        "title":"dependent card", "status":"todo", "session":"dependent-lane",
+        "depends_on":[dep["id"].as_str().unwrap()]
+    })).await;
+    let dependent_id = dependent["id"].as_str().unwrap().to_string();
+    let (_, _, body) = send_with(
+        &app, "POST", &format!("/api/board/{dependent_id}/status-update"),
+        Some(json!({"text":"dependency has not cleared"})),
+        &[("X-Amux-Worker", "dependent-lane")],
+    ).await;
+    assert_eq!(body["claim_verdict"], json!("dependency_blocked"));
+
+    let triggered = create(&app, json!({
+        "title":"fresh external trigger", "status":"backlog", "session":"trigger-lane"
+    })).await;
+    let triggered_id = triggered["id"].as_str().unwrap().to_string();
+    let trigger_for_db = triggered_id.clone();
+    store.write(move |conn| {
+        conn.execute(
+            "UPDATE issues SET source_ref='wait for upstream', last_verified_at=?1 WHERE id=?2",
+            rusqlite::params![amux_server::config::now_f64() as i64, &trigger_for_db],
+        )?;
+        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+    }).unwrap();
+    let (_, _, body) = send_with(
+        &app, "POST", &format!("/api/board/{triggered_id}/status-update"),
+        Some(json!({"text":"upstream is still unavailable"})),
+        &[("X-Amux-Worker", "trigger-lane")],
+    ).await;
+    assert_eq!(body["claim_verdict"], json!("external_trigger"));
+
+    let holding = create(&app, json!({
+        "title":"current work", "status":"doing", "session":"wip-lane"
+    })).await;
+    let target = create(&app, json!({
+        "title":"queued work", "status":"todo", "session":"wip-lane"
+    })).await;
+    let target_id = target["id"].as_str().unwrap().to_string();
+    let (_, _, body) = send_with(
+        &app, "POST", &format!("/api/board/{target_id}/status-update"),
+        Some(json!({"text":format!("still on {}", holding["id"])})),
+        &[("X-Amux-Worker", "wip-lane")],
+    ).await;
+    assert_eq!(body["claim_verdict"], json!("wip_conflict"));
+
+    for later in ["doing", "review", "done", "verified", "discarded"] {
+        let lane = format!("past-{later}");
+        let made = create(&app, json!({
+            "title":format!("already {later}"), "status":later, "session":lane
+        })).await;
+        let id = made["id"].as_str().unwrap().to_string();
+        let (_, _, body) = send_with(
+            &app, "POST", &format!("/api/board/{id}/status-update"),
+            Some(json!({"text":"informational follow-up"})),
+            &[("X-Amux-Worker", lane.as_str())],
+        ).await;
+        assert_eq!(body["claim_verdict"], json!("status_not_actionable"));
+        let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+        assert_eq!(detail["status"], json!(later), "{later} moved backward");
+    }
+
+    for id in [&cross_id, &blocked_id, &dependent_id, &target_id] {
+        let conn = store.read().unwrap();
+        let (status, log): (String, String) = conn.query_row(
+            "SELECT status, COALESCE(log,'') FROM issues WHERE id=?1", [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(status, "todo", "{id} bypassed its claim guard");
+        assert!(log.contains("STATUS ("), "refused update was lost: {log}");
+    }
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{triggered_id}"), None).await;
+    assert_eq!(detail["status"], json!("backlog"), "fresh trigger was bypassed");
+}
+
+/// Claim and progress are one transaction: a failed progress write rolls back
+/// the claim rather than leaving a partially-mutated card.
+#[tokio::test]
+async fn status_update_claim_rolls_back_when_its_log_write_fails() {
+    let (app, store, _dir) = app_with_store();
+    let made = create(&app, json!({
+        "title":"atomic update", "status":"todo", "session":"atomic-lane"
+    })).await;
+    let id = made["id"].as_str().unwrap().to_string();
+    let trigger_id = id.clone();
+    store.write(move |conn| {
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER reject_status_progress BEFORE UPDATE OF log ON issues \
+             WHEN NEW.id='{trigger_id}' AND NEW.log LIKE '%ROLLBACK-SPECIMEN%' \
+             BEGIN SELECT RAISE(ABORT, 'forced status progress failure'); END;"
+        ))?;
+        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+    }).unwrap();
+    let (st, _, _) = send_with(
+        &app, "POST", &format!("/api/board/{id}/status-update"),
+        Some(json!({"text":"ROLLBACK-SPECIMEN"})),
+        &[("X-Amux-Worker", "atomic-lane")],
+    ).await;
+    assert_eq!(st, StatusCode::INTERNAL_SERVER_ERROR);
+    let conn = store.read().unwrap();
+    let (status, log): (String, Option<String>) = conn.query_row(
+        "SELECT status, log FROM issues WHERE id=?1", [&id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(status, "todo");
+    assert!(log.as_deref().unwrap_or("").is_empty(), "partial log: {log:?}");
+}
+
+/// Artifact identity is the `(task, artifact)` pair in the URL. A mismatched
+/// task must never be able to mutate or delete another task's output, and a
+/// deleted/missing artifact is a 404 rather than a 500 or a false 204 success.
+#[tokio::test]
+async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
+    let (app, _dir) = app();
+    let first = create(&app, json!({"title": "artifact owner", "session": "amux"})).await;
+    let second = create(&app, json!({"title": "other task", "session": "amux"})).await;
+    let a = first["id"].as_str().unwrap();
+    let b = second["id"].as_str().unwrap();
+
+    let (st, _, body) = send(
+        &app,
+        "POST",
+        &format!("/api/board/{a}/artifacts"),
+        Some(json!({"kind": "implementation", "ref": "   "})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "a blank artifact cannot be clickable: {body}");
+
+    let (st, _, made) = send(
+        &app,
+        "POST",
+        &format!("/api/board/{a}/artifacts"),
+        Some(json!({"kind": "doc", "ref": "result.md", "state": "created"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{made}");
+    let aid = made["id"].as_str().unwrap();
+
+    let (st, _, wrong_patch) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{b}/artifacts/{aid}"),
+        Some(json!({"state": "submitted"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "cross-task PATCH must not become a storage 500: {wrong_patch}");
+
+    let (st, _, invalid) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{a}/artifacts/{aid}"),
+        Some(json!({"state": "teleported"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "an invalid state is a client error: {invalid}");
+
+    let (st, _, wrong_delete) = send(&app, "DELETE", &format!("/api/board/{b}/artifacts/{aid}"), None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a different task must not delete this artifact: {wrong_delete}");
+    let (_, _, still_there) = send(&app, "GET", &format!("/api/board/{a}/artifacts"), None).await;
+    assert_eq!(still_there.as_array().unwrap().len(), 1, "cross-task delete removed the artifact");
+    assert_eq!(still_there[0]["state"], json!("created"), "cross-task patch changed the artifact");
+
+    let (st, _, _) = send(&app, "DELETE", &format!("/api/board/{a}/artifacts/{aid}"), None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, _, missing_delete) = send(&app, "DELETE", &format!("/api/board/{a}/artifacts/{aid}"), None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "repeat delete must say the target is gone: {missing_delete}");
+    let (st, _, missing_patch) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{a}/artifacts/{aid}"),
+        Some(json!({"description": "too late"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "patching a deleted artifact must be 404: {missing_patch}");
+}
+
+/// Live controls from TUBES-2426/TUBES-2428: `.env` is a file even though its
+/// basename begins with a dot, while `1.93M` is a quantity even though it has
+/// a dot and an alphabetic suffix.
+#[tokio::test]
+async fn evidence_assets_keep_hidden_files_and_reject_decimal_measurements() {
+    let (app, _dir) = app();
+    let made = create(
+        &app,
+        json!({
+            "title": "hidden evidence asset",
+            "status": "doing",
+            "type": "chore",
+        }),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap();
+    let (status, _, patched) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "evidence": "validated customers/tubescience/.env across 1.93M rows",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "evidence patch failed: {patched}");
+
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    let refs = detail["asset_links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|asset| asset["ref"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(refs, vec!["customers/tubescience/.env"], "parser regressed: {detail}");
+}
+
+// AF-476. `trigger` is a CLI FLAG, not an API field. A raw PATCH of
+// {"trigger": ...} writes nothing and answers 422 all_ignored — correctly, since
+// no key sent was writable. What it did not say was what to send instead.
+//
+// Measured by the 2026-09-04 log sweep: 226 such PATCHes from `backend` in 80
+// seconds across ~220 distinct cards, every one incapable of doing anything.
+#[tokio::test]
+async fn an_ignored_trigger_key_names_the_fields_it_meant() {
+    let (app, _dir) = app();
+    let (_s, _h, c) = send_with(&app, "POST", "/api/board",
+        Some(json!({"title": "park me", "status": "todo", "session": "amux"})),
+        &[("X-Amux-Session", "amux")]).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    let (st, _h, b) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"trigger": "the next ts-engine roll"})),
+        &[("X-Amux-Session", "amux")]).await;
+
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "nothing sent was writable: {b}");
+    assert_eq!(b["ignored_fields"][0], "trigger");
+    let h = &b["ignored_hints"][0];
+    assert_eq!(h["sent"], "trigger", "the hint must name the key sent: {b}");
+    assert_eq!(h["meant"][0], "source_ref");
+    assert_eq!(h["meant"][1], "last_verified_at",
+        "both fields, or the caller lands in AF-469's re-draining state: {b}");
+    assert!(h["how"].as_str().unwrap_or("").contains("--trigger"),
+        "and it must name the CLI verb that writes both: {b}");
+
+    // THE OTHER ARM: an ordinary unwritable key gets no hint. Without this the
+    // test passes on an implementation that attaches the trigger hint to
+    // everything, which would be worse than silence.
+    let (st2, _h, b2) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"nonsense_key": 1})), &[("X-Amux-Session", "amux")]).await;
+    assert_eq!(st2, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(b2.get("ignored_hints").is_none(),
+        "a key with no known equivalent must not invent one: {b2}");
+}
+
 // `source_ref` has two owners. autofix stores its fault signature there and
 // `open_card_for_fault` reads it to suppress a duplicate filing; `amux board
 // backlog --trigger` writes the external condition a parked card waits on, as
@@ -2774,4 +4276,772 @@ async fn archiving_a_trigger_bearing_card_records_that_it_de_arms_it() {
     let plog = pv["log"].as_str().unwrap_or_default();
     assert!(plog.contains("ARCHIVED"), "it still records the archive: {plog}");
     assert!(!plog.contains("DE-ARMS"), "but must not warn about a trigger it does not have: {plog}");
+}
+
+/// `backlog` and `needsyou` were the only two statuses in the vocabulary with
+/// NO gate and no exit any automated loop could produce, and fleet-wide on
+/// 2026-08-29 they held 963 of 1029 open cards against 64 in the one status
+/// the drive loop dispatches. Zero of 589 backlog cards carried a due date.
+///
+/// A card entering either now leaves with a revisit date, so the drive loop's
+/// due arm can hand it back rather than a human triaging 219 cards at once.
+#[tokio::test]
+async fn entering_an_undrained_status_stamps_a_revisit_date() {
+    let (app, _tmp) = app();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    for (status, days) in [("backlog", 14i64), ("needsyou", 3)] {
+        let c = create(&app, json!({ "title": format!("park me to {status}") })).await;
+        let id = c["id"].as_str().unwrap().to_string();
+        // A typed ask, because this test is about the REVISIT DATE and not the
+        // AF-318 ask gate — the same reason these tests already carry an asset
+        // link and evidence. The gate has its own coverage below.
+        let mut body = json!({ "status": status, "gate_ack": true });
+        if status == "needsyou" {
+            body["ask_actor"] = json!("Ethan");
+            body["ask_type"] = json!("decision");
+            body["ask_question"] = json!("Which retention window should this use?");
+            body["ask_unblocks"] = json!("a number of days from the owner");
+        }
+        let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(body)).await;
+        assert_eq!(st, StatusCode::OK, "{status} transition refused: {v}");
+
+        let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+        let due = got["due"].as_str().unwrap_or("");
+        let want = (chrono::Local::now() + chrono::Duration::days(days))
+            .format("%Y-%m-%d")
+            .to_string();
+        assert_eq!(due, want, "{status} must be stamped {days}d out, got {due:?}");
+        // NOT already due, or the drain promotes it straight back on the next
+        // tick and the park never happened.
+        assert!(due > today.as_str(), "{status} date {due} must be in the future");
+        // The stamp is on the card's own history, not only in a response the
+        // caller may never read (Ethan: the card is the source of truth for
+        // its own history).
+        let log = got["log"].as_str().unwrap_or("");
+        assert!(log.contains(&format!("revisit {due}")), "log must name the date: {log}");
+    }
+}
+
+/// The stamp fills a blank; it never overwrites a date a human chose. This is
+/// the clause that keeps the default from being a decision taken away from the
+/// owner (ethos rule 8) — and it is the one that silently reverses if the
+/// stamp is ever moved above `set_opt`.
+#[tokio::test]
+async fn a_caller_supplied_revisit_date_survives_the_default() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({ "title": "i know when to look at this" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "due": "2027-01-15", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(got["due"].as_str(), Some("2027-01-15"), "the caller's date must win");
+}
+
+/// Every status with a next actor must be left alone. A `doing` card carrying
+/// an auto-stamped due date would read as a deadline nobody set, and `done`
+/// would acquire one after the work finished.
+#[tokio::test]
+async fn statuses_that_have_a_next_actor_are_not_stamped() {
+    let (app, _tmp) = app();
+    for status in ["doing", "review", "blocked"] {
+        let c = create(&app, json!({ "title": format!("move to {status}") })).await;
+        let id = c["id"].as_str().unwrap().to_string();
+        // `blocked` carries a named watch, because this test is about the DUE
+        // STAMP and not the AF-317 watch gate — same reason these tests already
+        // carry an asset link, evidence and a typed ask. The gate has its own
+        // coverage in `blocked_refuses_a_card_that_names_no_watch`.
+        let mut body = json!({ "status": status, "gate_ack": true });
+        if status == "blocked" {
+            let dep = create(&app, json!({ "title": "the thing that must land first" })).await;
+            body["depends_on"] = json!([dep["id"].as_str().unwrap()]);
+        }
+        let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(body)).await;
+        assert_eq!(st, StatusCode::OK, "{status}: {v}");
+        let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+        let due = got["due"].as_str().unwrap_or("");
+        assert!(due.is_empty(), "{status} must not be stamped, got due={due:?}");
+    }
+}
+
+/// `verified` is the board's highest claim and its default code gate is four
+/// INDEPENDENT assertions. `gate_ack: true` asserted all four with one bit and
+/// recorded which of them the acker looked at nowhere. Fleet-wide that was 302
+/// of 1605 verifications (18.8%); the other 81% already enumerate.
+#[tokio::test]
+async fn verified_refuses_a_blanket_ack_and_takes_the_enumeration() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({ "title": "shipped it", "type": "code" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "blanket ack must be refused: {v}");
+    assert_eq!(v["code"], "verified_requires_gate_checked");
+
+    // The refusal must carry the criteria back. The `amux` CLI's refusal
+    // printer keys on "gate" appearing in the error text and echoes
+    // `d["gate"]` as a ready `--checked ...` line — without BOTH, the operator
+    // is pushed to a hand-rolled PATCH, which is the unattributed write this
+    // whole gate system depends on not happening (AMUX-2325).
+    assert!(
+        v["error"].as_str().unwrap_or("").contains("gate"),
+        "CLI remedy printer keys on this: {}", v["error"]
+    );
+    let gate: Vec<String> = v["gate"]
+        .as_array()
+        .expect("refusal must return the gate")
+        .iter()
+        .map(|g| g.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(gate.len() > 1, "the multi-criterion case is the one refused: {gate:?}");
+
+    // Enumerating exactly what came back is accepted — the honest path is the
+    // one the refusal just printed.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": gate })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "enumerated ack must be accepted: {v}");
+}
+
+/// Both narrowings, which exist so the check cannot fire where it would only
+/// be ceremony. If either regresses the gate starts refusing transitions that
+/// carry no extra information, and the pressure to `--force` goes up.
+#[tokio::test]
+async fn the_blanket_ack_refusal_is_narrow_by_design() {
+    let (app, _tmp) = app();
+
+    // 1. A ONE-criterion verified gate (the non-code default, "Outcome
+    //    confirmed to still hold"): blanket-acking it is byte-identical to
+    //    checking it, so it is allowed.
+    let c = create(&app, json!({ "title": "looked again", "type": "investigation" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "single-criterion gate must still take an ack: {v}");
+
+    // 2. `done` is deliberately excluded: it already carries a machine-checked
+    //    asset link that no ack can fake, so it needs no second mechanism.
+    let c = create(&app, json!({ "title": "landed it", "type": "code", "desc": "landed in crates/amux-server/src/api/board.rs" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "done must still take a blanket ack: {v}");
+}
+
+/// A gate you can only learn by tripping it is the AF-112 shape. Both global
+/// machine-checked constraints must be readable from the contract, and the
+/// contract's claim about each must match what the handler actually does.
+#[tokio::test]
+async fn the_contract_publishes_every_machine_checked_constraint() {
+    let (app, _tmp) = app();
+    let (st, _, v) = send(&app, "GET", "/api/board/contract", None).await;
+    assert_eq!(st, StatusCode::OK);
+    // AF-321 added the third. A totalizing name ("both", "every") has to be
+    // tested at the widest scope the mechanism touches — ethos rule 7 — so this
+    // list is the list, and adding a constraint without adding it here is the
+    // failure the rename is guarding against.
+    for key in
+        ["done_requires_asset_link", "done_requires_evidence", "verified_requires_gate_checked"]
+    {
+        assert!(v[key].is_object(), "contract must publish {key}: {v}");
+        assert!(
+            v[key]["enforced"].as_str().unwrap_or("").contains("force bypasses"),
+            "{key} must say force bypasses it — the audited exit is part of the contract"
+        );
+    }
+    // The contract's `code` must be the one the refusal actually returns, or a
+    // caller keying on it reads the docs and matches nothing.
+    let c = create(&app, json!({ "title": "x", "type": "code" })).await;
+    let id = c["id"].as_str().unwrap();
+    let (_, _, refused) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(refused["code"], "verified_requires_gate_checked");
+}
+
+// ---- full export (AMUX-3868) ---------------------------------------------
+
+/// The export carries COMPLETE descriptions, which is the only reason this
+/// endpoint exists.
+///
+/// The contrast is the test: `GET /api/board` deliberately omits `desc` and
+/// sends `desc_head`/`desc_len` instead (AMUX-3861), so the dashboard's own
+/// client-side export physically cannot include full text. If a future change
+/// made the list carry `desc` again this test would still pass on the export
+/// half — so it asserts the LIST omission too, and the day that stops being
+/// true someone should be told, because this endpoint's justification changed.
+#[tokio::test]
+async fn export_carries_full_descriptions_where_the_list_deliberately_does_not() {
+    let (app, _dir) = app();
+    // Long enough that any head-truncation shows up as a real difference.
+    let long = "D".repeat(4000);
+    create(
+        &app,
+        json!({ "title": "big card", "session": "alpha", "desc": long.clone() }),
+    )
+    .await;
+
+    let (_, _, list) = send(&app, "GET", "/api/board", None).await;
+    let row = &list.as_array().expect("array")[0];
+    assert!(
+        row.get("desc").is_none(),
+        "the LIST must keep omitting desc — if it does not, this endpoint's reason for \
+         existing has changed and the docs on both sides are now wrong: {row}"
+    );
+    assert_eq!(row["desc_len"], json!(4000), "the list reports the true length");
+
+    let (st, h, ex) = send(&app, "GET", "/api/board/export?format=json", None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(ex["issues"][0]["desc"], json!(long), "export must carry the WHOLE desc");
+    assert_eq!(ex["count"], json!(1));
+    assert_eq!(ex["scoped"], json!(false), "no filters were given");
+    assert!(
+        hdr(&h, "content-disposition").contains("attachment; filename=\"amux-board-"),
+        "a download needs a filename: {}",
+        hdr(&h, "content-disposition")
+    );
+}
+
+/// A SCOPED export says so, and an unscoped one says that instead of staying
+/// quiet. Silence would make the two indistinguishable, which is the whole
+/// failure mode (ethos rule 4).
+#[tokio::test]
+async fn a_scoped_export_declares_its_scope_and_an_unscoped_one_declares_that() {
+    let (app, _dir) = app();
+    create(&app, json!({ "title": "a1", "session": "alpha", "desc": "AAA" })).await;
+    create(&app, json!({ "title": "b1", "session": "beta", "desc": "BBB" })).await;
+
+    let (_, _, all) = send(&app, "GET", "/api/board/export?format=json", None).await;
+    assert_eq!(all["count"], json!(2));
+    assert_eq!(all["scoped"], json!(false));
+
+    let (_, _, one) = send(&app, "GET", "/api/board/export?format=json&worker=alpha", None).await;
+    assert_eq!(one["count"], json!(1), "worker filter must actually filter");
+    assert_eq!(one["scoped"], json!(true));
+    assert!(
+        one["scope"].as_array().expect("scope array").iter().any(|s| s
+            .as_str()
+            .unwrap_or_default()
+            .contains("alpha")),
+        "the scope must NAME the filter, not merely flag that one ran: {}",
+        one["scope"]
+    );
+
+    // Markdown: the two headers must be different TEXT, not present-vs-absent.
+    let (_, _, md_all) = send(&app, "GET", "/api/board/export?format=md", None).await;
+    let (_, _, md_one) =
+        send(&app, "GET", "/api/board/export?format=md&worker=alpha", None).await;
+    let a = md_all.as_str().expect("md is text");
+    let b = md_one.as_str().expect("md is text");
+    assert!(a.contains("Whole board"), "unscoped md must say so: {}", &a[..a.len().min(200)]);
+    assert!(b.contains("Scoped export"), "scoped md must say so: {}", &b[..b.len().min(200)]);
+    assert!(b.contains("alpha"), "scoped md must name the worker");
+    assert!(b.contains("AAA"), "scoped md must carry the full desc");
+    assert!(!b.contains("BBB"), "scoped md must not leak the other worker's card");
+}
+
+/// AF-323: a `decision` card can be FILED and CLOSED, through the real HTTP
+/// path, with a gate that does not demand a merge.
+///
+/// The friction this pins is that two components disagreed about one fact: the
+/// board stored `type: decision` on five live cards while the create path
+/// refused the word. The disagreement was load-bearing rather than cosmetic —
+/// an unlisted type falls through `core_item_type` to `Code`, the STRICTEST
+/// gate, so those five cards demanded "Implemented and merged" for work whose
+/// entire output is a sentence from the person who owns the call. No owner
+/// could close one honestly, which is ethos rule 3: a constraint with no
+/// truthful path in a legitimate state.
+///
+/// This is deliberately an END-TO-END test and not a `default_gates_for` unit
+/// test. AF-342 shipped four passing cells over a correct pure function while
+/// the production caller read the wrong input, so the fix was inert on every
+/// path in the fleet and every instrument still said pass. The gate arm being
+/// right is not the claim; the claim is that a lane can do this.
+#[tokio::test]
+async fn a_decision_card_can_be_filed_and_closed_without_claiming_a_merge() {
+    let (app, _dir) = app();
+
+    // 1. THE CREATE PATH ACCEPTS IT. This is the arm that returned
+    //    `unknown type "decision"` while the board held cards typed exactly this.
+    let card = create(
+        &app,
+        json!({
+            "title": "Which region for the new shard?",
+            "session": "worker-1",
+            "status": "doing",
+            "type": "decision",
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+    assert_eq!(card["type"], json!("decision"), "type must round-trip: {card}");
+
+    // 2. THE GATE IS NOT THE CODE GATE. A refused transition reports the gate it
+    //    enforced, so this reads the criteria the server actually applied rather
+    //    than re-deriving them here — the two can differ, and when they do it is
+    //    this one that governs.
+    //
+    //    The evidence is supplied on THIS call because the global asset-link
+    //    constraint is checked BEFORE the type gate and short-circuits it: a bare
+    //    `{"status":"done"}` comes back `done_requires_asset_link` with no `gate`
+    //    key at all. Worth stating rather than just working around, because it
+    //    means the first refusal a decision card hits says nothing about its type
+    //    — the honest `none:` path is offered in `how_to_fix`, so there IS a way
+    //    through, but a reader debugging one of the five live cards would see the
+    //    artifact demand first and the mis-gating never.
+    const DECIDED: &str =
+        "none: Ethan chose us-east-1 on 2026-08-31; a decision ships no artifact";
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": DECIDED })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "expected the gate to ask first: {v}");
+    let gate = v["gate"].as_array().unwrap_or_else(|| panic!("no gate key in refusal: {v}"));
+    assert!(
+        !gate.contains(&json!("Implemented and merged")),
+        "a decision card must not be asked to claim a merge: {gate:?}"
+    );
+    assert!(
+        gate.iter().any(|c| c.as_str().unwrap_or("").contains("by whom")),
+        "the decision gate must ask WHO decided, which is the field that stops a \
+         settled question being re-asked: {gate:?}"
+    );
+
+    // 3. AND IT CLOSES. The whole point is a truthful path to `done`, so a test
+    //    that stopped at the refusal above would pin half the fix — the half a
+    //    card stuck at the strictest gate already satisfied.
+    //
+    //    `none: <reason>` is the evidence: a decision produces no artifact, and
+    //    that escape is documented, stored and counted rather than a bypass.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": DECIDED, "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "a decision card must be closable: {v}");
+    assert_eq!(v["status"], json!("done"));
+}
+
+/// The two hand-synced type vocabularies must not drift.
+///
+/// `KNOWN_TYPES` (amux-server, what the API validates against) and
+/// `ItemType::ALL` (amux-core, what gates and the state machine derive from) are
+/// separate lists kept in step BY HAND — `KNOWN_TYPES`' own doc says so and asks
+/// for a future cleanup that derives one from the other. Until that exists, this
+/// is the thing that fails when someone adds a type to one list only.
+///
+/// That failure is not cosmetic, which is why it is worth a test rather than a
+/// comment: a type in `KNOWN_TYPES` but absent from `core_item_type` is ACCEPTED
+/// by the API and then silently gated as `code`. That is precisely AF-323's
+/// defect — a card whose stored type the gate layer does not believe in — and
+/// adding `decision` by hand to two lists is exactly the move that would
+/// reintroduce it one list at a time.
+#[test]
+fn every_known_type_survives_the_round_trip_into_the_gate_vocabulary() {
+    use amux_server::db::board_store as bs;
+    for t in bs::KNOWN_TYPES {
+        let core = bs::core_item_type(t);
+        assert_eq!(
+            core.as_str(),
+            t,
+            "`{t}` is offered by the API but `core_item_type` does not map it, so \
+             a card filed with it would be silently gated as `code` — AF-323's \
+             exact shape, one list at a time"
+        );
+    }
+    // And the reverse direction: a variant that exists in core but is not
+    // offered by the API is a type nobody can file.
+    for ty in amux_core::board::ItemType::ALL {
+        assert!(
+            bs::KNOWN_TYPES.contains(&ty.as_str()),
+            "`{}` exists as an ItemType but the API will not accept it",
+            ty.as_str()
+        );
+    }
+}
+
+/// AF-367: a card carries WHERE it came from, and the field survives to the API.
+///
+/// `creator` cannot answer that question. `mint_capture_card` stamps
+/// `creator: "amux"` for every auto-captured human prompt and the amux LANE
+/// stamps the same string for cards it authors, so 49 of 90 cards carrying that
+/// value in one 24-hour window belonged to other lanes entirely. `owner_type`
+/// does not split them either: it reads `agent` for both populations.
+///
+/// The fix is ADDITIVE on purpose. Stamping captures `amux-capture` is the
+/// obvious alternative and it has a trap: `mint_capture_card`'s own dedup keys on
+/// `creator = 'amux'`, so changing the value would silently stop deduping and
+/// mint a card per prompt. That is this defect's own shape reappearing inside its
+/// fix, which is why nothing about `creator` moved.
+#[tokio::test]
+async fn a_card_records_where_it_came_from_and_the_api_publishes_it() {
+    let (app, _dir) = app();
+
+    // The HTTP create path is `agent`: a real POST, from a lane or a human.
+    let card = create(
+        &app,
+        json!({ "title": "an ordinary create", "session": "worker-1", "status": "todo" }),
+    )
+    .await;
+    assert_eq!(
+        card["source"],
+        json!("agent"),
+        "an API create must record itself as an agent create: {card}"
+    );
+
+    // AND IT SURVIVES THE READ. The insert and the SELECT are separate column
+    // lists kept in step by hand, so a field written but not selected is a real
+    // and silent outcome — the value would be in the database and absent from
+    // every payload, which is worse than not storing it at all.
+    let id = card["id"].as_str().unwrap();
+    let (st, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        got["source"],
+        json!("agent"),
+        "source must survive the round-trip to the single-card GET: {got}"
+    );
+
+    // THE CONTROL, and it is the load-bearing one: the field must DISCRIMINATE.
+    // A column hardcoded to "agent" everywhere would pass both assertions above
+    // while answering nothing, which is exactly the state `creator` is already
+    // in and the reason this card exists. So drive a second population through
+    // the store directly and require a different value.
+    let conn = rusqlite::Connection::open(_dir.path().join("amux-test.db")).unwrap();
+    let row = amux_server::db::board_store::create_issue(
+        &conn,
+        &amux_server::db::board_store::NewIssue {
+            title: "a captured human prompt".into(),
+            desc: String::new(),
+            status: "doing".into(),
+            session: Some("worker-2".into()),
+            item_type: "code".into(),
+            creator: "amux".into(),
+            owner_type: "agent".into(),
+            due: None,
+            due_time: None,
+            reviewer: None,
+            shepherd: None,
+            gate: vec![],
+            depends_on: vec![],
+            tags: vec![],
+            ask_type: None,
+            ask_question: None,
+            ask_unblocks: None,
+            ask_actor: None,
+            source: Some("capture".into()),
+            requested_by: None,
+            callback_session: None,
+            callback_prompt: None,
+        },
+        1_788_000_000,
+    )
+    .unwrap();
+    assert_eq!(row.source.as_deref(), Some("capture"));
+    assert_eq!(
+        row.creator, "amux",
+        "the capture population still carries creator=amux — that is the collision, \
+         and this fix deliberately does not move it"
+    );
+
+    // NULL IS AN HONEST ANSWER, not a default. Rows predating the column read
+    // NULL, which means "unknown", and nothing is backfilled: guessing which
+    // population an old row belonged to would manufacture the confident wrong
+    // attribution the field exists to end.
+    conn.execute("UPDATE issues SET source = NULL WHERE id = ?1", [&row.id])
+        .unwrap();
+    let (st, _, aged) = send(&app, "GET", &format!("/api/board/{}", row.id), None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        aged["source"].is_null(),
+        "a row with no source must publish null, not invent one: {aged}"
+    );
+}
+
+/// AF-413: a refusal must SAY what it threw away, and the caller must be able to
+/// tell "nothing else was lost" from "this server does not report losses".
+///
+/// The PATCH is atomic and stays that way — this asserts the reporting, not a
+/// partial write. Measured three times in one session on 2026-09-02 across three
+/// rejection reasons, one of which silently dropped a 4.2 KB card body.
+#[tokio::test]
+async fn a_refused_transition_names_the_fields_it_discarded() {
+    let (app, _dir) = app();
+    let card = create(
+        &app,
+        json!({ "title": "gated", "status": "doing", "desc": "artifact: crates/amux-server/src/api/board.rs" }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // A desc riding along with a gated status: the specimen.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "status": "done",
+            "evidence": EV,
+            "desc": "CANARY-BODY artifact: crates/amux-server/src/api/board.rs",
+            "title": "renamed"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(v["error"], json!("gate not acknowledged"));
+    assert_eq!(
+        v["discarded"],
+        json!(["desc", "evidence", "title"]),
+        "the refusal must name the content fields it dropped: {v}"
+    );
+    assert!(
+        v["discarded_note"].as_str().unwrap_or("").contains("NOT applied"),
+        "a bare array is cryptic; say what happened: {v}"
+    );
+
+    // AND THE WRITE REALLY DID NOT HAPPEN — otherwise this test would pass just
+    // as well against a server that applied the desc and reported it discarded.
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(detail["title"], json!("gated"), "title must be unchanged: {detail}");
+    assert!(
+        !detail["desc"].as_str().unwrap_or("").contains("CANARY-BODY"),
+        "desc must be unchanged: {detail}"
+    );
+
+    // THE FLEET'S COMMONEST LOSS, and the reason this matters beyond a card
+    // body. `amux board done <ID> --evidence-stdin` sends {status, evidence}.
+    // `evidence` is a writable field, so a gate refusal discards the evidence
+    // the caller just composed — which is what happened twice on 2026-09-02,
+    // on AF-410 and AF-416, each time re-sent by hand with --checked.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(v["discarded"], json!(["evidence"]), "{v}");
+
+    // CONTROL: a body with NOTHING but the status discards nothing surprising,
+    // and the key is STILL present. Its absence would mean "this server does not
+    // compute losses", which a caller cannot distinguish from "nothing was lost"
+    // if it were omitted when empty (ethos rule 4).
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(v["discarded"], json!([]), "empty, but PRESENT: {v}");
+    assert!(v.get("discarded_note").is_none(), "no note when nothing was dropped: {v}");
+}
+
+/// AF-424: a card whose stated deadline has ARRIVED outranks an older card
+/// nobody dated.
+///
+/// Reported by gtm-engine (GE-769). The queue ranked by `age_days *
+/// (blast_radius + 1)`, and the bias was structural rather than incidental:
+/// stating a deadline correlates with being NEW, new means low age_days, and
+/// the formula rewards age — so dating a card pushed it DOWN. Measured live
+/// 2026-09-02: 119 of 404 rows carried a due date at MEDIAN rank 329 of 404,
+/// and 47 were due-today-or-overdue. "Scrub 646 leaked API-key occurrences",
+/// due that day, ranked 349.
+#[tokio::test]
+async fn the_needsyou_queue_ranks_a_passed_deadline_above_an_older_undated_card() {
+    let (app, _dir) = app();
+    let ask = json!({
+        "status": "needsyou", "ask_actor": "Ethan", "ask_type": "decision",
+        "ask_question": "Should this move to the new cluster, or stay where it is?",
+        "ask_unblocks": "the migration can be scheduled either way",
+    });
+
+    // An OLD card nobody dated. Created first, so it is strictly older.
+    // NB: parking a card auto-stamps a near-future `due`, so this one is
+    // dated-but-not-arrived rather than truly undated — which is the same
+    // comparison and the commoner live shape (119 of 404 carry a date, mostly future).
+    let old = create(&app, json!({ "title": "older, date not yet arrived" })).await;
+    let old_id = old["id"].as_str().unwrap().to_string();
+    let (st, _, why) = send(&app, "PATCH", &format!("/api/board/{old_id}"), Some(ask.clone())).await;
+    assert_eq!(st, StatusCode::OK, "park refused: {why}");
+
+    // A NEWER card with a deadline that has already arrived.
+    let due = create(&app, json!({ "title": "new, due today" })).await;
+    let due_id = due["id"].as_str().unwrap().to_string();
+    let mut with_due = ask.as_object().unwrap().clone();
+    with_due.insert("due".into(), json!("2000-01-01")); // long past
+    let (st, _, _) =
+        send(&app, "PATCH", &format!("/api/board/{due_id}"), Some(Value::Object(with_due))).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (_, _, v) = send(&app, "GET", "/api/board/needsyou?all=1", None).await;
+    let q = v["queue"].as_array().unwrap();
+    let pos = |id: &str| q.iter().position(|r| r["id"] == json!(id)).expect("card in queue");
+    assert!(
+        pos(&due_id) < pos(&old_id),
+        "an ARRIVED deadline must outrank an older card whose date has not: {v}"
+    );
+    assert_eq!(v["queue"][pos(&due_id)]["overdue"], json!(true), "and say why: {v}");
+    assert_eq!(v["queue"][pos(&old_id)]["overdue"], json!(false));
+    assert_eq!(v["overdue"], json!(1), "the count is published: {v}");
+    assert!(
+        v["ranked_by"].as_str().unwrap().contains("overdue first"),
+        "the rule is stated, not silent: {v}"
+    );
+
+    // CONTROL 1: a FUTURE deadline is not urgency. Without this, "any due date
+    // wins" would pass — and 119 of 404 live cards carry one, mostly future.
+    let far = create(&app, json!({ "title": "dated, far future" })).await;
+    let far_id = far["id"].as_str().unwrap().to_string();
+    let mut future = ask.as_object().unwrap().clone();
+    future.insert("due".into(), json!("2099-12-31"));
+    let (st, _, _) =
+        send(&app, "PATCH", &format!("/api/board/{far_id}"), Some(Value::Object(future))).await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, _, v) = send(&app, "GET", "/api/board/needsyou?all=1", None).await;
+    let q = v["queue"].as_array().unwrap();
+    let pos = |id: &str| q.iter().position(|r| r["id"] == json!(id)).expect("card in queue");
+    assert!(
+        pos(&old_id) < pos(&far_id),
+        "a future deadline must NOT jump the queue; only an arrived one does: {v}"
+    );
+    assert_eq!(v["overdue"], json!(1), "still one overdue, not two: {v}");
+
+    // CONTROL 2: the view names the population it does NOT consider, so a
+    // reader comparing against a raw board dump cannot mistake archived cards
+    // for live work the view dropped. That misreading is what this card came in as.
+    assert!(v["archived_excluded"].is_number(), "excluded population is stated: {v}");
+}
+
+/// AF-506 — a gate refusal names the reassignment exit, not only the gate.
+///
+/// THE WIRING, not the wording. `reassign_exit`'s own cells read the STRINGS and
+/// all of them stay green if `gate_409` never calls it — the same shape that let
+/// two suites earlier today pass over a deleted call site. This drives a real
+/// refusal through the real handler and reads the response.
+///
+/// Reported by `backend` on MI-4155: a lane holding a card that is not its work
+/// had no honest state to move it to, and the refusal taught exactly one exit.
+#[tokio::test]
+async fn a_gate_refusal_offers_the_reassignment_exit_and_says_it_is_not_a_bypass() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({
+        "title": "a card whose work belongs elsewhere", "status": "doing",
+        "desc": "artifact: crates/amux-server/src/api/board.rs",
+        "session": "mvs-infra",
+    })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // A DIFFERENT lane trips the gate: the exit can name the owner.
+    let (st, _, v) = send_with(
+        &app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV })),
+        &[("X-Amux-Session", "backend")],
+    ).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    let ex = &v["or_reassign"];
+    assert!(!ex.is_null(), "the refusal offers no reassignment exit at all: {v}");
+    assert!(
+        ex["how"].as_str().unwrap_or("").contains("mvs-infra"),
+        "the exit does not name the owning lane it could see: {v}"
+    );
+    assert!(
+        ex["not_a_bypass"].as_str().unwrap_or("").contains("does not skip the gate"),
+        "the exit reads as a way around the gate: {v}"
+    );
+    // The gate itself is untouched: this is offered BESIDE the refusal.
+    assert_eq!(v["kind"], json!("gate_blocked"), "{v}");
+    assert!(v["how_to_ack"]["gate_ack"] == json!(true), "{v}");
+}
+
+/// AF-506, second pass — EVERY refusal that blocks closing or reviewing a card
+/// offers the reassignment exit, not just the one it was written for.
+///
+/// Found by probing the LIVE server on the commit that added the exit to
+/// `gate_409`: `done_requires_asset_link` fires first, then
+/// `done_requires_evidence`, and only then the gate ack. A lane routing a card
+/// away hits whichever comes first and never reaches the one that had been
+/// taught. A fix verified only through the path it was written for would have
+/// shipped looking complete — the live probe is what caught it.
+///
+/// SCOPE, deliberately: refusals that block CLOSING or REVIEWING. The needs-you,
+/// blocked-must-name and todo-capacity refusals are excluded because supplying
+/// the ask or the reason IS their exit; reassignment there would be noise.
+#[tokio::test]
+async fn every_close_refusal_offers_the_reassignment_exit() {
+    let (app, _dir) = app();
+
+    // Each tuple walks one card further along the ladder, so a DIFFERENT
+    // refusal answers each time. The order is the order the server applies.
+    let cases: Vec<(&str, Value, &str)> = vec![
+        // No desc artifact at all -> the asset-link gate answers first.
+        ("done_requires_asset_link", json!({ "status": "done" }), ""),
+        // Artifact present, evidence missing -> the evidence gate answers.
+        (
+            "done_requires_evidence",
+            json!({ "status": "done" }),
+            "artifact: crates/amux-server/src/api/board.rs",
+        ),
+    ];
+
+    for (want_code, patch, desc) in cases {
+        let card = create(&app, json!({
+            "title": format!("card for {want_code}"), "status": "doing",
+            "desc": desc, "session": "mvs-infra",
+        })).await;
+        let id = card["id"].as_str().unwrap().to_string();
+        let (st, _, v) = send_with(
+            &app, "PATCH", &format!("/api/board/{id}"), Some(patch.clone()),
+            &[("X-Amux-Session", "backend")],
+        ).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{want_code}: {v}");
+        assert_eq!(v["code"], json!(want_code), "wrong refusal answered: {v}");
+        assert!(
+            v["or_reassign"]["how"].as_str().unwrap_or("").contains("mvs-infra"),
+            "{want_code} teaches only its own exit: {v}"
+        );
+        assert!(
+            v["or_reassign"]["not_a_bypass"].as_str().unwrap_or("").contains("does not skip"),
+            "{want_code}: the exit reads as a way around the refusal: {v}"
+        );
+    }
 }

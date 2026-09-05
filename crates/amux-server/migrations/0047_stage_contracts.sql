@@ -1,0 +1,16 @@
+-- Richer stage contracts (Gap 5 of the workflow-engine convergence).
+--
+-- Extends the `statuses` table with fields that let a PM describe what each
+-- stage means, who is responsible, what must be produced, where failure goes,
+-- and how long a card should stay. These are DESCRIPTIVE metadata that
+-- advance() can consult but does not enforce by default: gate_criteria
+-- remains the enforced entry condition; these fields are the human-readable
+-- contract around it.
+--
+-- ADDCOL: statuses purpose TEXT
+-- ADDCOL: statuses entry_conditions TEXT
+-- ADDCOL: statuses responsible_role TEXT
+-- ADDCOL: statuses allowed_actions TEXT
+-- ADDCOL: statuses required_outputs TEXT
+-- ADDCOL: statuses failure_transition TEXT
+-- ADDCOL: statuses target_sla_seconds INTEGER

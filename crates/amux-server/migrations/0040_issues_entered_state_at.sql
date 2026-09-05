@@ -1,0 +1,26 @@
+-- AMUX-3947: when did this card enter the status it is in?
+--
+-- `issues` has created, updated, closed_at and last_verified_at. It has never
+-- had a per-state timestamp, confirmed by grep across crates/amux-server/src
+-- for entered_state_at | time_in_state | state_entered: no matches. So
+-- time-in-state was not merely unreported, it was UNCOMPUTABLE, and every
+-- aging signal on this board is total card age.
+--
+-- That makes the two questions a board is asked most often indistinguishable:
+-- a card that moved to `review` an hour ago and one that has sat there nine
+-- days both read as "created 15 days ago". The second is a reviewer
+-- bottleneck; the first is fine.
+--
+-- DELIBERATELY NOT BACKFILLED, and this reverses the plan as written
+-- (docs/design/task-workflow-engine.md said "backfill from updated with a
+-- recorded caveat"). `updated` is the LAST TOUCH, not the state entry. A card
+-- sitting in review since 08-20 that got a progress note today would backfill
+-- to today and report "in review for 0 days" -- confidently wrong, and wrong in
+-- the direction that HIDES the bottleneck this column exists to find. A caveat
+-- in a migration comment does not travel with the number.
+--
+-- NULL is the honest value for a card that predates this column, and every
+-- consumer must render it as NOT MEASURED rather than as zero (the AF-320 rule
+-- this repo already applies to every diagnostic endpoint). The board self-heals:
+-- each card gets a real stamp the next time its status moves.
+ALTER TABLE issues ADD COLUMN entered_state_at INTEGER;

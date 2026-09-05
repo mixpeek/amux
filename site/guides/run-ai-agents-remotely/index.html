@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Run AI Coding Agents on a Remote Server — amux Remote Guide (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Run Claude Code, Codex, and Gemini CLI agents on a remote server and manage them from your laptop or phone. amux-remote connects your local machine to a remote amux fleet over Tailscale or SSH.">
+  <meta name="keywords" content="run AI agents remotely, amux remote server, manage Claude Code remote, ai coding agents cloud server, remote ai agent management, amux tailscale, run coding agents overnight remote">
+  <link rel="canonical" href="https://amux.io/guides/run-ai-agents-remotely/">
+  <meta property="og:title" content="Run AI Coding Agents on a Remote Server — amux Remote Guide (2026)">
+  <meta property="og:description" content="Set up amux on a remote server, connect from your laptop or phone, and manage dozens of parallel AI coding agents from anywhere. Step-by-step guide with Tailscale and SSH options.">
+  <meta property="og:url" content="https://amux.io/guides/run-ai-agents-remotely/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Run AI Coding Agents on a Remote Server — amux Remote Guide (2026)">
+  <meta name="twitter:description" content="Run Claude Code, Codex, and Gemini CLI agents on a dedicated server overnight. Manage from your laptop or phone via amux-remote over Tailscale or SSH.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "Run AI Agents Remotely", "item": "https://amux.io/guides/run-ai-agents-remotely/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Run AI Coding Agents on a Remote Server — amux Remote Guide (2026)",
+    "description": "How to install amux on a remote server, connect from your local machine or phone, and manage a parallel fleet of Claude Code, Codex, and Gemini CLI agents from anywhere.",
+    "url": "https://amux.io/guides/run-ai-agents-remotely/",
+    "datePublished": "2026-08-28",
+    "dateModified": "2026-08-28",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Run AI Coding Agents on a Remote Server with amux",
+    "description": "Set up amux on a remote server and connect from your local machine to manage a parallel fleet of AI coding agents over Tailscale or SSH.",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Install amux on the remote server",
+        "text": "SSH into your remote machine and install amux: brew install amux (macOS/Linux with Homebrew) or download the single Rust binary from GitHub releases. Run amux serve to start the API server on port 8824."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Get the auth token from the remote server",
+        "text": "On the remote server, read the auth token: cat ~/.amux/auth_token. Copy this token — you will need it to authenticate your local machine."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Find the remote server's IP address",
+        "text": "Get the remote server's reachable IP. For Tailscale (recommended): tailscale ip -4. For direct IP: hostname -I. Tailscale provides a stable VPN address that works across networks without port forwarding."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Configure your local machine",
+        "text": "Create ~/.amux/remote.env on your local machine with AMUX_URL=https://<server-ip>:8824 and AMUX_TOKEN=<your-token>. Source this file before running amux commands: source ~/.amux/remote.env."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Verify the connection and start managing remotely",
+        "text": "Run curl -sk $AMUX_URL/api/health to confirm the connection. Then use any amux CLI command — amux board, amux send, amux peek — to manage the remote fleet. The dashboard at $AMUX_URL shows all remote sessions in real time."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is amux-remote?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux-remote is the capability to connect your local amux CLI to a remote amux server. You set AMUX_URL to the remote server's address and AMUX_TOKEN to its auth token. All amux commands — managing sessions, reading the board, peeking at output, sending messages — then operate on the remote fleet instead of a local one. This lets you run AI coding agents on a dedicated server and manage them from your laptop or phone."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Why run AI agents on a remote server instead of locally?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Three reasons: compute, stability, and mobility. A dedicated server (cloud VM or home server) can run 20-50 agents overnight without competing with your laptop's battery and RAM. It stays on when you close the laptop. And you can check progress from your phone or any device — the agents keep running regardless of where you are or whether your laptop is open."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux-remote require a VPN?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Tailscale is the recommended approach — it creates a private VPN mesh between your devices without port forwarding or firewall changes. Any device on your Tailscale network can reach the remote amux server at its Tailscale IP. Direct IP access also works if the server is on the same local network or if you configure port forwarding, but Tailscale is simpler and more secure."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I manage a remote amux fleet from my phone?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Point your iPhone's amux PWA or iOS app to the remote server's AMUX_URL and authenticate with the auth token. The dashboard shows all remote sessions, their status, and the last output in real time. You can send messages, check the board, and monitor fleet health from your phone without touching a laptop."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What server specs do I need to run a remote AI agent fleet?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Each Claude Code, Codex, or Gemini CLI session uses 200-400 MB of RAM. A server with 8 GB RAM can comfortably run 15-20 agents. For 50 agents, 32 GB is recommended. CPU is not the bottleneck — agents spend most of their time waiting for API responses. Any cloud VM (AWS t3.xlarge, Hetzner CX31, Digital Ocean 8GB) or a home server works."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux-remote differ from SSH-ing into the server directly?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "SSH gives you a terminal on the server. amux-remote gives you the full amux API, dashboard, and CLI — all the high-level fleet management tools — without opening a terminal session. You check the board with amux board, peek at sessions with amux peek <name>, and send messages with amux send <name> from your local machine. The dashboard at $AMUX_URL is a full web UI that works on any browser or phone."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Run AI Agents Remotely</span></div>
+
+    <h1>Run AI Coding Agents on a Remote Server</h1>
+    <p class="subtitle">Use amux-remote to manage a parallel fleet of Claude Code, Codex, and Gemini CLI agents on a dedicated server — from your laptop, phone, or any browser. <em>Published August 2026.</em></p>
+
+    <!-- EXP-067: run-ai-agents-remotely top-of-page CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-067">
+      <div>
+        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Run your AI engineering team on a dedicated server overnight</div>
+        <div style="color:#a7f3d0;font-size:0.875rem">amux: open-source fleet control plane for Claude Code, Codex &amp; Gemini CLI — 373+ stars, MIT licensed, single Rust binary.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp067_remote_guide_topofpage_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
+        View amux on GitHub ★
+      </a>
+    </div>
+
+    <p>amux lets you run 10-50 AI coding agents in parallel on any machine. With <strong>amux-remote</strong>, that machine doesn't have to be your laptop. Point amux at a remote server — a cloud VM, a home server, a dedicated machine — and manage the entire fleet from your local terminal, browser, or phone.</p>
+
+    <p>The remote server runs all the agents. Your local machine is just the control surface. Close your laptop, put your phone in your pocket — the agents keep working.</p>
+
+    <h2>Why run agents on a remote server?</h2>
+    <ul>
+      <li><strong>No laptop limits</strong> — a dedicated server has more RAM, more CPU cores, and doesn't compete with your browser or other apps. A 32 GB server can run 50+ agents simultaneously.</li>
+      <li><strong>Always-on</strong> — the server stays running when you close your laptop, lose your network connection, or put your machine to sleep. Overnight runs complete reliably.</li>
+      <li><strong>Manage from anywhere</strong> — check fleet status from your phone via the amux iOS app or PWA. Send a message to redirect an agent from the couch. Review completed PRs from the coffee shop.</li>
+      <li><strong>Separate compute from control</strong> — run expensive agents (GPT-4o, Claude Opus) on a high-memory server without paying for a premium laptop. Your local machine just needs a browser.</li>
+    </ul>
+
+    <h2>How to set up amux-remote (5 minutes)</h2>
+
+    <h3>Step 1: Install amux on the remote server</h3>
+    <p>SSH into your remote machine:</p>
+    <pre><code>ssh user@your-server
+
+# Install amux (single Rust binary)
+brew install amux
+# or download from GitHub releases for Linux
+curl -sSL https://github.com/mixpeek/amux/releases/latest/download/amux-linux-x86_64 -o /usr/local/bin/amux
+chmod +x /usr/local/bin/amux
+
+# Start the amux server
+amux serve  # listens on port 8824</code></pre>
+    <p>The server generates an auth token on first run at <code>~/.amux/auth_token</code>.</p>
+
+    <h3>Step 2: Get the auth token</h3>
+    <pre><code>cat ~/.amux/auth_token
+# Output: aAbBcCdDeE1234...  (copy this)</code></pre>
+
+    <h3>Step 3: Find the server's reachable IP</h3>
+    <p><strong>Option A — Tailscale (recommended):</strong></p>
+    <pre><code>tailscale ip -4
+# Output: 100.64.0.1  (your Tailscale VPN address)</code></pre>
+    <p>Tailscale creates a private mesh between your devices — no port forwarding or firewall changes needed. Install Tailscale on both the server and your local machine.</p>
+    <p><strong>Option B — Direct IP (same network or port-forwarded):</strong></p>
+    <pre><code>hostname -I
+# Output: 192.168.1.50</code></pre>
+
+    <h3>Step 4: Configure your local machine</h3>
+    <pre><code>cat > ~/.amux/remote.env &lt;&lt; 'EOF'
+AMUX_URL=https://100.64.0.1:8824
+AMUX_TOKEN=aAbBcCdDeE1234...
+EOF
+chmod 600 ~/.amux/remote.env
+
+# Load when you want to manage the remote fleet
+source ~/.amux/remote.env</code></pre>
+
+    <h3>Step 5: Verify the connection</h3>
+    <pre><code>source ~/.amux/remote.env
+curl -sk $AMUX_URL/api/health | python3 -m json.tool
+# Should return {"status":"ok","version":"..."}
+
+# List remote sessions
+amux list
+
+# Check the board
+amux board
+
+# Open the dashboard
+open $AMUX_URL</code></pre>
+
+    <p>Once connected, every amux command operates on the remote fleet. Start sessions, peek at output, send messages — all from your local terminal or the web dashboard at <code>$AMUX_URL</code>.</p>
+
+    <h2>Remote fleet topology</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Where it runs</th>
+          <th>What it does</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>amux server</td><td>Remote machine</td><td>Manages sessions, board, health, API</td></tr>
+        <tr><td>Agent sessions</td><td>Remote machine</td><td>Claude Code, Codex, Gemini CLI in tmux</td></tr>
+        <tr><td>amux CLI</td><td>Your local machine</td><td>Sends commands to remote via AMUX_URL</td></tr>
+        <tr><td>Dashboard</td><td>Your browser (any device)</td><td>Web UI served from remote server</td></tr>
+        <tr><td>iOS / PWA</td><td>Your phone</td><td>Mobile view of remote dashboard</td></tr>
+        <tr><td>Tailscale</td><td>Both machines</td><td>Encrypted VPN mesh (recommended)</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Remote server sizing guide</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Fleet size</th>
+          <th>RAM needed</th>
+          <th>Example cloud instance</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>5-10 agents</td><td>4-8 GB</td><td>AWS t3.large, Hetzner CX21</td></tr>
+        <tr><td>10-25 agents</td><td>8-16 GB</td><td>AWS t3.xlarge, Hetzner CX31</td></tr>
+        <tr><td>25-50 agents</td><td>16-32 GB</td><td>AWS t3.2xlarge, Hetzner CX41</td></tr>
+        <tr><td>50+ agents</td><td>32+ GB</td><td>AWS r6i.2xlarge, Hetzner CCX33</td></tr>
+      </tbody>
+    </table>
+    <p>Each Claude Code, Codex, or Gemini CLI session uses 200-400 MB of RAM. CPU is rarely the bottleneck — agents spend most of their time waiting for API responses. Disk I/O matters for worktree-heavy workflows.</p>
+
+    <h2>Overnight remote workflow</h2>
+    <p>A typical remote overnight session:</p>
+    <ol>
+      <li><strong>Evening</strong> — SSH into the remote server (or use the local amux CLI with AMUX_URL set). Add tasks to the board. Start 10-20 sessions. Confirm agents are running.</li>
+      <li><strong>Night</strong> — close your laptop. Agents run on the remote server. The self-healing watchdog handles context overflow, crashes, and stuck prompts automatically.</li>
+      <li><strong>Morning</strong> — open the amux iOS app or PWA. Check the board for completed tasks. Peek at session output for any that need review. Merge the PRs your agents opened.</li>
+    </ol>
+
+    <h2>Security considerations</h2>
+    <ul>
+      <li><strong>Auth token</strong> — treat the amux auth token like a password. Store it in <code>~/.amux/remote.env</code> with <code>chmod 600</code>. Never paste it into a shell command that logs to history.</li>
+      <li><strong>Tailscale ACLs</strong> — restrict amux server access to your own Tailscale devices using Tailscale ACL rules. No device outside your tailnet can reach the server.</li>
+      <li><strong>TLS</strong> — amux serves HTTPS with a self-signed certificate by default. Use <code>curl -sk</code> (not -k alone) for local trust, or add a proper TLS certificate for production setups.</li>
+      <li><strong>Agent credentials</strong> — API keys (Anthropic, OpenAI, Google) live in the remote server's environment or <code>~/.amux/server.env</code>. They never leave the server machine.</li>
+    </ul>
+
+    <h2>Frequently asked questions</h2>
+
+    <details>
+      <summary><strong>What is amux-remote?</strong></summary>
+      <p>amux-remote is the capability to point your local amux CLI and browser dashboard at a remote amux server. Set <code>AMUX_URL</code> to the remote server's address and <code>AMUX_TOKEN</code> to its auth token. All amux commands — board, send, peek, list — operate on the remote fleet. The dashboard at <code>$AMUX_URL</code> is served from the remote server and works in any browser or phone.</p>
+    </details>
+
+    <details>
+      <summary><strong>Why run agents on a remote server instead of locally?</strong></summary>
+      <p>Three reasons: compute, stability, and mobility. A dedicated server can run 20-50 agents overnight without competing with your laptop's battery and RAM. It stays on when you close your laptop. And you can check progress from your phone from anywhere — the agents keep running regardless of where you are.</p>
+    </details>
+
+    <details>
+      <summary><strong>Does amux-remote require Tailscale?</strong></summary>
+      <p>No, but Tailscale is the recommended approach. It creates a private VPN mesh between your devices without port forwarding or firewall changes — any device on your Tailscale network can reach the server at its stable Tailscale IP. Direct IP works too if you're on the same network or willing to configure port forwarding.</p>
+    </details>
+
+    <details>
+      <summary><strong>Can I manage a remote fleet from my iPhone?</strong></summary>
+      <p>Yes. Open the amux PWA or iOS app and point it at <code>$AMUX_URL</code> (the remote server's Tailscale IP). You get the full dashboard — sessions, board, fleet health, peek — on your phone. The iOS app is on the App Store; the PWA works in Safari by opening the dashboard URL and adding to home screen.</p>
+    </details>
+
+    <details>
+      <summary><strong>What if the remote server restarts?</strong></summary>
+      <p>Configure amux as a system service (launchd on macOS, systemd on Linux) so it starts automatically on boot. The amux watchdog resumes monitoring sessions that were running before the restart. Any session that was in the middle of a task will replay its last message and continue.</p>
+    </details>
+
+    <details>
+      <summary><strong>How is this different from just SSH-ing into the server?</strong></summary>
+      <p>SSH gives you a raw terminal. amux-remote gives you the full fleet management API, dashboard, and CLI — all the high-level tools without opening a terminal. Check the board with <code>amux board</code>, peek at a session with <code>amux peek myagent</code>, send a message with <code>amux send myagent "continue"</code>. The web dashboard at <code>$AMUX_URL</code> is a full phone-friendly UI served from the remote machine.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team on a dedicated server tonight</h3>
+      <p>amux is open source, MIT licensed, single Rust binary, zero external dependencies. Install on any Mac or Linux machine and connect from anywhere.</p>
+      <pre><code>brew install amux
+amux serve  # start the server
+# then from your local machine:
+export AMUX_URL=https://&lt;server-ip&gt;:8824
+amux list  # see all remote sessions</code></pre>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Getting started guide</a>
+        <a class="btn" href="/guides/ai-agent-session-cloning/">Session cloning guide</a>
+      </div>
+    </div>
+
+    <p style="margin-top:32px;color:var(--muted);font-size:.85rem">Related: <a href="/guides/ai-coding-agents-overnight/">Run agents overnight</a> · <a href="/guides/ai-agent-session-cloning/">Clone and fork sessions</a> · <a href="/guides/getting-started/">Getting started</a> · <a href="/glossary/ai-agent-fleet/">What is an AI agent fleet?</a></p>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Guides</div>
+          <ul>
+            <li><a href="/guides/getting-started/">Getting started</a></li>
+            <li><a href="/guides/ai-coding-agents-overnight/">Overnight runs</a></li>
+            <li><a href="/guides/ai-agent-session-cloning/">Session cloning</a></li>
+            <li><a href="/guides/">All guides</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/compare/">Compare</a></li>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/glossary/ai-agent-fleet/">AI Agent Fleet</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

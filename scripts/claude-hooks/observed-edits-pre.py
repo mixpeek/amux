@@ -62,9 +62,24 @@ def _warn_derive_failed(exc):
 
 try:
     session = (os.environ.get("AMUX_SESSION") or "").strip()
+    derived = not session
     if not session:
         session = _derive_session_from_tmux()
     if session:
+        # ISOLATED WORKERS (AMUX-3232): skip marker write for isolated workers
+        # so they leave no observed-{session}.t0 markers.
+        if derived:
+            _home = os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux")
+            _sf = os.path.join(_home, "sessions", f"{session}.env")
+            try:
+                with open(_sf) as _f:
+                    if any("CC_ISOLATED" in ln and ('"1"' in ln or "=1" in ln)
+                           for ln in _f):
+                        raise SystemExit(0)
+            except SystemExit:
+                raise
+            except OSError:
+                pass
         state = os.path.join(
             os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),
             "hooks", "state")

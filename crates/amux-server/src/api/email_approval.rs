@@ -75,6 +75,31 @@ pub fn exempt_sessions(home: &Path) -> Vec<String> {
     env_list(home, "AMUX_EMAIL_EXTERNAL_EXEMPT")
 }
 
+/// Whether this worker has a standing authorization to send external email
+/// without creating a one-shot human approval.
+///
+/// The first-class setting is the ordinary scoped environment key
+/// `AMUX_EMAIL_EXTERNAL_ALLOW`, resolved worker > group > global by the same
+/// resolver that supplies every other worker policy. The older global
+/// `AMUX_EMAIL_EXTERNAL_EXEMPT` comma-list remains accepted for compatibility,
+/// but new configuration should use the boolean: it can be understood and
+/// changed for one worker from the Configurations UI and can be explicitly
+/// denied at a more-specific layer.
+pub fn external_email_allowed(home: &Path, session: &str) -> bool {
+    let scoped = crate::api::session_verbs::scoped_setting_in(
+        home,
+        session,
+        "AMUX_EMAIL_EXTERNAL_ALLOW",
+    );
+    if let Some(value) = scoped {
+        return matches!(
+            value.trim().trim_matches('"').to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+    }
+    exempt_sessions(home).contains(&session.trim().to_lowercase())
+}
+
 /// The classifier, pure so every cell is testable: which of these addresses
 /// are EXTERNAL? `addrs` is one or more comma-separated lists concatenated
 /// with commas; a connected account's own address (a self-send) is internal.
@@ -360,6 +385,46 @@ mod tests {
             external_recipients("someone-else@gmail.com", &internal, &connected).len(),
             1
         );
+    }
+
+    #[test]
+    fn external_email_authorization_is_scoped_and_defaults_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::create_dir_all(home.join("env")).unwrap();
+        std::fs::write(home.join("sessions/probe.env"), "CC_TAGS=gtm\n").unwrap();
+
+        assert!(!external_email_allowed(home, "probe"), "closed by default");
+
+        // Global allow is visible until a more-specific worker denial wins.
+        std::fs::write(home.join("amux.env"), "AMUX_EMAIL_EXTERNAL_ALLOW=1\n").unwrap();
+        assert!(external_email_allowed(home, "probe"));
+        std::fs::write(
+            home.join("sessions/probe.env"),
+            "CC_TAGS=gtm\nAMUX_EMAIL_EXTERNAL_ALLOW=0\n",
+        )
+        .unwrap();
+        assert!(!external_email_allowed(home, "probe"));
+
+        // Removing the worker override exposes the group layer.
+        std::fs::write(home.join("amux.env"), "AMUX_EMAIL_EXTERNAL_ALLOW=0\n").unwrap();
+        std::fs::write(home.join("env/gtm.env"), "AMUX_EMAIL_EXTERNAL_ALLOW=yes\n").unwrap();
+        std::fs::write(home.join("sessions/probe.env"), "CC_TAGS=gtm\n").unwrap();
+        assert!(external_email_allowed(home, "probe"));
+
+        // Compatibility for the old global comma-list remains, but the new
+        // scoped key is authoritative when present.
+        std::fs::remove_file(home.join("env/gtm.env")).unwrap();
+        std::fs::write(home.join("amux.env"), "").unwrap();
+        std::fs::write(home.join("server.env"), "AMUX_EMAIL_EXTERNAL_EXEMPT=Probe,other\n").unwrap();
+        assert!(external_email_allowed(home, "probe"));
+        std::fs::write(
+            home.join("sessions/probe.env"),
+            "CC_TAGS=gtm\nAMUX_EMAIL_EXTERNAL_ALLOW=0\n",
+        )
+        .unwrap();
+        assert!(!external_email_allowed(home, "probe"));
     }
 
     #[test]

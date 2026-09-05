@@ -213,5 +213,73 @@ resolved=$(amux url 2>/dev/null)
 want "(z) the tool resolves amux-url to the CLOSED port, not the live server" \
      "$resolved" "https://127.0.0.1:9"
 
+# ---- (r) THE CARRY RETRIES A TRANSPORT FAILURE (AF-362) ---------------------
+# The entry MOVE is a local file write and always succeeds; only the card carry
+# can fail. So a server that is merely MID-RESTART produced a half-done
+# retirement: entry gone from frustrations.md, SYMPTOM and COST never reaching
+# the card that AF-38's rule keeps them for. Measured live on 2026-08-31, where
+# AMUX-3887 and AMUX-3723 both returned `NOT carried (curl exit 7, 0 bytes)`
+# while /api/health showed uptime_s=11 moments later. This box swaps the server
+# binary on every commit, so a batch archive reliably straddles one.
+#
+# The observable is TIME. Against the closed port every attempt fails fast, so a
+# single attempt returns in well under a second and three attempts cannot return
+# before the two 2s sleeps between them have elapsed. A floor, never a ceiling:
+# asserting "under N seconds" would be the flaky direction.
+#
+# It still must REPORT the failure rather than swallow it — a retry that ended in
+# a false success would be worse than no retry, and cell (r2) is that control.
+R=$TMP/retry; build "$R"
+RLN=$(cd "$R" && python3 scripts/frustrations-archive.py --list | grep -F "TARGET entry" | awk '{print $1}' | tr -d 'L')
+_t0=$(date +%s)
+( cd "$R" && python3 scripts/frustrations-archive.py "$RLN" tester --evidence-stdin >"$R/out.txt" 2>&1 <<'EV'
+validated: the carry is being exercised against a closed port on purpose
+EV
+)
+_t1=$(date +%s)
+_elapsed=$((_t1 - _t0))
+if [ "$_elapsed" -ge 4 ]; then
+  ok "(r) the carry retries a transport failure (took ${_elapsed}s, floor 4s for 3 attempts)"
+else
+  bad "(r) the carry returned in ${_elapsed}s — too fast to have retried; a single attempt against a closed port is instant"
+fi
+has "(r2) and an unreachable server is still REPORTED, not swallowed" "NOT carried" "$R/out.txt"
+
+# -- (s) field() reads a continuation at ANY indent width (AF-387) -----------
+#
+# The parser matched continuations with the literal two-space "\n  ". An entry
+# indenting by ONE space could not extend past its first line, the lookahead had
+# to match a line starting with a space, and the whole match failed. field()
+# then returned "" and the caller said "entry has no SYMPTOM/COST to carry"
+# about an entry that had both. 5 of 65 live entries and 2 of 98 archived ones
+# were unreadable that way, and those two had already been retired with nothing
+# reaching their cards.
+#
+# This calls the SHIPPED field() rather than restating its regex, and pins both
+# directions: it must READ the wider set, and the next field must still
+# TERMINATE it. A fix that swallowed the rest of the entry would satisfy the
+# first assertion alone.
+if python3 - "$ARCHIVE_TOOL" <<'FIELDPY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fa", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+one = "## t\nCARD: X-9\nSYMPTOM: first line\n second line one-space\nCOST: c\n"
+two = "## t\nCARD: X-9\nSYMPTOM: first line\n  second line two-space\nCOST: c\n"
+tab = "## t\nCARD: X-9\nSYMPTOM: first line\n\ttabbed line\nCOST: c\n"
+
+assert m.field(one, "SYMPTOM").endswith("one-space"), repr(m.field(one, "SYMPTOM"))
+assert m.field(two, "SYMPTOM").endswith("two-space"), repr(m.field(two, "SYMPTOM"))
+assert m.field(tab, "SYMPTOM").endswith("tabbed line"), repr(m.field(tab, "SYMPTOM"))
+
+# TERMINATION, the direction a greedy fix breaks silently.
+assert m.field(one, "COST") == "c", repr(m.field(one, "COST"))
+assert "COST" not in m.field(one, "SYMPTOM"), repr(m.field(one, "SYMPTOM"))
+assert m.field(one, "CARD") == "X-9", repr(m.field(one, "CARD"))
+FIELDPY
+then ok "(s) field() reads one-space, two-space and tab continuations, and still stops at the next field"
+else bad "(s) field() cannot read a continuation at every indent width, or it swallowed the next field"
+fi
+
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

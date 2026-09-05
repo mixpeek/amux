@@ -44,14 +44,38 @@ _fn_range() {  # $1 = function name -> "start,end" of its definition
     start && /\}/ { depth -= gsub(/\}/,"}"); if (depth<=0) { print start","NR; exit } }
   ' amux
 }
-SRC=""
-for f in _unstamped_ledger _record_unstamped_send _flush_unstamped_ledger; do
-  r=$(_fn_range "$f")
-  if [ -z "$r" ]; then
-    bad "could not locate $f in ./amux — the CLI moved and this test is now blind"
-    echo; echo "$PASS passed, $FAIL failed"; exit 1
-  fi
-  SRC="$SRC$(sed -n "${r}p" amux)"$'\n'
+# TRANSITIVELY. Extracting a function without its callees is the same rot this
+# file was built to catch, one layer down, and it had already happened: AMUX-40
+# (978645c0) swapped the bare `curl` inside _flush_unstamped_ledger for the
+# hang-guarded `_curl` helper, which this test did not extract. `_curl` was then
+# an undefined command, its rc-127 hit the flush's own "server went away
+# mid-flush: KEEP the row" branch, and three assertions went red reading:
+#
+#   FAIL — the row never reached /api/history — every fallback send would be lost
+#
+# A green server, a working POST (verified by hand), and a test insisting the
+# audit trail was broken. The diagnosis pointed at the mechanism; the defect was
+# in the harness reading it. So walk the call graph instead of naming three
+# functions and hoping the list stays complete.
+SRC=""; HAVE=" "; NEED="_unstamped_ledger _record_unstamped_send _flush_unstamped_ledger"
+while [ -n "$NEED" ]; do
+  NEXT=""
+  for f in $NEED; do
+    case "$HAVE" in *" $f "*) continue ;; esac
+    r=$(_fn_range "$f")
+    if [ -z "$r" ]; then
+      bad "could not locate $f in ./amux — the CLI moved and this test is now blind"
+      echo; echo "$PASS passed, $FAIL failed"; exit 1
+    fi
+    body=$(sed -n "${r}p" amux)
+    SRC="$SRC$body"$'\n'
+    HAVE="$HAVE$f "
+    for dep in $(printf '%s\n' "$body" | grep -oE '\b_[a-z0-9_]+' | sort -u); do
+      case "$HAVE$NEXT " in *" $dep "*) continue ;; esac
+      grep -q "^$dep() {" amux && NEXT="$NEXT $dep"
+    done
+  done
+  NEED="$NEXT"
 done
 
 TMPHOME=$(mktemp -d)
@@ -66,7 +90,20 @@ for f in _unstamped_ledger _record_unstamped_send _flush_unstamped_ledger; do
     echo; echo "$PASS passed, $FAIL failed"; exit 1
   fi
 done
-ok "all three ledger functions extracted from the shipped CLI"
+ok "ledger functions + callees extracted from the shipped CLI:$HAVE"
+# The closure is only worth having if a missing callee is LOUD. Without this,
+# the next helper swap reproduces AMUX-40 exactly: an undefined command, a
+# silent rc, and a red assertion pointing at the wrong subsystem.
+MISSING=""
+for dep in $(printf '%s\n' "$SRC" | grep -oE '\b_[a-z0-9_]+' | sort -u); do
+  grep -q "^$dep() {" amux || continue          # not a CLI function, not our problem
+  type -t "$dep" >/dev/null 2>&1 || MISSING="$MISSING $dep"
+done
+if [ -z "$MISSING" ]; then
+  ok "every CLI helper the extracted code calls is defined here (no silent rc-127)"
+else
+  bad "extracted code calls undefined CLI helper(s):$MISSING — assertions below would blame the ledger for a harness gap"
+fi
 
 MARK="__ledgerselftest$(date +%s)$$__"
 LEDGER=$(_unstamped_ledger)
@@ -143,6 +180,106 @@ else
   bad "the reconciled row's ts is ${MYTS:-0} — seconds into a millis column dates it 1970 and \
 hides it from every time-ordered view"
 fi
+
+# 5. WHAT THE FALLBACK TELLS ITS USER (AF-454). Sections 1-4 prove the ledger
+#    reconciles. This one proves the tool SAYS SO, which is a separate claim and
+#    was false for as long as the ledger has existed: the closing message ended
+#    "no origin stamp, no audit" and was printed one line AFTER
+#    _record_unstamped_send wrote the audit row.
+#
+#    That cost a real measurement pass. gtm-engine hit a server flap on
+#    2026-09-03, read "no audit" literally, and filed a provenance gap that
+#    AMUX-2670 had already closed; their own send was in the trail the whole
+#    time as MSG-40621 (type raw-tmux-fallback, origin "unstamped-fallback from
+#    gtm-engine"). A mechanism the user is told does not exist is a mechanism
+#    that does not reach them (ethos rule 1).
+#
+#    Asserted against the SOURCE, deliberately. This block cannot be executed
+#    without typing into a peer's live pane, which is the same reason sections
+#    1-4 drive the functions directly instead of sending. A static assertion
+#    that can fail beats a dynamic one that cannot run.
+#    And it reads ONLY the `echo` lines. The first draft of this check matched
+#    the whole block and went red against the FIXED code, because the comment
+#    explaining the old wording quotes "no audit" verbatim. A check that reads
+#    the prose around a line instead of the line is pinned to the wrong layer,
+#    and would have passed just as happily on a revert that kept the comment.
+BLOCK=$(sed -n '/^  _record_unstamped_send /,/^  return 0$/p' amux | grep '^ *echo ')
+if [ -z "$BLOCK" ]; then
+  bad "could not locate the fallback's closing block in ./amux — this check proves nothing"
+else
+  case "$BLOCK" in
+    *"no audit"*) bad "the fallback still says 'no audit' one line after recording the audit row (AF-454)" ;;
+    *) ok "the fallback no longer claims 'no audit' while writing the audit row" ;;
+  esac
+  case "$BLOCK" in
+    *"reconciles into the audit trail"*) ok "it tells the sender the send is recorded and will reconcile" ;;
+    *) bad "nothing tells the sender the send was recorded — they will read the warning as loss" ;;
+  esac
+  # The remedy must not depend on the server whose unreachability is the only
+  # reason this branch runs (ethos rule 3). tmux must come BEFORE the curl.
+  T_POS=$(printf '%s' "$BLOCK" | grep -n 'tmux capture-pane' | head -1 | cut -d: -f1)
+  C_POS=$(printf '%s' "$BLOCK" | grep -n 'curl -sk' | head -1 | cut -d: -f1)
+  if [ -n "$T_POS" ] && [ -n "$C_POS" ] && [ "$T_POS" -lt "$C_POS" ]; then
+    ok "the server-independent remedy (tmux) is offered before the curl"
+  elif [ -z "$T_POS" ]; then
+    bad "the only verification offered is a curl at the server that was just proved unreachable"
+  else
+    bad "the curl is printed above the tmux remedy — the reader tries the dead one first"
+  fi
+  # $tname, not $name: gtm-engine ran `tmux has-session -t gtm-ticker` against a
+  # session actually called amux-gtm-ticker, found nothing, and briefly read a
+  # DELIVERED message as lost (the 2026-07-27 shape). And the trailing colon is
+  # load-bearing: `-t "=$tname"` fails with "can't find pane".
+  CAP=$(printf '%s\n' "$BLOCK" | grep 'capture-pane' | head -1)
+  case "$CAP" in
+    *'=$tname:'*) ok "the tmux remedy uses the REAL prefixed session name, with the colon capture-pane needs" ;;
+    *'$tname'*)   bad "the tmux remedy names \$tname but drops the trailing colon — capture-pane answers \"can't find pane\"" ;;
+    *'$name'*)    bad "the tmux remedy interpolates the FLEET name; the tmux session is prefixed and it will find nothing" ;;
+    *)            bad "the tmux remedy does not name the session at all" ;;
+  esac
+  # Scrollback, not the viewport. A bare capture-pane returns the current frame,
+  # which is the trap CLAUDE.md documents for peek: a full-screen picker clears
+  # the screen and the message being looked for scrolls off.
+  case "$CAP" in
+    *'capture-pane -p -S -'*) ok "the tmux remedy reads scrollback, not just the viewport" ;;
+    *) bad "capture-pane without -S returns the viewport only — the peek/output trap, in the remedy" ;;
+  esac
+fi
+
+# 6. WHAT THE RECEIVER SEES (AF-455). Sections 1-5 are all about the SENDER:
+#    what is recorded, and what the sender is told. This one is the other side.
+#
+#    A send that reaches the server arrives stamped "[amux-origin: <lane> —
+#    server-verified ...]". An injection used to arrive with no prefix at all,
+#    making it shape-identical to a prompt typed by the OWNER — whose turns
+#    carry standing authority the sending peer does not have.
+KEYS=$(grep -n 'tmux send-keys .* -l "' amux | head -1)
+case "$KEYS" in
+  *'-l "$marked"'*) ok "the injected body carries a marker, not the bare text" ;;
+  *'-l "$text"'*)   bad "the injection is sent bare — the receiver cannot tell it from an owner prompt (AF-455)" ;;
+  *)                bad "could not find the fallback's send-keys body line; this check proves nothing" ;;
+esac
+# The marker must assert the ABSENCE of verification. A marker that claimed
+# identity would be the body signature AMUX-1768 forbids.
+MARKER=$(grep -n 'local marked=' amux | head -1)
+if [ -z "$MARKER" ]; then
+  bad "no marker is constructed for fallback injections"
+else
+  case "$MARKER" in
+    *'NOT server-verified'*) ok "the marker asserts the absence of verification, not an identity (AMUX-1768)" ;;
+    *) bad "the marker does not say it is unverified — a prefix that merely names a sender is the forgeable kind AMUX-1768 forbids" ;;
+  esac
+  case "$MARKER" in
+    *'\n'*) bad "the marker embeds a newline — send-keys -l would submit it as a prompt of its own" ;;
+    *) ok "the marker is a single line, so the separately-sent Enter still submits body and marker together" ;;
+  esac
+fi
+# The AUDIT row keeps the original text. The marker is for the human reading the
+# pane; a trail that stored the decorated string would drift from what was sent.
+case "$(grep -n '_record_unstamped_send "' amux | tail -1)" in
+  *'_record_unstamped_send "$name" "$text"'*) ok "the audit row records the ORIGINAL body, undecorated" ;;
+  *) bad "the audit row no longer records \$text — the trail and the pane would disagree" ;;
+esac
 
 echo
 echo "$PASS passed, $FAIL failed"

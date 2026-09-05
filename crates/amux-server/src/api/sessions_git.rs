@@ -452,6 +452,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
 
         // Seed a KNOWN-WRONG value with an old timestamp, the way a stale entry
@@ -506,6 +507,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let disposition = |r: &Response| {
             r.headers()

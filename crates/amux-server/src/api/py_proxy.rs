@@ -66,6 +66,10 @@ pub const PROXIED_FAMILIES: &[ProxiedFamily] = &[];
 /// predicate of the mechanism it describes — ethos rule 1).
 pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/health", "health + build discriminator"),
+    // The /api-prefixed alias for the same handler. Lanes guess this path
+    // because every sibling diagnostic is under /api/ (2026-08-30 sweep: 20
+    // 404s in 24h, hand-typed).
+    ("/api/health", "alias of /health; also the /api/health/invariants prefix"),
     ("/manifest.json", "PWA manifest from branding prefs"),
     ("/api/calendar.ics", "iCal feed"),
     ("/api/sync", "delta sync"),
@@ -76,6 +80,10 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/orchestrate", "voice fleet-orchestrator: transcript -> helper-model routing plan (api/orchestrate.rs, AMUX-3074)"),
     ("/api/skin", "resolved skin (terms/colours/tabs) for a worker"),
     ("/api/config", "declarative instance config: export + idempotent apply"),
+    // AMUX-2888. Complete: the relay client is ported, so start/stop drive a
+    // real tunnel rather than answering the honest 501 they carried while the
+    // client was missing.
+    ("/api/tunnel", "tunnel client controls: status/start/stop, driving the ported relay in runtime_jobs::tunnel (AMUX-2888)"),
     // ---- Mounted in mod.rs but never declared here, so
     // `every_mounted_api_family_is_claimed_by_the_registry` was RED on main and
     // CI could not go green for anyone. Native like everything else:
@@ -93,6 +101,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/sessions-git", "bulk {session: {branch, repo}} map for the session cards — REUSES the session list's branch (one answer, not two) and adds repo, one rev-parse per DISTINCT dir, 30s TTL (api/sessions_git.rs, AMUX-2599)"),
     ("/api/offline-origin", "which origin can run a service worker — answers from the TLS dir we ACTUALLY serve, and gives no cert advice on a proxied origin (api/offline_origin.rs, AMUX-2599)"),
     ("/api/git", "POST /api/git/staged-guard — the shared-checkout staged-state guard the installed .git/hooks/amux-staged-guard calls on every commit. UNROUTED from the cutover until 2026-08-09 (405 x ~1,147/hr, swallowed by the hook's fail-open), so the guard was silently off fleet-wide (api/git_guard.rs, AMUX-1730)"),
+    ("/api/telegram", "Telegram bot connector — chat/session link+mappings, outbound send, poll+relay status (api/telegram.rs, db/telegram.rs, runtime_jobs/telegram_poll.rs + telegram_relay.rs). Net-new: python never had this route"),
     ("/api/memories", "memories CRUD"),
     ("/api/messages", "inter-worker messages"),
     ("/api/schedules", "scheduler CRUD + runs"),
@@ -131,8 +140,8 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/tmux-sessions", "tmux sessions amux does not already own, for Connect (api/worker_create.rs)"),
     ("/api/iterm2", "open iTerm2 panes, for Connect-a-pane (api/worker_create.rs)"),
     ("/api/saved-messages", "peek composer's reusable snippets, per worker (api/saved_messages.rs, AMUX-2871)"),
-    ("/api/proxies", "Proxies tab CRUD; start/stop answer an honest 501 — the tunnel client is AMUX-2888 (api/proxies.rs, AMUX-2887)"),
-    ("/api/pull", "self-update button; routes brew/pip installs and REFUSES a pull that would rewrite a shared checkout (api/self_update.rs, AMUX-2891)"),
+    ("/api/proxies", "Proxies tab CRUD; start/stop drive the tunnel relay (api/proxies.rs, AMUX-2887 + AMUX-2888)"),
+    ("/api/pull", "self-update button; routes brew/pip installs, allows ahead-only no-op pulls, and refuses shared-checkout edits or non-fast-forward history (api/self_update.rs, AMUX-2891)"),
     ("/api/observability", "Cost tab rollup over token_ledger; does NOT index on request — the periodic job owns that (api/observability.rs, AMUX-2893)"),
     ("/api/habits", "Habits tab state — one JSON array in ~/.amux/habits.json (api/habits.rs, AMUX-2871)"),
     ("/api/scope", "uniform per-capability scope read/write — memory/rules/env/gates/status_mode at global/group/worker, python storage shared byte-for-byte (api/scope.rs, AMUX-2608: the family whose cutover emptied PROXIED_FAMILIES)"),
@@ -167,7 +176,12 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
 /// emptiness is STRUCTURAL (there is nothing left that could forward) rather
 /// than a table that merely happens to be clear today.
 pub async fn boundary() -> axum::Json<serde_json::Value> {
-    axum::Json(json!({
+    // AF-320. `proxied: []` is the whole claim this endpoint makes, and an empty
+    // list is exactly what a broken read would also produce. The population is
+    // both family tables, so a zero here is readable as structural rather than
+    // as unmeasured.
+    axum::Json(crate::api::measured::measured(
+        json!({
         "proxied": PROXIED_FAMILIES.iter().map(|f| json!({
             "family": f.family,
             "owner": "python",
@@ -182,5 +196,7 @@ pub async fn boundary() -> axum::Json<serde_json::Value> {
                             retired legacy bind, i.e. a self-proxy loop. `proxied` is empty \
                             STRUCTURALLY, not incidentally.",
         "doc": "docs/rust-migration/server-boundary.md",
-    }))
+        }),
+        PROXIED_FAMILIES.len() + NATIVE_FAMILIES.len(),
+    ))
 }

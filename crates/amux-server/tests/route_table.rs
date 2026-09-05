@@ -144,6 +144,7 @@ async fn route_table_matches_the_real_router_both_directions() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let twin_candidates = ["DELETE", "PUT", "PATCH", "POST", "GET"];

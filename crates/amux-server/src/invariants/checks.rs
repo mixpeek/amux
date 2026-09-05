@@ -65,26 +65,167 @@ pub(crate) fn gateway_owned(path: &str) -> bool {
 }
 
 /// Families whose ABSENCE is a documented product state with a GUARDED caller
-/// (AMUX-3468). `/api/tunnel/*`: the python-era tunnel API was never ported;
-/// the one caller (`amux tunnel`, AF-63) PREFLIGHTS /api/tunnel/status and
-/// prints "not available in this server build" instead of failing blind — so
-/// the census's own why_it_matters ("silent capability loss unless the client
-/// fails loudly") does not apply, and a permanent red here trains readers to
-/// skim the rows that matter (the AF-132 lesson). Entries are prefixes ending
-/// in `/`. The exclusion is SELF-EXPIRING both ways: if the family gets
-/// mounted, the stale entry FAILS the census naming itself for deletion; and
-/// if the guarded caller is ever removed, the call site disappears from the
-/// census with it. Porting-or-removing tunnel is a product call (Ethan's),
-/// tracked on AMUX-3468.
-const CALLER_GUARDED_ABSENT: &[&str] = &["/api/tunnel/"];
+/// (AMUX-3468). Entries are prefixes ending in `/`. The exclusion is
+/// SELF-EXPIRING both ways: if the family gets mounted, the stale entry FAILS
+/// the census naming itself for deletion; and if the guarded caller is ever
+/// removed, the call site disappears from the census with it.
+///
+/// EMPTY SINCE 2026-08-27, and the way it emptied is the point. Its one entry
+/// was `/api/tunnel/`, exempted because the python-era tunnel API was never
+/// ported and `amux tunnel` preflighted `/api/tunnel/status` rather than
+/// failing blind. c703c34b mounted that family — status answers 200 with
+/// `ported:false`, start/stop answer an honest 501 — so the exemption went
+/// stale, and the census did exactly what this doc-comment promised: it failed,
+/// 62504 evaluations deep, naming itself for deletion (AMUX-3812). A guard that
+/// describes its own retirement condition and then executes it is worth keeping
+/// even with nothing in it.
+///
+/// The family is now MOUNTED but still not PORTED — the relay client is
+/// unwritten and AMUX-2888 carries it. That is a capability gap, not a routing
+/// one, and the census is the wrong instrument for it: these routes exist and
+/// answer honestly, which is all this invariant asks.
+const CALLER_GUARDED_ABSENT: &[&str] = &[];
 
-fn caller_guarded_absent(path: &str) -> bool {
-    CALLER_GUARDED_ABSENT.iter().any(|p| path.starts_with(p))
+
+
+/// AF-453. `route.callers_have_routes` asks whether a route EXISTS. Nothing in
+/// this repo asked whether a mounted route ANSWERS, and the gap had a live
+/// specimen: `GET /api/workers/{id}` is in ROUTE_TABLE with GET/PATCH/DELETE,
+/// and returned 2xx for 0 of 15 calls over 14 days while 0 of 12 probed lanes
+/// resolved. The existence check passes it, correctly and uselessly.
+///
+/// GRANULARITY IS THE WHOLE CHECK, and the first version of this got it wrong.
+/// Aggregated by FAMILY, `/api/workers` reports 4,016 of 4,394 succeeding, which
+/// is healthy, because `/api/workers/{id}/<verb>` is 4,006/4,368 and drowns
+/// `/api/workers/{id}` at 1/17. A family-level version of this check reports the
+/// fleet clean and misses the one defect it was written for. Group by ROUTE
+/// SHAPE (`normalize_target_verb`), never by family.
+///
+/// WHAT A PASS DOES NOT MEAN. Four blind spots, published in the evidence of
+/// every result rather than left for a reader to rediscover (ethos rule 4),
+/// because "no findings" from this check means "no mounted route failed loudly
+/// enough, often enough, with a status", not "every mounted route answers":
+///
+///   1. n >= 10. A mounted route failing 9 times in the window is invisible.
+///   2. Never-called routes are invisible. 23 `/api` families had zero calls in
+///      the 14-day window that produced this check.
+///   3. A route answering 2xx for one input and failing every other stays above
+///      the threshold at low n.
+///   4. THE REAL ONE: this keys on STATUS. A route returning 200 with an error
+///      body passes it, and 1,646,523 2xx `/api` rows in the window are not
+///      inspected for that shape by anything.
+const MOUNTED_ANSWERS_BLIND_SPOTS: &[&str] = &[
+    "n >= 10: a mounted route failing fewer times in the window is invisible",
+    "never-called routes are invisible — this reads the request log, not the route table",
+    "a route answering 2xx for one input and failing the rest can stay above the threshold at low n",
+    "keys on STATUS ONLY: a route returning 200 with an error body passes this check",
+];
+
+/// One (method, route-shape) group from the request log. `shape` must come from
+/// `normalize_target_verb`, not `family` — see the granularity note above.
+#[derive(Debug, Clone)]
+pub struct RouteOutcomeRow {
+    pub method: String,
+    pub shape: String,
+    pub n: i64,
+    pub ok: i64,
+}
+
+/// Minimum calls before a shape is judged at all. Named rather than inlined so
+/// blind spot 1 and the code cannot drift apart.
+const MOUNTED_ANSWERS_MIN_N: i64 = 10;
+/// A shape is "not answering" below this 2xx percentage.
+const MOUNTED_ANSWERS_MAX_OK_PCT: i64 = 10;
+
+pub fn mounted_routes_answer(
+    rows: &[RouteOutcomeRow],
+    mounted: &[(&str, &[&str])],
+) -> Vec<InvariantResult> {
+    const ID: &str = "route.mounted_routes_answer";
+    // The empty-probe trap, same one `route.callers_have_routes` guards: a log
+    // that yielded nothing reports the identical silence to a fleet where every
+    // mounted route answers. Say which happened.
+    if rows.is_empty() {
+        return vec![InvariantResult::unknown(
+            ID,
+            "no request-log groups in the window — the probe did not run, which is not \
+             the same as every mounted route answering",
+        )];
+    }
+    let considered: i64 = rows.len() as i64;
+    let judged: Vec<&RouteOutcomeRow> = rows
+        .iter()
+        .filter(|r| r.n >= MOUNTED_ANSWERS_MIN_N)
+        .collect();
+    // n_considered BESIDE the answer (ethos rule 4): a zero here is only
+    // meaningful next to how many shapes cleared the threshold to produce it.
+    let ev = |extra: serde_json::Value| -> serde_json::Value {
+        serde_json::json!({
+            "measured": true,
+            "n_considered": considered,
+            "n_judged": judged.len(),
+            "min_n": MOUNTED_ANSWERS_MIN_N,
+            "max_ok_pct": MOUNTED_ANSWERS_MAX_OK_PCT,
+            "blind_spots": MOUNTED_ANSWERS_BLIND_SPOTS,
+            "detail": extra,
+        })
+    };
+    let mut out = Vec::new();
+    let mut failed = 0usize;
+    for r in &judged {
+        if r.ok * 100 > r.n * MOUNTED_ANSWERS_MAX_OK_PCT {
+            continue; // answering well enough
+        }
+        // MOUNTED filter. An unmounted path failing is a client guessing a URL,
+        // which /api/logs/analyze already reports as a 404 group with
+        // nearest_routes. This check is only about routes that DO exist.
+        if !matches!(match_route_full(mounted, &r.method, &r.shape), RouteMatch::Ok) {
+            continue;
+        }
+        failed += 1;
+        out.push(
+            InvariantResult::fail(
+                ID,
+                format!(
+                    "a route in ROUTE_TABLE answers 2xx for more than {}% of its calls",
+                    MOUNTED_ANSWERS_MAX_OK_PCT
+                ),
+                format!("{} {} — {}/{} 2xx", r.method, r.shape, r.ok, r.n),
+            )
+            .entity(format!("{} {}", r.method, r.shape))
+            .evidence(ev(serde_json::json!({ "n": r.n, "ok": r.ok }))),
+        );
+    }
+    if failed == 0 {
+        out.push(
+            InvariantResult::pass(ID).evidence(ev(serde_json::json!({
+                "means": "no MOUNTED route failed loudly enough, often enough, with a status — \
+                          see blind_spots; this is not 'every mounted route answers'"
+            }))),
+        );
+    }
+    out
 }
 
 pub fn route_callers_have_routes(
     mounted: &[(&str, &[&str])],
     callers: &[CallerPath],
+) -> Vec<InvariantResult> {
+    route_callers_have_routes_with(mounted, callers, CALLER_GUARDED_ABSENT)
+}
+
+/// The same census with the exempt list INJECTED (AMUX-3812).
+///
+/// The negative control for the self-expiring exemption used to read the live
+/// `CALLER_GUARDED_ABSENT` and hardcode `/api/tunnel/` as its fixture. When that
+/// entry retired — because the family got mounted, exactly as designed — the
+/// test went red, and it went red about production DATA rather than about the
+/// behaviour it exists to pin. A control that breaks when an unrelated constant
+/// changes is not testing the mechanism.
+pub fn route_callers_have_routes_with(
+    mounted: &[(&str, &[&str])],
+    callers: &[CallerPath],
+    guarded_absent: &[&str],
 ) -> Vec<InvariantResult> {
     const ID: &str = "route.callers_have_routes";
     if callers.is_empty() {
@@ -121,7 +262,7 @@ pub fn route_callers_have_routes(
         // EXPECTED state and passes with the license named; anything else
         // (the family got mounted, or a verb mismatch) means the exclusion
         // is STALE and must fail so the entry gets deleted.
-        if caller_guarded_absent(&c.path) {
+        if guarded_absent.iter().any(|p| c.path.starts_with(p)) {
             match verdict {
                 RouteMatch::Missing => {
                     out.push(InvariantResult::pass(ID).entity(format!("{} {}", c.method, c.path)));
@@ -131,7 +272,8 @@ pub fn route_callers_have_routes(
                         ID,
                         format!("{} stays in CALLER_GUARDED_ABSENT only while unrouted", c.path),
                         format!(
-                            "{} now has a mounted route — the CALLER_GUARDED_ABSENT entry is                              STALE; delete it so the census guards this family again",
+                            "{} now has a mounted route — the CALLER_GUARDED_ABSENT entry is \
+                             STALE; delete it so the census guards this family again",
                             c.path
                         ),
                     )
@@ -455,6 +597,22 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_result", "ts", false),
     ("_amux_media_jobs", "created_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
     ("_amux_media_jobs", "updated_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    // AMUX-3974's two tables. Both are EMPTY, so there is nothing to measure and
+    // the convention argument above would be the only thing available. It is not
+    // needed here: every write to these columns is derivable from source and all
+    // five are `chrono::Utc::now().timestamp()`, which is SECONDS.
+    //
+    //   api/board.rs:6792         `let now = ...timestamp()`, feeding both the
+    //                             insert at 6794 and update_state at 6850
+    //   db/artifact_store.rs:90   takes that same `now` as its parameter
+    //   api/verify.rs:145         `created_at: ...timestamp()`
+    //
+    // Zero occurrences of `timestamp_millis` in either store or in verify.rs. So
+    // this is read off the writers rather than off the column names, which is
+    // the distinction the guard exists to force.
+    ("_amux_task_artifacts", "created_at", false),
+    ("_amux_task_artifacts", "updated_at", false),
+    ("_amux_verifications", "created_at", false),
     ("_amux_request_log", "ts", false),
     // AF-175's boot column: which process wrote the row. Same unit as `ts` by
     // construction — it is `heartbeat::boot_at()`, the same clock — and the
@@ -463,6 +621,22 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // exclude or admit the wrong rows. Verified against 174 live rows: 0 with
     // boot_at > ts, and the magnitude is 1.78e9 (seconds), not 1.78e12.
     ("_amux_request_log", "boot_at", false),
+    // _amux_task_artifacts.{created_at,updated_at} and
+    // _amux_verifications.created_at (AMUX-3947, migrations 0044/0046; filed
+    // as AMUX-81/AMUX-72/AMUX-73/AMUX-74 — the migrations and this
+    // declaration landed in different commits) are declared just above,
+    // right after the "AMUX-3974's two tables" comment -- a merge brought in
+    // two independent additions of the same three columns, caught by this
+    // test's own duplicate check (caught by CI on this merge, 2026-09-02).
+    // Consolidated to the one
+    // declaration; the file:line writer citations there are the fuller of
+    // the two explanations.
+    // AF-319's nudge feedback state. SECONDS: written from `now_f64()` in
+    // `drive_lane`, the same clock every other board_drive timestamp uses.
+    // Declared the hour it shipped, because this invariant caught it — the
+    // migration landed at 04:1x and the check was red by the next sweep, which
+    // is the check doing exactly what it exists for.
+    ("board_drive_nudge_state", "last_nudge_at", false),
     ("cmd_history", "delivered_at", true),
     ("cmd_history", "queued_at", true),
     ("cmd_history", "ts", true),
@@ -476,6 +650,18 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // which the caller stamps in seconds, and backfilled through
     // `strftime('%s', ...)` which yields seconds (AMUX-3609).
     ("issues", "closed_at", false),
+    // SECONDS: the callback outbox stamps this from board.rs `now_secs()` in
+    // the same write that updates the issue's seconds-valued `updated` field.
+    ("issues", "callback_fired_at", false),
+    // SECONDS, same as every other `issues` timestamp and for the same reason:
+    // `entered_state_at_for_write` stamps `row.updated`, and `create_issue`
+    // stamps the same `now` it writes to `created`/`updated`. Nothing backfilled
+    // it, so there is no second unit to reconcile (AMUX-3947).
+    //
+    // Declared in the SAME COMMIT as the migration would have been better. It
+    // was not, and the invariant filed AMUX-3952 four evaluations later: adding
+    // a timestamp column is a two-part change and this file is the second part.
+    ("issues", "entered_state_at", false),
     ("issues", "last_verified_at", false),
     ("layout_presets", "created_at", false),
     ("logs", "ts", false),
@@ -488,6 +674,11 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("owner_alerts", "ts", false),
     ("proxies", "created_at", false),
     ("reclaim_quarantine", "created_at", false),
+    // SECONDS, and MEASURED rather than assumed from the sibling convention:
+    // `disk_watch::record_sample` passes an `f64` wall-clock and the one live
+    // row reads 1787960274.53855 against a `now` of 1787961628 — seconds, with a
+    // fractional part, not milliseconds (AMUX-3858).
+    ("regenerable_samples", "ts", false),
     ("reclaim_quarantine", "purged_at", false),
     ("reclaim_scans", "finished_at", false),
     ("reclaim_scans", "started_at", false),
@@ -518,10 +709,17 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
 /// `undeclared` is any timestamp-shaped column the schema has and
 /// [`TIMESTAMP_COLUMNS`] does not. Those fail: an undeclared unit is exactly the
 /// state that produced every incident above.
+/// `sampled` is how many of the newest rows each `observed` value was taken
+/// from, or 0 for the whole table. It exists so a `None` says what it actually
+/// means: after AMUX-3836 the probe reads the newest rows rather than scanning
+/// the table, and "empty" and "nothing in the newest N rows" are different
+/// claims about the schema. Reporting the first when you measured the second is
+/// the shape ethos rule 4 is about, and the caller is the only one that knows.
 pub fn timestamp_units_are_what_readers_assume(
     observed: &[(String, Option<f64>)],
     undeclared: &[String],
     now: f64,
+    sampled: usize,
 ) -> Vec<InvariantResult> {
     const ID: &str = "schema.timestamp_units_declared";
     // Generous: a year ahead for clock skew, ten years back for old rows. The
@@ -549,10 +747,15 @@ pub fn timestamp_units_are_what_readers_assume(
             .map(|(_, _, ms)| *ms);
         let Some(is_millis) = declared else { continue };
         let Some(v) = *max else {
-            out.push(
-                InvariantResult::unknown(ID, format!("{name} is empty — no rows to check the unit against"))
-                    .entity(name),
-            );
+            let why = if sampled > 0 {
+                format!(
+                    "{name} has no value in the newest {sampled} rows — nothing to check the unit \
+                     against. This is a bounded probe, so it is not a claim that the table is empty"
+                )
+            } else {
+                format!("{name} is empty — no rows to check the unit against")
+            };
+            out.push(InvariantResult::unknown(ID, why).entity(name));
             continue;
         };
         let as_declared = if is_millis { v / 1000.0 } else { v };
@@ -639,6 +842,175 @@ pub fn request_arrival_follows_boot(
              SELECT COUNT(*) FROM _amux_request_log WHERE boot_at IS NOT NULL AND ts < boot_at;"
         ),
     )]
+}
+
+/// A `.git/index.lock` that no process holds and that nobody is reporting
+/// (AF-504).
+///
+/// Reported by mixpeek-frustrations: a stale lock stalled a shared checkout for
+/// ~20 minutes while every lane routed around it and none said so. Each lane saw
+/// its own `git add` fail, retried, gave up, and worked another way; the LOCK was
+/// never anyone's card, so the fleet had no way to know a checkout was wedged.
+/// AF-503 shipped the half that reaches the BLOCKED lane, which is the one who
+/// can act. This is the fleet-visibility half.
+///
+/// `size` is the sharpest signal and it is free: git writes the new index INTO
+/// the lock and renames, so a live writer's lock GROWS. Zero bytes with a static
+/// mtime is the stale shape. It is reported beside the age either way, because a
+/// large lock that is old is a slow writer and a zero-byte lock that is old is
+/// abandoned, and those want opposite responses.
+///
+/// `holder` follows the guard's `_lock_holder` protocol exactly, and the reason
+/// is the whole point of that function: a probe that could not RUN must never
+/// answer "nobody holds it". Ten minutes were lost to `lsof <file> 2>/dev/null
+/// || echo no holder` printing the reassuring branch on a box with no lsof. So
+/// an unmeasured holder yields UNKNOWN here, never a pass — a green invariant
+/// over an unrunnable probe is worse than no invariant.
+pub fn git_index_lock_is_not_stale(
+    lock_exists: bool,
+    age_s: i64,
+    size_bytes: u64,
+    holder: LockHolder,
+    stale_after_s: i64,
+) -> Vec<InvariantResult> {
+    const ID: &str = "git.index_lock_not_stale";
+    if !lock_exists {
+        return vec![InvariantResult::pass(ID)];
+    }
+    let shape = if size_bytes == 0 {
+        "0 bytes and not growing, which is the STALE shape".to_string()
+    } else {
+        format!("{size_bytes} bytes, so a writer has been filling it")
+    };
+    match holder {
+        // A probe that did not run is UNKNOWN. This arm exists so that a box
+        // without lsof reports "I could not tell" rather than a clean pass, and
+        // it is the arm the whole check is shaped around.
+        LockHolder::Unmeasured(why) => vec![InvariantResult::unknown(
+            ID,
+            format!(
+                "index.lock has existed {age_s}s ({shape}), and the holder probe did NOT run \
+                 ({why}). This is UNKNOWN, not clear — do not remove the lock on the strength \
+                 of this result."
+            ),
+        )],
+        LockHolder::Held(who) => {
+            let mut r = InvariantResult::pass(ID);
+            r.observed = format!("held by a live writer ({who}), age {age_s}s");
+            vec![r]
+        }
+        LockHolder::Unheld if age_s <= stale_after_s => {
+            let mut r = InvariantResult::pass(ID);
+            r.observed =
+                format!("no holder, but only {age_s}s old ({shape}) — ordinary contention");
+            vec![r]
+        }
+        LockHolder::Unheld => vec![InvariantResult::fail(
+            ID,
+            format!("no index.lock, or one younger than {stale_after_s}s, or one with a holder"),
+            format!(
+                "index.lock has existed {age_s}s with NO process holding it open ({shape}). \
+                 Every lane's `git add`/`commit` on this checkout fails while it sits there, \
+                 and each one sees only its own failure — the lock is nobody's card, which is \
+                 why a 20-minute stall went unreported. Removing it is destructive on a shared \
+                 checkout and is a human's call, not this monitor's: confirm the mtime is still \
+                 not advancing, then remove it."
+            ),
+        )],
+    }
+}
+
+/// The holder verdict, as three states rather than a bool.
+///
+/// A bool would collapse `Unheld` and `Unmeasured`, which is the exact defect
+/// this check exists to avoid — they read identically and want opposite
+/// responses.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LockHolder {
+    Held(String),
+    Unheld,
+    Unmeasured(String),
+}
+
+#[cfg(test)]
+mod git_index_lock_tests {
+    use super::*;
+
+    fn one(
+        exists: bool, age: i64, size: u64, holder: LockHolder,
+    ) -> InvariantResult {
+        let mut v = git_index_lock_is_not_stale(exists, age, size, holder, 900);
+        assert_eq!(v.len(), 1);
+        v.pop().unwrap()
+    }
+
+    #[test]
+    fn no_lock_is_a_pass() {
+        assert_eq!(one(false, 0, 0, LockHolder::Unheld).status, Status::Pass);
+    }
+
+    /// THE CELL THIS EXISTS FOR. A lock nobody holds, older than the window, is
+    /// the 20-minute stall: every lane's git fails, each sees only its own
+    /// failure, and nothing in the fleet says a checkout is wedged.
+    #[test]
+    fn an_old_lock_with_no_holder_fails_and_says_why_nobody_reported_it() {
+        let r = one(true, 1200, 0, LockHolder::Unheld);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.observed.contains("NO process holding it open"), "{r:?}");
+        assert!(
+            r.observed.contains("nobody's card"),
+            "the result does not say why a 20m stall went unreported: {r:?}"
+        );
+        assert!(r.observed.contains("STALE shape"), "the zero-byte signal is missing: {r:?}");
+    }
+
+    /// THE ARM THE WHOLE CHECK IS SHAPED AROUND. A probe that could not RUN must
+    /// never read as clear. `lsof <file> 2>/dev/null || echo no holder` printing
+    /// the reassuring branch on a box without lsof cost ten minutes once; a
+    /// green invariant over an unrunnable probe would cost more, because
+    /// everyone reads it and nobody questions it.
+    #[test]
+    fn an_unmeasured_holder_is_unknown_and_never_a_pass() {
+        let r = one(true, 5000, 0, LockHolder::Unmeasured("lsof not found".into()));
+        assert_eq!(r.status, Status::Unknown, "an unrunnable probe passed: {r:?}");
+        assert!(r.observed.contains("UNKNOWN, not clear"), "{r:?}");
+        assert!(r.observed.contains("lsof not found"), "the reason is dropped: {r:?}");
+    }
+
+    /// A live writer is a PASS, however old. Ageing out a held lock would tell
+    /// people to delete a lock a peer is actively writing through, which is the
+    /// destructive direction.
+    #[test]
+    fn a_held_lock_passes_no_matter_how_old() {
+        let r = one(true, 99_999, 4096, LockHolder::Held("git 123 ethan".into()));
+        assert_eq!(r.status, Status::Pass);
+        assert!(r.observed.contains("held by a live writer"), "{r:?}");
+    }
+
+    /// THE CONTROL that keeps this from being "any lock is a failure". Ordinary
+    /// contention is a lock that exists for a second or two, which happens
+    /// constantly on a checkout with fifty lanes.
+    #[test]
+    fn a_young_lock_with_no_holder_is_ordinary_contention() {
+        let r = one(true, 3, 0, LockHolder::Unheld);
+        assert_eq!(r.status, Status::Pass, "routine contention was reported as a fault: {r:?}");
+        assert!(r.observed.contains("ordinary contention"), "{r:?}");
+    }
+
+    /// SIZE AND AGE ARE REPORTED TOGETHER because they disagree in a way that
+    /// matters: a large old lock is a slow writer, a zero-byte old lock is
+    /// abandoned, and the two want opposite responses.
+    #[test]
+    fn a_growing_lock_is_described_differently_from_an_empty_one() {
+        let empty = one(true, 1200, 0, LockHolder::Unheld);
+        let filled = one(true, 1200, 8192, LockHolder::Unheld);
+        assert!(empty.observed.contains("STALE shape"), "{empty:?}");
+        assert!(filled.observed.contains("8192 bytes"), "{filled:?}");
+        assert!(
+            filled.observed.contains("a writer has been filling it"),
+            "a non-empty lock reads the same as an empty one: {filled:?}"
+        );
+    }
 }
 
 pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<InvariantResult> {
@@ -758,11 +1130,18 @@ pub fn queue_has_live_consumer(
             continue;
         }
         match it.block_reason.as_deref() {
-            // A registered-but-stopped lane KEEPS its queue by design (the
-            // 08-19 panic lesson above); the sender was told "queued" at send
-            // time. Not a failure — a failing invariant on a deliberate state
-            // is the AF-132 shape.
-            Some("not-running") => {
+            // A reason the reaper will NEVER act on. Waiting is the design, so
+            // there is no deadline to be past and nothing for the reaper to
+            // have failed at (AMUX-3814).
+            //
+            // This arm exists because the one below claimed the reaper had
+            // failed on `rate-limited` rows, which the reaper deliberately
+            // never reaps: 56 failing evaluations over 8 days on a lane doing
+            // exactly the right thing. `not-running` used to be special-cased
+            // here by name and is now covered by the same predicate the reaper
+            // uses, so the next reason cannot re-break it the way AMUX-3473's
+            // enumerate-don't-share fix let this one through.
+            Some(reason) if !crate::api::session_verbs::reason_is_reapable(reason) => {
                 out.push(InvariantResult::pass(ID).entity(&it.target));
             }
             // no-env-file / archived: the dead-letter reaper OWNS this row's
@@ -1163,6 +1542,186 @@ pub fn self_reports_landing(
 pub struct LaneReport {
     pub name: String,
     pub report_age_s: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// 5b. A registered, non-archived lane actually has a live tmux session.
+// ---------------------------------------------------------------------------
+
+/// INCIDENT this closes (AMUX-48, 2026-08-31): INIT-1 (closed 2026-08-30,
+/// "amux.service KillMode=mixed kills the whole tmux fleet on every deploy")
+/// fixed the RESTART path (`KillMode=process` — a deploy or reboot no longer
+/// SIGKILLs the tmux fleet's cgroup), but its own log named a second
+/// deliverable that was never actually built: nothing catches a session
+/// dying any OTHER way — an OOM kill of the pane, a manual `tmux
+/// kill-session`, a crash inside the pane — until a human happens to read
+/// the dashboard. Confirmed missing by grepping this file for the very
+/// check INIT-1's log describes, and finding nothing.
+///
+/// INVARIANT: every registered, non-archived lane (`all_lane_names()` — the
+/// SAME enumeration `amux start-all`/the sessions list/the ghost-rescue
+/// sweep all already use, chosen deliberately so this cannot disagree with
+/// them about what "registered" means) has a live tmux session, probed with
+/// the SAME `is_running()` `/api/sessions` itself trusts — not a bespoke
+/// `has-session` call that could drift from what the rest of the system
+/// already calls "running."
+///
+/// Archived lanes are excluded upstream, in `all_lane_names()` itself:
+/// `CC_ARCHIVED=1` is the one sanctioned "this lane is deliberately parked,
+/// not dead" signal this codebase has (`start_session` refuses to start an
+/// archived lane with "wake it first" rather than silently starting it) —
+/// so a lane reaching this check at all already means nothing said it was
+/// supposed to be stopped.
+pub fn registered_lanes_are_running(lanes: &[LaneRunState]) -> Vec<InvariantResult> {
+    const ID: &str = "session.registered_lane_is_running";
+    let mut out = Vec::new();
+    for l in lanes {
+        if l.is_running {
+            out.push(InvariantResult::pass(ID).entity(&l.name));
+        } else {
+            out.push(
+                InvariantResult::fail(
+                    ID,
+                    "a registered, non-archived lane has a live tmux session",
+                    format!(
+                        "{} is registered and not archived, but is_running() — the same \
+                         probe /api/sessions itself trusts — says it is not running",
+                        l.name
+                    ),
+                )
+                .entity(&l.name)
+                .evidence(json!({
+                    "session": l.name,
+                    "class": "session-died-silently",
+                    "incident": "AMUX-48/INIT-1: INIT-1 fixed the deploy-restart path via \
+                                 KillMode=process, but named a second, never-built half — \
+                                 catching a session that died some OTHER way (OOM, manual \
+                                 kill, crash). This is that check.",
+                    "fix": "amux start <name>, or amux start-all for the whole fleet",
+                })),
+            );
+        }
+    }
+    if out.is_empty() {
+        // Zero registered lanes is a real, if unusual, state (a fresh box) —
+        // not evidence the probe itself is broken.
+        out.push(InvariantResult::pass(ID));
+    }
+    out
+}
+
+/// One registered lane's expected-vs-actual running state.
+#[derive(Debug, Clone)]
+pub struct LaneRunState {
+    pub name: String,
+    pub is_running: bool,
+}
+
+// ---------------------------------------------------------------------------
+// 5d. A pane's whole systemd scope got OOM-killed — the session, not the build.
+// ---------------------------------------------------------------------------
+
+/// INCIDENT (AMUX-70, 2026-09-01): a `cargo clippy` run directly in an
+/// interactive amux pane got OOM-killed. Confirmed via `journalctl --user`:
+/// every process in that pane — the Claude Code session itself included —
+/// shares ONE systemd scope, `tmux-spawn-<uuid>.scope`. Systemd does not
+/// reap just the offending process; it marks the WHOLE SCOPE `Failed with
+/// result 'oom-kill'`, and whatever supervises the pane tears it down and
+/// starts a brand-new one. The entire interactive session restarted
+/// mid-conversation — with every in-flight background task orphaned and
+/// nothing in the session's own view pointing at OOM as the cause (it
+/// surfaces only as "stopped ... may have been stopped via agent
+/// teardown"). `scripts/safe-cargo.sh` is the fix for NEW local cargo runs
+/// (isolates them in their own scope); this check is the log signal for
+/// when the fix wasn't used — the class of incident a sweep should catch,
+/// per this repo's own two-fix rule.
+///
+/// INVARIANT: no `tmux-spawn-*.scope` should show `Failed with result
+/// 'oom-kill'` in the recent systemd journal. A hit means some pane's
+/// entire session was just killed by memory pressure, not merely a
+/// process inside it.
+///
+/// Takes pre-fetched journal lines rather than shelling out itself, so the
+/// check is a pure function over its own negative control below — the
+/// gatherer (`monitor.rs`) owns calling `journalctl`.
+pub fn no_pane_scope_oom_kills(journal_lines: &[String]) -> Vec<InvariantResult> {
+    const ID: &str = "session.pane_scope_not_oom_killed";
+    let hits: Vec<&String> = journal_lines
+        .iter()
+        .filter(|l| l.contains("tmux-spawn-") && l.contains("Failed with result 'oom-kill'"))
+        .collect();
+    if hits.is_empty() {
+        return vec![InvariantResult::pass(ID)];
+    }
+    hits.into_iter()
+        .map(|line| {
+            InvariantResult::fail(
+                ID,
+                "no interactive pane's systemd scope was OOM-killed recently",
+                format!(
+                    "journalctl shows a tmux-spawn scope failed with oom-kill — an \
+                     interactive session (not just a build process inside it) was just \
+                     killed and respawned: {line}"
+                ),
+            )
+            .evidence(json!({
+                "journal_line": line,
+                "class": "pane-scope-oom-kill",
+                "incident": "AMUX-70: a process OOM-killed inside an interactive pane's \
+                             systemd scope takes the WHOLE PANE down, not just itself. \
+                             scripts/safe-cargo.sh isolates new local cargo runs; this \
+                             fired because something (cargo run bare, or another \
+                             memory-heavy process) wasn't isolated.",
+                "fix": "run local cargo through scripts/safe-cargo.sh, or offload to \
+                        remote hardware entirely — see CLAUDE.md's offload-builds \
+                        convention",
+            }))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod pane_scope_oom_kill_tests {
+    use super::*;
+
+    /// Negative control (AMUX-2624): the exact journal line shape confirmed
+    /// live on 2026-09-01 (journalctl --user, this session's own incident) —
+    /// rebuilt here so the check can be shown FAILING on the real specimen,
+    /// not a paraphrase.
+    #[test]
+    fn detects_the_2026_09_01_pane_scope_oom_kill() {
+        let lines = vec![
+            "Sep 01 09:22:32 dev systemd[121]: tmux-spawn-006a872a-28cc-4c3c-878c-7bd85667b915.scope: A process of this unit has been killed by the OOM killer.".to_string(),
+            "Sep 01 09:22:35 dev systemd[121]: tmux-spawn-006a872a-28cc-4c3c-878c-7bd85667b915.scope: Failed with result 'oom-kill'.".to_string(),
+            "Sep 01 09:22:35 dev systemd[121]: tmux-spawn-006a872a-28cc-4c3c-878c-7bd85667b915.scope: Consumed 3min 31.106s CPU time, 3.7G memory peak.".to_string(),
+        ];
+        let results = no_pane_scope_oom_kills(&lines);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, Status::Fail);
+        assert_eq!(results[0].evidence["class"], "pane-scope-oom-kill");
+    }
+
+    /// An OOM kill of some OTHER unit (a service, not a pane) must not fire —
+    /// this check is specifically about interactive SESSIONS dying, not
+    /// every OOM kill on the box.
+    #[test]
+    fn an_unrelated_services_oom_kill_does_not_fire() {
+        let lines = vec![
+            "Sep 01 08:54:28 dev systemd[121]: some-other.service: A process of this unit has been killed by the OOM killer.".to_string(),
+            "Sep 01 08:54:28 dev systemd[121]: some-other.service: Failed with result 'oom-kill'.".to_string(),
+        ];
+        let results = no_pane_scope_oom_kills(&lines);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, Status::Pass);
+    }
+
+    #[test]
+    fn clean_journal_passes() {
+        let lines = vec!["Sep 01 09:20:50 dev systemd[121]: Starting amux-builder.service".to_string()];
+        let results = no_pane_scope_oom_kills(&lines);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, Status::Pass);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1648,11 +2207,11 @@ pub struct ReportHookEntry {
 /// ethos rule 7, certified by its own incident report.
 ///
 /// INVARIANT: every report hook configured in settings.json actually INVOKES
-/// `hook-report.sh`, and (the documented second trap, AMUX-2538) a tool event's
-/// entry carries a matcher that is a valid REGEX — `"*"` is not one, and an
-/// entry without one is silently ignored. Both failure modes leave a
-/// settings.json that reads as correct and a hook that never runs or runs
-/// impoverished.
+/// `hook-report.sh`; all six lifecycle edges are present with the right mode;
+/// and (the documented second trap, AMUX-2538) a tool event's entry carries a
+/// matcher that is a valid REGEX — `"*"` is not one, and an entry without one is
+/// silently ignored. A Stop-only config used to pass this check while prompt
+/// activation and subagent counts were completely unwired.
 ///
 /// Selection is by "does this command mention the report script or the report
 /// ENDPOINT", so a fork is INSIDE the denominator rather than filtered out of
@@ -1676,6 +2235,14 @@ pub fn report_hooks_wired(entries: Result<Vec<ReportHookEntry>, String>) -> Vec<
     }
     let mut broken: Vec<String> = Vec::new();
     let mut rows: Vec<serde_json::Value> = Vec::new();
+    let required = [
+        ("SessionStart", "subagent-reset session-start-hook"),
+        ("UserPromptSubmit", "active prompt-hook"),
+        ("PostToolUse", "active tool-hook"),
+        ("Stop", "idle stop-hook"),
+        ("SubagentStart", "subagent-start subagent-start-hook"),
+        ("SubagentStop", "subagent-stop subagent-stop-hook"),
+    ];
     for e in &entries {
         let wired = e.command.contains("hook-report.sh");
         // A tool event without a valid regex matcher is INERT — it parses, it
@@ -1683,6 +2250,8 @@ pub fn report_hooks_wired(entries: Result<Vec<ReportHookEntry>, String>) -> Vec<
         let tool_event = matches!(e.event.as_str(), "PreToolUse" | "PostToolUse");
         let matcher_ok = !tool_event
             || e.matcher.as_deref().is_some_and(|m| regex::Regex::new(m).is_ok());
+        let expected_mode = required.iter().find(|(event, _)| *event == e.event);
+        let mode_ok = expected_mode.is_some_and(|(_, args)| e.command.contains(args));
         if !wired {
             broken.push(format!(
                 "{}: does not invoke hook-report.sh (an inline reimplementation — this is the \
@@ -1699,13 +2268,26 @@ pub fn report_hooks_wired(entries: Result<Vec<ReportHookEntry>, String>) -> Vec<
                 ),
             });
         }
+        if !mode_ok {
+            broken.push(match expected_mode {
+                Some((_, args)) => format!(
+                    "{}: hook-report.sh is invoked with the wrong mode (expected {args:?})",
+                    e.event
+                ),
+                None => format!(
+                    "{}: amux report command is on a non-canonical lifecycle event",
+                    e.event
+                ),
+            });
+        }
         let mut row = json!({
             "event": e.event,
             "invokes_hook_report": wired,
             "matcher_ok": matcher_ok,
+            "mode_ok": mode_ok,
             "matcher": e.matcher,
         });
-        if !wired || !matcher_ok {
+        if !wired || !matcher_ok || !mode_ok {
             // Only for FAILING rows, and only a head: enough to identify the
             // fork, without dumping a user's settings file into an API response.
             let head: String = e.command.chars().take(120).collect();
@@ -1713,13 +2295,27 @@ pub fn report_hooks_wired(entries: Result<Vec<ReportHookEntry>, String>) -> Vec<
         }
         rows.push(row);
     }
+    for (event, args) in required {
+        let covered = entries.iter().any(|e| {
+            e.event == event
+                && e.command.contains("hook-report.sh")
+                && e.command.contains(args)
+                && (event != "PostToolUse"
+                    || e.matcher.as_deref().is_some_and(|m| regex::Regex::new(m).is_ok()))
+        });
+        if !covered {
+            broken.push(format!(
+                "{event}: missing canonical hook (expected hook-report.sh {args})"
+            ));
+        }
+    }
     let evidence = json!({ "entries": rows });
     if broken.is_empty() {
         vec![InvariantResult::pass(ID).evidence(evidence)]
     } else {
         vec![InvariantResult::fail(
             ID,
-            "every report hook in ~/.claude/settings.json invokes ~/.amux/hook-report.sh, \
+            "all six lifecycle hooks invoke ~/.amux/hook-report.sh with canonical modes, \
              and tool events carry a valid regex matcher",
             broken.join("; "),
         )
@@ -1744,9 +2340,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// `title_from_prompt(text).is_some()` — computed in the monitor, so this
 /// invariant's denominator can never disagree with what the mint would have
 /// carded (the ethos view/predicate rule: copy the filter from the code that
-/// acts, never re-derive a plausible-looking one). `span_s` is the wall-clock
-/// spread of those cardable prompts, used to exclude a legitimate rapid re-send
-/// that the mint's dedup window is SUPPOSED to collapse to one card.
+/// acts, never re-derive a plausible-looking one). Exact distinct text—not time
+/// proximity—separates a transport retry from another command.
 #[derive(Debug, Clone)]
 pub struct SessionPromptStats {
     pub session: String,
@@ -1754,6 +2349,8 @@ pub struct SessionPromptStats {
     pub cardable: i64,
     /// Of those, how many actually have a linked capture card.
     pub carded: i64,
+    /// Exact distinct cardable prompt bodies in the window.
+    pub distinct_cardable: i64,
     /// Seconds between the earliest and latest cardable prompt.
     pub span_s: i64,
 }
@@ -1769,43 +2366,79 @@ pub struct SessionPromptStats {
 /// its own detector in a comment, but nothing READ that rate (ethos rule 4: a
 /// signal in a store the reader never opens is the same as no signal).
 ///
-/// INVARIANT: a session that received `min_cardable`+ cardable user prompts,
-/// spread over MORE than the dedup window (so each was an independent task, not
-/// one thought re-sent), must have minted at least one capture card. Zero cards
-/// across several spaced tasks is not legitimate dedup — it is the pipeline
-/// silently dropping the board leg.
+/// INVARIANT: a session that received `min_cardable`+ DISTINCT cardable user
+/// prompts must have minted at least one capture card. Exact repeats may be
+/// transport retries; time proximity alone is not evidence that two different
+/// commands are one thought, and deleting them would work against the model.
 ///
 /// The gates are load-bearing and each excludes a real false positive:
-/// - `cardable >= min_cardable`: one `[no-board]` or control prompt (title None)
+/// - `distinct_cardable >= min_cardable`: one `[no-board]` or control prompt (title None)
 ///   is already excluded from `cardable`; requiring several more excludes a lane
 ///   that legitimately sent only uncardable text.
-/// - `span_s > dedup_window_s`: a burst inside the dedup window SHOULD collapse
-///   to one card, so firing on it would flag correct behaviour — the exact
-///   "filter that matches everything" trap.
 /// - `carded == 0`: one card proves the pipeline works for this lane; a low
 ///   ratio is a separate, quieter concern, not this outage.
+#[cfg(test)]
+mod capture_isolation_tests {
+    use super::*;
+
+    /// AMUX-3824: the check must not fire on a lane the mint deliberately skips.
+    ///
+    /// The mint's gate is `is_user && !skip_board && !session_is_isolated(..)`.
+    /// The monitor's loop replicated only the first, so an ISOLATED lane — a raw
+    /// agent with no session or URL to run `amux board`, whose prompts are left
+    /// off the board on purpose because a card there would name work nobody can
+    /// drive — read as a lane whose board leg had been silently dropped. `self`
+    /// failed it 67 times over 13 days while behaving exactly as specified.
+    ///
+    /// The exclusion itself lives in the monitor (it needs the session env that
+    /// this pure function deliberately does not read). What is pinned HERE is
+    /// the shape the monitor must feed it: an isolated lane must not reach this
+    /// function at all, and a NON-isolated lane with the same numbers must still
+    /// fail — otherwise the fix is a blanket mute rather than an exclusion.
+    #[test]
+    fn a_lane_with_uncarded_prompts_still_fails_when_it_is_not_isolated() {
+        let s = |session: &str| SessionPromptStats {
+            session: session.to_string(),
+            cardable: 3,
+            carded: 0,
+            distinct_cardable: 3,
+            span_s: 933,
+        };
+        // The specimen's exact numbers, for a lane the monitor DID pass through.
+        let rs = user_prompts_produce_cards(&[s("a-real-lane")], 3);
+        assert_eq!(rs[0].status, Status::Fail, "a genuine dropped board leg must still fire");
+        assert!(rs[0].observed.contains("0 carded"), "{}", rs[0].observed);
+
+        // CONTROL: an isolated lane is filtered UPSTREAM, so this function never
+        // sees it. Passing an empty slice is what that looks like here, and it
+        // must PASS rather than produce a spurious entity-less failure.
+        let rs = user_prompts_produce_cards(&[], 3);
+        assert!(rs.iter().all(|r| r.status == Status::Pass), "no stats is not a failure: {rs:?}");
+    }
+}
+
 pub fn user_prompts_produce_cards(
     stats: &[SessionPromptStats],
     min_cardable: i64,
-    dedup_window_s: i64,
 ) -> Vec<InvariantResult> {
     const ID: &str = "pipeline.user_prompts_card";
     let mut out = Vec::new();
     for s in stats {
-        if s.cardable >= min_cardable && s.span_s > dedup_window_s && s.carded == 0 {
+        if s.distinct_cardable >= min_cardable && s.carded == 0 {
             out.push(
                 InvariantResult::fail(
                     ID,
                     "a delivered cardable user prompt mints a capture card",
                     format!(
-                        "{} cardable user prompt(s) over {}s, 0 carded — board leg silently dropped",
-                        s.cardable, s.span_s
+                        "{} distinct cardable user prompt(s) ({} total) over {}s, 0 carded — board leg silently dropped",
+                        s.distinct_cardable, s.cardable, s.span_s
                     ),
                 )
                 .entity(&s.session)
                 .evidence(serde_json::json!({
                     "session": s.session,
                     "cardable_user_prompts": s.cardable,
+                    "distinct_cardable_user_prompts": s.distinct_cardable,
                     "carded": s.carded,
                     "span_s": s.span_s,
                     "class": "capture-pipeline-dropped",
@@ -2435,6 +3068,215 @@ pub fn frustration_cards_are_reachable(
     }))]
 }
 
+/// The first SYMPTOM line of each entry, normalised, paired with its title.
+///
+/// AF-434. Titles alone are not enough. `7dbab8f6`'s whole-file overwrite left
+/// one entry's HEADING sitting on top of a DIFFERENT entry's body: MR-43's
+/// title over AF-195's already-archived symptom, fields and all. That chimera
+/// read as a live MR-43 to anyone scanning headings and as a live AF-195 to
+/// anyone reading bodies, and it survived a title-keyed sweep because its
+/// heading was not in the archive.
+///
+/// The inverse is equally real, which is why BOTH keys are needed and neither
+/// replaces the other: 17 of AF-430's 29 resurrections were the PRE-archive
+/// drafts of entries their authors edited before signing off, so their titles
+/// matched and their prose did not. Title alone misses the chimera; prose alone
+/// misses the revised draft.
+///
+/// The key is the SYMPTOM's first line rather than the whole body because the
+/// body is what gets edited: an entry gains a VERIFIED paragraph, a re-check, a
+/// correction. What it opens with is what identifies it.
+pub fn frustration_entry_fingerprints(md: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut started = false;
+    let mut cur: Option<String> = None;
+    let mut done_this = false;
+    for line in md.lines() {
+        if !started {
+            if line.trim() == "---" {
+                started = true;
+            }
+            continue;
+        }
+        if let Some(t) = line.strip_prefix("## ") {
+            cur = Some(t.trim().to_string());
+            done_this = false;
+            continue;
+        }
+        if done_this {
+            continue;
+        }
+        let Some(title) = cur.as_ref() else { continue };
+        if let Some(v) = line.strip_prefix("SYMPTOM:") {
+            let norm: String = v
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(120)
+                .collect();
+            if !norm.is_empty() {
+                out.push((title.clone(), norm));
+            }
+            done_this = true;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// 11c. A retired entry stays retired (AF-430)
+// ---------------------------------------------------------------------------
+
+/// No title appears in BOTH `frustrations.md` and `frustrations-archive.md`.
+///
+/// INCIDENT (AF-430, 2026-08-29 to 2026-09-02). One commit, `7dbab8f6`,
+/// overwrote the ledger with a fork's older copy to satisfy the append-only
+/// push guard. It re-added 29 headings that had already been archived with a
+/// `VALIDATED:` stamp, and deleted 33 that had been appended since. For four
+/// days the live file carried 29 retired entries reading `STATUS: open`, and
+/// every count run over it overstated the backlog by that much. Twelve were
+/// byte-identical to their archived copy; the other seventeen were the
+/// PRE-archive drafts of entries their authors had corrected before signing
+/// off, so the ledger served older text than the archive held.
+///
+/// WHY THIS IS A CHECK AND NOT A FOURTH SENTENCE. Three separate places already
+/// state the rule: `.claude/rules/frustrations.md` ("grep here first, present
+/// means it was retired on purpose"), the archive file's own header, and
+/// `scripts/frustrations-archive.py`, which warns when it is asked to archive a
+/// title the archive already holds. All three sit on the ARCHIVE path. A
+/// resurrection lands on the LEDGER, which nothing was watching, so a
+/// whole-file overwrite walked past all three without tripping anything. That
+/// is ethos rule 1: the guidance existed and did not reach the moment it was
+/// needed.
+///
+/// The direction matters and is the reason the message says so out loud. A
+/// title in both files does NOT mean an entry was lost; the archive exists
+/// precisely so a set-difference over the ledger alone cannot read a MOVE as a
+/// deletion (creative-dna measured 15 of 15 "lost" entries as archive moves).
+/// It means the ledger is serving a copy of something already signed off. The
+/// remedy is to delete the LEDGER copy, never to un-archive.
+fn trunc(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
+pub fn frustration_retired_entries_stay_retired(
+    ledger_titles: &[String],
+    archive_titles: &[String],
+    ledger_prints: &[(String, String)],
+    archive_prints: &[(String, String)],
+    source: &str,
+) -> InvariantResult {
+    const ID: &str = "frustrations.retired_entries_stay_retired";
+    // Rule 4: an empty side makes the intersection empty and the check pass
+    // vacuously, which is exactly the theatre this module forbids. Zero
+    // archived entries is a broken read or a broken parse, never a healthy
+    // archive, because the archive is append-only and has held entries since
+    // 2026-08-06.
+    if archive_titles.is_empty() {
+        return InvariantResult::unknown(
+            ID,
+            format!("parsed 0 entries from the archive (ledger read from {source}); with no \
+                    archived titles the intersection is empty for the wrong reason"),
+        );
+    }
+    if ledger_titles.is_empty() {
+        return InvariantResult::unknown(
+            ID,
+            format!("parsed 0 entries from the ledger ({source})"),
+        );
+    }
+    let archived: BTreeSet<&str> = archive_titles.iter().map(|s| s.as_str()).collect();
+    let both: Vec<&String> =
+        ledger_titles.iter().filter(|t| archived.contains(t.as_str())).collect();
+    // AF-434, the second key. An entry whose SYMPTOM opens exactly like an
+    // archived one, under a title the archive does not have, is a resurrection
+    // wearing someone else's heading. Reported separately because the remedy
+    // differs: a title match means delete the ledger copy, while a chimera also
+    // means a DIFFERENT entry's heading is orphaned and its body may be lost.
+    let arch_prints: BTreeSet<&str> = archive_prints.iter().map(|(_, f)| f.as_str()).collect();
+    let chimeras: Vec<&(String, String)> = ledger_prints
+        .iter()
+        .filter(|(t, f)| arch_prints.contains(f.as_str()) && !archived.contains(t.as_str()))
+        .collect();
+    if both.is_empty() && chimeras.is_empty() {
+        return InvariantResult::pass(ID).evidence(json!({
+            "ledger_entries": ledger_titles.len(),
+            "archive_entries": archive_titles.len(),
+            "ledger_fingerprints": ledger_prints.len(),
+            "archive_fingerprints": archive_prints.len(),
+            "keys": "title and first-SYMPTOM-line; neither alone is sufficient (AF-434)",
+            "source": source,
+        }));
+    }
+    // A chimera with no title overlap is its own message: the title-only text
+    // below would send the reader to delete a ledger copy whose HEADING belongs
+    // to a different, possibly lost, entry.
+    if both.is_empty() {
+        let ex: Vec<String> = chimeras
+            .iter()
+            .take(3)
+            .map(|(t, f)| format!("\"{}\" opens like an archived entry: {}…", trunc(t, 60), trunc(f, 70)))
+            .collect();
+        return InvariantResult::fail(
+            ID,
+            "no frustrations.md entry duplicates an archived one, by title OR by opening \
+             SYMPTOM"
+                .to_string(),
+            format!(
+                "{} ledger entry/entries open with the SAME SYMPTOM as an archived entry while \
+                 carrying a title the archive does not have ({}). That is a CHIMERA, not an \
+                 ordinary resurrection: a whole-file overwrite left one entry's heading on top \
+                 of another's body (AF-434, MR-43's title over AF-195's archived body). Two \
+                 things are wrong, not one — the archived body is live again under a false \
+                 name, AND the entry that owns the heading has lost its own body, which is \
+                 probably in neither file. Recover the headed entry from git before deleting \
+                 anything. Ledger read from {source}.",
+                chimeras.len(),
+                ex.join("; "),
+            ),
+        )
+        .evidence(json!({
+            "chimeras": chimeras.iter().map(|(t, f)| json!({"title": t, "symptom_opens": f}))
+                .collect::<Vec<_>>(),
+            "ledger_entries": ledger_titles.len(),
+            "archive_entries": archive_titles.len(),
+            "source": source,
+            "remedy": "recover the headed entry from git history, then delete the archived body",
+        }));
+    }
+    let sample: Vec<String> = both.iter().take(4).map(|t| {
+        let t = t.as_str();
+        if t.len() > 70 { format!("{}…", &t[..t.char_indices().nth(70).map_or(t.len(), |(i, _)| i)]) }
+        else { t.to_string() }
+    }).collect();
+    InvariantResult::fail(
+        ID,
+        "no frustrations.md entry title also appears in frustrations-archive.md".to_string(),
+        format!(
+            "{} ledger entry/entries are also in the archive, where each carries a VALIDATED \
+             stamp naming the session that signed it off ({}). They read as live friction and \
+             `grep '^STATUS: open' frustrations.md` counts every one of them. This is a \
+             RESURRECTION, not a loss: the archive is where retired entries are supposed to be, \
+             so the fix is to delete the LEDGER copy, never to un-archive. Check the archived \
+             copy's text first, because it may be a later revision than the ledger's \
+             (17 of AF-430's 29 were). Ledger read from {source}.",
+            both.len(),
+            sample.join("; "),
+        ),
+    )
+    .evidence(json!({
+        "resurrected": both.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+        "ledger_entries": ledger_titles.len(),
+        "archive_entries": archive_titles.len(),
+        "source": source,
+        "remedy": "delete the frustrations.md copy; the archive copy is the signed-off one",
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Negative controls (AMUX-2624). Each proves the check DETECTS the real bug.
 // ---------------------------------------------------------------------------
@@ -2748,6 +3590,137 @@ mod negative_controls {
         );
     }
 
+    // -- AF-430: a retired entry stays retired ---------------------------
+
+    fn ttl(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The positive control, rebuilt from the incident: `7dbab8f6` put 29
+    /// already-archived headings back into the ledger. The check must FAIL on
+    /// exactly that, and its message must send the reader at the ledger copy,
+    /// because the opposite reading (the entry was lost, restore it) is the
+    /// mistake the archive exists to prevent.
+    #[test]
+    fn detects_an_archived_entry_resurrected_into_the_ledger() {
+        let led = ttl(&["a live one", "amux-launched browser does not survive a server self-adopt"]);
+        let arc = ttl(&["amux-launched browser does not survive a server self-adopt", "another"]);
+        let r = frustration_retired_entries_stay_retired(&led, &arc, &[], &[], "worktree");
+        assert_eq!(r.status, Status::Fail, "{}", r.observed);
+        let obs = &r.observed;
+        assert!(obs.contains("1 ledger entry"), "{obs}");
+        assert!(obs.contains("delete the LEDGER copy"), "remedy must name the side to delete: {obs}");
+        assert!(obs.contains("RESURRECTION"), "must say which direction this is: {obs}");
+    }
+
+    /// The control that matters. A checker that fires on every ledger is worth
+    /// nothing, and the honest ledger is the far more common state.
+    #[test]
+    fn a_ledger_sharing_no_title_with_the_archive_passes() {
+        let r = frustration_retired_entries_stay_retired(
+            &ttl(&["one", "two"]),
+            &ttl(&["three", "four"]),
+            &[],
+            &[],
+            "worktree",
+        );
+        assert_eq!(r.status, Status::Pass, "{}", r.observed);
+    }
+
+    /// Rule 4. An empty archive makes the intersection empty, so the check
+    /// would PASS while measuring nothing. That is the shape this module
+    /// forbids, and `unknown` is the only honest answer.
+    #[test]
+    fn an_empty_archive_is_unknown_not_a_pass() {
+        let r = frustration_retired_entries_stay_retired(&ttl(&["one"]), &[], &[], &[], "worktree");
+        assert_eq!(r.status, Status::Unknown, "{}", r.observed);
+        assert!(r.observed.contains("for the wrong reason"), "{}", r.observed);
+        let r2 = frustration_retired_entries_stay_retired(&[], &ttl(&["one"]), &[], &[], "HEAD");
+        assert_eq!(r2.status, Status::Unknown);
+    }
+
+    fn fp(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    /// AF-434's specimen, rebuilt: MR-43's heading sitting on AF-195's already
+    /// archived body. Title-keyed detection CANNOT see this, which is the whole
+    /// reason the second key exists, so the cell asserts the title key is blind
+    /// AND the fingerprint key is not.
+    #[test]
+    fn detects_a_chimera_whose_heading_is_not_in_the_archive() {
+        let led = ttl(&["A main lane with no $AMUX_SESSION in its env"]);
+        let arc = ttl(&["A green test suite EXPIRES through the shared index"]);
+        // The control first: on titles alone this pair is clean.
+        assert_eq!(
+            frustration_retired_entries_stay_retired(&led, &arc, &[], &[], "worktree").status,
+            Status::Pass,
+            "the title key must be BLIND here, or this cell proves nothing"
+        );
+        let lp = fp(&[("A main lane with no $AMUX_SESSION in its env", "I ran cargo test -p amux-server --test board_api: 37 passed")]);
+        let ap = fp(&[("A green test suite EXPIRES through the shared index", "I ran cargo test -p amux-server --test board_api: 37 passed")]);
+        let r = frustration_retired_entries_stay_retired(&led, &arc, &lp, &ap, "worktree");
+        assert_eq!(r.status, Status::Fail, "{}", r.observed);
+        assert!(r.observed.contains("CHIMERA"), "{}", r.observed);
+        assert!(
+            r.observed.contains("lost its own body"),
+            "the remedy must name BOTH halves: {}",
+            r.observed
+        );
+    }
+
+    /// The control for the second key. Two entries that merely share a subject
+    /// must not collide; only an identical opening SYMPTOM counts.
+    #[test]
+    fn different_symptoms_under_different_titles_are_not_a_chimera() {
+        let r = frustration_retired_entries_stay_retired(
+            &ttl(&["live one"]),
+            &ttl(&["retired one"]),
+            &fp(&[("live one", "the board refused a PATCH and dropped the desc")]),
+            &fp(&[("retired one", "the guard named a peer it could not identify")]),
+            "worktree",
+        );
+        assert_eq!(r.status, Status::Pass, "{}", r.observed);
+    }
+
+    /// The fingerprint parser on the real file: it must actually find symptoms,
+    /// or the second key is an empty set that can never match.
+    #[test]
+    fn the_fingerprint_parser_finds_a_symptom_for_almost_every_entry() {
+        const LED: &str = include_str!("../../../../frustrations.md");
+        let n_entries = parse_frustration_entries(LED).len();
+        let prints = frustration_entry_fingerprints(LED);
+        assert!(n_entries > 20, "only {n_entries} entries parsed");
+        assert!(
+            prints.len() * 10 >= n_entries * 9,
+            "only {} of {n_entries} entries yielded a SYMPTOM fingerprint",
+            prints.len()
+        );
+        assert!(
+            prints.iter().all(|(_, f)| f.len() <= 120 && !f.contains("  ")),
+            "fingerprints must be normalised and bounded"
+        );
+    }
+
+    /// The live pair, which is the cell that would have caught AF-430 four days
+    /// earlier than a human did. It reads both real files rather than a
+    /// fixture, because a fixture cannot go stale and the ledger can.
+    #[test]
+    fn the_real_ledger_holds_nothing_the_real_archive_has_already_retired() {
+        const LED: &str = include_str!("../../../../frustrations.md");
+        const ARC: &str = include_str!("../../../../frustrations-archive.md");
+        let lt: Vec<String> =
+            parse_frustration_entries(LED).into_iter().map(|e| e.1).collect();
+        let at: Vec<String> =
+            parse_frustration_entries(ARC).into_iter().map(|e| e.1).collect();
+        assert!(at.len() > 20, "archive parsed only {} entries", at.len());
+        let lp = frustration_entry_fingerprints(LED);
+        let ap = frustration_entry_fingerprints(ARC);
+        assert!(ap.len() > 20, "archive yielded only {} fingerprints", ap.len());
+        let r = frustration_retired_entries_stay_retired(&lt, &at, &lp, &ap, "baked-at-build");
+        assert_eq!(r.status, Status::Pass, "{}", r.observed);
+    }
+
     /// AMUX-3203, rebuilt from the incident artifact: both channels ENABLED with
     /// no destination (0 subs, empty phone) is the disconnected fire alarm that
     /// dropped five serious pages while reading healthy. The check must FAIL on
@@ -2871,26 +3844,26 @@ mod negative_controls {
         assert!(f.observed.contains("hooks=true"), "must name the lied capability: {}", f.observed);
     }
 
-    /// AMUX-3148: the exact live signature — several spaced cardable prompts, zero
-    /// cards — must FAIL, and a healthy lane, a low-volume lane, and a rapid
-    /// re-send burst must all PASS. A check that fired on the burst would be
-    /// flagging the dedup working as designed.
+    /// AMUX-3148: several distinct cardable prompts with zero cards must FAIL;
+    /// healthy, low-volume, and exact-retry-only lanes must PASS. A fast burst
+    /// of different commands is still work—the model, not a timer, relates it.
     #[test]
     fn detects_a_lane_whose_prompts_never_reach_the_board() {
-        let window = 45; // the mint's dedup window
         let stats = vec![
             // amux's real shape: 22 prompts over hours, 0 cards.
-            SessionPromptStats { session: "amux".into(), cardable: 12, carded: 0, span_s: 7200 },
+            SessionPromptStats { session: "amux".into(), cardable: 12, carded: 0, distinct_cardable: 12, span_s: 7200 },
             // healthy: cards its prompts.
-            SessionPromptStats { session: "amux-homepage".into(), cardable: 3, carded: 3, span_s: 1800 },
+            SessionPromptStats { session: "amux-homepage".into(), cardable: 3, carded: 3, distinct_cardable: 3, span_s: 1800 },
             // one card is enough to prove the pipeline works for the lane.
-            SessionPromptStats { session: "tubescience".into(), cardable: 6, carded: 2, span_s: 3600 },
+            SessionPromptStats { session: "tubescience".into(), cardable: 6, carded: 2, distinct_cardable: 6, span_s: 3600 },
             // low volume: below the floor, not judged as an outage.
-            SessionPromptStats { session: "quiet".into(), cardable: 2, carded: 0, span_s: 600 },
-            // a rapid re-send burst INSIDE the window: 0 cards is CORRECT (dedup).
-            SessionPromptStats { session: "burst".into(), cardable: 4, carded: 0, span_s: 30 },
+            SessionPromptStats { session: "quiet".into(), cardable: 2, carded: 0, distinct_cardable: 2, span_s: 600 },
+            // Four exact retries are one distinct body: 0 cards stays below the incident floor.
+            SessionPromptStats { session: "retry-only".into(), cardable: 4, carded: 0, distinct_cardable: 1, span_s: 30 },
+            // Four different commands sent just as fast are not discarded by a timer.
+            SessionPromptStats { session: "rapid-distinct".into(), cardable: 4, carded: 0, distinct_cardable: 4, span_s: 30 },
         ];
-        let rs = user_prompts_produce_cards(&stats, 3, window);
+        let rs = user_prompts_produce_cards(&stats, 3);
         let failed: Vec<&str> = rs
             .iter()
             .filter(|r| r.status == Status::Fail)
@@ -2898,8 +3871,8 @@ mod negative_controls {
             .collect();
         assert_eq!(
             failed,
-            vec!["amux"],
-            "only the spaced-prompts-zero-cards lane fails; healthy/low-volume/burst all pass"
+            vec!["amux", "rapid-distinct"],
+            "distinct prompts fail at any cadence; healthy/low-volume/exact-retry-only lanes pass"
         );
     }
 
@@ -3064,6 +4037,36 @@ mod negative_controls {
         );
     }
 
+    /// A `{*rest}` wildcard must CONSUME at least one segment, which is axum's
+    /// own rule and what `segments_match`'s comment already claims ("must have
+    /// at least one segment left to consume").
+    ///
+    /// Found by `scripts/mutate.sh survey` on its first real run, not by
+    /// reading: `return want.len() > i` flipped to `>=` and the entire
+    /// negative_controls suite stayed green. So the arm that decides whether a
+    /// wildcard route swallows its own prefix had a documented invariant, a
+    /// comment explaining it, and nothing holding it. With `>=`,
+    /// `/api/logs/{*rest}` would report `/api/logs` as mounted, which is the
+    /// prefix-matching false pass the neighbouring cell exists to prevent,
+    /// arriving through the one arm that cell does not reach.
+    #[test]
+    fn a_wildcard_tail_does_not_match_with_nothing_left_to_consume() {
+        let pat = ["api", "logs", "{*rest}"];
+        assert!(
+            segments_match(&pat, &["api", "logs", "x"]),
+            "a wildcard must match when there IS a segment to consume"
+        );
+        assert!(
+            segments_match(&pat, &["api", "logs", "x", "y"]),
+            "a wildcard must match a multi-segment tail"
+        );
+        assert!(
+            !segments_match(&pat, &["api", "logs"]),
+            "a wildcard tail must NOT match with zero segments left — that is the \
+             prefix false-pass, one arm over"
+        );
+    }
+
     /// An extractor that found nothing must report Unknown, never a clean pass.
     /// The empty-grep trap: silence from a broken probe is indistinguishable
     /// from silence from a healthy system unless it is typed differently.
@@ -3189,6 +4192,40 @@ mod negative_controls {
             rs.iter().all(|r| r.status == Status::Pass),
             "a stopped-but-registered lane keeps its queue deliberately: {rs:?}"
         );
+
+        // AMUX-3814: rate-limited is the reason AMUX-3473's fix did not
+        // enumerate, so this check claimed "the reaper did not reap it" about
+        // rows the reaper deliberately never reaps — 56 failing evaluations
+        // over 8 days on a lane doing exactly the right thing, waiting out a
+        // limit that lifts by itself.
+        //
+        // THE PREDICATE IS NOW SHARED, so the loop below is over the reaper's
+        // own answer rather than a list copied here. A new non-reapable reason
+        // added to `reason_is_reapable` cannot re-break this the way
+        // `rate-limited` did.
+        for reason in ["rate-limited", "not-running"] {
+            assert!(
+                !crate::api::session_verbs::reason_is_reapable(reason),
+                "{reason} must not be reapable, or this cell proves nothing"
+            );
+            let rs = queue_has_live_consumer(&[mk(reason, 0.0)], 7_560.0, 300.0, 3_600.0);
+            assert!(
+                rs.iter().all(|r| r.status == Status::Pass),
+                "{reason} waits by design at any age, so there is no deadline to be past: {rs:?}"
+            );
+        }
+        // THE CONTROL, restated against the shared predicate: the reasons the
+        // reaper DOES act on must still fail past the deadline. A version that
+        // passed everything would satisfy every assertion above and delete the
+        // wedge detection this invariant exists for.
+        for reason in ["no-env-file", "archived"] {
+            assert!(crate::api::session_verbs::reason_is_reapable(reason), "{reason} is reapable");
+            let rs = queue_has_live_consumer(&[mk(reason, 0.0)], 7_560.0, 300.0, 3_600.0);
+            assert!(
+                rs.iter().any(|r| r.status == Status::Fail),
+                "{reason} past the deadline is a wedged reaper and must still fail: {rs:?}"
+            );
+        }
     }
 
     /// AMUX-3084 / AMUX-3111: a target that is not a live consumer at all (its
@@ -3569,7 +4606,10 @@ mod negative_controls {
             CallerPath { method: "GET".into(), path: "/api/tunnel2/x".into(),
                          source: "amux-cli".into(), interpolated: false, method_known: true },
         ];
-        let rs = route_callers_have_routes(&mounted, &callers);
+        // Its OWN exempt list, not the live one: this pins the MECHANISM, and
+        // the live list legitimately empties as families get mounted.
+        let guarded: &[&str] = &["/api/tunnel/"];
+        let rs = route_callers_have_routes_with(&mounted, &callers, guarded);
         let by_ent = |e: &str| rs.iter().find(|r| r.entity_key == e).unwrap();
         assert_eq!(by_ent("POST /api/tunnel/start").status, Status::Pass,
                    "documented absence with a preflighting caller must not be a permanent red");
@@ -3578,10 +4618,69 @@ mod negative_controls {
         // Mount the family: the exclusion is now stale and must SAY SO.
         let mounted2: Vec<(&str, &[&str])> =
             vec![("/api/board", &["GET"]), ("/api/tunnel/start", &["POST"])];
-        let rs2 = route_callers_have_routes(&mounted2, &callers);
+        let rs2 = route_callers_have_routes_with(&mounted2, &callers, guarded);
         let row = rs2.iter().find(|r| r.entity_key == "POST /api/tunnel/start").unwrap();
         assert_eq!(row.status, Status::Fail);
         assert!(row.observed.contains("STALE"), "{}", row.observed);
+    }
+
+    /// AF-453, both arms. A check that flags every mounted route would satisfy
+    /// the first assertion alone and be worthless, so the healthy-route arm is
+    /// what makes this a test rather than a tautology.
+    #[test]
+    fn a_mounted_route_that_never_answers_is_reported_and_a_healthy_one_is_not() {
+        let mounted: Vec<(&str, &[&str])> = vec![
+            ("/api/workers/{id}", &["GET", "PATCH", "DELETE"]),
+            ("/api/workers/{id}/send", &["POST"]),
+        ];
+        let rows = vec![
+            // The live specimen: mounted, called 15 times, answered 0.
+            RouteOutcomeRow { method: "GET".into(), shape: "/api/workers/{id}".into(), n: 15, ok: 0 },
+            // ARM 2 — a HEALTHY mounted route. Without this the check could
+            // flag everything and still pass arm 1.
+            RouteOutcomeRow { method: "POST".into(), shape: "/api/workers/{id}/send".into(), n: 4368, ok: 4006 },
+            // Below the threshold: judged on nothing, so reported as nothing.
+            RouteOutcomeRow { method: "GET".into(), shape: "/api/workers/{id}".into(), n: 0, ok: 0 },
+            // UNMOUNTED and failing: a client guessing a URL. /api/logs/analyze
+            // already reports these as 404 groups with nearest_routes, and this
+            // check must not double-file them.
+            RouteOutcomeRow { method: "GET".into(), shape: "/api/stripe/status".into(), n: 430, ok: 0 },
+        ];
+        let rs = mounted_routes_answer(&rows, &mounted);
+        let fails: Vec<_> = rs.iter().filter(|r| r.status == Status::Fail).collect();
+        assert_eq!(fails.len(), 1, "expected exactly the mounted-and-dead route, got {:?}",
+                   fails.iter().map(|r| &r.entity_key).collect::<Vec<_>>());
+        assert_eq!(fails[0].entity_key, "GET /api/workers/{id}");
+        assert!(fails[0].observed.contains("0/15"), "{}", fails[0].observed);
+        assert!(!rs.iter().any(|r| r.entity_key.contains("/send")),
+                "a mounted route answering 4006/4368 must not be reported");
+        assert!(!rs.iter().any(|r| r.entity_key.contains("stripe")),
+                "an UNMOUNTED failing path is a client guessing a URL, not this check's finding");
+
+        // ARM 3 — the caveat must SHIP, not live in a doc comment. A pass here
+        // means "nothing failed loudly enough, often enough, with a status",
+        // and a reader who cannot see that will read it as "every route answers".
+        let clean = mounted_routes_answer(
+            &[RouteOutcomeRow { method: "POST".into(), shape: "/api/workers/{id}/send".into(), n: 4368, ok: 4006 }],
+            &mounted,
+        );
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].status, Status::Pass);
+        let ev = &clean[0].evidence;
+        assert_eq!(ev["measured"], true);
+        assert_eq!(ev["n_considered"], 1, "a zero finding is only readable beside its population");
+        assert_eq!(ev["blind_spots"].as_array().map(|a| a.len()), Some(4),
+                   "all four blind spots ship with every result");
+        assert!(ev["blind_spots"].to_string().contains("error body"),
+                "the status-only blind spot is the one most likely to be forgotten");
+
+        // ARM 4 — an empty log is UNKNOWN, never a pass. This is the trap
+        // route.callers_have_routes already guards: a probe that could not run
+        // reports the same silence as a clean fleet.
+        let none = mounted_routes_answer(&[], &mounted);
+        assert_eq!(none.len(), 1);
+        assert_eq!(none[0].status, Status::Unknown);
+        assert!(none[0].observed.contains("did not run"), "{}", none[0].observed);
     }
 
     /// AF-137 both directions: unowned auto-filed cards must go RED naming
@@ -3759,9 +4858,32 @@ mod negative_controls {
         const INLINE: &str = r#"curl -sk -m 3 -X POST -H 'Content-Type: application/json' -d "{\"state\":\"idle\",\"source\":\"stop-hook\"}" "$AMUX_URL/api/sessions/$AMUX_SESSION/report""#;
 
         let healthy = report_hooks_wired(Ok(vec![
-            ent("Stop", GOOD, None),
-            ent("UserPromptSubmit", GOOD, None),
-            ent("PostToolUse", GOOD, Some(".*")),
+            ent(
+                "SessionStart",
+                r#"bash "$HOME/.amux/hook-report.sh" subagent-reset session-start-hook"#,
+                None,
+            ),
+            ent("Stop", r#"bash "$HOME/.amux/hook-report.sh" idle stop-hook"#, None),
+            ent(
+                "UserPromptSubmit",
+                r#"bash "$HOME/.amux/hook-report.sh" active prompt-hook"#,
+                None,
+            ),
+            ent(
+                "PostToolUse",
+                r#"bash "$HOME/.amux/hook-report.sh" active tool-hook"#,
+                Some(".*"),
+            ),
+            ent(
+                "SubagentStart",
+                r#"bash "$HOME/.amux/hook-report.sh" subagent-start subagent-start-hook"#,
+                None,
+            ),
+            ent(
+                "SubagentStop",
+                r#"bash "$HOME/.amux/hook-report.sh" subagent-stop subagent-stop-hook"#,
+                None,
+            ),
         ]));
         assert_eq!(healthy[0].status, Status::Pass, "correct wiring must pass: {healthy:?}");
 
@@ -3793,10 +4915,12 @@ mod negative_controls {
         let no_matcher = report_hooks_wired(Ok(vec![ent("PostToolUse", GOOD, None)]));
         assert_eq!(no_matcher[0].status, Status::Fail, "tool event needs a matcher: {no_matcher:?}");
 
-        // A LIFECYCLE event legitimately has none — the check must not invent a
-        // failure there, or it fires forever on a correct config and gets muted.
+        // A lifecycle event legitimately has no matcher, but one event cannot
+        // stand in for the other four. This was the vacuous PASS in the live
+        // incident: Stop was correct while activation/subagents were unwired.
         let lifecycle = report_hooks_wired(Ok(vec![ent("Stop", GOOD, None)]));
-        assert_eq!(lifecycle[0].status, Status::Pass, "Stop takes no matcher: {lifecycle:?}");
+        assert_eq!(lifecycle[0].status, Status::Fail, "Stop-only must fail: {lifecycle:?}");
+        assert!(lifecycle[0].observed.contains("SubagentStart"));
 
         // Absence and unreadability are Unknown, never a false pass.
         assert_eq!(report_hooks_wired(Ok(vec![]))[0].status, Status::Unknown);
@@ -3910,6 +5034,7 @@ mod negative_controls {
             ],
             &[],
             now,
+            0,
         );
         assert!(ok.iter().all(|r| r.status == Status::Pass), "{ok:?}");
         assert_eq!(ok.len(), 2, "every declared column reports, not just the bad ones");
@@ -3921,6 +5046,7 @@ mod negative_controls {
             &[("_amux_request_log.ts".into(), Some(now * 1000.0))],
             &[],
             now,
+            0,
         );
         assert_eq!(bad[0].status, Status::Fail, "{bad:?}");
         assert!(bad[0].observed.contains("MILLISECONDS"), "name the reading that fits: {:?}", bad[0].observed);
@@ -3930,6 +5056,7 @@ mod negative_controls {
             &[("cmd_history.ts".into(), Some(now))],
             &[],
             now,
+            0,
         );
         assert_eq!(bad2[0].status, Status::Fail, "{bad2:?}");
         assert!(bad2[0].observed.contains("SECONDS"), "{:?}", bad2[0].observed);
@@ -3941,14 +5068,47 @@ mod negative_controls {
             &[("token_ledger.ts".into(), None)],
             &[],
             now,
+            0,
         );
         assert_eq!(empty[0].status, Status::Unknown, "{empty:?}");
+        assert!(
+            empty[0].observed.contains("is empty"),
+            "an unbounded probe's None IS a claim the table is empty: {:?}",
+            empty[0].observed
+        );
+
+        // AND A BOUNDED PROBE'S None IS A DIFFERENT CLAIM (AMUX-3836). Same
+        // input, same Unknown verdict, different sentence: the caller sampled
+        // the newest rows, so it did not learn that the table is empty and must
+        // not say so. Reading "token_ledger.ts is empty" off a probe that only
+        // looked at 5000 rows sends the reader to the schema for a fact nobody
+        // measured.
+        let sampled = timestamp_units_are_what_readers_assume(
+            &[("token_ledger.ts".into(), None)],
+            &[],
+            now,
+            5_000,
+        );
+        assert_eq!(sampled[0].status, Status::Unknown, "{sampled:?}");
+        // The CLAIM form, not the substring: the bounded sentence ends by
+        // disclaiming emptiness, so `contains("is empty")` matches its own
+        // denial. Assert on "<name> is empty", which only the unbounded arm says.
+        assert!(
+            !sampled[0].observed.contains("token_ledger.ts is empty"),
+            "a bounded probe must not claim the table is empty: {:?}",
+            sampled[0].observed
+        );
+        assert!(
+            sampled[0].observed.contains("newest 5000 rows"),
+            "and it must say what it DID look at: {:?}",
+            sampled[0].observed
+        );
 
         // An UNDECLARED timestamp column fails. This is the half that keeps
         // working as the schema grows: a sixth table with a bare `ts` inherits
         // the trap silently, and only a check that goes red makes its author
         // state the unit.
-        let undecl = timestamp_units_are_what_readers_assume(&[], &["new_table.ts".into()], now);
+        let undecl = timestamp_units_are_what_readers_assume(&[], &["new_table.ts".into()], now, 0);
         assert_eq!(undecl[0].status, Status::Fail, "{undecl:?}");
         assert!(undecl[0].entity_key.contains("new_table"), "{:?}", undecl[0]);
 
@@ -3966,6 +5126,7 @@ mod negative_controls {
             &[("_amux_request_log.ts".into(), Some(now - 86_400.0 * 3_000.0))],
             &[],
             now,
+            0,
         );
         assert_eq!(oldrow[0].status, Status::Pass, "a 3000-day-old row is old, not mis-united: {oldrow:?}");
     }
@@ -4306,5 +5467,110 @@ mod schedule_kind_tests {
             let out = schedule_cost_titles_match_kind(&[row("S", t, "tmux")]);
             assert_eq!(out[0].status, Status::Fail, "{t} asserts zero cost and runs as tmux");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// N. Nonterminal cards have a disposition (actionable next_action).
+// ---------------------------------------------------------------------------
+
+pub struct DispositionRow {
+    pub id: String,
+    pub status: String,
+    pub next_action: Option<String>,
+    pub session: Option<String>,
+    pub item_type: String,
+}
+
+pub fn nonterminal_has_disposition(cards: &[DispositionRow]) -> Vec<InvariantResult> {
+    const ID: &str = "board.nonterminal_has_disposition";
+    if cards.is_empty() {
+        return vec![InvariantResult::unknown(ID, "no cards to check")];
+    }
+    let nonterminal: Vec<_> = cards
+        .iter()
+        .filter(|c| !matches!(c.status.as_str(), "done" | "verified" | "discarded" | "backlog"))
+        .collect();
+    if nonterminal.is_empty() {
+        return vec![InvariantResult::pass(ID)
+            .evidence(serde_json::json!({"checked": 0, "reason": "no nonterminal cards"}))];
+    }
+    let missing: Vec<_> = nonterminal
+        .iter()
+        .filter(|c| c.next_action.as_ref().is_none_or(|s| s.trim().is_empty()))
+        .collect();
+    if missing.is_empty() {
+        vec![InvariantResult::pass(ID)
+            .evidence(serde_json::json!({"checked": nonterminal.len()}))]
+    } else {
+        let sample: Vec<_> = missing
+            .iter()
+            .take(5)
+            .map(|c| serde_json::json!({"id": c.id, "status": c.status, "session": c.session}))
+            .collect();
+        vec![InvariantResult::fail(
+            ID,
+            "nonterminal cards carry a next_action".to_string(),
+            format!(
+                "{} of {} nonterminal cards have no next_action",
+                missing.len(),
+                nonterminal.len()
+            ),
+        )
+        .evidence(serde_json::json!({
+            "missing_count": missing.len(),
+            "nonterminal_count": nonterminal.len(),
+            "sample": sample,
+        }))]
+    }
+}
+
+#[cfg(test)]
+mod disposition_tests {
+    use super::*;
+
+    fn row(id: &str, status: &str, next_action: Option<&str>) -> DispositionRow {
+        DispositionRow {
+            id: id.into(),
+            status: status.into(),
+            next_action: next_action.map(Into::into),
+            session: Some("test".into()),
+            item_type: "code".into(),
+        }
+    }
+
+    #[test]
+    fn all_nonterminal_with_disposition_passes() {
+        let cards = vec![
+            row("A-1", "doing", Some("implement the thing")),
+            row("A-2", "todo", Some("pick this up")),
+        ];
+        assert_eq!(nonterminal_has_disposition(&cards)[0].status, Status::Pass);
+    }
+
+    #[test]
+    fn terminal_cards_without_disposition_still_pass() {
+        let cards = vec![
+            row("A-1", "done", None),
+            row("A-2", "verified", None),
+            row("A-3", "discarded", None),
+        ];
+        assert_eq!(nonterminal_has_disposition(&cards)[0].status, Status::Pass);
+    }
+
+    #[test]
+    fn nonterminal_without_disposition_fails() {
+        let cards = vec![
+            row("A-1", "doing", None),
+            row("A-2", "todo", Some("pick up")),
+        ];
+        let out = nonterminal_has_disposition(&cards);
+        assert_eq!(out[0].status, Status::Fail);
+    }
+
+    #[test]
+    fn empty_next_action_counts_as_missing() {
+        let cards = vec![row("A-1", "doing", Some("  "))];
+        assert_eq!(nonterminal_has_disposition(&cards)[0].status, Status::Fail);
     }
 }

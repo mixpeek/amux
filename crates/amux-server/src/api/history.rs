@@ -80,7 +80,11 @@ async fn get_history_item(
     let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = store.read()?;
         let sql = "SELECT id, text, type, session, ts, origin, card_id, \
-                   delivery, queued_at, delivered_at, submit_verdict \
+                   delivery, queued_at, delivered_at, submit_verdict, \
+                   (SELECT title FROM issues WHERE issues.id=cmd_history.card_id) AS card_title, \
+                   (SELECT status FROM issues WHERE issues.id=cmd_history.card_id) AS card_status, \
+                   (SELECT archived FROM issues WHERE issues.id=cmd_history.card_id) AS card_archived, \
+                   (SELECT deleted FROM issues WHERE issues.id=cmd_history.card_id) AS card_deleted \
                    FROM cmd_history WHERE id=?1";
         let refs: Vec<&dyn rusqlite::types::ToSql> = vec![&nid];
         let mut rows = super::calendar::query_rows_json(&conn, sql, &refs)?;
@@ -379,6 +383,16 @@ fn flag(v: &Option<String>) -> bool {
     v.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
 }
 
+/// The UI's durable display id for a command-history row. A prefixed query is
+/// an identity lookup, not prose search: clicking `MSG-123` must still find the
+/// row when neither its body nor its worker happens to contain "MSG-123".
+fn prefixed_message_id(raw: &str) -> Option<i64> {
+    raw.trim()
+        .strip_prefix("MSG-")
+        .or_else(|| raw.trim().strip_prefix("msg-"))
+        .and_then(|n| n.parse::<i64>().ok())
+}
+
 /// Default page, and the CEILING no caller can exceed (AF-213).
 ///
 /// `limit` was unclamped: `?limit=100000` served all 8,920 rows at 19 MB, and
@@ -488,9 +502,14 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
         }
         let q = p.q.as_deref().unwrap_or("").trim().to_string();
         if !q.is_empty() {
-            where_cl.push("text LIKE ? ESCAPE '\\'".into());
-            let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-            params.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
+            if let Some(message_id) = prefixed_message_id(&q) {
+                where_cl.push("id=?".into());
+                params.push(rusqlite::types::Value::Integer(message_id));
+            } else {
+                where_cl.push("text LIKE ? ESCAPE '\\'".into());
+                let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+                params.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
+            }
         }
         let want: Vec<String> = p
             .kind
@@ -552,7 +571,12 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
             // NULL — the UI distinguishes "not recorded" from "direct", and
             // coalescing here would assert a delivery path nobody observed.
             "SELECT id, text, type, session, ts, origin, card_id, \
-             delivery, queued_at, delivered_at, submit_verdict FROM cmd_history",
+             delivery, queued_at, delivered_at, submit_verdict, \
+             (SELECT title FROM issues WHERE issues.id=cmd_history.card_id) AS card_title, \
+             (SELECT status FROM issues WHERE issues.id=cmd_history.card_id) AS card_status, \
+             (SELECT archived FROM issues WHERE issues.id=cmd_history.card_id) AS card_archived, \
+             (SELECT deleted FROM issues WHERE issues.id=cmd_history.card_id) AS card_deleted \
+             FROM cmd_history",
         );
         if !where_cl.is_empty() {
             sql.push_str(" WHERE ");
@@ -746,6 +770,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let router = Router::new().nest("/api/history", routes()).with_state(state);
         (router, dir)
@@ -1012,6 +1037,12 @@ mod tests {
                 [],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO issues (id, title, desc, status, created, updated, archived) \
+                 VALUES ('AMUX-9', 'Fix parser', '', 'done', 1, 1, 1)",
+                [],
+            )
+            .unwrap();
         }
         let (st, list) = send(&app, "GET", "/api/history", None).await;
         assert_eq!(st, StatusCode::OK, "{list}");
@@ -1023,8 +1054,18 @@ mod tests {
         assert_eq!(row["ts"], json!(1753000000123i64));
         assert_eq!(row["origin"], json!("orch"));
         assert_eq!(row["card_id"], json!("AMUX-9"));
+        assert_eq!(row["card_title"], json!("Fix parser"));
+        assert_eq!(row["card_status"], json!("done"));
+        assert_eq!(row["card_archived"], json!(1));
+        assert!(row["card_deleted"].is_null());
         assert_eq!(row["kind"], json!("human"), "steering displays as human");
         assert_eq!(row["queued"], json!(true), "steering is the queued delivery detail");
+
+        let (st, one) = send(&app, "GET", "/api/history/MSG-1", None).await;
+        assert_eq!(st, StatusCode::OK, "{one}");
+        assert_eq!(one["card_title"], json!("Fix parser"));
+        assert_eq!(one["card_status"], json!("done"));
+        assert_eq!(one["card_archived"], json!(1));
     }
 
     #[tokio::test]
@@ -1058,6 +1099,13 @@ mod tests {
         let (_, hits) = send(&app, "GET", "/api/history?q=steer", None).await;
         assert_eq!(hits.as_array().unwrap().len(), 1);
         assert_eq!(hits[0]["text"], json!("queued steer"));
+
+        // A displayed message id is an exact, stable identity. It must not be
+        // treated as prose (the body does not contain its own database id).
+        let (_, by_id) = send(&app, "GET", "/api/history?q=MSG-2", None).await;
+        assert_eq!(by_id.as_array().unwrap().len(), 1);
+        assert_eq!(by_id[0]["id"], json!(2));
+        assert_eq!(by_id[0]["text"], json!("queued steer"));
 
         // limit/offset window.
         let (_, page) = send(&app, "GET", "/api/history?limit=2&offset=1", None).await;

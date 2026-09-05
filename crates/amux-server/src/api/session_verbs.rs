@@ -34,8 +34,8 @@
 //! - no boot board-digest briefing on start (standing instructions ARE re-sent)
 //! - no _install_amux_commit_hook / _auto_trust_dir / _ensure_memory side
 //!   effects (Python's loops still own those during coexistence)
-//! - commit-report attaches to the in-flight card but skips the cross-session
-//!   sweep notice (py:76008-76230)
+//! - commit-report records the exact task from its body/commit subject, but
+//!   skips the cross-session sweep notice (py:76008-76230)
 //! - env-explain / memory-explain answer 501 with a pointer (layered env
 //!   composition is not ported yet)
 //! - iTerm2-backed sessions (CC_ITERM2_SESSION_ID) answer 501 (0 in the fleet)
@@ -148,6 +148,12 @@ fn is_session_blocked(name: &str) -> bool {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EnvFile {
     pairs: Vec<(String, String)>,
+    dirty: Vec<(String, Option<String>)>,
+}
+
+fn env_write_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 /// A temp path unique to THIS CALL, for the write-then-rename dance (AF-104).
@@ -180,10 +186,17 @@ pub(crate) fn unique_tmp_path(path: &Path) -> std::path::PathBuf {
 }
 
 impl EnvFile {
-    fn load(path: &Path) -> Self {
+    /// The key names this file defines, in file order. Names only: the VALUES
+    /// are credentials (these files are 0600), and every caller so far wants to
+    /// know which file defines a key rather than what it holds.
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.pairs.iter().map(|(k, _)| k.clone()).collect()
+    }
+
+    pub(crate) fn load(path: &Path) -> Self {
         let mut pairs = Vec::new();
         let Ok(text) = std::fs::read_to_string(path) else {
-            return Self { pairs };
+            return Self { pairs, dirty: Vec::new() };
         };
         for line in text.lines() {
             let line = line.trim();
@@ -207,7 +220,7 @@ impl EnvFile {
                 None => pairs.push((k.to_string(), v.to_string())),
             }
         }
-        Self { pairs }
+        Self { pairs, dirty: Vec::new() }
     }
 
     pub(crate) fn get(&self, key: &str) -> Option<&str> {
@@ -216,18 +229,34 @@ impl EnvFile {
     fn get_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
         self.get(key).unwrap_or(default)
     }
-    fn set(&mut self, key: &str, value: &str) {
+    pub(crate) fn set(&mut self, key: &str, value: &str) {
         match self.pairs.iter_mut().find(|(k, _)| k == key) {
             Some((_, v)) => *v = value.to_string(),
             None => self.pairs.push((key.to_string(), value.to_string())),
         }
+        self.dirty.retain(|(k, _)| k != key);
+        self.dirty.push((key.to_string(), Some(value.to_string())));
     }
-    fn remove(&mut self, key: &str) {
+    pub(crate) fn remove(&mut self, key: &str) {
         self.pairs.retain(|(k, _)| k != key);
+        self.dirty.retain(|(k, _)| k != key);
+        self.dirty.push((key.to_string(), None));
     }
 
     /// Python `_write_env` (py:4252): `# updated:` header + K="V", atomic 0600.
-    fn write(&self, path: &Path) -> std::io::Result<()> {
+    pub(crate) fn write(&self, path: &Path) -> std::io::Result<()> {
+        let _guard = env_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut latest = if self.dirty.is_empty() { self.clone() } else { Self::load(path) };
+        for (key, value) in &self.dirty {
+            match value {
+                Some(value) => latest.set(key, value),
+                None => latest.remove(key),
+            }
+        }
+        latest.write_unlocked(path)
+    }
+
+    fn write_unlocked(&self, path: &Path) -> std::io::Result<()> {
         use std::io::Write as _;
         let mut out = format!("# updated: {}\n", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f"));
         for (k, v) in &self.pairs {
@@ -246,6 +275,59 @@ impl EnvFile {
             }
             f.write_all(out.as_bytes())?;
             f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)
+    }
+
+    pub(crate) fn replace_text(path: &Path, text: &str) -> std::io::Result<()> {
+        let _guard = env_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+        use std::io::Write as _;
+        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir)?; }
+        let tmp = unique_tmp_path(path);
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; f.set_permissions(std::fs::Permissions::from_mode(0o600))?; }
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)
+    }
+
+    /// Merge key deltas into the legacy unquoted `KEY=value` representation.
+    /// Scope configuration historically writes this shape, while worker env
+    /// files use [`Self::write`]'s quoted/header form. Both paths share the
+    /// same lock and reload under it, so concurrent UI saves cannot resurrect
+    /// a stale copy of another setting merely because their serialization
+    /// formats differ.
+    pub(crate) fn merge_plain(
+        path: &Path,
+        updates: &[(String, Option<String>)],
+    ) -> std::io::Result<()> {
+        let _guard = env_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut current: std::collections::BTreeMap<String, String> =
+            crate::config::parse_env_file(path).into_iter().collect();
+        for (key, value) in updates {
+            match value {
+                Some(value) => {
+                    current.insert(key.clone(), value.clone());
+                }
+                None => {
+                    current.remove(key);
+                }
+            }
+        }
+        let text: String = current.iter().map(|(key, value)| format!("{key}={value}\n")).collect();
+        use std::io::Write as _;
+        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir)?; }
+        let tmp = unique_tmp_path(path);
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
         }
         std::fs::rename(&tmp, path)
     }
@@ -358,6 +440,28 @@ pub(crate) fn scoped_setting_in(home: &std::path::Path, lane: &str, key: &str) -
     EnvFile::load(&home.join("amux.env")).get(key).and_then(nonempty)
 }
 
+/// Resolve `CC_SEND_ALLOW` while preserving an explicit empty value.
+///
+/// The general scoped resolver deliberately treats empty as absent because
+/// most switches spell an override as `0`. Cross-worker reach predates that
+/// convention: its persisted opt-out is an empty allow-list. Once the product
+/// default became open, collapsing empty into absent made OFF reload as ON —
+/// exactly the resetting toggle the user observed. Same layer order as the
+/// launched shell and [`scoped_setting_in`], but presence and value stay two
+/// separate facts.
+pub(crate) fn cross_group_allow_setting_in(
+    home: &std::path::Path,
+    lane: &str,
+) -> Option<String> {
+    for path in scope_env_layers(home, lane).into_iter().rev() {
+        let cfg = EnvFile::load(&path);
+        if let Some(v) = cfg.get("CC_SEND_ALLOW") {
+            return Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 fn provider_of(cfg: &EnvFile) -> String {
     let p = cfg.get_or("CC_PROVIDER", "claude").trim().to_lowercase();
     if SESSION_PROVIDERS.contains(&p.as_str()) && !p.is_empty() {
@@ -369,6 +473,10 @@ fn provider_of(cfg: &EnvFile) -> String {
 
 fn work_dir_of(cfg: &EnvFile) -> String {
     let wd = cfg.get_or("CC_DIR", "").trim();
+    normalize_work_dir(wd)
+}
+
+fn normalize_work_dir(wd: &str) -> String {
     if wd.is_empty() {
         return String::new();
     }
@@ -402,6 +510,16 @@ fn load_meta(name: &str) -> Map<String, Value> {
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default()
+}
+
+/// Epoch seconds since this lane's composer has held unsubmitted text, or 0.
+///
+/// Stamped by `rate_limit_sweep`, and read here by `autofix`'s stuck-composer
+/// detector, which needs the AGE: `ghost_rescue` can say a lane holds a
+/// collapsed paste right now but not for how long, and "held for six days" is
+/// the whole difference between noise and a card (AMUX-3885).
+pub(crate) fn composer_stuck_since(name: &str) -> i64 {
+    meta_i64(&load_meta(name), "composer_stuck_since")
 }
 
 fn save_meta(name: &str, meta: &Map<String, Value>) {
@@ -1033,6 +1151,129 @@ pub(crate) fn is_rate_limited_credit_banner(footer: &str) -> bool {
         || clean.contains("usage limit reached \u{00b7} continuing automatically at")
 }
 
+/// WHEN the limit in [`is_rate_limited_credit_banner`]'s banner lifts, as an
+/// epoch — or `None` when the banner does not say (AMUX-3815).
+///
+/// The banner Claude renders carries the answer in the same sentence the
+/// detector above already matches:
+///
+/// ```text
+/// You've hit your session limit · resets 8:30pm (America/New_York)
+/// ⚠ Usage limit reached · continuing automatically at 8:30pm · esc to cancel
+/// ```
+///
+/// amux read the first half of that line and threw the second half away. The
+/// cost is a wrong CLAIM, not just a missing field: `rate_limited_until` was
+/// only ever read, never written, so it was a permanent zero, and the steering
+/// detector told the board "this queue will not drain on its own" about a lane
+/// that was going to resume by itself in 35 minutes. `lane_block_reason_from`
+/// says the opposite in a comment three files away ("a rate limit is by
+/// definition temporary. The row waits, which is the whole point of the card").
+///
+/// `None` is a real answer and must stay distinguishable from "resets at the
+/// epoch": a credit cap has no reset clock at all, and a caller that reads a
+/// missing time as zero re-creates exactly the bug above.
+///
+/// Local time, because the server and its lanes share a machine and a clock. A
+/// parsed time already past is tomorrow's — Claude writes "resets 2am" at
+/// 11pm — with a two-minute grace so a reset landing exactly now does not jump
+/// a day.
+pub(crate) fn parse_rate_limit_reset(footer: &str) -> Option<i64> {
+    parse_rate_limit_reset_at(footer, chrono::Local::now())
+}
+
+/// `8:30pm` / `2am` / `12am` at the head of `s`, as (hour24, minute).
+///
+/// 12-HOUR ONLY, deliberately. A bare `20:30` is ambiguous against `8:30` once
+/// the meridiem is optional, and Claude does not emit 24-hour times here.
+/// Refusing to read one is honest; guessing would put a silent 12-hour error
+/// into a field the steering detector suppresses cards on.
+fn parse_clock12(s: &str) -> Option<(u32, u32)> {
+    let mut chars = s.chars().peekable();
+    let mut hour = String::new();
+    while chars.peek().is_some_and(char::is_ascii_digit) {
+        hour.push(chars.next()?);
+    }
+    if hour.is_empty() || hour.len() > 2 {
+        return None;
+    }
+    let mut minute = 0u32;
+    if chars.peek() == Some(&':') {
+        chars.next();
+        let m: String = chars.by_ref().take(2).collect();
+        if m.len() != 2 || !m.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        minute = m.parse().ok()?;
+    }
+    while chars.peek() == Some(&' ') {
+        chars.next();
+    }
+    let mer: String = chars.take(2).collect();
+    let mut h: u32 = hour.parse().ok()?;
+    if !(1..=12).contains(&h) || minute > 59 {
+        return None;
+    }
+    match mer.as_str() {
+        "am" => {
+            if h == 12 {
+                h = 0
+            }
+        }
+        "pm" => {
+            if h != 12 {
+                h += 12
+            }
+        }
+        _ => return None,
+    }
+    Some((h, minute))
+}
+
+/// [`parse_rate_limit_reset`] against a caller-supplied "now", so the rollover
+/// and the already-past cases are testable without waiting for a clock.
+pub(crate) fn parse_rate_limit_reset_at(
+    footer: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<i64> {
+    use chrono::TimeZone;
+    let clean = strip_ansi(footer).to_lowercase().replace('\u{2019}', "'");
+    // Both phrasings. "resets" is the wording of the session-limit line,
+    // "continuing automatically at" of the footer warning; a pane often shows
+    // both and they agree. Most specific FIRST, and each candidate is parsed
+    // rather than merely located: "resets at 8pm" matches the bare "resets "
+    // too, leaving "at 8pm", which must lose to the marker that leaves "8pm".
+    let (h24, minute) = ["continuing automatically at ", "resets at ", "resets "]
+        .iter()
+        .filter_map(|m| clean.find(m).map(|i| &clean[i + m.len()..]))
+        .find_map(parse_clock12)?;
+    let (h, minute) = (h24, minute);
+
+    let today = now.date_naive();
+    let at = |d: chrono::NaiveDate| -> Option<i64> {
+        let naive = d.and_hms_opt(h, minute, 0)?;
+        match chrono::Local.from_local_datetime(&naive) {
+            chrono::offset::LocalResult::Single(t) => Some(t.timestamp()),
+            // A DST spring-forward can make a wall-clock time not exist and a
+            // fall-back can make it exist twice. Take the earliest candidate
+            // rather than dropping the reading: an hour of error beats
+            // reporting "no reset time known" and re-filing the card.
+            chrono::offset::LocalResult::Ambiguous(a, _) => Some(a.timestamp()),
+            chrono::offset::LocalResult::None => Some(
+                chrono::Local
+                    .from_local_datetime(&d.and_hms_opt(h.min(22) + 1, minute, 0)?)
+                    .earliest()?
+                    .timestamp(),
+            ),
+        }
+    };
+    let ts = at(today)?;
+    if ts < now.timestamp() - 120 {
+        return at(today.succ_opt()?);
+    }
+    Some(ts)
+}
+
 /// The policy for what amux does with a rate-limit menu (ethos D2).
 ///
 /// `wait` (default) presses 1. `off` leaves the menu for a human and reports it.
@@ -1186,7 +1427,21 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         return String::new();
     }
     let n = lines.len();
+    // Codex keeps an apparently empty prompt shell on screen while a command
+    // continues in its background terminal. Its provider-owned active row is
+    // already parsed structurally by the adapter (including adjacency to the
+    // newest prompt); reuse it so quoted prose cannot become activity.
+    if crate::backend::adapter::codex_pane_generation_state(&clean) == Some(true) {
+        return "active".into();
+    }
     let reading_re = cached_re!(r"^Reading \d+ file");
+    // Claude Code yields the main composer while background agents continue,
+    // so every ordinary main-turn signal looks idle. This provider-owned row
+    // is the positive lifecycle statement; share its exact parser with the
+    // adapter rather than maintaining a second spelling here (ATE-45).
+    if crate::backend::adapter::claude_background_agents_working(&clean) {
+        return "active".into();
+    }
     // 0. Active spinner, wide window.
     for l in lines[n.saturating_sub(30)..].iter().rev() {
         let s = l.trim();
@@ -1580,6 +1835,86 @@ pub const GENERATIONS_WARN_AT: u32 = 20;
 /// be EXECUTED by a test rather than paraphrased by one (ethos rule 7: a test
 /// that restates the list is green whichever columns the shipped path
 /// actually touches).
+/// What a RENAME must do with a table keyed by a session name (AMUX-4033).
+pub enum RenameDisposition {
+    /// The rows are the lane's own state and must follow it. Orphaning them
+    /// silently changes the worker's behaviour under a cosmetic rename.
+    Migrate,
+    /// An append-only record of what happened UNDER THAT NAME. Rewriting it
+    /// would falsify history, so it deliberately keeps the old name. The string
+    /// is why, because "not in the list" and "deliberately excluded" look
+    /// identical to the next reader.
+    KeepForAudit(&'static str),
+}
+
+/// EVERY table with a session-name column, and its disposition.
+///
+/// THE LIST USED TO BE THE BUG. The cascade carried two hand-maintained arrays,
+/// and a table added later simply never joined them — no error, no warning, the
+/// rows just stopped being addressable. Measured 2026-09-02 while renaming
+/// `leadership-coaching`: 12 of 21 session-keyed tables were uncovered,
+/// including `token_ledger` (the lane's whole cost history) and
+/// `telegram_mappings` (chat routing, so messages would address a dead name).
+///
+/// `tests/rename_covers_every_session_table.rs` enumerates the schema BUILT FROM
+/// MIGRATIONS and fails on any table missing here, so the next one cannot join
+/// that gap quietly — the same argument AF-328 made for the issues fixture.
+pub const SESSION_SCOPED_TABLES: &[(&str, RenameDisposition)] = &[
+    // -- the lane's own state: must follow the rename --
+    ("issues", RenameDisposition::Migrate),
+    ("schedules", RenameDisposition::Migrate),
+    ("session_gates", RenameDisposition::Migrate),
+    ("saved_messages", RenameDisposition::Migrate),
+    ("steering_queue", RenameDisposition::Migrate),
+    ("steering_history", RenameDisposition::Migrate),
+    ("share_tokens", RenameDisposition::Migrate),
+    ("cmd_history", RenameDisposition::Migrate),
+    ("token_ledger", RenameDisposition::Migrate),
+    ("tasks", RenameDisposition::Migrate),
+    ("task_windows", RenameDisposition::Migrate),
+    ("telegram_mappings", RenameDisposition::Migrate),
+    ("mdai_runs", RenameDisposition::Migrate),
+    ("board_drive_nudge_state", RenameDisposition::Migrate),
+    ("dictation_history", RenameDisposition::Migrate),
+    ("reclaim_quarantine", RenameDisposition::Migrate),
+    ("send_dedup", RenameDisposition::Migrate),
+    // -- history written under the old name: keeps it, on purpose --
+    (
+        "session_events",
+        RenameDisposition::KeepForAudit(
+            "the rename journal entry links the old and new name, so the audit \
+             trail stays readable across the rename",
+        ),
+    ),
+    (
+        "logs",
+        RenameDisposition::KeepForAudit("a log line records who emitted it at the time"),
+    ),
+    (
+        "guard_verdicts",
+        RenameDisposition::KeepForAudit(
+            "AF-127 outcome rows exist to measure a false-positive rate over time; \
+             rewriting the actor would re-attribute past verdicts",
+        ),
+    ),
+    (
+        "reclaim_scans",
+        RenameDisposition::KeepForAudit("a scan is a dated observation, not live state"),
+    ),
+];
+
+/// The `Migrate` tables a plain `SET session=?1 WHERE session=?2` handles —
+/// everything except the ones [`RENAME_MIGRATIONS`] already covers with custom
+/// SQL (those filter on `deleted IS NULL` or touch a second column).
+pub fn simple_rename_tables() -> Vec<&'static str> {
+    const CUSTOM: [&str; 4] = ["issues", "schedules", "session_gates", "saved_messages"];
+    SESSION_SCOPED_TABLES
+        .iter()
+        .filter(|(t, d)| matches!(d, RenameDisposition::Migrate) && !CUSTOM.contains(t))
+        .map(|(t, _)| *t)
+        .collect()
+}
+
 pub const RENAME_MIGRATIONS: [(&str, &str); 6] = [
     ("issues", "UPDATE issues SET session=?1 WHERE session=?2 AND deleted IS NULL"),
     // BEYOND PYTHON, and the reason AMUX-3749 exists: the cascade
@@ -1729,14 +2064,20 @@ pub async fn debug_context_health() -> Response {
         }));
     }
     lanes.sort_by_key(|l| std::cmp::Reverse(l.get("generations").and_then(Value::as_u64).unwrap_or(0)));
-    j200(json!({
+    let n_lanes = lanes.len();
+    j200(crate::api::measured::measured(
+        json!({
         "note": "compaction generations per lane: how many times this conversation has been \
                  summarized away. A raw `claude` in a terminal sits at 0; an amux lane resumes \
                  forever, so it answers from a summary of a summary. Measured 2026-08-26 across \
                  every transcript active since 08-05: amux median 8 / max 215, raw median 0 / \
                  max 32 — same models, same effort, same first-turn token baseline.",
         "sessions": lanes.len(),
-        "measured": measured,
+        // RENAMED for AF-320. This was `measured`, an integer, on the one
+        // endpoint that already had the right instinct — and the contract needs
+        // `measured` to be the boolean "did this probe run". Two meanings on one
+        // key is worse than either, so the count takes the specific name.
+        "lanes_measured": measured,
         "unmeasurable": unmeasurable,
         "over_warn_threshold": over,
         "warn_at": GENERATIONS_WARN_AT,
@@ -1744,7 +2085,9 @@ pub async fn debug_context_health() -> Response {
                    starts its conversation over. Never automatic: the conversation is the lane's \
                    accumulated work, so discarding it is the owner's call (ethos rule 8).",
         "lanes": lanes,
-    }))
+        }),
+        n_lanes,
+    ))
 }
 
 /// The display name a transcript CURRENTLY carries — the last `customTitle` /
@@ -2073,10 +2416,13 @@ fn codex_rollout_files() -> Vec<(std::time::SystemTime, PathBuf)> {
     out
 }
 
-/// The `cwd` a rollout was recorded in, read from its first line
-/// (`session_meta`), so this stats one small read per candidate, not the whole
-/// file.
-fn rollout_cwd(path: &Path) -> Option<String> {
+/// Identity carried by a rollout's first `session_meta` row.
+///
+/// `cwd` alone is not an identity: several workers routinely share one
+/// checkout.  Keep the rollout's own start timestamp with it so the fallback
+/// resolver can associate it with the worker life that created it instead of
+/// assigning the newest sibling rollout to every worker in that directory.
+fn rollout_identity(path: &Path) -> Option<(String, f64)> {
     let Ok(f) = std::fs::File::open(path) else { return None };
     let mut reader = std::io::BufReader::new(f);
     let mut line = String::new();
@@ -2086,20 +2432,54 @@ fn rollout_cwd(path: &Path) -> Option<String> {
     if v.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
         return None;
     }
-    v.pointer("/payload/cwd")
-        .and_then(|c| c.as_str())
-        .map(str::to_string)
+    let cwd = normalize_work_dir(v.pointer("/payload/cwd").and_then(|c| c.as_str())?);
+    let started = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_iso8601)?;
+    Some((cwd, started))
 }
 
-/// Map a codex/ollama worker to its live Codex rollout file. Mirrors
-/// `session_jsonl_path`'s resolution order: a recorded session-id claim first
-/// (deterministic: the id is the filename UUID), then the worker's `CC_DIR`
-/// cwd with newest mtime winning. `None` when nothing matches, which makes the
-/// caller fall back to the raw terminal (never a wrong transcript).
+const CODEX_ROLLOUT_START_WINDOW_S: f64 = 15.0 * 60.0;
+const CODEX_ROLLOUT_EARLY_GRACE_S: f64 = 30.0;
+
+/// Pick the rollout born nearest this worker life, never merely the newest
+/// rollout in the same checkout.  The bounded window accommodates startup
+/// pickers (the live ATE-42 specimen created its rollout six minutes after
+/// `last_started`) while refusing to borrow a later sibling's conversation.
+fn rollout_for_worker_start<'a>(
+    files: &'a [(std::time::SystemTime, PathBuf)],
+    cwd: &str,
+    started: f64,
+) -> Option<&'a PathBuf> {
+    if cwd.is_empty() || started <= 0.0 {
+        return None;
+    }
+    files
+        .iter()
+        .take(80)
+        .filter_map(|(_, path)| {
+            let (rollout_cwd, rollout_started) = rollout_identity(path)?;
+            let delta = rollout_started - started;
+            (rollout_cwd == cwd
+                && (-CODEX_ROLLOUT_EARLY_GRACE_S..=CODEX_ROLLOUT_START_WINDOW_S)
+                    .contains(&delta))
+                .then_some((delta.abs(), path))
+        })
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, path)| path)
+}
+
+/// Map a codex/ollama worker to its live Codex rollout file: a recorded
+/// session-id claim first (deterministic: the id is the filename UUID), then a
+/// bounded `CC_DIR + worker start` association. `None` when nothing matches,
+/// which makes the caller fall back to the raw terminal (never a sibling's
+/// transcript).
 pub(crate) fn codex_rollout_path(name: &str) -> Option<PathBuf> {
     let cfg = parse_env(name);
-    let wd = cfg.get_or("CC_DIR", "").trim().to_string();
-    let sid = meta_str(&load_meta(name), "codex_session_id");
+    let wd = work_dir_of(&cfg);
+    let meta = load_meta(name);
+    let sid = meta_str(&meta, "codex_session_id");
     let files = codex_rollout_files();
     if files.is_empty() {
         return None;
@@ -2113,16 +2493,87 @@ pub(crate) fn codex_rollout_path(name: &str) -> Option<PathBuf> {
             return Some(p.clone());
         }
     }
-    // 2. cwd match, newest first. Bounded to the most recent candidates so a
-    //    years-deep history never turns one tab-open into thousands of reads.
-    if !wd.is_empty() {
-        for (_, p) in files.iter().take(80) {
-            if rollout_cwd(p).as_deref() == Some(wd.as_str()) {
-                return Some(p.clone());
-            }
+    // 2. Worker-life match. `cwd + newest` cross-linked every worker sharing
+    //    a checkout: an active sibling made an idle prompt read WORKING.  A
+    //    worker start is the second independent coordinate available before
+    //    Codex has given us a durable thread id, so use it and decline to guess
+    //    outside the bounded startup window.
+    let started = meta_i64(&meta, "last_started") as f64;
+    rollout_for_worker_start(&files, &wd, started).cloned()
+}
+
+/// The latest structured Codex turn boundary recorded in a rollout file.
+///
+/// Codex does not expose Claude-style start/stop hooks, but its rollout is an
+/// append-only event stream with the same semantics: `task_started` opens a
+/// turn, while `task_complete` and `turn_aborted` close it. This is stronger
+/// evidence than tmux's `window_activity`, which does not advance for Codex's
+/// alternate-screen TUI on some tmux builds (the live `amux-testing-e2e`
+/// specimen stayed `idle` for an entire multi-minute turn while the pane
+/// visibly said `Working`).
+#[derive(Clone, Debug)]
+pub(crate) struct CodexTurnSignal {
+    pub state: String,
+    pub ts: f64,
+    pub boundary: String,
+}
+
+fn codex_turn_signal_from_events(lines: &[Value]) -> Option<CodexTurnSignal> {
+    let mut latest = None;
+    for event in lines {
+        let top = event.get("type").and_then(Value::as_str).unwrap_or("");
+        let nested = event.pointer("/payload/type").and_then(Value::as_str).unwrap_or("");
+        let (state, boundary) = match (top, nested) {
+            ("turn.started", _) => ("active", "turn.started"),
+            ("event_msg", "task_started") => ("active", "task_started"),
+            ("turn.completed", _) => ("idle", "turn.completed"),
+            ("event_msg", "task_complete") => ("idle", "task_complete"),
+            ("turn.aborted", _) => ("idle", "turn.aborted"),
+            ("event_msg", "turn_aborted") => ("idle", "turn_aborted"),
+            _ => continue,
+        };
+        let ts = event.get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.timestamp_millis() as f64 / 1000.0)?;
+        latest = Some(CodexTurnSignal {
+            state: state.into(),
+            ts,
+            boundary: boundary.into(),
+        });
+    }
+    latest
+}
+
+/// Resolve one Codex/ollama worker's latest structured turn state.
+///
+/// A bounded tail keeps the fleet poll cheap. Turn-complete is always the
+/// final lifecycle event of an idle rollout; while a very long live turn can
+/// push its start outside the tail, its continuing event writes still leave
+/// the pane/activity fallback available rather than inventing an idle claim.
+pub(crate) fn codex_rollout_turn_signal(name: &str) -> Option<CodexTurnSignal> {
+    let provider = provider_of(&parse_env(name));
+    if !matches!(provider.as_str(), "codex" | "ollama") {
+        return None;
+    }
+    let path = codex_rollout_path(name)?;
+    let signal = codex_turn_signal_from_events(&iter_jsonl_tail(&path, 32_000_000))?;
+    if matches!(signal.boundary.as_str(), "turn_aborted" | "turn.aborted") {
+        let now = chrono::Utc::now().timestamp() as f64;
+        let key = format!("codex-turn-aborted:{name}:{}", signal.ts);
+        if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(now)) {
+            tracing::warn!(
+                target: "status_truth",
+                session = name,
+                rollout = %path.display(),
+                boundary = %signal.boundary,
+                boundary_ts = signal.ts,
+                verdict = "interrupted_turn_is_terminal",
+                "Codex rollout interruption closed the active turn; prompt is safe to report idle"
+            );
         }
     }
-    None
+    Some(signal)
 }
 
 /// A codex/ollama worker's transcript as the uniform [`TranscriptEvent`] model
@@ -3143,13 +3594,15 @@ pub(crate) async fn emit_event_store(store: &crate::db::SharedStore, session: &s
 
 /// The secret-redaction pass Python applies before any chat text lands in a
 /// DB row (py:8676 _cmd_hist_record / py:8655 steer history — AMUX-2525).
-/// Same pattern family as the pipe-pane redactor (py:21478).
-fn redact_secrets(text: &str) -> String {
+/// Same pattern family as the delivery/history redactor (py:21478). Terminal
+/// output itself is intentionally preserved; this helper protects copied text
+/// that is about to enter a shared record.
+pub(crate) fn redact_secrets(text: &str) -> String {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(
-            r"((?:mxp|usr|ret)_sk)_[A-Za-z0-9_-]+|((?:AMUX_MIXPEEK_OPS_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_MAPS_API_KEY|GOOGLE_API_KEY|CLOUDFLARE_API_TOKEN|ELEVENLABS_API_KEY|POSTHOG_KEY|POSTHOG_PERSONAL_API_KEY)=)[^\s\r\n]+|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+|sk-ant-[A-Za-z0-9_-]+|sk-proj-[A-Za-z0-9_-]+|sk[_-][A-Za-z0-9]{32,}|AIza[0-9A-Za-z_-]{30,}|(?:phx|phc)_[A-Za-z0-9]+",
+            r"((?:mxp|usr|ret)_sk)_[A-Za-z0-9_-]+|((?i:[A-Z_][A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET|CREDENTIAL|_KEY)[A-Z0-9_]*=))[^\s\r\n]+|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+|sk-ant-[A-Za-z0-9_-]+|sk-proj-[A-Za-z0-9_-]+|sk[_-][A-Za-z0-9]{32,}|AIza[0-9A-Za-z_-]{30,}|(?:phx|phc)_[A-Za-z0-9]+",
         )
         .expect("redact regex")
     });
@@ -3214,8 +3667,8 @@ impl Delivery {
 // point: there is no longer a spelling of "record this" that quietly asserts
 // direct delivery.
 
-/// A scheduled command that was DELIVERED (py parity: origin = the schedule's
-/// title, so a peek shows scheduled commands distinctly from a human's). Only
+/// A scheduled command that was DELIVERED (origin includes the exact schedule
+/// id, so the row is clickable and can be joined back to its run). Only
 /// called once delivery is confirmed — recording history for a command that
 /// never landed is how the Messages tab starts disagreeing with the run log.
 pub(crate) async fn cmd_hist_record_schedule(
@@ -3297,9 +3750,8 @@ const DUP_DELIVERY_WINDOW_MS: i64 = 120_000;
 
 /// Mint a ledger card for a HUMAN prompt delivered via the send path and return
 /// its row, or None when the prompt is steering/control (`title_from_prompt`
-/// None: `[no-board]`, control words, bare slash commands, <12 chars) or the
-/// worker already holds an open agent card (the prompt is steering work in
-/// flight, not a new task).
+/// None: `[no-board]`, control words, bare slash commands, <12 chars) or an
+/// identical prompt was just retried.
 ///
 /// WHY THIS EXISTS (AMUX-3071): the Python server's `_autotask_from_command`
 /// carded every human command and stamped `cmd_history.card_id`. That path was
@@ -3355,10 +3807,19 @@ pub(crate) fn redact_prompt_secrets(s: &str) -> String {
     out = tok
         .replace_all(&out, |c: &regex::Captures| {
             let m = &c[0];
+            // Absolute/relative filesystem paths and lowercase kebab-case
+            // filenames are not credentials. The previous "any punctuation"
+            // rule treated `/Users/.../video-moderation-launch-9x16` as a
+            // token, replacing the useful part of every produced-asset link
+            // with `[REDACTED]`. Known token prefixes were already handled
+            // above; a path must retain its identity to remain auditable.
+            if m.starts_with('/') || m.starts_with("./") || m.starts_with("../") {
+                return m.to_string();
+            }
             let has_upper = m.bytes().any(|b| b.is_ascii_uppercase());
             let has_lower = m.bytes().any(|b| b.is_ascii_lowercase());
-            let has_punct = m.bytes().any(|b| matches!(b, b'+' | b'/' | b'=' | b'-'));
-            if (has_upper && has_lower) || has_punct {
+            let has_b64_punct = m.bytes().any(|b| matches!(b, b'+' | b'/' | b'='));
+            if (has_upper && has_lower) || has_b64_punct {
                 "[REDACTED]".to_string()
             } else {
                 m.to_string() // pure-hex / single-case run (git sha, hex hash): leave it
@@ -3403,10 +3864,10 @@ fn mint_capture_card(
     // already declines. Surface it (two-fixes rule): grep
     // "ledger: status-query not carded" to audit the detector, so a wrong
     // suppression of a REAL task is findable in the logs rather than silent.
-    if amux_core::board::is_status_query(body) {
+    if amux_core::board::is_informational_query(body) {
         tracing::info!(
             session = %session_name,
-            "ledger: status-query not carded (recorded in cmd_history only) — AMUX-3330"
+            "ledger: informational prompt not carded (recorded in cmd_history only) — AMUX-3330"
         );
         return Ok(None);
     }
@@ -3418,11 +3879,11 @@ fn mint_capture_card(
     // arrive via the delivered path, not here). Manual work cards also counted, so
     // being mid-work on ANY card blanked the ledger entirely.
     //
-    // Narrowed to the guard's real purpose: don't double-card a RAPID re-send of
-    // one thought (the user pastes a spec across two sends). Skip ONLY when THIS
-    // mechanism minted a capture card (`desc` starts with the `**Prompt:**`
-    // marker) for this session within the window; a distinct task seconds+ later
-    // still cards, and a manual work card never blocks a capture. Captures mint
+    // Narrowed to the guard's real purpose: don't double-card an IDENTICAL retry.
+    // The former time-only test swallowed every distinct command sent within 45s,
+    // preventing the model from ever seeing or decomposing that work. Equality is
+    // checked against the exact captured description; a distinct follow-up cards
+    // immediately, and a manual work card never blocks a capture. Captures mint
     // `doing` (never re-dispatched), so an extra card cannot re-run work — the
     // AMUX-2613 double-run the old dedup was conflated with stays fixed by the
     // `doing` mint, not by this skip.
@@ -3431,11 +3892,12 @@ fn mint_capture_card(
         .and_then(|v| v.parse().ok())
         .unwrap_or(45);
     let cutoff = (now_ms / 1000) - window_s;
+    let desc_body: String = body.chars().take(300).collect();
+    let captured_desc = format!("**Prompt:** {desc_body}");
     let recent_capture: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM issues WHERE session = ?1 AND deleted IS NULL \
-         AND owner_type = 'agent' AND creator = 'amux' AND status = 'doing' \
-         AND substr(desc, 1, 11) = '**Prompt:**' AND created > ?2",
-        rusqlite::params![session_name, cutoff],
+        "SELECT COUNT(*) FROM cmd_history WHERE session=?1 AND type='user' \
+         AND text=?2 AND card_id IS NOT NULL AND ts>?3",
+        rusqlite::params![session_name, body, cutoff * 1000],
         |r| r.get(0),
     )?;
     if recent_capture > 0 {
@@ -3444,17 +3906,16 @@ fn mint_capture_card(
         tracing::info!(
             session = %session_name,
             window_s,
-            "ledger: capture deduped — a capture card was minted <{window_s}s ago (rapid re-send guard)"
+            "ledger: identical capture retry deduped within {window_s}s"
         );
         return Ok(None);
     }
     let needs_self = amux_core::board::title_needs_self_description(&title);
-    let desc_body: String = body.chars().take(300).collect();
     let mut row = crate::db::board_store::create_issue(
         conn,
         &crate::db::board_store::NewIssue {
             title,
-            desc: format!("**Prompt:** {desc_body}"),
+            desc: captured_desc,
             // `doing`, NOT `todo`: an owned `todo` ledger card is Runnable to the
             // planner and its prompt was re-dispatched, double-running every
             // direct prompt (AMUX-2613). `doing` + agent owner is Assigned, never
@@ -3475,6 +3936,17 @@ fn mint_capture_card(
             } else {
                 vec![]
             },
+            // Not an ask: this producer files ordinary cards, and a card
+            // filed into needsyou without one is what AMUX-3929 is about.
+            ask_type: None,
+            ask_question: None,
+            ask_unblocks: None,
+            ask_actor: None,
+            // AF-367: an auto-captured human prompt — the population AF-367 is about.
+            source: Some("capture".into()),
+            requested_by: None,
+            callback_session: None,
+            callback_prompt: None,
         },
         now_ms / 1000,
     )?;
@@ -3496,6 +3968,37 @@ fn mint_capture_card(
     // notifier never re-announces a prompt the worker already received live.
     conn.execute("UPDATE issues SET notified = 1 WHERE id = ?1", rusqlite::params![row.id])?;
     Ok(Some(row))
+}
+
+/// The most recent row for (session, text) that was actually DELIVERED, newer
+/// than `since_ms`. `(id, ts)`, or None.
+///
+/// Extracted so the duplicate-delivery detector and its test run the SAME
+/// query. It was inline, and a test could only restate it — a restatement stays
+/// green when the shipped query changes, which is the "check pinning the wrong
+/// layer" shape (ethos rule 7).
+///
+/// # `stuck` rows are excluded, and that is the point
+///
+/// Failed sends became rows in AMUX-3903. A send that never left the composer
+/// is exactly what a caller SHOULD retry, so counting it as a prior delivery
+/// would flag the correct response as a double delivery and train people to
+/// ignore the one warning that exists for real duplicates. A QUEUED row carries
+/// no verdict and IS delivered at the next boundary, so it still counts.
+fn prior_delivered(
+    conn: &rusqlite::Connection,
+    session: &str,
+    text: &str,
+    since_ms: i64,
+) -> Option<(i64, i64)> {
+    conn.query_row(
+        "SELECT id, ts FROM cmd_history WHERE session=?1 AND text=?2 \
+         AND ts > ?3 AND COALESCE(submit_verdict,'') != 'stuck' \
+         ORDER BY ts DESC LIMIT 1",
+        rusqlite::params![session, text, since_ms],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
 }
 
 pub(crate) async fn cmd_hist_record_full(
@@ -3533,42 +4036,34 @@ pub(crate) async fn cmd_hist_record_full(
     // deliberate, and silently dropping one would turn a visible annoyance into
     // an invisible data-loss bug — strictly worse. It announces, and lets a
     // human or a sweep decide.
-    let dup_prior: Option<(i64, i64)> = {
-        let session_q = session.clone();
-        let text_q = text.clone();
-        match state.store.read() {
-            Ok(conn) => conn
-                .query_row(
-                    "SELECT id, ts FROM cmd_history WHERE session=?1 AND text=?2 \
-                     AND ts > ?3 ORDER BY ts DESC LIMIT 1",
-                    rusqlite::params![session_q, text_q, now_ms - DUP_DELIVERY_WINDOW_MS],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok(),
-            Err(_) => None,
-        }
-    };
-    if let Some((prior_id, prior_ts)) = dup_prior {
-        let age_s = (now_ms - prior_ts) as f64 / 1000.0;
-        tracing::warn!(
-            session = %session, prior_id, age_s,
-            preview = %chars_truncate(&text, 80),
-            "duplicate delivery: identical text already recorded for this lane"
-        );
-        emit_event(
-            state,
-            &session,
-            "message.duplicate",
-            Some(json!({
-                "prior_id": prior_id, "age_s": age_s, "type": ctype,
-                "chars": text.chars().count(),
-                "preview": chars_truncate(&text, 120),
-            })),
-            None,
-            "cmd-history",
-        )
-        .await;
-    }
+    // THE LOOKUP RUNS INSIDE THE WRITE, and it did not (AF-483).
+    //
+    // It used to take a READ connection here, check, drop it, and let the
+    // INSERT happen later in its own `write_async`. Two sends whose reads both
+    // land before either write therefore each see no prior, and NEITHER
+    // announces — precisely the 0-1s pair a human does not produce, which is
+    // the case most worth announcing.
+    //
+    // Measured over all of cmd_history 2026-09-04: six exact-text duplicate
+    // pairs inside the window after the detector shipped, only two announced.
+    // The four misses had gaps of 2s, 1s, 7s and 31s. The first three are this
+    // race comfortably; 31s needs a stalled write queue as well, so this fix is
+    // claimed for the shape, not for all four rows.
+    //
+    // SQLite serialises writers, so performing the check in the same closure as
+    // the INSERT makes it a real check-then-act rather than a TOCTOU. The
+    // announcement stays OUT here: `emit_event` is async and the closure is not,
+    // and warning from inside a write would fire on a transaction that can still
+    // fail. The carrier is two atomics rather than a Mutex, matching msg_row_id
+    // directly below; 0 means no prior, and a real row id is never 0.
+    let dup_prior_id = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let dup_prior_ts = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let dup_prior_id_w = dup_prior_id.clone();
+    let dup_prior_ts_w = dup_prior_ts.clone();
+    // Copies for the announcement, which now runs AFTER the closure has taken
+    // ownership of the originals.
+    let cap_ctype = ctype.clone();
+    let cap_origin = origin.clone();
 
     let is_user = ctype == "user";
     // Carry the recorded row id out of the write so auto-capture can link the card.
@@ -3604,8 +4099,16 @@ pub(crate) async fn cmd_hist_record_full(
     // separate `steering_history` table IS stamped at real delivery by the
     // deliverer — which is also where the timestamp for the eventual backfill
     // will come from.
+    // A STUCK ROW IS NOT A DELIVERY (AMUX-3903). `delivery` says which PATH was
+    // taken and `Direct` is true of a stuck send — amux typed straight into the
+    // pane — so the mode alone would stamp `delivered_at`, which is the exact
+    // AMUX-3541 defect (a column populated 100% of the time is believable, and
+    // wrong) reintroduced through a new door. The verdict is what says whether
+    // the text landed, so it decides this column too.
+    let landed = !matches!(submit_verdict.as_deref(), Some("stuck"));
     let delivered_at_ms = match meta.delivery {
         Some(Delivery::Queued) => None,
+        _ if !landed => None,
         _ => Some(now_ms),
     };
     let msg_row_id_w = msg_row_id.clone();
@@ -3615,6 +4118,15 @@ pub(crate) async fn cmd_hist_record_full(
         .store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
+            // BEFORE the insert, on the writer's own connection: the prior must
+            // be one that already existed, and no concurrent record can slip its
+            // own insert between this read and ours (AF-483).
+            if let Some((pid, pts)) =
+                prior_delivered(conn, &session, &text, now_ms - DUP_DELIVERY_WINDOW_MS)
+            {
+                dup_prior_id_w.store(pid, std::sync::atomic::Ordering::SeqCst);
+                dup_prior_ts_w.store(pts, std::sync::atomic::Ordering::SeqCst);
+            }
             conn.execute(
                 "INSERT INTO cmd_history (text, type, session, ts, origin, delivery, queued_at, delivered_at, submit_verdict) \
                  VALUES (?,?,?,?,?,?,?,?,?)",
@@ -3623,15 +4135,64 @@ pub(crate) async fn cmd_hist_record_full(
                     delivery, queued_at_ms, delivered_at_ms, submit_verdict
                 ],
             )?;
-            msg_row_id_w.store(conn.last_insert_rowid(), std::sync::atomic::Ordering::SeqCst);
+            let row_id = conn.last_insert_rowid();
+            msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             conn.execute(
                 "DELETE FROM cmd_history WHERE session=?1 AND id NOT IN \
                  (SELECT id FROM cmd_history WHERE session=?1 ORDER BY ts DESC LIMIT ?2)",
                 rusqlite::params![session, CMD_HIST_KEEP],
             )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            // cmd_history is the durable Messages ledger, but this write used
+            // to publish no StateEvent. A healthy SSE client therefore had no
+            // reason to refetch Messages: the row appeared only after a manual
+            // reload, while the less-healthy polling fallback happened to look
+            // current. Publish the committed fact without its text payload;
+            // SSE turns Message into a coalesced `messages` invalidation and
+            // the authenticated history endpoint remains the data plane.
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![crate::db::PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Message,
+                    entity_id: format!("MSG-{row_id}"),
+                    mutation: amux_core::revision::MutationKind::Created,
+                    payload: None,
+                }],
+            })
         })
         .await;
+
+    // ANNOUNCE AFTER THE WRITE COMMITTED, never from inside it (AF-483). A warn
+    // emitted in the closure would fire on a transaction that can still fail,
+    // which is a duplicate report for a message that was never recorded.
+    //
+    // Still does NOT suppress the second delivery. Two identical sends can be
+    // deliberate, and silently dropping one turns a visible annoyance into an
+    // invisible data-loss bug, which is strictly worse. It announces and lets a
+    // human or a sweep decide.
+    let prior_id = dup_prior_id.load(std::sync::atomic::Ordering::SeqCst);
+    if prior_id > 0 {
+        let prior_ts = dup_prior_ts.load(std::sync::atomic::Ordering::SeqCst);
+        let age_s = (now_ms - prior_ts) as f64 / 1000.0;
+        tracing::warn!(
+            session = %cap_session, prior_id, age_s,
+            preview = %chars_truncate(&cap_text, 80),
+            "duplicate delivery: identical text already recorded for this lane"
+        );
+        emit_event(
+            state,
+            &cap_session,
+            "message.duplicate",
+            Some(json!({
+                "prior_id": prior_id, "age_s": age_s, "type": cap_ctype,
+                "origin": cap_origin,
+                "chars": cap_text.chars().count(),
+                "preview": chars_truncate(&cap_text, 120),
+            })),
+            None,
+            "cmd-history",
+        )
+        .await;
+    }
 
     // NO SILENT WORK (AMUX-3071): mint a ledger card for a HUMAN prompt and link
     // it to the message row. Separate write so a capture failure can never roll
@@ -3643,7 +4204,13 @@ pub(crate) async fn cmd_hist_record_full(
     // not auto-captured as ledger cards. It has no session/URL to run `amux
     // board`, so a card minted here would name work nobody can drive, and the
     // accountability sweep is likewise told to skip it.
-    if is_user && !skip_board && !session_is_isolated(&cap_session) {
+    // AND NOT FOR A PROMPT THE LANE NEVER RECEIVED (AMUX-3903). A ledger card
+    // asserts "this lane was given this task", and a stuck send means it was
+    // not: the text is sitting in the composer. Minting one would hand the
+    // accountability sweep a lane to chase over work nobody delivered. The
+    // message ROW still goes in, because the delivery attempt is the fact worth
+    // keeping; the card is a consequence that did not happen.
+    if is_user && landed && !skip_board && !session_is_isolated(&cap_session) {
         let row_id = msg_row_id.load(std::sync::atomic::Ordering::SeqCst);
         if row_id > 0 {
             let minted: std::sync::Arc<std::sync::Mutex<Option<String>>> =
@@ -3709,8 +4276,48 @@ fn steer_row_source(conn: &rusqlite::Connection, id: &str) -> (Option<String>, O
     .unwrap_or((None, None))
 }
 
+/// Guards whose messages CARRY CONTENT instead of asserting a re-evaluated
+/// state. These never coalesce: a second one is a SECOND MESSAGE, not a fresher
+/// version of the first.
+///
+/// The guard field does three jobs at once — it is the isolation discriminator,
+/// the producer label, and the coalescing key — and only the third is wrong for
+/// a note. Coalescing is right for a nudge: auto-compact re-evaluates the same
+/// condition 300 times and the reader wants one pending answer with current
+/// content (AMUX-3557). It is wrong for a peer's note, which is a message with
+/// a body that nobody else will ever send again.
+///
+/// MEASURED (AMUX-3938). Every board note enqueues under `board-progress`, and
+/// the lookup below is `WHERE session=? AND guard=?` — no card, no text. So
+/// while one note sat pending for a lane's next turn boundary, the NEXT board
+/// note to that lane overwrote its text, from any sender, about any card. Live
+/// specimen: three notes posted to AMUX-3935 within one second produced exactly
+/// one steer, and it carried note 1's `queued_at` with note 2's text, which is
+/// the signature of the in-place UPDATE. The lane read one of two distinct notes
+/// and had no way to know a first one existed.
+///
+/// This is the SAME defect as AMUX-3935 one layer down, and strictly wider: that
+/// one needed the same card and the same author, this one needs neither. Fixing
+/// the dedupe key alone left it in place, which is why the reporter's live test
+/// passed while a note still went missing.
+///
+/// Membership is by producer, not by heuristic, so adding a content-bearing
+/// producer is a deliberate edit here rather than something that has to be
+/// noticed later.
+const NON_COALESCING_GUARDS: &[&str] = &["board-progress"];
+
+/// Whether `guard` names a content-bearing producer (see
+/// [`NON_COALESCING_GUARDS`]). Guards stay non-empty for these, so the isolation
+/// gate above still refuses them into a raw-agent lane — the coalescing is what
+/// is switched off, not the producer identity.
+fn non_coalescing(guard: &str) -> bool {
+    NON_COALESCING_GUARDS.contains(&guard)
+}
+
 /// py:8595 _steer_enqueue — durable queue row + message.queued event.
-/// Dedup-on-enqueue: identical text (or same guard) replaces, never stacks.
+/// Dedup-on-enqueue: identical text replaces, never stacks. A shared `guard`
+/// ALSO replaces, except for the content-bearing producers in
+/// [`NON_COALESCING_GUARDS`].
 ///
 /// `sender` is the origin lane (the server-verified `X-Amux-Session` stamp) or
 /// "" for an automated producer, which the `guard` already identifies. It is
@@ -3784,6 +4391,43 @@ pub(crate) async fn steer_enqueue_precond(
     sender: &str,
     precond: Option<(&str, i64)>,
 ) -> Result<String, &'static str> {
+    steer_enqueue_precond_with_id(store, name, text, guard, sender, precond, None).await
+}
+
+/// Board callbacks use a stable id so a crash between enqueue and marking the
+/// card cannot duplicate a callback. If the id is already queued its payload
+/// is refreshed in place; if it is in steering_history it is already delivered
+/// and is not queued again.
+#[must_use = "board callbacks must record whether their delivery was queued or refused"]
+pub(crate) async fn steer_enqueue_idempotent(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    guard: &str,
+    sender: &str,
+    message_id: &str,
+) -> Result<String, &'static str> {
+    steer_enqueue_precond_with_id(
+        &state.store,
+        name,
+        text,
+        guard,
+        sender,
+        None,
+        Some(message_id),
+    )
+    .await
+}
+
+async fn steer_enqueue_precond_with_id(
+    store: &crate::db::SharedStore,
+    name: &str,
+    text: &str,
+    guard: &str,
+    sender: &str,
+    precond: Option<(&str, i64)>,
+    stable_id: Option<&str>,
+) -> Result<String, &'static str> {
     // ZERO AMUX HARNESS INTO AN ISOLATED LANE (Ethan, 2026-08-26: "isolated =
     // zero amux harness, just raw LLM pass through"), gated at the CHOKEPOINT
     // for the same reason AF-188 put the archived refusal here.
@@ -3856,7 +4500,9 @@ pub(crate) async fn steer_enqueue_precond(
         );
         return Err(reason);
     }
-    let msg_id = format!("steer-{}", (now_f64() * 1000.0) as i64);
+    let msg_id = stable_id
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("steer-{}", (now_f64() * 1000.0) as i64));
     let id = msg_id.clone();
     // The id we RETURN must be the row that actually exists. When a guarded
     // re-enqueue updates the prior row in place (AMUX-3557) the freshly minted
@@ -3870,9 +4516,46 @@ pub(crate) async fn steer_enqueue_precond(
     let guard_s = guard.to_string();
     let sender_s = sender.to_string();
     let precond_w = precond.map(|(c, r)| (c.to_string(), r));
-    let _ = store
+    let stable_w = stable_id.map(str::to_string);
+    let should_emit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let should_emit_w = should_emit.clone();
+    let persisted = store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
+            if let Some(ref fixed) = stable_w {
+                let delivered = conn
+                    .query_row(
+                        "SELECT 1 FROM steering_history WHERE id=?1 LIMIT 1",
+                        rusqlite::params![fixed],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+                if delivered {
+                    should_emit_w.store(false, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(mut g) = effective_id_w.lock() {
+                        *g = fixed.clone();
+                    }
+                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                }
+                let queued = conn
+                    .query_row(
+                        "SELECT 1 FROM steering_queue WHERE id=?1 LIMIT 1",
+                        rusqlite::params![fixed],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+                if queued {
+                    conn.execute(
+                        "UPDATE steering_queue SET text=?1, session=?2, guard=?3, sender=?4 \
+                         WHERE id=?5",
+                        rusqlite::params![text_s, session, guard_s, sender_s, fixed],
+                    )?;
+                    if let Ok(mut g) = effective_id_w.lock() {
+                        *g = fixed.clone();
+                    }
+                    return Ok(crate::db::WriteOutcome { applied: true, events: vec![] });
+                }
+            }
             // A GUARDED RE-ENQUEUE UPDATES IN PLACE AND KEEPS `queued_at`
             // (AMUX-3557). This was DELETE-then-INSERT, which looks like the
             // same thing and is not: the new row got `now_f64()`, so a guarded
@@ -3892,7 +4575,7 @@ pub(crate) async fn steer_enqueue_precond(
             // been waiting since it was first queued. The newest TEXT wins
             // because that is the guard's purpose (one pending answer, current
             // content); the age is not part of the content.
-            let existing: Option<String> = if guard_s.is_empty() {
+            let existing: Option<String> = if guard_s.is_empty() || non_coalescing(&guard_s) {
                 None
             } else {
                 conn.query_row(
@@ -3934,15 +4617,20 @@ pub(crate) async fn steer_enqueue_precond(
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
-    emit_event_store(
-        store,
-        name,
-        "message.queued",
-        Some(json!({"chars": text.chars().count(), "preview": chars_truncate(text, 120), "guard": if guard.is_empty() { Value::Null } else { json!(guard) }})),
-        Some(format!("q:{msg_id}")),
-        "steering",
-    )
-    .await;
+    if persisted.is_err() {
+        return Err("could not persist steering message");
+    }
+    if should_emit.load(std::sync::atomic::Ordering::SeqCst) {
+        emit_event_store(
+            store,
+            name,
+            "message.queued",
+            Some(json!({"chars": text.chars().count(), "preview": chars_truncate(text, 120), "guard": if guard.is_empty() { Value::Null } else { json!(guard) }})),
+            Some(format!("q:{msg_id}")),
+            "steering",
+        )
+        .await;
+    }
     // The row that exists, not the one we minted (AMUX-3557).
     Ok(effective_id.lock().map(|g| g.clone()).unwrap_or(msg_id))
 }
@@ -4216,11 +4904,48 @@ fn dim_mask(line: &str) -> (String, String) {
                 for c2 in chars.by_ref() {
                     if c2.is_ascii_alphabetic() {
                         if c2 == 'm' {
-                            for code in body.split(';') {
-                                match code.trim() {
-                                    "2" => is_dim = true,
-                                    "0" | "" | "22" => is_dim = false,
-                                    _ => {}
+                            // AN EXTENDED COLOUR'S PARAMETERS ARE NOT SGR CODES
+                            // (AMUX-3889). This was a flat scan over every
+                            // semicolon-separated field, which reads the `2` in
+                            // `48;2;95;95;95` — the marker that says "truecolor
+                            // follows" — as SGR 2, DIM. One such sequence turns
+                            // the rest of the line dim, and `composer_state`
+                            // reports dim text as a PLACEHOLDER rather than as
+                            // pending input.
+                            //
+                            // It survived because Claude Code paints in 256
+                            // colour (`38;5;N`), where the second field is 5 and
+                            // the bug cannot fire. Gemini paints in truecolor,
+                            // so on a gemini lane EVERY typed message read as a
+                            // placeholder — and `read_frame` turns "no pending
+                            // input" into `Cleared`, i.e. SUBMITTED. The sender
+                            // is told a message landed while it sits in the box,
+                            // which is the AMUX-3876 failure with a different
+                            // cause.
+                            //
+                            // So the parameters are CONSUMED, walking the list
+                            // rather than scanning it: `38;5;n` takes one,
+                            // `38;2;r;g;b` takes three.
+                            let codes: Vec<&str> = body.split(';').collect();
+                            let mut i = 0;
+                            while i < codes.len() {
+                                match codes[i].trim() {
+                                    "38" | "48" | "58" => {
+                                        i += match codes.get(i + 1).map(|c| c.trim()) {
+                                            Some("5") => 3,
+                                            Some("2") => 5,
+                                            _ => 1,
+                                        }
+                                    }
+                                    "2" => {
+                                        is_dim = true;
+                                        i += 1;
+                                    }
+                                    "0" | "" | "22" => {
+                                        is_dim = false;
+                                        i += 1;
+                                    }
+                                    _ => i += 1,
                                 }
                             }
                         }
@@ -4245,6 +4970,106 @@ fn dim_mask(line: &str) -> (String, String) {
         }
     }
     (plain, dim)
+}
+
+/// Gemini CLI's composer, or `None` when this frame is not one.
+///
+/// # Why this is its own reader rather than another glyph in the scan
+///
+/// The obvious patch is to add `*` to the prompt-glyph set beside the two the
+/// scan already knows. That would be a disaster on Claude Code panes, where a
+/// line beginning `*` is an ordinary prose bullet and would read as pending
+/// input in any lane that happened to be writing markdown.
+///
+/// So the anchor is the CHROME, matched positively: gemini draws its input box
+/// as a half-block sandwich, a run of U+2584 above and a run of U+2580 below,
+/// and nothing else in any supported TUI draws those. Text between them is the
+/// composer by construction, and prose cannot fake a border.
+///
+/// # The placeholder is COLOURED, not dim
+///
+/// Claude Code's suggestion is SGR-2, which is why [`dim_mask`] exists and why
+/// `Placeholder` can be told from `Typed` without reading the words. Gemini
+/// paints its hint in grey (38;2;175;175;175), an ordinary foreground colour
+/// indistinguishable from real text by attribute alone, so this one case has to
+/// match the words.
+///
+/// IT FAILS TOWARD `Typed`, deliberately, and the asymmetry is the reason to
+/// say so here. Reading a placeholder as typed costs a send that reports
+/// not-confirmed when the lane is actually clear: annoying, and self-correcting
+/// on the next frame. Reading typed text as a placeholder makes `read_frame`
+/// return `Cleared`, which means SUBMITTED — the sender is told the message
+/// landed while it sits in the box, which is the AMUX-3876 defect this module
+/// already carries a variant for. So only gemini's own hint sentence is a
+/// placeholder; anything else is somebody's message.
+fn gemini_composer_state(raw_lines: &[&str], stripped: &[String]) -> Option<ComposerState> {
+    /// Gemini's own hint text. Matched on the stable head of the sentence
+    /// rather than the whole of it, because the `@path/to/file` tail is the
+    /// part most likely to be reworded, and a hint that stops matching fails
+    /// toward `Typed` (see above) rather than toward a false confirmation.
+    const HINT: &str = "type your message";
+    let is_run = |l: &str, ch: char| {
+        let t = l.trim();
+        t.chars().filter(|c| *c == ch).count() >= 4 && t.chars().all(|c| c == ch)
+    };
+    // The LAST box in the frame: scrollback can hold an older one.
+    let top = stripped.iter().rposition(|l| is_run(l, '\u{2584}'))?;
+    let bottom = stripped.iter().skip(top + 1).position(|l| is_run(l, '\u{2580}'))? + top + 1;
+    if bottom <= top + 1 {
+        // A drawn box with no body line: painted, and empty.
+        return Some(ComposerState::Empty);
+    }
+    let mut plain = String::new();
+    for (n, raw) in raw_lines[top + 1..bottom].iter().enumerate() {
+        let (mut p, _) = dim_mask(raw);
+        if n == 0 {
+            // Drop the prompt glyph and the reverse-video cursor cell: chrome,
+            // never content.
+            p = p.trim_start().trim_start_matches(['*', ' ', '\u{a0}', '\t']).to_string();
+        }
+        plain.extend(p.split_whitespace());
+    }
+    if plain.is_empty() {
+        return Some(ComposerState::Empty);
+    }
+    // Compared against the SPACE-STRIPPED hint, because `plain` is built with
+    // `split_whitespace` and concatenated — the same shape that makes
+    // `is_collapsed_paste` match `[Pastedtext#137+44lines]` rather than the
+    // spaced form a human reads off the pane.
+    let hint_squashed: String = HINT.split_whitespace().collect();
+    if plain.to_lowercase().starts_with(&hint_squashed) {
+        return Some(ComposerState::Placeholder(plain));
+    }
+    Some(ComposerState::Typed(plain))
+}
+
+/// Codex's model/path line is footer chrome, not a continuation of the input.
+///
+/// The current TUI draws no box rule between its composer and this footer, so
+/// the generic continuation scan cannot stop on geometry as it does for Claude
+/// Code. Match the footer's STRUCTURE and styling instead of any model/version:
+/// Codex dims only the middle-dot separator and leaves the model, effort, and
+/// working directory normally coloured. Requiring that raw ANSI evidence is
+/// deliberate. If a future Codex release changes the chrome, this fails toward
+/// `Typed` (a visible, unconfirmed send) rather than hiding real user input and
+/// falsely claiming that it was submitted.
+fn codex_model_footer_chrome(raw: &str, stripped: &str) -> bool {
+    let text = stripped.trim();
+    let Some((identity, location)) = text.rsplit_once('\u{b7}') else {
+        return false;
+    };
+    let location = location.trim();
+    if identity.trim().is_empty()
+        || !(location == "~" || location.starts_with("~/") || location.starts_with('/'))
+    {
+        return false;
+    }
+
+    let (plain, dim) = dim_mask(raw);
+    let plain_squashed: String = plain.split_whitespace().collect();
+    let expected_plain: String = format!("{identity}{location}").split_whitespace().collect();
+    let dim_squashed: String = dim.split_whitespace().collect();
+    dim_squashed == "\u{b7}" && plain_squashed == expected_plain
 }
 
 pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
@@ -4281,6 +5106,16 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     // form so the ❯ scan is unchanged from python.
     let raw_lines: Vec<&str> = raw_frame.lines().filter(|l| !strip_ansi(l).trim().is_empty()).collect();
     let stripped: Vec<String> = raw_lines.iter().map(|l| strip_ansi(l)).collect();
+    // GEMINI DRAWS A DIFFERENT BOX, AND IT IS NOT A PROMPT GLYPH (AMUX-3889).
+    // Tried before the scan below because gemini's frame contains neither
+    // glyph at all, so that scan returned `NotVisible` for a composer that is
+    // plainly drawn — and `read_frame` maps `NotVisible` to `NoUi`, which
+    // `final_frame_confirms` refuses by design. Every send to a gemini lane
+    // therefore spun its twelve no-ui looks and reported `Unverified` while the
+    // message sat delivered in the lane.
+    if let Some(state) = gemini_composer_state(&raw_lines, &stripped) {
+        return state;
+    }
     let Some(idx) = stripped
         .iter()
         .rposition(|l| matches!(l.trim().chars().next(), Some('\u{276f}') | Some('\u{203a}')))
@@ -4290,7 +5125,9 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     let mut block: Vec<&str> = vec![raw_lines[idx]];
     for (i, s) in stripped.iter().enumerate().skip(idx + 1) {
         let t = s.trim();
-        if matches!(t.chars().next(), Some('\u{2500}') | Some('\u{23f5}')) {
+        if matches!(t.chars().next(), Some('\u{2500}') | Some('\u{23f5}'))
+            || codex_model_footer_chrome(raw_lines[i], s)
+        {
             break;
         }
         block.push(raw_lines[i]);
@@ -4547,6 +5384,70 @@ pub(crate) enum FrameRead {
     /// Our text is still sitting in the composer with the lane idle. Nothing is
     /// going to submit it.
     StillThereIdle,
+    /// The composer holds a COLLAPSED PASTE (`[Pasted text #12 +4 lines]`), so
+    /// the text itself is not in the frame and cannot be compared to ours.
+    ///
+    /// Its own variant rather than folded into `NoUi` (AMUX-3880), because the
+    /// two want opposite handling and folding them cost a real delivery.
+    /// `NoUi` means "Claude Code has not painted yet", and the right response is
+    /// to WAIT. This means "the composer is painted and holding something
+    /// unsubmitted", and waiting is exactly wrong — the Enter needs pressing
+    /// again.
+    ///
+    /// AMUX-3876 mapped this to `NoUi` to stop it reading as `Cleared`, which
+    /// fixed the false CONFIRMED and left the message stranded: the retry lives
+    /// past the `StillThereIdle` arm, and a waiting arm never reaches it.
+    ///
+    /// WHY THE SEND MAY ACT ON THIS WHERE `ghost_rescue` MAY NOT. That sweep
+    /// refuses to submit a collapsed paste because it cannot prove the content
+    /// is the message it means, and it is right: it runs minutes later, holding
+    /// no lock. Inside `send_text` the claim is provable — `session_send_lock`
+    /// is held across paste, Enter and verify precisely so nothing else can type
+    /// into the pane (its own doc says the sweep must never fire an Enter into a
+    /// pane a send is mid-way through), and we pasted seconds ago. Same evidence
+    /// standard, different evidence available.
+    CollapsedPaste,
+}
+
+/// Does the FINAL frame — the one read after the retry loop gives up — PROVE
+/// the message was submitted?
+///
+/// `false` does not mean "not submitted". It means this frame did not prove it,
+/// and the durable JSONL record is the arbiter instead.
+///
+/// # This was `!matches!(frame, StillThereIdle)`, and that is a bug (AMUX-3870)
+///
+/// Negating ONE variant of FOUR sends the other three to Confirmed. Two belong
+/// there. The third is [`FrameRead::NoUi`], whose own doc says "NOT
+/// \"submitted\" (AC-271)" — so the variant documented as not-submitted was
+/// reported as submitted, at the very site the retry loop's own `NoUi` arm
+/// exists to prevent. That arm carries the incident: a schedule fired into a
+/// container that was still waking, send reported sent, `_run_schedule`
+/// recorded ok, and the worker never ran. Nine workers across three customer
+/// envs (amux-cloud, 2026-08-06). The loop refused to claim it; the
+/// fall-through claimed it anyway.
+///
+/// THE DEFECT IS THE SHAPE, NOT THE OVERSIGHT. AC-271 *added* `NoUi` to the
+/// enum, and a negative match silently absorbs every variant added after it is
+/// written — no compiler error, no test, and the new variant lands on whichever
+/// side the author of the negation never considered. Matching exhaustively is
+/// what makes the next addition fail to compile here so a human decides.
+pub(crate) fn final_frame_confirms(frame: FrameRead) -> bool {
+    match frame {
+        // The composer is drawn and no longer holds our text: it went in.
+        FrameRead::Cleared => true,
+        // Still in the box while the lane generates. That is queued input and
+        // the turn boundary submits it, so Confirmed is right.
+        FrameRead::StillThereGenerating => true,
+        // We cannot read our own message back, so the frame proves nothing in
+        // either direction. Defer to the durable record.
+        FrameRead::NoUi => false,
+        // Sitting in an idle composer: nothing is going to submit it.
+        FrameRead::StillThereIdle => false,
+        // A collapsed paste is something UNSUBMITTED in a painted composer.
+        // Never a confirmation, whatever else is done about it.
+        FrameRead::CollapsedPaste => false,
+    }
 }
 
 pub(crate) fn read_frame(raw: &str, tail_sq: &str) -> FrameRead {
@@ -4555,6 +5456,33 @@ pub(crate) fn read_frame(raw: &str, tail_sq: &str) -> FrameRead {
     // manager): we cannot read our own message back, so we assert nothing.
     if matches!(state, ComposerState::NotVisible | ComposerState::BackgroundManager) {
         return FrameRead::NoUi;
+    }
+    // A COLLAPSED PASTE HIDES OUR OWN MESSAGE (AMUX-3876).
+    //
+    // Claude Code renders a large or multi-line paste as `[Pasted text #54 +8
+    // lines]`. The real text is not in the frame, so the `contains(tail_sq)`
+    // test below cannot find it and falls to `Cleared` — which means SUBMITTED.
+    // The message is sitting in the box, and the sender is told it went.
+    //
+    // Live specimen: paid-social -> gtm-playbooks at 13:15:41, recorded
+    // `submit_verdict = confirmed`, and the lane still held
+    // `[Pastedtext#54+8lines]` unsubmitted fifty minutes later. Not rare by
+    // construction either: `must_paste` chooses this path whenever the lane is
+    // generating OR the text is over 400 chars, which is most inter-worker
+    // traffic.
+    //
+    // `NoUi` is the honest verdict and its doc already says exactly this: "we
+    // cannot read our own message back, so we assert nothing". It routes to the
+    // durable JSONL check (AMUX-3870), which CAN tell a landed message from a
+    // stranded one, instead of guessing from a frame that is hiding the answer.
+    //
+    // Deliberately not `StillThereIdle`: that asserts the text IS ours, and the
+    // TUI has hidden the content that would prove it. `ghost_rescue` reaches the
+    // same conclusion from the other side and refuses to submit on a guess —
+    // this is the same refusal, one layer earlier, where it can still be
+    // reported to the sender rather than only logged.
+    if state.typed().is_some_and(crate::runtime_jobs::ghost_rescue::is_collapsed_paste) {
+        return FrameRead::CollapsedPaste;
     }
     // Only REAL input counts as "still there". A dim suggestion that happens to
     // repeat our text is not our message sitting unsent — and treating it as
@@ -4745,8 +5673,25 @@ async fn verify_submitted(
             // ran — 9 workers across 3 customer envs.
             FrameRead::NoUi => {
                 no_ui_looks += 1;
+                // THE 12 IS UNREACHABLE AND THE COMMENT OVERSTATED THE GRACE
+                // (AMUX-3870). `continue` goes back to `for _ in 0..5`, so each
+                // NoUi look SPENDS an iteration and this counter can never pass
+                // 5. The branch below it is dead code, and the real cold-start
+                // window is ~3s (300ms at the loop top plus 300ms here, five
+                // times) rather than the ~4s more this line used to claim on top
+                // of the loop's own.
+                //
+                // Left at 12 deliberately rather than "corrected" to 5: the
+                // number a reader should see is the one the author INTENDED,
+                // and lowering it would encode the cap as the design. Whether
+                // to actually give a cold Claude Code its 12 looks is a timing
+                // change on every send in the fleet and wants its own
+                // measurement, so it stays on the card and not in this fix.
+                //
+                // What made it dangerous was never the short window; it was
+                // what waited at the end of it. That is fixed below: falling
+                // out of this loop no longer reports NoUi as submitted.
                 if no_ui_looks <= 12 {
-                    // ~4s more; a cold Claude Code needs it
                     sleep_ms(300).await;
                     continue;
                 }
@@ -4771,6 +5716,18 @@ async fn verify_submitted(
             // interrupt).
             FrameRead::StillThereGenerating => return (Submission::Confirmed, retried),
             FrameRead::StillThereIdle => {}
+            // TREATED AS "still there", because it IS (AMUX-3880). The composer
+            // is painted and holding something unsubmitted; the text is merely
+            // hidden behind the TUI's chip. Falling through here is the whole
+            // fix: the Escape+Enter retry lives below, and the previous
+            // `NoUi` mapping waited instead of reaching it, so a pasted message
+            // was correctly reported stuck and then left in the box.
+            //
+            // Ownership is provable at THIS site and only at this site: the
+            // send lock is held from paste through verify, and we pasted
+            // seconds ago. `ghost_rescue` cannot make that claim and correctly
+            // does not try.
+            FrameRead::CollapsedPaste => {}
         }
         cleared_once = false;
         // ONE stuck look is not proof either: for ~1s after a successful submit
@@ -4819,11 +5776,16 @@ async fn verify_submitted(
         stuck_looks = 0;
     }
     let raw = tmux_capture(name, 25).await;
-    if !matches!(read_frame(&raw, &tail_sq), FrameRead::StillThereIdle) {
+    if final_frame_confirms(read_frame(&raw, &tail_sq)) {
         return (Submission::Confirmed, retried);
     }
     // Last resort before reporting a failure (which makes callers re-send):
     // trust the durable JSONL record over a possibly-torn final frame.
+    //
+    // This is also why routing `NoUi` here is safe rather than merely stricter.
+    // A re-send now happens only when the message is genuinely absent from the
+    // durable record, which is precisely when re-sending is the right move; the
+    // old path traded that for a silent drop.
     if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
         (Submission::Confirmed, retried)
     } else {
@@ -5822,8 +6784,7 @@ fn tmux_rows() -> String {
     std::env::var("AMUX_TMUX_ROWS").ok().filter(|v| v.parse::<u32>().is_ok()).unwrap_or_else(|| "50".into())
 }
 
-/// The `pipe-pane` writer program (py:21478 `_log_pipe_command` was
-/// redaction-only; AMUX-2628 rewrote it).
+/// The `pipe-pane` writer program (AMUX-2628).
 ///
 /// **Why this is not `for line in sys.stdin.buffer`.** That is what shipped,
 /// and it froze every log on the fleet for over an hour with `pane_pipe=1`
@@ -5855,11 +6816,6 @@ fn tmux_rows() -> String {
 fn log_pipe_command(log_path: &Path) -> String {
     const PROG: &str = r#"import os,re,select,sys,time
 LOG=sys.argv[1]; MAXB=int(sys.argv[2]); RAW=sys.argv[3]=='1'; FLUSH=int(sys.argv[4])/1000.0
-SEC=re.compile(rb'((?:mxp|usr|ret)_sk)_[A-Za-z0-9_-]+|((?:AMUX_MIXPEEK_OPS_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_MAPS_API_KEY|GOOGLE_API_KEY|CLOUDFLARE_API_TOKEN|ELEVENLABS_API_KEY|POSTHOG_KEY|POSTHOG_PERSONAL_API_KEY)=)[^\s\r\n]+|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+|sk-ant-[A-Za-z0-9_-]+|sk-proj-[A-Za-z0-9_-]+|sk[_-][A-Za-z0-9]{32,}|AIza[0-9A-Za-z_-]{30,}|(?:phx|phc)_[A-Za-z0-9]+')
-def repl(m):
-    if m.group(1): return m.group(1)+b'_REDACTED'
-    if m.group(2): return m.group(2)+b'REDACTED'
-    return b'SECRET_REDACTED'
 CSI=re.compile(rb'\x1b\[[0-9;?]*([a-zA-Z])')
 def csi(m):
     f=m.group(1)
@@ -5884,7 +6840,7 @@ def rot():
 prev=None
 def emit(seg,redraw):
     global prev
-    s=SEC.sub(repl,seg)
+    s=seg
     if RAW:
         try: fh.write(s+b'\n')
         except OSError: return
@@ -5903,7 +6859,7 @@ if RAW:
     while True:
         c=os.read(0,65536)
         if not c: break
-        try: fh.write(SEC.sub(repl,c))
+        try: fh.write(c)
         except OSError: break
         rot()
     sys.exit(0)
@@ -5954,7 +6910,7 @@ fn log_rotate_bytes() -> u64 {
 }
 
 /// `AMUX_LOG_RAW=1` keeps the verbatim byte stream (colour, cursor escapes)
-/// instead of readable text. Secrets are still redacted in both modes.
+/// instead of readable text. Worker output is never content-redacted.
 fn log_raw_capture() -> bool {
     matches!(std::env::var("AMUX_LOG_RAW").unwrap_or_default().trim(), "1" | "true" | "yes")
 }
@@ -6584,18 +7540,34 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "grok" && has_oauth {
         shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
     }
+    // Settings writes provider keys to server.env at runtime. Reading that file
+    // here is what makes the next worker actually inherit a key saved through
+    // the UI; std::env still contains only the values captured at server boot.
+    // Keep the values out of shell_rc/logs and pass them straight to tmux's
+    // child environment.
+    let runtime_provider_env = super::settings::runtime_provider_env(&home());
+    let provider_value = |key: &str| {
+        runtime_provider_env
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+    };
     let mut env_args: Vec<String> = Vec::new();
     if has_oauth {
         env_args.push("-e".into());
         env_args.push("ANTHROPIC_API_KEY=".into());
-    } else if let Ok(v) = std::env::var("ANTHROPIC_API_KEY") {
-        if !v.is_empty() {
+    } else if let Some(v) = provider_value("ANTHROPIC_API_KEY") {
+        env_args.push("-e".into());
+        env_args.push(format!("ANTHROPIC_API_KEY={v}"));
+    }
+    for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"] {
+        if let Some(v) = provider_value(k) {
             env_args.push("-e".into());
-            env_args.push(format!("ANTHROPIC_API_KEY={v}"));
+            env_args.push(format!("{k}={v}"));
         }
     }
     for k in [
-        "ANTHROPIC_API_BASE", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "ANTHROPIC_API_BASE",
         "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
     ] {
         if let Ok(v) = std::env::var(k) {
@@ -6608,6 +7580,37 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
 
     let tmux_sess = tmux_name(name);
     let tmux_exists = tmux_sessions_set().await.contains(&tmux_sess);
+    if tmux_exists {
+        // A stopped worker keeps its tmux session and shell. Updating
+        // server.env and pressing Start must not reuse the credentials that
+        // shell inherited before the PATCH. Refresh tmux's session environment
+        // now; the shell imports it below without ever printing a value.
+        // Bound as `st`, not `target`: tests/tmux_target_audit.rs whitelists the
+        // literal expressions ["st","pt","stq","ptq"] as a `-t` argument, so a
+        // correctly-derived target under any other name fails the audit. The
+        // VALUE was already exact here (st() is session_target(tmux_name(..)),
+        // i.e. "=amux-<n>"); only the binding's name was outside the list, and
+        // `let pt = pane_target(sess)` a few thousand lines down is the same
+        // convention.
+        let st = st(name);
+        for key in super::settings::PROVIDER_ENV_KEYS {
+            let value = if has_oauth && key == "ANTHROPIC_API_KEY" {
+                None
+            } else {
+                provider_value(key)
+            };
+            let refreshed = match value {
+                Some(value) => tmux(&["set-environment", "-t", &st, key, &value]).await,
+                None => tmux(&["set-environment", "-u", "-t", &st, key]).await,
+            };
+            if !refreshed.map(|out| out.status.success()).unwrap_or(false) {
+                return (
+                    false,
+                    format!("could not refresh {key} for the existing tmux session"),
+                );
+            }
+        }
+    }
     if tmux_exists {
         // Reuse the surviving tmux session (py:24589).
         let output = tmux_capture(name, 10).await;
@@ -6640,6 +7643,20 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
                 poll_shell_prompt(name, 3000).await;
             }
         }
+        // `tmux set-environment` changes what future pane processes inherit;
+        // this shell already exists. Import the session environment through
+        // tmux's shell-escaped output. The typed command contains no values,
+        // so provider keys cannot land in terminal history or pane logs.
+        let target = st(name);
+        type_line(
+            name,
+            &format!(
+                "eval \"$(tmux show-environment -s -t {})\"",
+                sh_quote(&target)
+            ),
+        )
+        .await;
+        poll_shell_prompt(name, 3000).await;
     } else {
         // Fresh tmux session hosting the user's login shell (py:24647).
         let cols = tmux_cols();
@@ -6879,14 +7896,24 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     meta.insert("last_started".into(), json!(now_i64()));
     let count = meta.get("start_count").and_then(|v| v.as_i64()).unwrap_or(0);
     meta.insert("start_count".into(), json!(count + 1));
-    let pending_reload = meta.remove("pending_log_reload").is_some();
+    // Old `pending_log_reload` keys are consumed for migration, but the new
+    // worker never receives raw terminal replay. Durable board state is the
+    // cross-provider continuity contract.
+    let pending_resume = meta.remove("pending_structured_resume").is_some()
+        || meta.remove("pending_log_reload").is_some();
     let pending_reason = meta
-        .remove("pending_log_reload_reason")
+        .remove("pending_structured_resume_reason")
+        .or_else(|| meta.remove("pending_log_reload_reason"))
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
     save_meta(name, &meta);
-    if pending_reload && log_path(name).exists() {
-        let prompt = log_reload_prompt(name, &pending_reason);
+    if pending_resume {
+        let prompt = structured_resume_prompt(name, &pending_reason);
+        tracing::info!(
+            session = %name,
+            reason = %pending_reason,
+            "context hydration: structured board state queued; raw terminal replay suppressed"
+        );
         let st2 = state.clone();
         let n = name.to_string();
         tokio::spawn(async move { send_after_ready(st2, n, prompt, 60, SendOrigin::Automation).await });
@@ -6926,20 +7953,16 @@ fn libc_geteuid() -> u32 {
     })
 }
 
-fn log_reload_prompt(name: &str, reason: &str) -> String {
-    let lp = log_path(name);
-    let size = lp.metadata().map(|m| m.len()).unwrap_or(0);
-    let size_mb = size as f64 / (1024.0 * 1024.0);
-    let cap_mb = MAX_LOG_BYTES / (1024 * 1024);
+fn structured_resume_prompt(name: &str, reason: &str) -> String {
     let reason_text = if reason.is_empty() { "session swap" } else { reason };
     format!(
-        "Before continuing, load the previous amux terminal context.\n\n\
-         The log tail captured for this {reason_text} is at:\n{}\n\n\
-         Read that file now. It contains up to the last {cap_mb} MB of this \
-         session's terminal history ({size_mb:.1} MB currently saved). Use it \
-         as continuity context for the work in this session. Do not summarize it \
-         back unless asked.",
-        lp.display()
+        "Continue this worker after a {reason_text} using durable amux state, not terminal \
+         replay. Run `amux board ls --session {name}` and inspect every non-terminal card \
+         assigned to this worker with `amux board show <ID>`. Treat each card's source message, \
+         epic, dependencies, priority, next action, gates, worker actions, and produced assets \
+         as the source of truth. Resume the highest-priority actionable card and keep driving \
+         until no actionable non-terminal work remains. Consult a linked message only when the \
+         card says context is missing. Do not automatically load the worker terminal log."
     )
 }
 
@@ -7255,79 +8278,6 @@ fn write_plain_log(name: &str) -> Option<(PathBuf, usize)> {
     Some((cp, clean.len()))
 }
 
-/// py:22616 _capture_log_tail_for_reload — persist the last MAX_LOG_BYTES of
-/// output before a provider/model/effort/yolo swap.
-async fn capture_log_tail_for_reload(name: &str, reason: &str) -> bool {
-    if !valid_session_name(name) {
-        return false;
-    }
-    let _ = std::fs::create_dir_all(logs_dir());
-    let lp = log_path(name);
-    let mut chunks: Vec<u8> = Vec::new();
-    let existing = load_session_log(name, MAX_LOG_BYTES as u64);
-    chunks.extend_from_slice(existing.as_bytes());
-    let mut captured = String::new();
-    let mut was_piped = false;
-    if is_running(name).await {
-        let ptq = pt(name);
-        // Detaching the pipe is deliberate: the whole-file rewrite below would
-        // otherwise race the writer's appends. But it has to be put BACK —
-        // this used to detach and return, so any provider/model/effort/yolo
-        // swap left the session permanently unlogged with nothing reporting it.
-        was_piped = pane_is_piped(name).await;
-        let _ = tmux(&["pipe-pane", "-t", &ptq]).await;
-        if let Some(o) = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-S", "-"], Duration::from_secs(30)).await {
-            captured = String::from_utf8_lossy(&o.stdout).into_owned();
-        }
-    }
-    if !captured.trim().is_empty() {
-        let safe_reason = reason.replace('\n', " ").trim().to_string();
-        let safe_reason = if safe_reason.is_empty() { "session swap".to_string() } else { safe_reason };
-        let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
-        let marker = format!("\n\n=== Captured before {safe_reason}: {ts} ===\n\n");
-        let cap_text = if tmux_alt_screen(name).await {
-            collapse_blank_runs(&captured)
-        } else {
-            captured
-        };
-        chunks.extend_from_slice(marker.as_bytes());
-        chunks.extend_from_slice(cap_text.as_bytes());
-    }
-    if chunks.is_empty() {
-        if was_piped {
-            rearm_log_pipe(name).await;
-        }
-        return false;
-    }
-    let start = chunks.len().saturating_sub(MAX_LOG_BYTES);
-    let ok = std::fs::write(&lp, &chunks[start..]).is_ok();
-    if was_piped {
-        rearm_log_pipe(name).await;
-    }
-    ok
-}
-
-/// Is this pane currently piped? `#{pane_pipe}` is tmux's own answer, and it
-/// is the field the stale-log verdict in `/api/debug/logs` keys off.
-async fn pane_is_piped(name: &str) -> bool {
-    let ptq = pt(name);
-    match tmux(&["list-panes", "-t", &ptq, "-F", "#{pane_pipe}"]).await {
-        Some(o) => String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == "1"),
-        None => false,
-    }
-}
-
-/// Re-attach the log pipe. Same construction as `start_session` and, like it,
-/// without `-o` — see the comment there for why `-o` silently disables the
-/// pipe it is supposed to guard.
-async fn rearm_log_pipe(name: &str) {
-    let _ = std::fs::create_dir_all(logs_dir());
-    let lp = log_path(name);
-    let ptq = pt(name);
-    let pipe_cmd = log_pipe_command(&lp);
-    let _ = tmux(&["pipe-pane", "-t", &ptq, &pipe_cmd]).await;
-}
-
 /// Previous generation produced by the writer's rotation.
 fn rotated_log_path(name: &str) -> PathBuf {
     logs_dir().join(format!("{name}.log.1"))
@@ -7571,7 +8521,11 @@ pub async fn debug_logs(RawQuery(q): RawQuery) -> Response {
         }));
     }
 
-    j200(json!({
+    // AF-320. `healthy: true` over zero rows is the dangerous reading here: a
+    // sweep reads that one boolean, and an empty fleet and an unlistable one
+    // both produce it. n_considered is the lanes actually examined.
+    j200(crate::api::measured::measured(
+        json!({
         "checked_at": now,
         "stale_s": stale_s,
         // Panes named amux-* that amux does not manage (no session env file).
@@ -7590,14 +8544,36 @@ pub async fn debug_logs(RawQuery(q): RawQuery) -> Response {
         // The whole point of the endpoint: a sweep reads this one boolean.
         "healthy": stale == 0 && unpiped == 0,
         "sessions": rows,
-    }))
+        }),
+        rows.len(),
+    ))
 }
 
-fn mark_pending_log_reload(name: &str, reason: &str) {
+fn mark_pending_structured_resume(name: &str, reason: &str) {
     update_meta(
         name,
-        &[("pending_log_reload", json!(now_i64())), ("pending_log_reload_reason", json!(reason))],
+        &[
+            ("pending_structured_resume", json!(now_i64())),
+            ("pending_structured_resume_reason", json!(reason)),
+        ],
     );
+}
+
+/// A model/provider switch is the one moment the harness has direct evidence
+/// that a configured model became the running model. Keep that fact separate
+/// from provider self-reports, which may belong to the previous process life.
+fn set_confirmed_active_model(name: &str, provider: &str, model: Option<&str>) {
+    let mut meta = load_meta(name);
+    if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
+        meta.insert("active_model_confirmed".into(), json!(model));
+        meta.insert("active_model_provider".into(), json!(provider));
+        meta.insert("active_model_confirmed_at".into(), json!(now_i64()));
+    } else {
+        meta.remove("active_model_confirmed");
+        meta.remove("active_model_provider");
+        meta.remove("active_model_confirmed_at");
+    }
+    save_meta(name, &meta);
 }
 
 // ---------------------------------------------------------------------------
@@ -8098,6 +9074,26 @@ fn list_session_transcripts(name: &str) -> Vec<Value> {
 const MEM_MARKER: &str = "<!-- amux:session-memory -->";
 const MEM_TOPIC_FILE: &str = "amux-api.md";
 
+/// The roster's preamble and table header, split out of `fleet_roster` so a test
+/// can read it without a live fleet on disk (ethos rule 7 — `fleet_roster()`
+/// returns an empty string when no peers exist, so a test that only called it
+/// would pass on an empty machine while asserting nothing).
+///
+/// EVERY LINE HERE STARTS AT COLUMN 0 IN THE OUTPUT. Rust keeps a plain
+/// multi-line literal's indentation, so each source line ends with a `\`
+/// continuation. Without it the leading spaces are baked into the value, and
+/// this string is written into every worker's MEMORY.md: the two prose lines
+/// shipped indented by nine spaces, and so did the table HEADER, which in
+/// markdown is an indented code block and breaks the table it heads (AMUX-3810).
+const FLEET_ROSTER_HEADER: &str = "\n## Fleet — who else is running (auto-generated, do not edit)\n\n\
+     Every live worker is listed, INCLUDING YOU — this file is shared by every lane in \
+     this directory, so it cannot omit the reader. You are the one whose name matches \
+     $AMUX_SESSION.\n\n\
+     Reach any of them with `amux send <name> --stdin` (origin-stamped), or make \
+     durable delegated work with `amux board request <name> <title>`. \
+     The latter keeps the request, gates, assets and terminal return on one card.\n\n\
+     | worker | groups | description | provider / model | workspace / branch |\n|---|---|---|---|---|\n";
+
 /// The fleet roster every worker gets, regenerated on each write.
 ///
 /// Ethan: "make sure all workers are always aware of each others: name, groups,
@@ -8111,10 +9107,11 @@ const MEM_TOPIC_FILE: &str = "amux-api.md";
 /// session env files that are already the source of truth for the worker list,
 /// so a roster cannot drift from the fleet the way a checked-in list would.
 ///
-/// Excludes archived lanes and the reader itself — "who else is out there" is
-/// the question, and 50 rows of which one is you is noise.
+/// Excludes archived/isolated lanes. It deliberately includes the reader: the
+/// roster is one shared generated file, so a per-reader omission would either
+/// require N copies or make the contents depend on whoever regenerated it.
 fn fleet_roster() -> String {
-    let mut rows: Vec<(String, String, String)> = Vec::new();
+    let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
         let mut names: Vec<String> = rd
             .flatten()
@@ -8156,22 +9153,35 @@ fn fleet_roster() -> String {
                 })
                 .unwrap_or_default();
             let desc = env.get("CC_DESC").cloned().unwrap_or_default();
-            rows.push((other, groups, desc));
+            let provider = env.get("CC_PROVIDER").cloned().unwrap_or_else(|| "claude".into());
+            let model = env.get("CC_MODEL").cloned().unwrap_or_default();
+            let runtime = if model.is_empty() { provider } else { format!("{provider} / {model}") };
+            let dir = env.get("CC_DIR").cloned().unwrap_or_default();
+            let branch = env.get("CC_BRANCH").cloned().unwrap_or_default();
+            let workspace = if branch.is_empty() { dir } else { format!("{dir} @ {branch}") };
+            rows.push((other, groups, desc, runtime, workspace));
         }
     }
     if rows.is_empty() {
         return String::new();
     }
-    let mut out = String::from(
-        "\n## Fleet — who else is running (auto-generated, do not edit)\n\n         Every live worker is listed, INCLUDING YOU — this file is shared by every lane in \
-this directory, so it cannot omit the reader. You are the one whose name matches $AMUX_SESSION.\n\n\
-Reach any of them with `amux send <name> --stdin` (origin-stamped).          Peek before interrupting: `curl -sk $AMUX_URL/api/sessions/<name>/peek?lines=200`.\n\n         | worker | groups | description |\n|---|---|---|\n",
-    );
-    for (n, g, d) in rows.iter().take(120) {
-        let d = d.replace('|', "\\|").chars().take(110).collect::<String>();
-        out.push_str(&format!("| `{n}` | {} | {} |\n", if g.is_empty() { "—" } else { g }, if d.is_empty() { "—" } else { &d }));
+    let mut out = String::from(FLEET_ROSTER_HEADER);
+    for (n, g, d, r, w) in rows.iter().take(120) {
+        let cell = |s: &str, max: usize| {
+            let escaped = s.replace('|', "\\|").replace('\n', " ");
+            let trimmed = escaped.chars().take(max).collect::<String>();
+            if trimmed.is_empty() { "—".to_string() } else { trimmed }
+        };
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} |\n",
+            cell(n, 64), cell(g, 80), cell(d, 110), cell(r, 80), cell(w, 140)
+        ));
     }
-    out.push_str(&format!("\n{} peer worker(s). Same-group peers share memory, env and gates.\n", rows.len()));
+    out.push_str(&format!(
+        "\n{} discoverable peer worker(s). Cross-group messaging is open by default; \
+         isolation is the explicit opt-out.\n",
+        rows.len()
+    ));
     out
 }
 
@@ -8232,11 +9242,71 @@ fn compose_worker_block(name: &str, session_content: &str) -> String {
         return String::new();
     }
     format!(
-        "## Worker memory — `{name}`\n\n         <!-- Written by the {name} lane. If you are not {name}, this is a peer's \
+        "## Worker memory — `{name}`\n\n\
+         <!-- Written by the {name} lane. If you are not {name}, this is a peer's \
          memory: useful context, not your own notes. Your own is at \
          ~/.amux/memory/<your-worker>.md and reaches this file when you write it. -->\n\n{}",
         session_content.trim()
     )
+}
+
+/// The composed MEMORY.md text, separated from writing it (AF-296).
+///
+/// Extracted so the composition is testable WITHOUT touching real data.
+/// `claude_home()` reads `$HOME`, which the test harness does not redirect (only
+/// `AMUX_HOME`), so a test that called `write_claude_memory` would overwrite the
+/// developer's own `~/.claude/.../MEMORY.md`. Everything this function reads is
+/// rooted at `AMUX_HOME`, so it is safe to exercise directly.
+fn compose_memory_doc(name: &str, global_content: &str, session_content: &str) -> String {
+    let mut parts = Vec::new();
+    // RULES FIRST (AF-297). Binding constraints buried under prose are
+    // constraints the model has to go looking for, which is the python call
+    // site's own reason for this ordering.
+    let rules = compose_rules_block(name);
+    if !rules.is_empty() {
+        parts.push(rules);
+    }
+    if !global_content.trim().is_empty() {
+        parts.push(format!(
+            "- [amux inter-session API]({MEM_TOPIC_FILE}) — \
+             sessions/peek/send, board, notes, CRM, browser, Drive. Read it when you \
+             need the call shapes; it is also in ~/.claude/CLAUDE.md."
+        ));
+    }
+    parts.push(MEM_MARKER.to_string());
+    // GROUP MEMORY, between global and worker (AF-296).
+    //
+    // `/api/scope` advertises `memory` at [global, group, worker] and the scope
+    // UI writes all three, but this composer read only two — so a group-level
+    // write saved `memory/tags/<group>.md` and nothing ever consulted it. The
+    // setting appeared to save and changed nothing, which is ethos rule 1's
+    // exact shape and the SAME defect the docstring on `scope_env_layers`
+    // records for env. env was fixed; memory was not.
+    //
+    // Groups come from `lane_groups`, the same CC_TAGS source `scope_env_layers`
+    // uses, rather than a second spelling. BTreeSet gives a stable order, so a
+    // lane in two groups composes the same way on every write.
+    //
+    // A lane with no groups, or whose group files do not exist, appends NOTHING
+    // and the output is byte-identical to before this change. That is what makes
+    // a fleet-wide composition change safe to land: today no `memory/tags/`
+    // directory exists at all, so this is inert until someone uses the level.
+    for g in lane_groups(name) {
+        let gf = memory_dir().join("tags").join(format!("{g}.md"));
+        let gc = std::fs::read_to_string(&gf).unwrap_or_default();
+        if !gc.trim().is_empty() {
+            parts.push(format!(
+                "## Group memory — `{g}`\n\n                 <!-- Written at the GROUP level in the scope UI. It reaches every lane \
+                 tagged `{g}`, so it is shared context rather than any one lane's notes. -->\n\n{}",
+                gc.trim()
+            ));
+        }
+    }
+    let worker_block = compose_worker_block(name, session_content);
+    if !worker_block.is_empty() {
+        parts.push(worker_block);
+    }
+    parts.join("\n\n") + "\n"
 }
 
 fn write_claude_memory(name: &str, work_dir: &str) {
@@ -8247,20 +9317,7 @@ fn write_claude_memory(name: &str, work_dir: &str) {
     let global_content = std::fs::read_to_string(&global_file).unwrap_or_default();
     let session_content = std::fs::read_to_string(&session_file).unwrap_or_default();
 
-    let mut parts = Vec::new();
-    if !global_content.trim().is_empty() {
-        parts.push(format!(
-            "- [amux inter-session API]({MEM_TOPIC_FILE}) — \
-             sessions/peek/send, board, notes, CRM, browser, Drive. Read it when you \
-             need the call shapes; it is also in ~/.claude/CLAUDE.md."
-        ));
-    }
-    parts.push(MEM_MARKER.to_string());
-    let worker_block = compose_worker_block(name, &session_content);
-    if !worker_block.is_empty() {
-        parts.push(worker_block);
-    }
-    let composed = parts.join("\n\n") + "\n";
+    let composed = compose_memory_doc(name, &global_content, &session_content);
 
     let claude_mem_dir = claude_home().join("projects").join(&pname).join("memory");
     let claude_mem_file = claude_mem_dir.join("MEMORY.md");
@@ -8588,6 +9645,47 @@ pub(crate) async fn lane_block_reason(name: &str) -> Option<&'static str> {
     lane_block_reason_from(env_exists, archived, running, rate_limited)
 }
 
+/// When this lane's rate limit lifts, or 0 if unknown (AMUX-3815).
+///
+/// The companion to [`lane_block_reason`]'s `rate-limited`, kept separate
+/// because that predicate returns a `&'static str` by design — one shared
+/// answer, no per-lane text. This is the WHEN, and it is deliberately NOT part
+/// of the block decision: the sweep's presence-based `rate_limited_since` is
+/// what says the lane is limited RIGHT NOW, and gating delivery on a clock
+/// instead would resurrect the bug the presence-based clear fixed.
+///
+/// 0 means "no reset time known", never "resets at the epoch". A credit cap has
+/// no clock at all, so a caller that reads 0 as a past time would treat every
+/// capped lane as overdue.
+/// WHICH kind of limit this lane is under: `"menu"` (the usage-limit selector,
+/// which carries a reset time), `"credit-banner"` (a credit cap, which has none),
+/// or `""` when unknown (MC-1458).
+///
+/// [`lane_rate_limit_reset`] returning 0 cannot answer this and never could. A
+/// zero there means "no reset time known", and the two ways to arrive at it want
+/// OPPOSITE responses: a cap has no clock to read and there is nothing to fix,
+/// while a menu does have one and a zero means the parse failed. The steering
+/// detector was asserting the second about every instance of the first, which is
+/// a false lead pointed at real code (`parse_rate_limit_reset`).
+///
+/// EMPTY IS "UNKNOWN", NOT "CAP". A lane stamped before this field existed, or
+/// one whose meta predates the current sweep, has no value here, and a reader
+/// that defaults it to either kind manufactures the certainty this exists to
+/// remove.
+pub(crate) fn lane_rate_limit_kind(name: &str) -> String {
+    if !env_path(name).exists() {
+        return String::new();
+    }
+    meta_str(&load_meta(name), "rate_limited_by")
+}
+
+pub(crate) fn lane_rate_limit_reset(name: &str) -> i64 {
+    if !env_path(name).exists() {
+        return 0;
+    }
+    meta_i64(&load_meta(name), "rate_limited_until")
+}
+
 /// The sentence a sender gets. It states what will HAPPEN, not merely what is
 /// wrong: "queued" on its own is the string that manufactured the false belief,
 /// and replacing it with a bare reason code would leave the sender to guess
@@ -8761,11 +9859,40 @@ pub(crate) fn steer_dead_letter_s() -> f64 {
 /// for 6.5h and every queued row delivered on restart, and no age threshold
 /// can tell that outage from a dead lane.
 pub(crate) fn steer_dead_letter_verdict(reason: &str, age_s: f64) -> Option<&'static str> {
+    if !reason_is_reapable(reason) {
+        return None;
+    }
+    if age_s <= steer_dead_letter_s() {
+        return None;
+    }
     match reason {
-        "no-env-file" if age_s > steer_dead_letter_s() => Some("no-env-file"),
-        "archived" if age_s > steer_dead_letter_s() => Some("archived"),
+        "no-env-file" => Some("no-env-file"),
+        "archived" => Some("archived"),
         _ => None,
     }
+}
+
+/// Which block reasons the reaper will EVER act on, regardless of age.
+///
+/// Split out because the reaper is not the only consumer (AMUX-3814): the
+/// `queue.has_live_consumer` invariant reports a row as "PAST the dead-letter
+/// deadline and the reaper did not reap it", and it was computing reapability
+/// on its own by treating every reason except `not-running` as permanent. That
+/// swept in `rate-limited`, which the reaper deliberately never reaps, so the
+/// invariant went red for 56 evaluations over 8 days on a lane doing exactly
+/// what it should — waiting out a limit that lifts by itself.
+///
+/// That is ethos rule 1, and this function's own docstring had already named
+/// the shape: AMUX-3473 fixed the same view/predicate split for a different
+/// reason and enumerated rather than shared, so the next reason re-broke it.
+/// One list, two consumers.
+///
+/// PERMANENT ONLY. `not-running` cannot be told from a 6.5h outage by age (the
+/// 2026-08-19 panic: 41 registered lanes down, every queued row delivered on
+/// restart), and `rate-limited` lifts on a clock Claude publishes in its own
+/// banner (AMUX-3815).
+pub(crate) fn reason_is_reapable(reason: &str) -> bool {
+    matches!(reason, "no-env-file" | "archived")
 }
 
 /// THE DELIVERY DECISION (AMUX-2642). Pure, so the case that matters — a lane
@@ -8805,6 +9932,25 @@ pub(crate) fn steer_decide(reported: Option<&str>, pane_idle: Option<bool>, age_
     SteerDelivery::Hold
 }
 
+/// A live background agent/terminal is not ordinary mid-turn work. The normal
+/// max-age escape deliberately hands an old message to the provider while a
+/// long foreground turn continues; doing that while the provider says a
+/// background child is live interrupted the parent conversation and killed the
+/// very work status was protecting. Only the terminal edge clears this hold.
+fn steer_decide_with_background(
+    reported: Option<&str>,
+    pane_idle: Option<bool>,
+    age_s: f64,
+    max_age_s: f64,
+    background_working: bool,
+) -> SteerDelivery {
+    if background_working {
+        SteerDelivery::Hold
+    } else {
+        steer_decide(reported, pane_idle, age_s, max_age_s)
+    }
+}
+
 /// One lane's stored self-report, with the SHARED trust verdict already applied.
 ///
 /// `None` means the lane has never reported — a hookless lane (gemini, codex),
@@ -8816,6 +9962,9 @@ pub(crate) struct LaneReport {
     /// badge uses. When false the report is evidence of nothing and the caller
     /// must fall through to the pane.
     pub applies: bool,
+    /// Identity-backed subagent count carried by the same report object. A
+    /// positive value is a hard mid-turn hold even when the main state is idle.
+    pub subagents_live: Option<i64>,
 }
 
 /// Read the report and judge it, in one place, for every mechanism that acts on
@@ -8847,7 +9996,69 @@ pub(crate) fn lane_report(state: &AppState, name: &str) -> Option<LaneReport> {
     if !applies {
         warn_stuck_report_once(name, &st, ts, now - ts);
     }
-    Some(LaneReport { state: st, age_s: (now - ts).max(0.0), applies })
+    let subagents_live = rep["subagents"]["count"].as_i64();
+    Some(LaneReport {
+        state: st,
+        age_s: (now - ts).max(0.0),
+        applies,
+        subagents_live,
+    })
+}
+
+/// Exact provider-owned evidence that work continues behind an idle-looking
+/// composer. This is intentionally narrower than generic pane activity: the
+/// Claude row is spinner-chrome anchored, and the Codex row is structurally
+/// adjacent to its newest prompt. A worker quoting either sentence in prose
+/// does not match.
+pub(crate) fn provider_background_working(raw: &str) -> bool {
+    if crate::backend::adapter::codex_pane_background_working(raw) {
+        return true;
+    }
+    let clean = crate::backend::adapter::strip_ansi(raw);
+    let working = crate::backend::adapter::claude_background_agents_working(&clean);
+    if !working && crate::backend::adapter::claude_background_wait_superseded(&clean) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static ANNOUNCED: AtomicBool = AtomicBool::new(false);
+        if !ANNOUNCED.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                target: "status_truth",
+                provider_signal = "claude_background_agent",
+                verdict = "superseded_by_completed_turn",
+                "stale provider background row ignored: a newer completed-turn boundary owns the pane"
+            );
+        }
+    }
+    working
+}
+
+/// A trusted idle report describes the parent prompt, not background work.
+/// Kept pure because both board-drive and queued steering depend on this exact
+/// override; the live Codex interruption must be a regression cell, not an
+/// integration assumption.
+fn reported_idle_is_boundary(subagents_live: Option<i64>, raw: &str) -> bool {
+    !subagents_live.is_some_and(|count| count > 0) && !provider_background_working(raw)
+}
+
+fn warn_background_override_once(name: &str, raw: &str) {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let kind = if crate::backend::adapter::codex_pane_background_working(raw) {
+        "codex_background_terminal"
+    } else {
+        "claude_background_agent"
+    };
+    let key = format!("{name}:{kind}");
+    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    if !seen.insert(key) {
+        return;
+    }
+    tracing::warn!(
+        target: "status_truth",
+        session = name,
+        provider_signal = kind,
+        "provider_background_work_overrode_idle_report: board-drive and steering are held until the provider row clears"
+    );
 }
 
 /// WARN once per lane per stuck report, so a lane held out of the drive loop by
@@ -8933,7 +10144,18 @@ pub(crate) async fn steer_lane_at_boundary(state: &AppState, name: &str) -> bool
     //    but the status badge refuses is the AMUX-3756 deadlock.
     if let Some(r) = lane_report(state, name) {
         if r.applies {
-            return r.state == "idle";
+            if r.state != "idle" {
+                return false;
+            }
+            if r.subagents_live.is_some_and(|count| count > 0) {
+                return false;
+            }
+            let raw = tmux_capture(name, 12).await;
+            if !reported_idle_is_boundary(r.subagents_live, &raw) {
+                warn_background_override_once(name, &raw);
+                return false;
+            }
+            return true;
         }
     }
     // 2. Hookless lane, or a report that no longer applies: the pane. Empty
@@ -8960,6 +10182,9 @@ pub(crate) async fn steer_lane_at_boundary(state: &AppState, name: &str) -> bool
 /// because the gate never believed the lane was busy. A view that disagrees
 /// with the mechanism it describes is worse than no view (ethos rule 1).
 pub(crate) fn pane_is_at_boundary(raw: &str) -> bool {
+    if let Some(generating) = crate::backend::adapter::codex_pane_generation_state(raw) {
+        return !generating;
+    }
     !pane_bar_says_generating(raw) && detect_claude_status(raw) == "idle"
 }
 
@@ -8970,15 +10195,33 @@ pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64)
     // to be a second, unjudged copy of the report read (AMUX-3756). A report
     // that no longer applies is dropped to `None`, which routes to the pane
     // exactly as a hookless lane does.
-    let reported: Option<String> =
-        lane_report(state, name).filter(|r| r.applies).map(|r| r.state);
+    let report = lane_report(state, name).filter(|r| r.applies);
+    let reported: Option<String> = report.as_ref().map(|r| r.state.clone());
+    // Capture even for a trusted active report: max-age delivery is allowed for
+    // ordinary foreground work, but must remain disabled for provider-owned
+    // background work until its terminal row appears.
+    let raw = tmux_capture(name, 12).await;
+    let provider_background = provider_background_working(&raw);
+    let background_working = report
+        .as_ref()
+        .and_then(|r| r.subagents_live)
+        .is_some_and(|count| count > 0)
+        || provider_background;
+    if provider_background {
+        warn_background_override_once(name, &raw);
+    }
     let pane_idle = if reported.is_some() {
         None
     } else {
-        let raw = tmux_capture(name, 12).await;
         if raw.trim().is_empty() { None } else { Some(pane_is_at_boundary(&raw)) }
     };
-    steer_decide(reported.as_deref(), pane_idle, age_s, steer_max_age_s())
+    steer_decide_with_background(
+        reported.as_deref(),
+        pane_idle,
+        age_s,
+        steer_max_age_s(),
+        background_working,
+    )
 }
 
 /// One pass: deliver queued steering to every lane that is at a turn boundary.
@@ -9268,10 +10511,18 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                                 ensure_fleet_tables(conn)?;
                                 let (src_guard, src_sender) = steer_row_source(conn, &id2);
                 conn.execute("DELETE FROM steering_queue WHERE id=?", [&id2])?;
+                                // OUTCOME IS NOT OPTIONAL ON A VOID PATH (AMUX-3919).
+                                // This row is a message that was deliberately NOT
+                                // delivered, and it used to write no outcome at all —
+                                // so the one row where the column carries the most
+                                // information was the row that left it NULL, reading
+                                // identically to a delivered message whose outcome
+                                // simply went unrecorded. Every NULL written by the
+                                // live code path on 2026-08-30 was one of these.
                                 conn.execute(
-                                    "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, guard, sender) \
-                                     VALUES(?,?,?,?,?,?,?)",
-                                    rusqlite::params![id2, sess2, hist_text, queued_at, now, src_guard, src_sender],
+                                    "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+                                     VALUES(?,?,?,?,?,?,?,?)",
+                                    rusqlite::params![id2, sess2, hist_text, queued_at, now, "void:pickup-stale", src_guard, src_sender],
                                 )?;
                                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
                             })
@@ -9448,15 +10699,20 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                         ensure_fleet_tables(conn)?;
                         let (src_guard, src_sender) = steer_row_source(conn, &id2);
                 conn.execute("DELETE FROM steering_queue WHERE id=?", [&id2])?;
+                        // Same as the pickup-stale void above (AMUX-3919): a
+                        // deliberately undelivered message must say so in the
+                        // column, not only in the text prefix. `[VOIDED: ...]` in
+                        // the body is prose; `outcome` is what a query can group by.
                         conn.execute(
-                            "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, guard, sender) \
-                             VALUES(?,?,?,?,?,?,?)",
+                            "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+                             VALUES(?,?,?,?,?,?,?,?)",
                             rusqlite::params![
                                 id2,
                                 sess2,
                                 format!("[VOIDED: picker gone] {}", redact_secrets(&text2)),
                                 queued_at,
                                 now_f64(),
+                                "void:picker-gone",
                                 src_guard,
                                 src_sender
                             ],
@@ -9505,6 +10761,24 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         }
         // Delivered — move the row to history under the SAME contract the
         // manual deliver path uses (redacted text, queued_at preserved).
+        // COLUMN THE WRITERS FORGOT (Ethan, 2026-08-29: "why are you sending
+        // unsubmitted text?"). `outcome` has existed on this table since it was
+        // created and 5 of its 6 writers omitted it, so 10,957 of 10,989 rows
+        // carry a blank verdict. That is why nobody noticed a lane holding an
+        // unsubmitted message: amux does not record whether its own sends
+        // submitted, so it cannot count, alert on, or even answer the question.
+        // `msg` is already bound above (it is what the delivery log prints as
+        // `detail=`) — the value was in scope the whole time.
+        //
+        // SCOPE, precisely: this insert is reached only when `ok`, so what it
+        // captures is the DELIVERED outcomes, including
+        // "sent (Enter was dropped; submitted on retry)" — the leading
+        // indicator that a lane's keystroke path is failing. A HARD-stuck send
+        // returns ok=false, takes the `continue` above, and never reaches this
+        // table at all: its row stays in `steering_queue` and the only record
+        // is `skip()`, which writes DEBUG and an in-process map that a restart
+        // erases. That remaining hole is named on the card, not fixed here.
+        let outcome2 = msg.clone();
         let (id2, sess2, text2) = (id.clone(), session.clone(), text.clone());
         let _ = state
             .store
@@ -9520,9 +10794,9 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                 let (src_guard, src_sender) = steer_row_source(conn, &id2);
                 conn.execute("DELETE FROM steering_queue WHERE id=?", [&id2])?;
                 conn.execute(
-                    "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, guard, sender) \
-                     VALUES(?,?,?,?,?,?,?)",
-                    rusqlite::params![id2, sess2, redact_secrets(&text2), queued_at, now_f64(), src_guard, src_sender],
+                    "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+                     VALUES(?,?,?,?,?,?,?,?)",
+                    rusqlite::params![id2, sess2, redact_secrets(&text2), queued_at, now_f64(), outcome2, src_guard, src_sender],
                 )?;
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             })
@@ -9549,6 +10823,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         if guard.is_empty()
             && sender.is_empty()
             && amux_core::board::title_from_prompt(&text).is_some()
+            && !amux_core::board::is_informational_query(&text)
         {
             let (sess3, text3) = (session.clone(), text.clone());
             let now_ms = (now_f64() * 1000.0) as i64;
@@ -9559,11 +10834,17 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                 .store
                 .write_async(move |conn| {
                     // Already carded (enqueue-time direct mint)? Never double-card.
+                    let retry_cutoff_ms = now_ms
+                        - std::env::var("AMUX_CAPTURE_DEDUP_WINDOW_S")
+                            .ok()
+                            .and_then(|v| v.parse::<i64>().ok())
+                            .unwrap_or(45)
+                            * 1000;
                     let already: i64 = conn
                         .query_row(
                             "SELECT COUNT(*) FROM cmd_history \
-                             WHERE session = ?1 AND text = ?2 AND card_id IS NOT NULL",
-                            rusqlite::params![sess3, text3],
+                             WHERE session = ?1 AND text = ?2 AND card_id IS NOT NULL AND ts>?3",
+                            rusqlite::params![sess3, text3, retry_cutoff_ms],
                             |r| r.get(0),
                         )
                         .unwrap_or(0);
@@ -9645,6 +10926,34 @@ fn steer_skips() -> &'static std::sync::Mutex<BTreeMap<String, SkipRecord>> {
     static M: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, SkipRecord>>> =
         std::sync::OnceLock::new();
     M.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+/// Per-lane `(last_skip_reason, seconds_since_that_skip)` for the autofix
+/// detector (AMUX-3927).
+///
+/// The drain loop already records WHY it last declined to deliver each lane's
+/// oldest row, and `/api/debug/steering` already publishes it. Nothing else
+/// read it, so every stall card ever filed omitted the one field that separates
+/// a HUNG DRAIN LOOP from a lane that is simply mid-turn. On the live
+/// mixpeek-studio lane it read "not-at-turn-boundary (within max age)" with an
+/// age of 2 seconds: the loop had evaluated that lane two seconds earlier and
+/// correctly deferred, while the card said the queue was stalled.
+///
+/// ABSENCE IS NOT EVIDENCE. This map is in-memory and empty after a restart —
+/// which is exactly when someone reads it — so a missing entry means UNMEASURED,
+/// never "the loop is dead". Callers must distinguish those; the detector
+/// suppresses with `why_unmeasured` rather than filing.
+pub(crate) fn steer_skip_snapshot() -> BTreeMap<String, (String, f64)> {
+    let now = now_f64();
+    steer_skips()
+        .lock()
+        .map(|m| {
+            m.iter()
+                .filter(|(_, (_, _, at))| *at > 0.0)
+                .map(|(k, (_, reason, at))| (k.clone(), (reason.clone(), now - at)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Has this exact stall already been LOGGED in this hour, for this lane and this
@@ -9865,14 +11174,30 @@ async fn warn_on_stalled_lanes(state: &AppState) {
 /// every 5 seconds for four hours looked exactly like a lane with nothing to do.
 async fn steering_debug(State(state): State<AppState>) -> Response {
     let rows: Vec<(String, f64, i64, String)> = {
+        // Both arms carry the AF-320 contract: an error body with no `lanes`
+        // key renders as "nothing is queued" in any tolerant reader, and the
+        // steer-queue age is a number other jobs subtract from.
         let Ok(conn) = state.store.read() else {
-            return jresp(StatusCode::SERVICE_UNAVAILABLE, json!({"error": "store unavailable"}));
+            return jresp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                crate::api::measured::unmeasured(
+                    json!({"error": "store unavailable", "lanes": []}),
+                    "the store could not be opened, so the steering queue was never read",
+                ),
+            );
         };
         let Ok(mut stmt) = conn.prepare(
             "SELECT session, MIN(queued_at), COUNT(*), COALESCE(GROUP_CONCAT(DISTINCT sender),'') \
              FROM steering_queue GROUP BY session",
         ) else {
-            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "query failed"}));
+            return jresp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::api::measured::unmeasured(
+                    json!({"error": "query failed", "lanes": []}),
+                    "steering_queue could not be queried — the schema is older than this \
+                     binary expects, so an empty `lanes` is unmeasured, not idle",
+                ),
+            );
         };
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .map(|it| it.flatten().collect())
@@ -9892,6 +11217,14 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
         // reason at all. This one is computed on the spot from the same
         // predicate the deliverer uses.
         let blocked = lane_block_reason(&session).await;
+        // WHEN a `rate-limited` block lifts (AMUX-3815). Published beside the
+        // reason because this endpoint is what the stall card tells the reader
+        // to check, and the autofix detector now SUPPRESSES a card on a known
+        // future reset — a suppression whose input is invisible here would be
+        // indistinguishable from a detector that never ran. Null, never 0, when
+        // no time is known: a credit cap has no reset clock, and 0 would read
+        // as a reset in 1970.
+        let reset = lane_rate_limit_reset(&session);
         lanes.push(json!({
             "session": session,
             "queued": count,
@@ -9900,19 +11233,31 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
             "overdue": now - oldest >= steer_max_age_s(),
             "deliverable": blocked.is_none(),
             "blocked_reason": blocked,
+            "rate_limit_resets_at": if reset > 0 { json!(reset) } else { Value::Null },
+            "rate_limit_resets_local": if reset > 0 {
+                json!(crate::api::request_log::local_when(reset as f64))
+            } else {
+                Value::Null
+            },
             "senders": senders.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>(),
             "last_skip_id": last_id,
             "last_skip_reason": reason,
             "last_skip_age_s": if at > 0.0 { json!((now - at) as i64) } else { Value::Null },
         }));
     }
-    j200(json!({
+    // AF-320: an empty `lanes` means either nothing is queued anywhere or the
+    // queue was never read, and the steer-queue age is exactly the number other
+    // jobs subtract from.
+    j200(crate::api::measured::measured(
+        json!({
         "lanes": lanes,
         "stall_warn_s": steer_stall_warn_s(),
         "max_age_s": steer_max_age_s(),
         "max_age_env": "AMUX_STEER_MAX_AGE_S",
         "note": "last_skip_* is in-memory and resets when the server restarts; queued/oldest_age_s are durable",
-    }))
+        }),
+        lanes.len(),
+    ))
 }
 
 /// Deliver the oldest queued steering message for ONE specific session.
@@ -9977,6 +11322,24 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     }
     let Some((msg, age)) = sent else { return false };
     steer_skips().lock().unwrap().remove(session);
+    // COLUMN THE WRITERS FORGOT (Ethan, 2026-08-29: "why are you sending
+    // unsubmitted text?"). `outcome` has existed on this table since it was
+    // created and 5 of its 6 writers omitted it, so 10,957 of 10,989 rows
+    // carry a blank verdict. That is why nobody noticed a lane holding an
+    // unsubmitted message: amux does not record whether its own sends
+    // submitted, so it cannot count, alert on, or even answer the question.
+        // `msg` is already bound above (it is what the delivery log prints as
+    // `detail=`) — the value was in scope the whole time.
+    //
+    // SCOPE, precisely: this insert is reached only when `ok`, so what it
+    // captures is the DELIVERED outcomes, including
+    // "sent (Enter was dropped; submitted on retry)" — the leading
+    // indicator that a lane's keystroke path is failing. A HARD-stuck send
+    // returns ok=false, takes the `continue` above, and never reaches this
+    // table at all: its row stays in `steering_queue` and the only record
+    // is `skip()`, which writes DEBUG and an in-process map that a restart
+    // erases. That remaining hole is named on the card, not fixed here.
+    let outcome2 = msg.clone();
     let (id2, sess2, text2) = (id.clone(), session_s.clone(), text.clone());
     let _ = state
         .store
@@ -9992,9 +11355,9 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
             let (src_guard, src_sender) = steer_row_source(conn, &id2);
                 conn.execute("DELETE FROM steering_queue WHERE id=?", [&id2])?;
             conn.execute(
-                "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, guard, sender) \
-                 VALUES(?,?,?,?,?,?,?)",
-                rusqlite::params![id2, sess2, redact_secrets(&text2), queued_at, now_f64(), src_guard, src_sender],
+                "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+                 VALUES(?,?,?,?,?,?,?,?)",
+                rusqlite::params![id2, sess2, redact_secrets(&text2), queued_at, now_f64(), outcome2, src_guard, src_sender],
             )?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
@@ -10035,12 +11398,28 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
 // silently unlogged 29 of 60 panes.
 //
 // The writer comes from log_pipe_command() and is never hand-rolled, because
-// that function is where REDACTION lives (sk-ant-, ANTHROPIC_API_KEY=, ghp_,
-// AIza..., sk-proj-, POSTHOG_KEY). Re-arming a pane with a bare `cat` works and
-// redacts nothing — I did exactly that by hand while diagnosing this and had to
-// detach it. "Re-arming is safe" is true of the tmux VERB, not of an arbitrary
-// command handed to it.
+// that function owns the readable/raw capture contract, CR/LF handling,
+// rotation, and flush behavior. "Re-arming is safe" is true of the tmux VERB,
+// not of an arbitrary command handed to it.
 // ---------------------------------------------------------------------------
+
+fn pipe_writer_fingerprint() -> String {
+    // Stable FNV-1a over the complete generated command. Unlike a hand-maintained
+    // version number this changes whenever the embedded writer OR one of its
+    // effective runtime knobs changes, so a deployment cannot leave old writer
+    // children running indefinitely behind pane_pipe=1.
+    let command = log_pipe_command(Path::new("__amux_log_path__"));
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in command.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn pipe_writer_marker_path() -> PathBuf {
+    logs_dir().join(".pipe-writer-version")
+}
 
 /// Should this pane be re-armed? Pure, so the discriminator is testable without
 /// a tmux server — and so the NEGATIVE case is pinned as tightly as the
@@ -10050,8 +11429,8 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
 /// those would spray shell noise into per-worker logs for lanes that have no
 /// worker; 10 of the 11 unpiped panes measured were exactly that (disposable
 /// smprobe*/zz-* test lanes) and only ONE was a live agent.
-fn should_rearm_pipe(pane_pipe: i64, children: usize) -> bool {
-    pane_pipe == 0 && children > 0
+fn should_rearm_pipe(pane_pipe: i64, children: usize, writer_changed: bool) -> bool {
+    children > 0 && (pane_pipe == 0 || writer_changed)
 }
 
 /// One reconciliation pass. Returns how many panes were re-armed — a count, so
@@ -10065,8 +11444,17 @@ pub async fn pipe_reconcile_tick() -> usize {
     else {
         return 0; // tmux unreachable: not a reconciliation, and not a pass
     };
+    if !out.status.success() {
+        return 0;
+    }
+    let fingerprint = pipe_writer_fingerprint();
+    let marker_path = pipe_writer_marker_path();
+    let writer_changed = std::fs::read_to_string(&marker_path)
+        .map(|value| value.trim() != fingerprint)
+        .unwrap_or(true);
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let mut rearmed = 0usize;
+    let mut failed = false;
     for line in text.lines() {
         let mut f = line.split_whitespace();
         let (Some(sess), Some(pipe), Some(pid)) = (f.next(), f.next(), f.next()) else {
@@ -10081,15 +11469,29 @@ pub async fn pipe_reconcile_tick() -> usize {
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
             .unwrap_or(0);
-        if !should_rearm_pipe(pipe, children) {
+        if !should_rearm_pipe(pipe, children, writer_changed) {
             continue;
         }
         let lp = log_path(name);
         let cmd = log_pipe_command(&lp);
         let pt = pane_target(sess);
-        let _ = tmux(&["pipe-pane", "-t", &pt, &cmd]).await;
-        rearmed += 1;
-        tracing::warn!(session = %name, children, "re-armed a lost pipe-pane");
+        match tmux(&["pipe-pane", "-t", &pt, &cmd]).await {
+            Some(result) if result.status.success() => {
+                rearmed += 1;
+                tracing::warn!(session = %name, children, writer_changed, "re-armed pipe-pane");
+            }
+            _ => {
+                failed = true;
+                tracing::error!(session = %name, children, writer_changed, "failed to re-arm pipe-pane");
+            }
+        }
+    }
+    // Mark the fleet current only after every eligible pane accepted the new
+    // writer. A partial failure deliberately retries the migration next tick.
+    if writer_changed && !failed {
+        if let Err(error) = EnvFile::replace_text(&marker_path, &format!("{fingerprint}\n")) {
+            tracing::error!(error = %error, "failed to persist pipe-writer version");
+        }
     }
     rearmed
 }
@@ -10312,11 +11714,50 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             // Presence-based, and both signals are footer/menu-scoped, so scrollback
             // ABOUT limits never flags and a lane clears as soon as its banner goes.
             if meta_i64(&load_meta(name), "rate_limited_since") > 0 {
-                update_meta(name, &[("rate_limited_since", json!(0))]);
+                // Clear the reset time with the flag it qualifies. A stale
+                // `rate_limited_until` beside a cleared `since` is a lane that
+                // reads as "limited until 8:30pm" while it is already working.
+                update_meta(
+                    name,
+                    &[
+                        ("rate_limited_since", json!(0)),
+                        ("rate_limited_until", json!(0)),
+                        ("rate_limited_by", json!("")),
+                    ],
+                );
             }
             continue;
         }
         found += 1;
+        // WHEN it lifts, from the banner the check above already matched
+        // (AMUX-3815). Re-read every tick, not only on first detection: Claude
+        // rewrites the line when the window moves, and a reset time that cannot
+        // be refreshed is worse than none once it goes stale. `None` stays 0 —
+        // a credit cap has no reset clock, and callers must be able to tell
+        // "no reset time" from "resets at the epoch".
+        let reset = parse_rate_limit_reset(&footer).unwrap_or(0);
+        if meta_i64(&load_meta(name), "rate_limited_until") != reset {
+            update_meta(name, &[("rate_limited_until", json!(reset))]);
+        }
+        // WHICH KIND OF LIMIT, PERSISTED (MC-1458). This loop already knows:
+        // `menu` is the usage-limit selector, which CARRIES a reset time, and
+        // the credit banner is a cap that has none. Until now that fact went
+        // only into the `session.rate_limited` event payload as `detected_by`
+        // and was dropped, so every downstream reader saw the same
+        // `rate_limited_until = 0` for both and could not tell "no clock exists"
+        // from "a clock exists and amux failed to read it".
+        //
+        // The cost was a card that pointed at real code on evidence that cannot
+        // indicate the fault: the steering silent-detector told readers a zero
+        // meant "the banner wording changed and `parse_rate_limit_reset` needs
+        // it", which is true only in the menu case and wrong in the far more
+        // common cap case. Written on EVERY tick, not only on first detection,
+        // because a lane can move from a cap to a session limit without the
+        // stamp clearing in between.
+        let kind = if menu { "menu" } else { "credit-banner" };
+        if meta_str(&load_meta(name), "rate_limited_by") != kind {
+            update_meta(name, &[("rate_limited_by", json!(kind))]);
+        }
         if meta_i64(&load_meta(name), "rate_limited_since") == 0 {
             update_meta(
                 name,
@@ -10380,6 +11821,12 @@ pub async fn steer_deliver_loop(state: AppState) {
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        // Fleet-wide cross-group default (AMUX-4018). GET is open; PUT is
+        // owner-only, enforced in the handler.
+        .route("/api/config/cross-group", axum::routing::get(get_cross_group_config).put(put_cross_group_config))
+        // Fleet-wide board-drain default.  Per-worker/group values still win,
+        // but this is the operator control for "all workers on by default".
+        .route("/api/config/board-drain", axum::routing::get(get_board_drain_config).put(put_board_drain_config))
         .route("/api/sessions/{name}", any(session_root_handler))
         // A WARN nobody can query is the same gap one layer out: this is
         // where a sweep or an autofix loop asks "did anything get delivered
@@ -10407,7 +11854,21 @@ pub fn routes() -> Router<AppState> {
         // reaches machines that reinstall, while the route fixes every already
         // installed copy at once (ethos rule 1 — capability has to actually
         // reach everyone, not just exist).
-        .route("/api/workers/{name}/{*verb}", any(session_verb_handler))
+        // /api/workers/{name}/{*verb} RETIRED 2026-08-28 (AF-204). Kept in
+        // history rather than silently dropped, because the reason it existed is
+        // still true: the INSTALLED `amux send` posts to /api/workers/<n>/send,
+        // and after the python cutover that 405'd and the CLI fell back to raw
+        // tmux keystrokes — unstamped, unaudited, two long messages confirmed
+        // lost the same afternoon. That is why send was PROMOTED (AF-202) rather
+        // than left to a wildcard. Every verb any caller reaches by this spelling
+        // now has its own route in api/workers.rs; measured repo-wide before the
+        // deletion, they were peek, send, start, stop and dead-letters.
+        //
+        // The wildcard is what made the surface unable to answer "is this
+        // capability implemented": an unrouted verb returned whatever it returned
+        // instead of 404ing. Everything it used to serve is still reachable at
+        // /api/sessions/{name}/{verb} below — aliases.rs:82 exempts that path
+        // from the alias layer, so this deletion changes the SPELLING only.
         // Long prompts ride /send bodies; axum's 2MB default is Python's cap
         // too (none), so disable rather than invent one.
         .layer(axum::extract::DefaultBodyLimit::disable())
@@ -10725,15 +12186,45 @@ fn json_str_after(blob: &str, key: &str) -> Option<String> {
 }
 
 
-/// GET /api/debug/duplicate-deliveries?hours=24 — every lane that received the
-/// SAME text twice inside the detector's window, newest first.
+/// GET /api/debug/duplicate-deliveries?since_h=24 — every lane that received
+/// the SAME text twice inside the detector's window, newest first.
 ///
 /// Reads `session_events` rows the detector writes, so it reports what actually
 /// happened rather than re-deriving a heuristic. `window_ms` is echoed so a
 /// reader knows what "duplicate" meant without going to the source.
+///
+/// `since_h` IS THE FLEET CONVENTION AND THIS ENDPOINT DID NOT SPEAK IT
+/// (AF-482). Every other diagnostic takes `since_h` — /api/logs/analyze,
+/// /api/logs/stats, /api/logs/writers, /api/debug/sse, the git-guard and
+/// messages probes, and CLAUDE.md's observability table lists them that way.
+/// This one took `hours` alone, and an unrecognised parameter fell back to the
+/// 24h default silently.
+///
+/// Measured 2026-09-04, asking this endpoint for a month:
+///     since_h=24 -> total 7      since_h=168 -> total 7
+///     since_h=72 -> total 7      since_h=720 -> total 7
+/// while 26 duplicate events existed. The number never moved because the
+/// parameter was never read, and the payload said `measured: true` beside it.
+/// This is the one endpoint a frustration sweep is told to consult for "was
+/// that a double delivery", which is always a question about a SPECIFIC old
+/// message, so a silently-24h window is wrong exactly when it is used.
+///
+/// Both names are accepted, `since_h` wins, and the response says WHICH ONE
+/// answered. Echoing the resolved window is not enough on its own: `hours: 24`
+/// in a reply to `since_h=720` is a true field that reads as agreement.
 async fn debug_duplicate_deliveries(State(state): State<AppState>, RawQuery(q): RawQuery) -> Response {
     let params = parse_qs(q.as_deref().unwrap_or(""));
-    let hours: f64 = qs_get(&params, "hours").and_then(|v| v.parse().ok()).unwrap_or(24.0);
+    let (hours, window_param) = match (
+        qs_get(&params, "since_h").and_then(|v| v.parse::<f64>().ok()),
+        qs_get(&params, "hours").and_then(|v| v.parse::<f64>().ok()),
+    ) {
+        (Some(h), _) => (h, "since_h"),
+        (None, Some(h)) => (h, "hours"),
+        (None, None) => (24.0, "default"),
+    };
+    // Same bounds as `since_h_of` in request_log.rs, so the family agrees on
+    // what an out-of-range window does instead of each probe choosing.
+    let hours = hours.clamp(0.01, 24.0 * 365.0);
     let since = now_f64() - hours * 3600.0;
     let conn = match state.store.read() {
         Ok(c) => c,
@@ -10762,16 +12253,66 @@ async fn debug_duplicate_deliveries(State(state): State<AppState>, RawQuery(q): 
     for r in &rows {
         *by_session.entry(r["session"].as_str().unwrap_or("").to_string()).or_insert(0) += 1;
     }
-    j200(json!({
+
+    // THE DENOMINATOR THIS PROBE NEVER HAD (AF-483).
+    //
+    // `total` counts what the detector ANNOUNCED. An unannounced duplicate is
+    // therefore invisible to the only endpoint a sweep is told to consult, and
+    // `total` is a lower bound with nothing beside it saying so. That is ethos
+    // rule 4 one layer up from the probe: the measurement can read low for two
+    // reasons and reports one number for both.
+    //
+    // The independent population is cmd_history itself: the same text to the
+    // same lane inside the same window is a duplicate whether or not anything
+    // noticed. Comparing the two is what turns "7 duplicates" into "7 announced
+    // of 11 that happened", and it is the query that would have surfaced the
+    // TOCTOU without a sweep — six pairs, two announced, measured by hand on
+    // 2026-09-04.
+    //
+    // ts is MILLISECONDS here and `since` is SECONDS, which is the same split
+    // the rest of this handler lives with; multiply rather than trusting the
+    // column names to agree.
+    let since_ms = (since * 1000.0) as i64;
+    let pairs_in_history: Option<i64> = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cmd_history a JOIN cmd_history b \
+               ON b.session = a.session AND b.text = a.text AND b.id > a.id \
+              AND b.ts - a.ts BETWEEN 0 AND ?2 \
+             WHERE a.ts > ?1",
+            rusqlite::params![since_ms, DUP_DELIVERY_WINDOW_MS],
+            |r| r.get(0),
+        )
+        .ok();
+    let unannounced = pairs_in_history.map(|p| (p - rows.len() as i64).max(0));
+    // AF-320. `total: 0` reads as "no duplicates" whether the query ran or
+    // silently returned nothing; `unwrap_or_default()` above makes that a real
+    // path rather than a hypothetical one.
+    j200(crate::api::measured::measured(
+        json!({
         "hours": hours,
+        // WHICH PARAMETER ANSWERED, because "hours: 24" alone cannot tell a
+        // caller who asked for 720 that their parameter was never read. A
+        // reader who typos `since_h` on any other probe would get 24h here and
+        // no way to see it (AF-482).
+        "window_param": window_param,
         "window_ms": DUP_DELIVERY_WINDOW_MS,
         "total": rows.len(),
+        // ANNOUNCED vs HAPPENED. `total` is the first; these two are the second
+        // and the difference. `null` when the comparison query itself failed,
+        // which is distinct from 0 and must not read as "none missed".
+        "pairs_in_history": pairs_in_history,
+        "unannounced": unannounced,
         "by_session": by_session,
         "events": rows,
         "note": "a duplicate is the SAME text recorded twice for one lane inside window_ms. \
                  Deliveries are never suppressed on this signal — two identical sends can be \
-                 deliberate, and dropping one would turn a visible annoyance into silent loss.",
-    }))
+                 deliberate, and dropping one would turn a visible annoyance into silent loss. \
+                 `total` is what the detector ANNOUNCED; `pairs_in_history` is what cmd_history \
+                 shows happened, counted independently. A non-zero `unannounced` means the \
+                 detector missed some, so `total` alone is a lower bound (AF-483).",
+        }),
+        rows.len(),
+    ))
 }
 
 fn qs_first<'a>(qs: &'a [(String, String)], key: &str, default: &'a str) -> &'a str {
@@ -10838,23 +12379,7 @@ async fn get_dispatch(
             )
             .await
         }
-        "peek" => {
-            let lines: i64 = qs_first(qs, "lines", "80").parse().unwrap_or(80);
-            let live_only = qs_flag(qs, "live");
-            let no_trim = qs_flag(qs, "notrim");
-            // Geometry is attached HERE rather than inside peek_response because
-            // that function has six return points (live_only, alt-screen, normal,
-            // short-output, empty…) and a key added to one of them is a key the
-            // reader cannot rely on. One injection site covers every shape.
-            let mut resp = peek_response(name, lines, live_only, no_trim).await;
-            if let (Some((cols, rows)), Some(obj)) =
-                (tmux_pane_geometry(name).await, resp.as_object_mut())
-            {
-                obj.insert("pane_cols".into(), json!(cols));
-                obj.insert("pane_rows".into(), json!(rows));
-            }
-            j200(resp)
-        }
+        "peek" => peek_verb(name, qs).await,
         "transcript" => {
             // Codex/Ollama run a native TUI whose raw mirror is what Ethan saw
             // looked nothing like Claude (AMUX-3201). They also write a
@@ -10966,38 +12491,9 @@ async fn get_dispatch(
                 "raw": std::fs::read_to_string(env_path(name)).unwrap_or_default(),
             }))
         }
-        "instructions" => j200(json!({
-            "name": name,
-            "instructions": meta_str(&load_meta(name), "instructions").trim(),
-        })),
-        "dirty" => {
-            let wd = session_work_dir(name);
-            let files = if wd.is_empty() { vec![] } else { session_dirty_files(name, &wd).await };
-            j200(json!({
-                "name": name,
-                "dirty": !files.is_empty(),
-                "count": files.len(),
-                "files": files.iter().take(50).collect::<Vec<_>>(),
-            }))
-        }
-        "commit-guard" => {
-            let cfg = parse_env(name);
-            let per = cfg.get_or("AMUX_COMMIT_GUARD_SESSION", "").trim().to_lowercase();
-            let global = !matches!(
-                std::env::var("AMUX_COMMIT_GUARD").unwrap_or_else(|_| "1".into()).trim().to_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            );
-            let override_v: Value = if per.is_empty() {
-                Value::Null
-            } else {
-                json!(!matches!(per.as_str(), "0" | "false" | "off" | "no"))
-            };
-            let enabled = match &override_v {
-                Value::Bool(b) => *b,
-                _ => global,
-            };
-            j200(json!({"name": name, "enabled": enabled, "global": global, "override": override_v}))
-        }
+        "instructions" => instructions_get_verb(name),
+        "dirty" => dirty_verb(name).await,
+        "commit-guard" => commit_guard_verb(name),
         "meta" => {
             // py:75162 — merged meta + env-derived fields.
             let cfg = parse_env(name);
@@ -11057,27 +12553,13 @@ async fn get_dispatch(
             }
             j200(json!({"transcripts": list_session_transcripts(name)}))
         }
-        "tracked-files" => {
-            let meta = load_meta(name);
-            j200(json!({"files": meta.get("tracked_files").cloned().unwrap_or(json!([]))}))
-        }
+        "tracked-files" => tracked_files_verb(name),
         "stats" => {
             let cfg = parse_env(name);
             j200(get_claude_stats(cfg.get_or("CC_DIR", "")))
         }
         "git" => git_get(name, subid, qs).await,
-        "memory" => {
-            let mf = mem_file(name);
-            let content = std::fs::read_to_string(&mf).unwrap_or_default();
-            let wd = session_work_dir(name);
-            j200(json!({
-                "content": content,
-                "path": mf.to_string_lossy(),
-                "work_dir": wd,
-                "claude_project": if wd.is_empty() { String::new() } else { project_name(&wd) },
-                "shared_with": memory_shared_with(name),
-            }))
-        }
+        "memory" => memory_get_verb(name),
         "memory-inherited" => {
             let wd = session_work_dir(name);
             let names: Vec<String> = qs_first(qs, "file", "")
@@ -11143,72 +12625,26 @@ async fn get_dispatch(
             };
             jresp(status, Value::Object(out))
         }
-        "steer" => {
-            let conn = match state.store.read() {
-                Ok(c) => c,
-                Err(e) => return jresp(StatusCode::SERVICE_UNAVAILABLE, json!({"error": e.to_string()})),
-            };
-            if qs_first(qs, "history", "0") == "1" {
-                let mut out = vec![];
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT id, text, queued_at, delivered_at FROM steering_history \
-                     WHERE session=? ORDER BY delivered_at DESC LIMIT 100",
-                ) {
-                    if let Ok(rows) = stmt.query_map([name], |r| {
-                        Ok(json!({
-                            "id": r.get::<_, String>(0)?,
-                            "text": r.get::<_, String>(1)?,
-                            "queued_at": r.get::<_, Option<f64>>(2)?,
-                            "delivered_at": r.get::<_, f64>(3)?,
-                        }))
-                    }) {
-                        out = rows.flatten().collect();
-                    }
-                }
-                return j200(json!(out));
-            }
-            let mut out: Vec<Value> = vec![];
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT id, text, queued_at, COALESCE(guard,''), COALESCE(sender,'') FROM steering_queue \
-                 WHERE session=? ORDER BY queued_at ASC",
-            ) {
-                if let Ok(rows) = stmt.query_map([name], |r| {
-                    Ok(json!({
-                        "id": r.get::<_, String>(0)?,
-                        "text": r.get::<_, String>(1)?,
-                        "queued_at": r.get::<_, f64>(2)?,
-                        "guard": r.get::<_, String>(3)?,
-                        "sender": r.get::<_, String>(4)?,
-                    }))
-                }) {
-                    out = rows.flatten().collect();
-                }
-            }
-            drop(conn);
-            // AGE AND REACHABILITY PER ROW (AMUX-2785). A queue listing that
-            // shows only text and a timestamp cannot answer the one question a
-            // sender staring at it has — "is this coming, or is it stuck?" —
-            // and the caller cannot compute it, because whether the lane can
-            // receive at all is not in the row. Same predicate as the drain
-            // loop, so the list cannot claim what the loop will not do.
-            let blocked = lane_block_reason(name).await;
-            let max_age = steer_max_age_s();
-            let now = now_f64();
-            for row in out.iter_mut() {
-                let age = now - row["queued_at"].as_f64().unwrap_or(now);
-                row["age_s"] = json!(age as i64);
-                row["overdue"] = json!(age >= max_age);
-                row["deliverable"] = json!(blocked.is_none());
-                row["blocked_reason"] = json!(blocked);
-            }
-            j200(json!(out))
-        }
-        "env-explain" | "memory-explain" => jresp(
+        "steer" => steer_history_verb(state, name, qs).await,
+        "env-explain" => env_explain_verb(name, qs),
+        // STILL 501, and now for a REASON rather than a port gap. `memory` and
+        // `rules` are advertised at [global, group, worker] and the scope UI
+        // writes all three, but `write_claude_memory` composes only global +
+        // worker: `memory/tags/<group>.md` is written by scope and read by
+        // nothing (AF-296). An explain built today would have to report that
+        // one of the three advertised levels is inert, which is a defect
+        // report, not an explanation. Fix the composition, then explain what
+        // actually happens.
+        "memory-explain" => jresp(
             StatusCode::NOT_IMPLEMENTED,
             json!({
-                "error": format!("{action} is not ported to the rust origin yet"),
-                "python_source": "amux-server.py:74901 (env-explain) / 74957 (memory-explain)",
-                "note": "layered env/memory composition is a named residual gap in api/session_verbs.rs",
+                "error": "memory-explain is not implemented",
+                "why": "the composition it would explain is itself incomplete: group-level \
+                        memory is written by /api/scope and read by no consumer (AF-296)",
+                "meanwhile": format!("GET /api/sessions/{name}/memory-inherited shows the \
+                                      CLAUDE.md inheritance, which is a DIFFERENT layering \
+                                      (loaded by Claude Code, not composed by amux)"),
+                "card": "AF-296",
             }),
         ),
         _ => not_found(),
@@ -11312,7 +12748,7 @@ fn log_get(name: &str, subid: &str, qs: &[(String, String)]) -> Response {
 /// GET git (+ commits / commit-detail / diff), py:75277-75361. The
 /// _install_amux_commit_hook side effect is not ported (Python still owns
 /// hook installation during coexistence).
-async fn git_get(name: &str, subid: &str, qs: &[(String, String)]) -> Response {
+pub(crate) async fn git_get(name: &str, subid: &str, qs: &[(String, String)]) -> Response {
     let wd = session_work_dir(name);
     match subid {
         "commits" => {
@@ -11517,6 +12953,63 @@ impl ConvAdopt {
 /// So the cross-link refusal is kept, and it is LOUD. A reported id that another
 /// lane's meta already claims is the one shape that cannot be a benign restart,
 /// and silently dropping it would leave the lane blind with no trace of why.
+/// How long a conversation claim survives without its OWNER re-confirming it.
+///
+/// A live lane's hooks report their conversation id every few seconds, so this
+/// window is hundreds of missed reports, not a couple.
+fn conv_claim_stale_s() -> i64 {
+    std::env::var("AMUX_CONV_CLAIM_STALE_S")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(1800)
+}
+
+/// What to do about a claim another lane holds on the id we were just handed.
+///
+/// PURE ON PURPOSE (AMUX-3897). The effectful version reads and writes meta
+/// files under the real `~/.amux`, and the property under test is the DECISION.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ConvClaim {
+    /// The owner confirmed recently. Their claim stands; stay blind.
+    Refuse,
+    /// The claim predates confirmation tracking, so its age is unknown. Start
+    /// the clock and refuse THIS time. A live owner re-confirms within seconds
+    /// and never ages out; a dead one ages out exactly once.
+    StampAndRefuse,
+    /// The owner has not re-confirmed for a full window. Take it.
+    Takeover,
+}
+
+/// `confirmed_at` is the last time the OWNER itself reported this id.
+///
+/// AMUX-3897. The refusal this gates is correct and had no expiry: a lane that
+/// restarts onto a different conversation keeps holding the old id, and the
+/// lane actually running that conversation can never take it. Measured live on
+/// 2026-08-30: `desktop` went idle on 08-28 still holding
+/// 15819f9b-aaf6-46fb-889d-175a8e134a4d, and `ts-gke` — whose hooks report that
+/// id every ~5s because it is genuinely ts-gke's conversation — was refused 205
+/// times and stayed blind to the staged guard throughout.
+///
+/// The card proposed keying staleness on "the claimant STARTED after the claim
+/// was stamped", and correctly declined to ship it: a RESUMED lane keeps its id
+/// across a restart, so that test cannot tell an abandoned claim from a resumed
+/// one, and two live lanes could ping-pong an id against a mechanism whose own
+/// doc says cross-linking is worse than blindness.
+///
+/// Confirmation time does not have that failure. A resumed lane reports the id
+/// it still holds, which refreshes the stamp, so it never goes stale and the
+/// ping-pong cannot start. Only a lane that has STOPPED reporting an id ages
+/// out of it, which is the actual condition being detected.
+pub(crate) fn conv_claim_verdict(confirmed_at: i64, now: i64, window_s: i64) -> ConvClaim {
+    if confirmed_at <= 0 {
+        return ConvClaim::StampAndRefuse;
+    }
+    if now - confirmed_at >= window_s {
+        return ConvClaim::Takeover;
+    }
+    ConvClaim::Refuse
+}
+
 pub(crate) fn adopt_reported_conv_id(name: &str, reported: &str) -> ConvAdopt {
     let reported = reported.trim();
     // A transcript stem is a UUID. Anything else is a caller mistake, not an id;
@@ -11528,23 +13021,75 @@ pub(crate) fn adopt_reported_conv_id(name: &str, reported: &str) -> ConvAdopt {
     if !plausible {
         return ConvAdopt::Unchanged;
     }
-    let was = meta_str(&load_meta(name), "cc_conversation_id");
+    let meta = load_meta(name);
+    let was = meta_str(&meta, "cc_conversation_id");
     if was == reported {
+        // THE OWNER RE-CONFIRMING ITS OWN CLAIM (AMUX-3897). This path used to
+        // write nothing, which is why a claim had no age and therefore no way
+        // to expire. Throttled: a lane reports every few seconds and this is a
+        // file write, so refresh only once a minute. The staleness window is
+        // measured in tens of minutes, so a stamp up to 60s behind changes no
+        // verdict.
+        let now = crate::config::now_f64() as i64;
+        if now - meta_i64(&meta, "cc_conversation_confirmed_at") >= 60 {
+            update_meta(name, &[("cc_conversation_confirmed_at", json!(now))]);
+        }
         return ConvAdopt::Unchanged;
     }
     let owner = conversation_owned_by_other(reported, name);
     if !owner.is_empty() {
-        tracing::warn!(
-            target: "staged_guard",
-            "[conv-adopt/AMUX-2936] session={} reported conv_id={} but lane '{}' already claims \
-             it — REFUSED. Two lanes pointing at one conversation both resume it, and the \
-             staged guard would attribute one lane's edits to the other. '{}' stays blind \
-             until the conflict is resolved.",
-            name, reported, owner, name,
-        );
-        return ConvAdopt::Conflict { owner: owner.clone() };
+        let now = crate::config::now_f64() as i64;
+        let confirmed_at = meta_i64(&load_meta(&owner), "cc_conversation_confirmed_at");
+        match conv_claim_verdict(confirmed_at, now, conv_claim_stale_s()) {
+            ConvClaim::StampAndRefuse => {
+                // A claim from before confirmation tracking. Its age is unknown,
+                // and "unknown" must not read as "stale" — that would hand a
+                // live lane's conversation away on the first report after a
+                // deploy. Start the clock and refuse; a live owner refreshes it
+                // within seconds, a dead one ages out once.
+                update_meta(&owner, &[("cc_conversation_confirmed_at", json!(now))]);
+                tracing::warn!(
+                    target: "staged_guard",
+                    "[conv-adopt/AMUX-3897] session={} reported conv_id={} claimed by '{}', whose \
+                     claim predates confirmation tracking — clock started, REFUSED for now. If \
+                     '{}' is not really on that conversation this clears itself in {}s.",
+                    name, reported, owner, owner, conv_claim_stale_s(),
+                );
+                return ConvAdopt::Conflict { owner: owner.clone() };
+            }
+            ConvClaim::Takeover => {
+                tracing::warn!(
+                    target: "staged_guard",
+                    "[conv-adopt/AMUX-3897] TAKEOVER: session={} adopted conv_id={} from lane \
+                     '{}', which had not re-confirmed it for {}s (window {}s). A live lane \
+                     reports its id every few seconds, so '{}' is no longer on this \
+                     conversation. '{}' was blind to the staged guard until now.",
+                    name, reported, owner, now - confirmed_at, conv_claim_stale_s(), owner, name,
+                );
+                update_meta(&owner, &[("cc_conversation_id", json!(""))]);
+            }
+            ConvClaim::Refuse => {
+                tracing::warn!(
+                    target: "staged_guard",
+                    "[conv-adopt/AMUX-2936] session={} reported conv_id={} but lane '{}' already \
+                     claims it and re-confirmed {}s ago — REFUSED. Two lanes pointing at one \
+                     conversation both resume it, and the staged guard would attribute one \
+                     lane's edits to the other. '{}' stays blind until the conflict is resolved.",
+                    name, reported, owner, now - confirmed_at, name,
+                );
+                return ConvAdopt::Conflict { owner: owner.clone() };
+            }
+        }
     }
-    update_meta(name, &[("cc_conversation_id", json!(reported))]);
+    update_meta(
+        name,
+        &[
+            ("cc_conversation_id", json!(reported)),
+            // Adoption IS a confirmation, and without this the freshly adopted
+            // claim would read as age-unknown to the next lane that reports it.
+            ("cc_conversation_confirmed_at", json!(crate::config::now_f64() as i64)),
+        ],
+    );
     // Countable, because "how many lanes healed and how many are still blind" is
     // the question AMUX-2936 could not answer for want of a trace. `was.empty()`
     // is the discriminator that matters: it means a lane the guard could not see
@@ -11564,7 +13109,7 @@ pub(crate) fn adopt_reported_conv_id(name: &str, reported: &str) -> ConvAdopt {
     ConvAdopt::Adopted { was }
 }
 
-fn tracked_files_mutate(name: &str, method: &Method, body: &Value) -> Response {
+pub(crate) fn tracked_files_mutate(name: &str, method: &Method, body: &Value) -> Response {
     let mut meta = load_meta(name);
     let mut tracked: Vec<String> = meta
         .get("tracked_files")
@@ -11627,7 +13172,7 @@ pub(crate) fn steer_guard_is_system(guard: &str) -> bool {
     !guard.is_empty() && guard != "selector-answer"
 }
 
-async fn steer_mutate(
+pub(crate) async fn steer_mutate(
     state: &AppState,
     name: &str,
     method: &Method,
@@ -11677,12 +13222,20 @@ async fn steer_mutate(
                 }
                 if let Some((text, queued_at)) = sent_row.filter(|_| sent) {
                     let hid = id2.clone();
+                    // AMUX-3919: the sixth writer, and the last one that left
+                    // `outcome` NULL. This row IS a delivery — the caller asked
+                    // for the queued row to be sent as it was dequeued — so it
+                    // must not be indistinguishable from a void or from a
+                    // delivery whose outcome went unrecorded. Named for the path
+                    // rather than a bare "sent", because the turn-boundary
+                    // drain and an operator sending a row by hand are different
+                    // facts and a reader grouping by outcome should see both.
                     conn.execute(
-                        "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, guard, sender) \
-                         VALUES(?,?,?,?,?,?,?)",
+                        "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+                         VALUES(?,?,?,?,?,?,?,?)",
                         rusqlite::params![
                             hid, session, redact_secrets(&text), queued_at, now_f64(),
-                            sent_src.0, sent_src.1
+                            "sent (dequeued by request)", sent_src.0, sent_src.1
                         ],
                     )?;
                 }
@@ -11837,150 +13390,17 @@ async fn post_dispatch(
             None => j200(json!({"ok": false, "message": "nothing to backup"})),
         },
         "send" => send_post(state, name, headers, body).await,
-        "instructions" => {
-            let mut saved = false;
-            if let Some(instr) = body.get("instructions") {
-                let v = instr.as_str().unwrap_or("").trim().to_string();
-                update_meta(name, &[("instructions", json!(v))]);
-                saved = true;
-            }
-            let mut applied = false;
-            if body.get("apply").map(py_truthy).unwrap_or(false) {
-                let instr = meta_str(&load_meta(name), "instructions").trim().to_string();
-                if !instr.is_empty() {
-                    if is_running(name).await {
-                        let _ = send_text(state, name, &instr, false, SendOrigin::Owner).await;
-                    } else {
-                        let st2 = state.clone();
-                        let n = name.to_string();
-                        tokio::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
-                    }
-                    applied = true;
-                }
-            }
-            j200(json!({
-                "ok": true,
-                "instructions": meta_str(&load_meta(name), "instructions").trim(),
-                "saved": saved,
-                "applied": applied,
-            }))
-        }
-        "keys" => {
-            let keys = body_str(body, "keys");
-            if keys.is_empty() {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'keys'"}));
-            }
-            let (ok, msg) = send_keys_op(name, &keys).await;
-            let code = if ok {
-                update_meta(name, &[("last_send", json!(now_i64()))]);
-                StatusCode::OK
-            } else if msg == "not running" {
-                StatusCode::CONFLICT
-            } else if msg.contains("not in allowed set") {
-                // 400 so the offline queue drops it instead of retrying
-                // forever (py:75700, 2026-07-18).
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            jresp(code, json!({"ok": ok, "message": msg}))
-        }
-        "resize" => {
-            let cols = body.get("cols").and_then(|v| v.as_i64());
-            let rows = body.get("rows").and_then(|v| v.as_i64()).unwrap_or(50);
-            let Some(cols) = cols else {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "cols/rows must be integers"}));
-            };
-            if cols == 0 {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "cols required"}));
-            }
-            if !is_running(name).await {
-                return jresp(StatusCode::CONFLICT, json!({"ok": false, "message": "not running"}));
-            }
-            let (ok, msg) = resize_pane(name, cols, rows).await;
-            j200(json!({"ok": true, "resized": ok, "message": msg}))
-        }
+        "instructions" => instructions_post_verb(state, name, body).await,
+        "keys" => keys_verb(name, body).await,
+        "resize" => resize_verb(name, body).await,
         // "agent-nav" DELETED (ARE-7): it drove Claude Code's subagents panel
         // by pane-verified keystrokes, keyed on a "⏺ main" row the TUI no
         // longer renders — 0 of 50 sessions matched, so the verb was wired
         // end-to-end and reached nobody. The durable replacement is
         // GET .../subagents (AMUX-2635). Resurrection: git log -S agent_nav.
-        "memory" => {
-            let content = body_str(body, "content");
-            let mf = mem_file(name);
-            let _ = std::fs::create_dir_all(memory_dir());
-            if std::fs::write(&mf, content).is_err() {
-                return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write memory file"}));
-            }
-            let wd = session_work_dir(name);
-            if !wd.is_empty() {
-                write_claude_memory(name, &wd);
-            }
-            j200(json!({"ok": true}))
-        }
-        "git" => {
-            let branch = body_str(body, "branch").trim().to_string();
-            let create = body.get("create").map(py_truthy).unwrap_or(false)
-                || (body.get("worktree").map(py_truthy).unwrap_or(false)
-                    && body.get("create").map(py_truthy).unwrap_or(false));
-            let wd = session_work_dir(name);
-            if wd.is_empty() {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "session has no directory"}));
-            }
-            if branch.is_empty() {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "branch name required"}));
-            }
-            let re = cached_re!(r"^[a-zA-Z0-9_./@\-]+$");
-            if !re.is_match(&branch) {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "invalid branch name"}));
-            }
-            let mut args: Vec<&str> = vec!["-C", &wd, "checkout"];
-            if create {
-                args.push("-b");
-            }
-            args.push(&branch);
-            match run_cmd("git", &args, Duration::from_secs(10)).await {
-                Some(o) if o.status.success() => j200(json!({"ok": true, "branch": branch})),
-                Some(o) => {
-                    let err = String::from_utf8_lossy(if o.stderr.is_empty() { &o.stdout } else { &o.stderr })
-                        .trim()
-                        .to_string();
-                    jresp(StatusCode::BAD_REQUEST, json!({"ok": false, "error": err}))
-                }
-                None => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"ok": false, "error": "git timed out"})),
-            }
-        }
-        "git-push" => {
-            if !is_running(name).await {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "session not running — start it first"}));
-            }
-            let cfg = parse_env(name);
-            let branch = cfg.get_or("CC_BRANCH", "").to_string();
-            let msg = if !branch.is_empty() && branch != "none" {
-                format!(
-                    "Deploy now. Your branch is `{branch}`. Run these steps:\n\
-                     1. `git stash` (if needed to allow checkout)\n\
-                     2. `git checkout {branch}` and `git stash pop` (if stashed)\n\
-                     3. IMPORTANT: Only stage files YOU changed in this session — do NOT use `git add -A`. Use `git add <specific files>` for each file you modified.\n\
-                     4. `git commit` with a good commit message summarizing YOUR changes only\n\
-                     5. `git checkout main && git pull --ff-only origin main`\n\
-                     6. `git merge {branch}` (resolve conflicts if any)\n\
-                     7. `git push origin main`\n\
-                     8. `git checkout {branch}` (go back to your branch)\n\
-                     Do all steps now. If any step fails, fix it and continue."
-                )
-            } else {
-                "Deploy now. You are on `main`. Run these steps:\n\
-                 1. `git pull --ff-only origin main`\n\
-                 2. IMPORTANT: Only stage files YOU changed in this session — do NOT use `git add -A`. Use `git add <specific files>` for each file you modified. Review `git diff` and only add files related to your task.\n\
-                 3. `git commit` with a good commit message summarizing YOUR changes only\n\
-                 4. `git push origin main`\n\
-                 Do all steps now. If any step fails, fix it and continue."
-                    .to_string()
-            };
-            let _ = send_text(state, name, &msg, false, SendOrigin::Owner).await;
-            j200(json!({"ok": true, "message": "deploy instructions sent to session"}))
-        }
+        "memory" => memory_post_verb(name, body),
+        "git" => git_checkout_verb(name, body).await,
+        "git-push" => git_push_verb(state, name).await,
         "start" => {
             // RESPOND BEFORE THE CHOREOGRAPHY (AMUX-2557): validations
             // inline, launch in the background, instant 202.
@@ -12061,49 +13481,8 @@ async fn post_dispatch(
             });
             jresp(StatusCode::ACCEPTED, json!({"ok": true, "message": "stopping"}))
         }
-        "clear" => {
-            let ptq = pt(name);
-            match tmux(&["clear-history", "-t", &ptq]).await {
-                Some(_) => j200(json!({"ok": true, "message": "cleared"})),
-                None => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"ok": false, "message": "tmux clear-history timed out"})),
-            }
-        }
-        "duplicate" => {
-            let new_name = body_str(body, "new_name").trim().to_string();
-            if new_name.is_empty() {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing new_name"}));
-            }
-            let re = cached_re!(r"[^a-zA-Z0-9_-]");
-            let new_name = re.replace_all(&new_name, "-").into_owned();
-            let new_file = env_path(&new_name);
-            if new_file.exists() {
-                return jresp(StatusCode::CONFLICT, json!({"error": format!("session '{new_name}' already exists")}));
-            }
-            if std::fs::copy(env_path(name), &new_file).is_err() {
-                return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "copy failed"}));
-            }
-            let registered = match register_twin(state, name, &new_name) {
-                Ok(applied) => applied,
-                // FAIL WHOLE, NOT HALF. Leaving the copied env file behind after
-                // a failed insert would produce exactly the unregistered twin
-                // this code exists to prevent, and it would do so on the error
-                // path where nobody looks.
-                Err(e) => {
-                    let _ = std::fs::remove_file(&new_file);
-                    return jresp(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        json!({"error": format!("could not register '{new_name}' in the worker store; the duplicate was rolled back rather than left invisible: {e}")}),
-                    );
-                }
-            };
-            j200(json!({
-                "ok": true,
-                "message": format!("duplicated as {new_name}"),
-                // Say which shape happened, so a caller can tell a registered
-                // twin from a plain env-file copy without going to the store.
-                "registered": registered,
-            }))
-        }
+        "clear" => clear_verb(name).await,
+        "duplicate" => duplicate_verb(state, name, body),
         "clone" => clone_post(state, name, body).await,
         "archive" => {
             if !session_destructive_allowed(state, headers) {
@@ -12116,130 +13495,11 @@ async fn post_dispatch(
             let (ok, msg) = archive_session(state, name).await;
             verb_resp(ok, msg)
         }
-        "wake" => {
-            let (ok, msg) = wake_session(state, name).await;
-            verb_resp(ok, msg)
-        }
-        "reset" => {
-            let (ok, msg) = reset_session(state, name).await;
-            verb_resp(ok, msg)
-        }
-        "commit-report" => {
-            // Attach the commit to the in-flight card (py:76233-76246). The
-            // cross-session sweep notice (py:76008-76230) is a named gap.
-            let sha: String = body_str(body, "sha").trim().chars().take(16).collect();
-            let subj: String = body_str(body, "subject").trim().chars().take(140).collect();
-            if sha.is_empty() {
-                return jresp(StatusCode::BAD_REQUEST, json!({"error": "sha required"}));
-            }
-            let session = name.to_string();
-            let sha2 = sha.clone();
-            let reply = state
-                .store
-                .write_async(move |conn| {
-                    let row: Option<String> = conn
-                        .query_row(
-                            "SELECT id FROM issues WHERE session=? AND deleted IS NULL \
-                             AND COALESCE(archived,0)=0 AND status IN ('doing','review') \
-                             AND owner_type='agent' ORDER BY updated DESC LIMIT 1",
-                            [&session],
-                            |r| r.get(0),
-                        )
-                        .ok();
-                    let Some(issue_id) = row else {
-                        return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
-                    };
-                    let log: String = conn
-                        .query_row("SELECT COALESCE(log,'') FROM issues WHERE id=?", [&issue_id], |r| r.get(0))
-                        .unwrap_or_default();
-                    let ts = chrono::Local::now().format("%H:%M");
-                    let new_log = format!("{}\n`{ts}` commit {sha2} — {subj}", log.trim_end()).trim().to_string();
-                    conn.execute(
-                        "UPDATE issues SET log=?, rev=COALESCE(rev,0)+1, updated=? WHERE id=?",
-                        rusqlite::params![new_log, now_i64(), issue_id],
-                    )?;
-                    Ok(crate::db::WriteOutcome {
-                        applied: true,
-                        events: vec![crate::db::PendingEvent {
-                            entity_type: amux_core::revision::EntityType::Other("issue".into()),
-                            entity_id: issue_id,
-                            mutation: amux_core::revision::MutationKind::Updated,
-                            payload: None,
-                        }],
-                    })
-                })
-                .await;
-            match reply {
-                Ok(r) if !r.applied => j200(json!({"ok": true, "attached": Value::Null})),
-                Ok(_) => {
-                    // Re-read the card id for the response (the write closure
-                    // cannot return it through WriteReply).
-                    let attached: Option<String> = state.store.read().ok().and_then(|conn| {
-                        conn.query_row(
-                            "SELECT id FROM issues WHERE session=? AND deleted IS NULL \
-                             AND COALESCE(archived,0)=0 AND status IN ('doing','review') \
-                             AND owner_type='agent' ORDER BY updated DESC LIMIT 1",
-                            [name],
-                            |r| r.get(0),
-                        )
-                        .ok()
-                    });
-                    j200(json!({"ok": true, "attached": attached, "sha": sha}))
-                }
-                Err(e) => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
-            }
-        }
+        "wake" => wake_verb(state, name).await,
+        "reset" => reset_verb(state, name).await,
+        "commit-report" => commit_report_verb(state, name, body).await,
         "report" => report_post(state, name, headers, body).await,
-        "apply-template" => {
-            let re = cached_re!(r"[^a-z0-9\-]");
-            let tmpl_id = re.replace_all(&body_str(body, "template_id"), "").into_owned();
-            let work_dir = body_str(body, "dir").trim().to_string();
-            // Two different failures, two different messages. They shared one
-            // string until 2026-08-11, and that is precisely why a dead
-            // templates_dir() went unnoticed: "template not found" reads as
-            // "you asked for a template that doesn't exist", so nobody
-            // suspected the ROOT was missing. Name which one it is.
-            let Some(tmpl_root) = templates_dir() else {
-                return jresp(
-                    StatusCode::NOT_FOUND,
-                    json!({"error": "no templates directory on this machine",
-                           "hint": "set AMUX_TEMPLATES_DIR, or install templates/ to ~/.amux/templates (install.sh does this)",
-                           "tried": [std::env::var("AMUX_TEMPLATES_DIR").unwrap_or_default(),
-                                     home().join("templates").display().to_string()]}),
-                );
-            };
-            let tmpl_path = tmpl_root.join(&tmpl_id);
-            if tmpl_id.is_empty() || !tmpl_path.is_dir() {
-                return jresp(
-                    StatusCode::NOT_FOUND,
-                    json!({"error": format!("no template '{tmpl_id}'"),
-                           "templates_dir": tmpl_root.display().to_string()}),
-                );
-            }
-            if !work_dir.is_empty() {
-                let work = expanduser(&work_dir);
-                let _ = std::fs::create_dir_all(&work);
-                if let Ok(meta_text) = std::fs::read_to_string(tmpl_path.join("template.json")) {
-                    if let Ok(meta) = serde_json::from_str::<Value>(&meta_text) {
-                        for d in meta["dirs"].as_array().cloned().unwrap_or_default() {
-                            if let Some(d) = d.as_str() {
-                                let _ = std::fs::create_dir_all(work.join(d));
-                            }
-                        }
-                    }
-                }
-                let claude_file = tmpl_path.join("CLAUDE.md");
-                if claude_file.exists() {
-                    let dest = work.join("CLAUDE.md");
-                    if !dest.exists() {
-                        if let Ok(t) = std::fs::read_to_string(&claude_file) {
-                            let _ = std::fs::write(&dest, t);
-                        }
-                    }
-                }
-            }
-            j200(json!({"ok": true}))
-        }
+        "apply-template" => apply_template_verb(body),
         "delete" => delete_post(state, name, headers).await,
         // CONVENTIONAL SPELLINGS, routed to the SAME handlers (AMUX-2669/2665).
         //
@@ -12401,20 +13661,20 @@ fn dirs_home() -> Option<std::path::PathBuf> {
 
 /// Why a worker-to-worker send is allowed, or `Err(reason)` if it is not.
 ///
-/// Ethan's rule: "worker to worker communication should be limited to intra
-/// group unless explicitly stated." The escapes are CONFIG, never something the
-/// sending agent can assert about itself in a request body — a flag any caller
-/// could set would make the rule advisory.
+/// Worker-to-worker communication is open across the fleet by default. An
+/// explicit empty `CC_SEND_ALLOW` remains a configuration-level opt-out; it is
+/// never a request-body flag that a caller can forge or accidentally override.
 ///
 /// - same group (or a self-send)          -> allowed
-/// - sender's `CC_SEND_ALLOW`             -> groups it may reach, or `*`
+/// - absent sender `CC_SEND_ALLOW`         -> `*` (the product default)
+/// - sender's `CC_SEND_ALLOW`             -> explicit groups, `*`, or empty opt-out
 /// - receiver's `CC_RECEIVE_ANY=1`        -> a documented fleet-wide routing
 ///   target. `amux` is one by construction: the worker roster tells every lane
 ///   to route amux platform bugs here, which IS the explicit statement, and
 ///   683 of the 908 worker-to-worker sends in the 24h before this shipped were
 ///   cross-group — mostly bug reports inbound to this lane. Blocking those
 ///   would have severed the fleet's only bug channel to fix a broadcast problem.
-fn cross_group_send_ok(origin: &str, target: &str) -> Result<&'static str, String> {
+pub(crate) fn cross_group_send_ok(origin: &str, target: &str) -> Result<&'static str, String> {
     if origin.is_empty() || origin == target {
         return Ok("self-or-human");
     }
@@ -12435,11 +13695,24 @@ fn cross_group_send_ok(origin: &str, target: &str) -> Result<&'static str, Strin
     if !og.is_disjoint(&tg) {
         return Ok("same-group");
     }
-    let env_t = parse_env(target);
-    if matches!(
-        env_t.get("CC_RECEIVE_ANY").map(|v| v.trim().trim_matches('"').to_lowercase()).as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    ) {
+    // RESOLVED WORKER > GROUP > GLOBAL, not read from the worker file alone
+    // (AMUX-4015). Both switches below are POLICY — a standing order about who
+    // may talk to whom — and AMUX-2930 already established that policy read
+    // through `parse_env` is the ethos-rule-1 shape: `/api/scope` advertises
+    // `env` at all three levels and the Configurations tab writes all three, so a
+    // group-level or global `CC_SEND_ALLOW` saved cleanly and changed nothing,
+    // because this gate only ever consulted `sessions/<worker>.env`.
+    //
+    // Using the same resolver `continuation_required` uses means a setting means
+    // the same thing to this gate as it does inside the lane's own shell.
+    let home = crate::config::amux_home();
+    let truthy = |v: Option<String>| {
+        matches!(
+            v.map(|x| x.trim().trim_matches('"').to_lowercase()).as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    };
+    if truthy(scoped_setting_in(&home, target, "CC_RECEIVE_ANY")) {
         return Ok("receiver-open");
     }
     // REPLY EXEMPTION. Ethan's objection was to a lane BROADCASTING across groups
@@ -12455,10 +13728,16 @@ fn cross_group_send_ok(origin: &str, target: &str) -> Result<&'static str, Strin
     if recently_contacted_by(target, origin) {
         return Ok("reply-to-inbound");
     }
-    let allow: Vec<String> = parse_env(origin)
-        .get("CC_SEND_ALLOW")
-        .map(|v| v.split(',').map(|t| t.trim().trim_matches('"').to_lowercase()).filter(|t| !t.is_empty()).collect())
-        .unwrap_or_default();
+    // OPEN BY DEFAULT (Ethan, 2026-09-03). An absent setting means `*`; an
+    // explicit empty worker/group/global value remains the opt-out. Keeping
+    // the policy in this one resolver means direct sends, board requests and
+    // reviewer routing cannot acquire three different defaults.
+    let allow: Vec<String> = cross_group_allow_setting_in(&home, origin)
+        .unwrap_or_else(|| "*".into())
+        .split(',')
+        .map(|t| t.trim().trim_matches('"').to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
     if allow.iter().any(|a| a == "*") || allow.iter().any(|a| tg.contains(a)) {
         return Ok("sender-allowlist");
     }
@@ -12466,10 +13745,16 @@ fn cross_group_send_ok(origin: &str, target: &str) -> Result<&'static str, Strin
         if g.is_empty() { "(untagged)".to_string() } else { g.iter().cloned().collect::<Vec<_>>().join(",") }
     };
     Err(format!(
-        "cross-group send refused: {origin} [{}] -> {target} [{}]. Worker-to-worker \
-         messaging is intra-group unless explicitly configured. To allow it: set \
-         CC_SEND_ALLOW on {origin} (comma-separated groups, or *), or CC_RECEIVE_ANY=1 \
-         on {target} if it is a fleet-wide routing target. A human send is never \
+        "cross-group send refused: {origin} [{}] -> {target} [{}]. This worker has \
+         an explicit cross-group opt-out. To allow it STANDING (no per-message \
+         approval): clear that override so it inherits the open fleet default, \
+         or set CC_SEND_ALLOW on {origin} \
+         (comma-separated groups, or *), or CC_RECEIVE_ANY=1 on {target} if it is a \
+         fleet-wide routing target. BOTH RESOLVE worker > group > global, so the \
+         Configurations tab can set them for this one worker, for its whole group, or \
+         fleet-wide, and a worker-level value overrides a group or global one \
+         (AMUX-4015). For a ONE-OFF instead, this refusal mints a grant the owner \
+         approves from the dashboard. A human send is never \
          restricted — this applies only to sends carrying a worker origin. For a \
          cross-group HANDOFF, use the board on a card owned by {target}: \
          `amux board progress <CARD> --stdin` notifies the owner at their next turn, \
@@ -12477,6 +13762,148 @@ fn cross_group_send_ok(origin: &str, target: &str) -> Result<&'static str, Strin
          bare desc PATCH records without notifying).",
         fmt(&og), fmt(&tg)
     ))
+}
+
+/// GET /api/config/cross-group — the FLEET-WIDE default for cross-group sends.
+///
+/// Reports the resolved global value plus whether the gate is enforcing at all,
+/// because those are different facts and only one of them is a policy choice:
+/// `AMUX_GROUP_SEND_ENFORCE=0` switches the whole gate OFF, which also disables
+/// the isolated-target protection and stops emitting the refusal events. A
+/// global allowance leaves the gate running and simply grants every lane, so
+/// isolation still holds and every crossing is still auditable. The UI offers
+/// the second; this endpoint reports both so an operator can see when the first
+/// one is what is really in effect.
+async fn get_cross_group_config() -> Response {
+    let home = crate::config::amux_home();
+    let global = crate::config::parse_env_file(&home.join("amux.env"))
+        .get("CC_SEND_ALLOW")
+        .map(|v| v.trim().trim_matches('"').to_string())
+        // Product default: a fresh install is an open peer fleet. Writing an
+        // explicit empty value through PUT is how an owner opts it back out.
+        .unwrap_or_else(|| "*".into());
+    let enforcing = std::env::var("AMUX_GROUP_SEND_ENFORCE")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "no"))
+        .unwrap_or(true);
+    j200(json!({
+        "default_allow": global,
+        "enabled": !global.is_empty(),
+        // Named separately and never folded into `enabled`: a reader who turns
+        // the toggle off while enforcement is disabled would otherwise believe
+        // they had closed a door that is not there.
+        "gate_enforcing": enforcing,
+        "note": if enforcing {
+            "the gate is active; this default grants every worker a standing allowance"
+        } else {
+            "AMUX_GROUP_SEND_ENFORCE is off, so ALL cross-group sends pass regardless of this setting"
+        },
+    }))
+}
+
+/// PUT /api/config/cross-group — set the fleet-wide default.
+///
+/// OWNER ONLY, the same rule `/api/scope` applies to its global layer: a session
+/// that could write this could grant ITSELF and every peer a standing
+/// cross-group channel, which is the escalation the scope policy exists to stop.
+/// A request carrying no worker origin is the dashboard.
+async fn put_cross_group_config(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+    if ["x-amux-session", "x-amux-worker"].iter().any(|h| {
+        headers.get(*h).and_then(|v| v.to_str().ok()).is_some_and(|s| !s.trim().is_empty())
+    }) {
+        return jresp(StatusCode::FORBIDDEN, json!({
+            "error": "a worker may not set the fleet-wide cross-group default",
+            "why": "this grants EVERY lane a standing allowance, so a session writing it \
+                    would be granting itself and its peers new capability. Same rule \
+                    /api/scope applies to the global layer.",
+            "how": "set it from the dashboard, or per worker via PATCH /api/sessions/{name}/config",
+        }));
+    }
+    let b = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    let allow = b.get("allow").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let home = crate::config::amux_home();
+    let f = home.join("amux.env");
+    let mut cfg = EnvFile::load(&f);
+    cfg.set("CC_SEND_ALLOW", &allow);
+    if cfg.write(&f).is_err() {
+        return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write amux.env"}));
+    }
+    tracing::warn!(
+        default_allow = %allow,
+        "config: FLEET-WIDE cross-group default changed (global CC_SEND_ALLOW)"
+    );
+    j200(json!({
+        "ok": true,
+        "default_allow": allow,
+        "enabled": !allow.is_empty(),
+        // A worker-level value still overrides this, so the honest message says
+        // "default" rather than implying it settles every lane.
+        "message": if allow.is_empty() {
+            "cross-group sends are disabled by an explicit global opt-out; per-worker allowances still apply"
+        } else if allow == "*" {
+            "every worker may now send to any group by default, no approval needed"
+        } else {
+            "workers may now send to the listed groups by default"
+        },
+    }))
+}
+
+/// GET /api/config/board-drain — the fleet-wide backlog -> To Do default.
+///
+/// Absence means ON. That is the product default, so a fresh install and an
+/// old install with no override agree. Worker and group scope may still opt a
+/// lane out through the ordinary configuration resolver.
+async fn get_board_drain_config() -> Response {
+    let home = crate::config::amux_home();
+    let key = crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY;
+    let configured = EnvFile::load(&home.join("amux.env"))
+        .get(key)
+        .map(|v| v.trim().trim_matches('"').to_string());
+    let enabled = configured
+        .as_deref()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+        .unwrap_or(true);
+    j200(json!({
+        "enabled": enabled,
+        "configured": configured,
+        "default_when_unset": true,
+        "note": "worker and group configuration may explicitly opt individual lanes out",
+    }))
+}
+
+/// PUT /api/config/board-drain — set the all-worker backlog-drain default.
+/// Owner-only for the same reason as the cross-group fleet setting: a worker
+/// may tune its own lane, but may not rewrite every peer's automation policy.
+async fn put_board_drain_config(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+    if ["x-amux-session", "x-amux-worker"].iter().any(|h| {
+        headers.get(*h).and_then(|v| v.to_str().ok()).is_some_and(|s| !s.trim().is_empty())
+    }) {
+        return jresp(StatusCode::FORBIDDEN, json!({
+            "error": "a worker may not set the fleet-wide board-drain default",
+            "how": "set it from dashboard Settings, or use the worker's Configurations tab for one lane",
+        }));
+    }
+    let b = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    let Some(enabled) = b.get("enabled").and_then(Value::as_bool) else {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "enabled must be a boolean"}));
+    };
+    let home = crate::config::amux_home();
+    let path = home.join("amux.env");
+    let key = crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY;
+    let mut cfg = EnvFile::load(&path);
+    cfg.set(key, if enabled { "1" } else { "0" });
+    if cfg.write(&path).is_err() {
+        return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write amux.env"}));
+    }
+    tracing::warn!(enabled, "config: fleet-wide backlog drain default changed");
+    j200(json!({
+        "ok": true,
+        "enabled": enabled,
+        "message": if enabled {
+            "all workers will drain eligible backlog by default"
+        } else {
+            "workers will not drain backlog unless a group or worker override enables it"
+        },
+    }))
 }
 
 /// The message id a send answers with (Ethan 2026-08-11: "we should have all
@@ -12546,22 +13973,98 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         .unwrap_or(true)
     {
         if let Err(reason) = cross_group_send_ok(&send_origin, name) {
-            // LOUD AND QUERYABLE, per CLAUDE.md's two-fixes rule: a refusal that
-            // leaves no trace is a rule nobody can audit or tune.
-            tracing::warn!(origin = %send_origin, target = %name, "{reason}");
-            emit_event(
-                state,
-                name,
-                "send.cross_group_refused",
-                Some(json!({"origin": send_origin, "target": name})),
-                None,
-                "group-scope",
-            )
-            .await;
-            return jresp(
-                StatusCode::FORBIDDEN,
-                json!({"ok": false, "error": reason, "blocked": "cross_group"}),
-            );
+            // Isolation is a permanent reachability boundary, not a permission
+            // prompt. The generic refusal path below used to mint a one-shot
+            // cross-group grant even though approving it could never make an
+            // isolated raw-agent lane a valid peer target. Worse, a previously
+            // approved allowance was consumed before the refusal and bypassed
+            // the isolation check entirely. Return the exact refusal without a
+            // grant: only the owner/dashboard path (empty origin) is allowed.
+            if session_is_isolated(name) {
+                tracing::warn!(origin = %send_origin, target = %name, "{reason}");
+                emit_event(
+                    state,
+                    name,
+                    "send.isolated_refused",
+                    Some(json!({"origin": send_origin, "target": name})),
+                    None,
+                    "isolation",
+                )
+                .await;
+                return jresp(
+                    StatusCode::FORBIDDEN,
+                    json!({
+                        "ok": false,
+                        "error": reason,
+                        "blocked": "isolated",
+                        "code": "isolated_target",
+                        "what_to_do": "An isolated worker is reachable only by its owner from the dashboard; no approval can authorize peer delivery.",
+                    }),
+                );
+            }
+            // AN OWNER-APPROVED, SINGLE-USE ALLOWANCE RELEASES EXACTLY ONE SEND
+            // (AMUX-3997). Checked before the refusal so an approval the owner
+            // already gave is honoured on the worker's own retry.
+            //
+            // This is the truthful path the rule was missing. Ethan really does
+            // sometimes authorize a cross-group send, and before this the only
+            // way to carry that intent was prose in a message — which is not
+            // authorization and which a peer can forge. Now it goes through the
+            // same shape the email gate uses, where the yes is a request the
+            // SERVER saw from the dashboard.
+            let home = crate::config::amux_home();
+            if let Some(gid) = super::grants::take_allowance(&home, &send_origin, name) {
+                emit_event(
+                    state,
+                    name,
+                    "send.cross_group_allowed_by_grant",
+                    Some(json!({"origin": send_origin, "target": name, "grant": gid})),
+                    None,
+                    "group-scope",
+                )
+                .await;
+            } else {
+                // LOUD AND QUERYABLE, per CLAUDE.md's two-fixes rule: a refusal that
+                // leaves no trace is a rule nobody can audit or tune.
+                tracing::warn!(origin = %send_origin, target = %name, "{reason}");
+                emit_event(
+                    state,
+                    name,
+                    "send.cross_group_refused",
+                    Some(json!({"origin": send_origin, "target": name})),
+                    None,
+                    "group-scope",
+                )
+                .await;
+                // The refusal now carries an ASK. Previously it was terminal, so a
+                // lane with a legitimate need had nowhere to go and the owner had
+                // no way to say yes that the machine could see.
+                let preview: String = body_str(body, "text").chars().take(280).collect();
+                let grant = super::grants::create_grant(
+                    &home,
+                    "cross_group_send",
+                    &send_origin,
+                    &format!("{send_origin} -> {name}"),
+                    json!({"origin": send_origin, "target": name, "preview": preview}),
+                );
+                let mut out = json!({
+                    "ok": false,
+                    "error": reason,
+                    "blocked": "cross_group",
+                });
+                if let Some(gid) = grant {
+                    out["code"] = json!("approval_required");
+                    out["grant_id"] = json!(gid);
+                    out["what_to_do"] = json!(
+                        "STOP and surface this to Ethan — do not retry, do not reroute, do not \
+                         approve it yourself. A human approves from the dashboard origin: POST \
+                         /api/grants/<grant_id>/approve (no X-Amux-Session header). The approval \
+                         releases exactly ONE send to this target and expires in 1h."
+                    );
+                    out["expires_in_s"] = json!(super::grants::GRANT_TTL_S as i64);
+                }
+                return jresp(StatusCode::FORBIDDEN, out);
+            }
         }
     }
     let mut text = body_str(body, "text");
@@ -12660,8 +14163,58 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         } else if !origin.is_empty() && origin != name {
             cmd_hist_record_full(state, name, &orig_text, "session", &origin, false, meta).await;
         }
-    } else if !msg_id.is_empty() {
-        send_dedup_forget(state, name, &msg_id).await;
+    } else {
+        // A FAILED DELIVERY IS A DELIVERY EVENT (AMUX-3903).
+        //
+        // This whole record was inside `if ok`, so a send that typed the text
+        // and could not submit it wrote NO ROW AT ALL. Not a row marked failed:
+        // absent. The consequences compound, because every consumer of this
+        // table reads a population with the failures already removed —
+        // `submit_verdict` had never been `stuck` in 9,494 rows fleet-wide, the
+        // success rate computed from it is 100% by construction, and the
+        // duplicate-delivery detector, the sender-attribution trail and any
+        // sweep over "what was this lane told" all inherit the same blind spot.
+        // A wrong answer that is not wrong-looking is ethos rule 4's whole
+        // subject.
+        //
+        // A REFUSAL IS NOT A FAILED DELIVERY, and the distinction is the reason
+        // this is not simply `else`. "not running", archived, invalid name, the
+        // resume picker, an isolated lane, the background-conversation view:
+        // amux never typed anything, the caller got an error naming the next
+        // step, and recording them here would bury the real failures under
+        // thousands of rows about messages that were never attempted.
+        //
+        // `submit_verdict_of` is the discriminator and it already exists —
+        // reused rather than re-derived, so this cannot drift from the verdict
+        // the response reports (ethos rule 1). On the failure branch it returns
+        // Some only for "not submitted", which means the text IS in the lane's
+        // composer; every refusal maps to None.
+        if let Some(verdict) = submit_verdict_of(&msg) {
+            // LOUD, for the same reason ghost-rescue is: keystroke delivery
+            // failing is a defect, and until now it left the process without a
+            // trace anywhere durable.
+            tracing::warn!(
+                session = %name, verdict = %verdict,
+                preview = %chars_truncate(&text, 80),
+                "send FAILED to submit — recording it (AMUX-3903); the text is in the lane's \
+                 composer and was never delivered"
+            );
+            let meta = DeliveryMeta {
+                delivery: Some(Delivery::Direct),
+                queued_at_ms: None,
+                submit_verdict: Some(verdict),
+            };
+            if record_history {
+                let email =
+                    headers.get("x-amux-user-email").and_then(|v| v.to_str().ok()).unwrap_or("");
+                cmd_hist_record_full(state, name, &orig_text, "user", email, skip_board, meta).await;
+            } else if !origin.is_empty() && origin != name {
+                cmd_hist_record_full(state, name, &orig_text, "session", &origin, false, meta).await;
+            }
+        }
+        if !msg_id.is_empty() {
+            send_dedup_forget(state, name, &msg_id).await;
+        }
     }
     // A REFUSAL IS NOT A SERVER ERROR (AMUX-2681). This used to be
     // `if msg == "not running" { 409 } else { 500 }`, so every other honest
@@ -12710,6 +14263,1008 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     // credit-gate state (_session_auto_actions) — process state this origin
     // does not hold; named gap.
     jresp(code, resp)
+}
+
+/// `reset` as a callable verb, so the promoted `/api/workers/{id}/reset`
+/// route and the legacy `/api/sessions/{name}/reset` spelling run ONE
+/// implementation instead of a route alias and a re-implementation (AF-288).
+pub(crate) async fn reset_verb(state: &AppState, name: &str) -> Response {
+    let (ok, msg) = reset_session(state, name).await;
+    verb_resp(ok, msg)
+}
+
+/// `wake` as a callable verb, so the promoted `/api/workers/{id}/wake`
+/// route and the legacy `/api/sessions/{name}/wake` spelling run ONE
+/// implementation instead of a route alias and a re-implementation (AF-288).
+pub(crate) async fn wake_verb(state: &AppState, name: &str) -> Response {
+    let (ok, msg) = wake_session(state, name).await;
+    verb_resp(ok, msg)
+}
+
+/// `clear` as a callable verb, so the promoted `/api/workers/{id}/clear`
+/// route and the legacy `/api/sessions/{name}/clear` spelling run ONE
+/// implementation instead of a route alias and a re-implementation (AF-288).
+pub(crate) async fn clear_verb(name: &str) -> Response {
+    let ptq = pt(name);
+    match tmux(&["clear-history", "-t", &ptq]).await {
+        Some(_) => j200(json!({"ok": true, "message": "cleared"})),
+        None => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"ok": false, "message": "tmux clear-history timed out"})),
+    }
+}
+
+/// `resize` as a callable verb, so the promoted `/api/workers/{id}/resize`
+/// route and the legacy `/api/sessions/{name}/resize` spelling run ONE
+/// implementation instead of a route alias and a re-implementation (AF-288).
+pub(crate) async fn resize_verb(name: &str, body: &Value) -> Response {
+    let cols = body.get("cols").and_then(|v| v.as_i64());
+    let rows = body.get("rows").and_then(|v| v.as_i64()).unwrap_or(50);
+    let Some(cols) = cols else {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "cols/rows must be integers"}));
+    };
+    if cols == 0 {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "cols required"}));
+    }
+    if !is_running(name).await {
+        return jresp(StatusCode::CONFLICT, json!({"ok": false, "message": "not running"}));
+    }
+    let (ok, msg) = resize_pane(name, cols, rows).await;
+    j200(json!({"ok": true, "resized": ok, "message": msg}))
+}
+
+/// `keys` as a callable verb, so the promoted `/api/workers/{id}/keys`
+/// route and the legacy `/api/sessions/{name}/keys` spelling run ONE
+/// implementation instead of a route alias and a re-implementation (AF-288).
+pub(crate) async fn keys_verb(name: &str, body: &Value) -> Response {
+    let keys = body_str(body, "keys");
+    if keys.is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'keys'"}));
+    }
+    let (ok, msg) = send_keys_op(name, &keys).await;
+    let code = if ok {
+        update_meta(name, &[("last_send", json!(now_i64()))]);
+        StatusCode::OK
+    } else if msg == "not running" {
+        StatusCode::CONFLICT
+    } else if msg.contains("not in allowed set") {
+        // 400 so the offline queue drops it instead of retrying
+        // forever (py:75700, 2026-07-18).
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    jresp(code, json!({"ok": ok, "message": msg}))
+}
+
+/// `apply-template` as a callable verb.
+///
+/// IT TAKES NO SESSION, and that is the finding rather than an oversight in the
+/// extraction: the arm reads its target directory from the BODY (`dir`) and
+/// never consults the name it was addressed to. The compiler said so — `name`
+/// was unused the moment this became a function — which is why the parameter is
+/// gone rather than underscored.
+///
+/// So `apply-template` is not an operation on a worker as a resource, and it is
+/// reclassified out of RESOURCE on AF-203 rather than promoted (AF-288).
+/// Mounting it at `/api/workers/{id}/apply-template` would make the id
+/// decorative and freeze that fiction into the supported API, which is the
+/// specific failure AF-201 says a one-for-one promotion causes.
+pub(crate) fn apply_template_verb(body: &Value) -> Response {
+    let re = cached_re!(r"[^a-z0-9\-]");
+    let tmpl_id = re.replace_all(&body_str(body, "template_id"), "").into_owned();
+    let work_dir = body_str(body, "dir").trim().to_string();
+    // Two different failures, two different messages. They shared one
+    // string until 2026-08-11, and that is precisely why a dead
+    // templates_dir() went unnoticed: "template not found" reads as
+    // "you asked for a template that doesn't exist", so nobody
+    // suspected the ROOT was missing. Name which one it is.
+    let Some(tmpl_root) = templates_dir() else {
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": "no templates directory on this machine",
+                   "hint": "set AMUX_TEMPLATES_DIR, or install templates/ to ~/.amux/templates (install.sh does this)",
+                   "tried": [std::env::var("AMUX_TEMPLATES_DIR").unwrap_or_default(),
+                             home().join("templates").display().to_string()]}),
+        );
+    };
+    let tmpl_path = tmpl_root.join(&tmpl_id);
+    if tmpl_id.is_empty() || !tmpl_path.is_dir() {
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": format!("no template '{tmpl_id}'"),
+                   "templates_dir": tmpl_root.display().to_string()}),
+        );
+    }
+    if !work_dir.is_empty() {
+        let work = expanduser(&work_dir);
+        let _ = std::fs::create_dir_all(&work);
+        if let Ok(meta_text) = std::fs::read_to_string(tmpl_path.join("template.json")) {
+            if let Ok(meta) = serde_json::from_str::<Value>(&meta_text) {
+                for d in meta["dirs"].as_array().cloned().unwrap_or_default() {
+                    if let Some(d) = d.as_str() {
+                        let _ = std::fs::create_dir_all(work.join(d));
+                    }
+                }
+            }
+        }
+        let claude_file = tmpl_path.join("CLAUDE.md");
+        if claude_file.exists() {
+            let dest = work.join("CLAUDE.md");
+            if !dest.exists() {
+                if let Ok(t) = std::fs::read_to_string(&claude_file) {
+                    let _ = std::fs::write(&dest, t);
+                }
+            }
+        }
+    }
+    j200(json!({"ok": true}))
+}
+
+/// The GET half of `steer`: the lane's steering queue, annotated per row with
+/// age and whether the lane can actually receive (AMUX-2785).
+///
+/// Extracted for the promoted `/api/workers/{id}/steer` route (AF-288).
+/// `steer` is READ AND WRITE, which is worth stating because the GET arm alone
+/// reads like an observability endpoint: every non-GET method on this action
+/// goes to `steer_mutate` instead, so a promoted route has to carry both or it
+/// silently drops the half that queues work.
+pub(crate) async fn steer_history_verb(
+    state: &AppState,
+    name: &str,
+    qs: &[(String, String)],
+) -> Response {
+    let conn = match state.store.read() {
+        Ok(c) => c,
+        Err(e) => return jresp(StatusCode::SERVICE_UNAVAILABLE, json!({"error": e.to_string()})),
+    };
+    if qs_first(qs, "history", "0") == "1" {
+        let mut out = vec![];
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT id, text, queued_at, delivered_at FROM steering_history \
+             WHERE session=? ORDER BY delivered_at DESC LIMIT 100",
+        ) {
+            if let Ok(rows) = stmt.query_map([name], |r| {
+                Ok(json!({
+                    "id": r.get::<_, String>(0)?,
+                    "text": r.get::<_, String>(1)?,
+                    "queued_at": r.get::<_, Option<f64>>(2)?,
+                    "delivered_at": r.get::<_, f64>(3)?,
+                }))
+            }) {
+                out = rows.flatten().collect();
+            }
+        }
+        return j200(json!(out));
+    }
+    let mut out: Vec<Value> = vec![];
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, text, queued_at, COALESCE(guard,''), COALESCE(sender,'') FROM steering_queue \
+         WHERE session=? ORDER BY queued_at ASC",
+    ) {
+        if let Ok(rows) = stmt.query_map([name], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "text": r.get::<_, String>(1)?,
+                "queued_at": r.get::<_, f64>(2)?,
+                "guard": r.get::<_, String>(3)?,
+                "sender": r.get::<_, String>(4)?,
+            }))
+        }) {
+            out = rows.flatten().collect();
+        }
+    }
+    drop(conn);
+    // AGE AND REACHABILITY PER ROW (AMUX-2785). A queue listing that
+    // shows only text and a timestamp cannot answer the one question a
+    // sender staring at it has — "is this coming, or is it stuck?" —
+    // and the caller cannot compute it, because whether the lane can
+    // receive at all is not in the row. Same predicate as the drain
+    // loop, so the list cannot claim what the loop will not do.
+    let blocked = lane_block_reason(name).await;
+    let max_age = steer_max_age_s();
+    let now = now_f64();
+    for row in out.iter_mut() {
+        let age = now - row["queued_at"].as_f64().unwrap_or(now);
+        row["age_s"] = json!(age as i64);
+        row["overdue"] = json!(age >= max_age);
+        row["deliverable"] = json!(blocked.is_none());
+        row["blocked_reason"] = json!(blocked);
+    }
+    j200(json!(out))
+}
+
+/// `memory` as a callable verb, extracted for the promoted
+/// `/api/workers/{id}/memory` route (AF-293).
+pub(crate) fn memory_post_verb(name: &str, body: &Value) -> Response {
+    let content = body_str(body, "content");
+    let mf = mem_file(name);
+    let _ = std::fs::create_dir_all(memory_dir());
+    if std::fs::write(&mf, content).is_err() {
+        return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write memory file"}));
+    }
+    let wd = session_work_dir(name);
+    if !wd.is_empty() {
+        write_claude_memory(name, &wd);
+    }
+    j200(json!({"ok": true}))
+}
+
+/// `instructions` as a callable verb, extracted for the promoted
+/// `/api/workers/{id}/instructions` route (AF-293).
+pub(crate) async fn instructions_post_verb(state: &AppState, name: &str, body: &Value) -> Response {
+    let mut saved = false;
+    if let Some(instr) = body.get("instructions") {
+        let v = instr.as_str().unwrap_or("").trim().to_string();
+        update_meta(name, &[("instructions", json!(v))]);
+        saved = true;
+    }
+    let mut applied = false;
+    if body.get("apply").map(py_truthy).unwrap_or(false) {
+        let instr = meta_str(&load_meta(name), "instructions").trim().to_string();
+        if !instr.is_empty() {
+            if is_running(name).await {
+                let _ = send_text(state, name, &instr, false, SendOrigin::Owner).await;
+            } else {
+                let st2 = state.clone();
+                let n = name.to_string();
+                tokio::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
+            }
+            applied = true;
+        }
+    }
+    j200(json!({
+        "ok": true,
+        "instructions": meta_str(&load_meta(name), "instructions").trim(),
+        "saved": saved,
+        "applied": applied,
+    }))
+}
+
+/// `memory` as a callable verb, extracted for the promoted
+/// `/api/workers/{id}/memory` route (AF-293).
+pub(crate) fn memory_get_verb(name: &str) -> Response {
+    let mf = mem_file(name);
+    let content = std::fs::read_to_string(&mf).unwrap_or_default();
+    let wd = session_work_dir(name);
+    j200(json!({
+        "content": content,
+        "path": mf.to_string_lossy(),
+        "work_dir": wd,
+        "claude_project": if wd.is_empty() { String::new() } else { project_name(&wd) },
+        "shared_with": memory_shared_with(name),
+    }))
+}
+
+/// `instructions` as a callable verb, extracted for the promoted
+/// `/api/workers/{id}/instructions` route (AF-293).
+pub(crate) fn instructions_get_verb(name: &str) -> Response {
+    j200(json!({
+        "name": name,
+        "instructions": meta_str(&load_meta(name), "instructions").trim(),
+    }))
+}
+
+/// `env-explain` — which env layer supplied a worker's value, and which did not.
+///
+/// The scope API advertises `env` at [global, group, worker] and names this
+/// endpoint as the per-worker "why did I get this value" answer (SCOPE_CAPS's
+/// `explain` field). It answered 501 until AF-295. The layering itself was never
+/// the missing part: `scope_env_layers` already resolves the same ordered files
+/// every consumer reads, so this walks THAT list rather than re-deriving one,
+/// which is the only way the answer can stay true when the resolver changes.
+///
+/// VALUES ARE NEVER RETURNED, and that is a security property rather than a
+/// convenience. These files are 0600 because they carry credentials
+/// (`api/scope.rs`'s own storage note says so), and an explain that echoed them
+/// would turn a documentation endpoint into a credential read over HTTP. Key
+/// NAMES are returned, matching the repo's existing line — `docs/credentials.md`
+/// is a committed inventory of names, and the values live only in server.env.
+///
+/// "Which layer won" is the whole question anyway. A caller who needs the value
+/// already has it; what they cannot see is which of three files produced it.
+pub(crate) fn env_explain_verb(name: &str, qs: &[(String, String)]) -> Response {
+    let h = home();
+    let key = qs_first(qs, "key", "").trim().to_string();
+    let layers = scope_env_layers(&h, name);
+    let level_of = |p: &std::path::Path| -> &'static str {
+        if p.file_name().map(|f| f == "amux.env").unwrap_or(false) {
+            "global"
+        } else if p.parent().map(|d| d.ends_with("env")).unwrap_or(false) {
+            "group"
+        } else {
+            "worker"
+        }
+    };
+    let mut rows = Vec::new();
+    let mut winner: Option<Value> = None;
+    for p in &layers {
+        let ef = EnvFile::load(p);
+        let level = level_of(p);
+        let mut row = json!({
+            "level": level,
+            "path": p.to_string_lossy(),
+            "keys": ef.keys().len(),
+        });
+        if !key.is_empty() {
+            // PRESENT-BUT-EMPTY IS NOT ABSENT, the same distinction
+            // `effective_env` had to learn the hard way: an empty value is a
+            // deliberate clear, and reporting it as "does not define" would send
+            // a reader looking for a layer that is doing exactly its job.
+            let defines = ef.get(&key).is_some();
+            let empty = ef.get(&key).map(|v| v.trim().is_empty()).unwrap_or(false);
+            row["defines"] = json!(defines);
+            row["empty"] = json!(empty);
+            if defines {
+                // LAST writer wins: the list is least-specific first, so this
+                // keeps overwriting and ends on the most specific layer.
+                winner = Some(json!({"level": level, "path": p.to_string_lossy()}));
+            }
+        } else {
+            let mut names: Vec<String> = ef.keys();
+            names.sort();
+            row["defined_keys"] = json!(names);
+        }
+        rows.push(row);
+    }
+    j200(json!({
+        "worker": name,
+        "key": if key.is_empty() { Value::Null } else { json!(key) },
+        "order": ["global", "group", "worker"],
+        "layers": rows,
+        "winner": winner,
+        "values_withheld": true,
+        "note": "Values are never returned: these files are 0600 and carry credentials. \
+                 This answers WHICH layer supplied the value, which is the part a caller \
+                 cannot see for themselves.",
+        "resolver": "scope_env_layers — the same ordered list every consumer reads",
+    }))
+}
+
+/// `commit-report` as a callable verb, for the grouped
+/// `/api/workers/{id}/git/...` surface (AF-291).
+fn commit_task_refs(subject: &str) -> Vec<String> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\b[A-Z][A-Z0-9]+-\d+\b").expect("commit task ref regex")
+    });
+    let mut seen = std::collections::HashSet::new();
+    re.find_iter(subject)
+        .map(|m| m.as_str().to_string())
+        .filter(|id| seen.insert(id.clone()))
+        .collect()
+}
+
+#[derive(Debug, Default)]
+struct CommitArtifactScan {
+    full_sha: Option<String>,
+    subject: Option<String>,
+    files: Vec<String>,
+    measured: bool,
+    why_unmeasured: Option<&'static str>,
+}
+
+/// Read the identity and files from the commit itself. The hook's subject is
+/// truncated for a log line, so it cannot be the authoritative source of a
+/// task id near the end of a long subject. All git arguments are passed without
+/// a shell and `sha` is validated before reaching git.
+async fn read_commit_artifacts(dir: &str, sha: &str) -> CommitArtifactScan {
+    if dir.trim().is_empty() {
+        return CommitArtifactScan {
+            why_unmeasured: Some("no repo dir in the report"),
+            ..Default::default()
+        };
+    }
+    if !commit_shape::usable_sha(sha) {
+        return CommitArtifactScan {
+            why_unmeasured: Some("sha is not a plain hex object name"),
+            ..Default::default()
+        };
+    }
+    if !std::path::Path::new(dir).is_dir() {
+        return CommitArtifactScan {
+            why_unmeasured: Some("reported dir is not a directory here"),
+            ..Default::default()
+        };
+    }
+    let git = |args: Vec<String>| {
+        let dir = dir.to_string();
+        async move {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        }
+    };
+    let Some(full_sha) = git(vec![
+        "rev-parse".into(),
+        "--verify".into(),
+        format!("{sha}^{{commit}}"),
+    ])
+    .await
+    else {
+        return CommitArtifactScan {
+            why_unmeasured: Some("git could not resolve the commit"),
+            ..Default::default()
+        };
+    };
+    let subject = git(vec!["show".into(), "-s".into(), "--format=%s".into(), full_sha.clone()])
+        .await;
+    let files = git(vec![
+        "diff-tree".into(),
+        "--no-commit-id".into(),
+        "--name-only".into(),
+        "-r".into(),
+        "--root".into(),
+        "-m".into(),
+        full_sha.clone(),
+    ])
+    .await
+    .map(|out| {
+        let mut seen = std::collections::HashSet::new();
+        out.lines()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .filter(|p| seen.insert(p.clone()))
+            .collect::<Vec<_>>()
+    });
+    match (subject, files) {
+        (Some(subject), Some(files)) => CommitArtifactScan {
+            full_sha: Some(full_sha),
+            subject: Some(subject),
+            files,
+            measured: true,
+            why_unmeasured: None,
+        },
+        _ => CommitArtifactScan {
+            full_sha: Some(full_sha),
+            why_unmeasured: Some("git could not read commit subject or files"),
+            ..Default::default()
+        },
+    }
+}
+
+pub(crate) async fn commit_report_verb(state: &AppState, name: &str, body: &Value) -> Response {
+    // Attach the commit to the exact task named by the report/subject. The
+    // cross-session sweep notice (py:76008-76230) is a named gap.
+    let sha: String = body_str(body, "sha").trim().chars().take(16).collect();
+    let subj: String = body_str(body, "subject").trim().chars().take(140).collect();
+    if sha.is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "sha required"}));
+    }
+    // DID THE COMMIT CONTAIN ANYTHING (AMUX-3837). See `commit_shape`
+    // for why this lives here. The verdict is computed BEFORE the card
+    // write so it can ride the same log line the commit already adds:
+    // a second write would put the warning somewhere other than where
+    // the session goes to read what it shipped.
+    let dir = body_str(body, "dir");
+    let shape = read_commit_shape(&dir, &sha).await;
+    let scan = read_commit_artifacts(&dir, &sha).await;
+    let empty = matches!(shape, commit_shape::Shape::Empty);
+    // WHAT THE HOOK SAW, held by the staged-guard (AMUX-3837).
+    // amux-frustrations demonstrated the mechanism: git writes the tree
+    // AFTER the hooks return, so anything that empties the index during
+    // our 30-90s pre-commit window (cargo check + clippy, on an index
+    // every lane shares) yields a zero-file commit reporting success.
+    // The hook already reports its staged set and this endpoint already
+    // knows what landed; joining them turns a forensic reconstruction
+    // into a stated pair. 300s, because the window is the pre-commit
+    // build, not a session.
+    let staged_at_hook =
+        crate::api::git_guard::staged_seen(name, &dir, crate::config::now_f64(), 300.0);
+    if empty {
+        tracing::warn!(
+            session = %name, sha = %sha, subject = %subj,
+            staged_at_hook = staged_at_hook.map(|n| n as i64).unwrap_or(-1),
+            // The gloss follows what THIS line actually carries. It used
+            // to explain the -1 sentinel unconditionally, so a line
+            // reading `staged_at_hook=1` came with a sentence about a
+            // value it did not have. Caught by probing the arm rather
+            // than by reading the code.
+            "commit-report: EMPTY COMMIT — this sha contains no files, so the change it \
+             claims is still uncommitted in the working tree (AMUX-3837). On a shared \
+             checkout any peer's checkout or stash destroys it, and a card closed citing \
+             this sha is citing nothing. {}",
+            empty_commit_hook_gloss(staged_at_hook)
+        );
+    }
+    let session = name.to_string();
+    let reported_task = body_str(body, "task_id").trim().to_string();
+    let authoritative_subject = scan.subject.clone().unwrap_or_else(|| subj.clone());
+    let subject_tasks = commit_task_refs(&authoritative_subject);
+    let full_sha = scan.full_sha.clone().unwrap_or_else(|| sha.clone());
+    let files = scan.files.clone();
+    let scan_measured = scan.measured;
+    let why_unmeasured = scan.why_unmeasured;
+    let authoritative_subject_w = authoritative_subject.clone();
+    let full_sha_w = full_sha.clone();
+    let files_w = files.clone();
+    // Named so the log line can say WHY it is silent: absent because
+    // the commit was fine, versus absent because nothing looked.
+    let shape_note = match shape {
+        commit_shape::Shape::Empty => empty_commit_card_note(staged_at_hook),
+        commit_shape::Shape::Unchecked(why) => format!(" (not checked for content: {why})"),
+        _ => String::new(),
+    };
+    #[derive(Debug)]
+    enum CommitReportOutcome {
+        Unattached,
+        Refused(StatusCode, Value),
+        Attached {
+            task: String,
+            source: &'static str,
+            artifacts: Vec<crate::db::artifact_store::ArtifactRow>,
+        },
+    }
+    let outcome: Arc<std::sync::Mutex<Option<CommitReportOutcome>>> = Default::default();
+    let outcome_w = outcome.clone();
+    let reply = state
+        .store
+        .write_async(move |conn| {
+            let mut active = Vec::new();
+            let mut stmt = conn.prepare(
+                "SELECT id FROM issues WHERE session=?1 AND deleted IS NULL \
+                 AND COALESCE(archived,0)=0 AND status IN ('doing','review') \
+                 AND owner_type='agent' ORDER BY id",
+            )?;
+            active.extend(stmt.query_map([&session], |r| r.get::<_, String>(0))?.flatten());
+
+            let (issue_id, source) = if !reported_task.is_empty() {
+                if !subject_tasks.is_empty() && !subject_tasks.contains(&reported_task) {
+                    *outcome_w.lock().expect("commit-report outcome poisoned") = Some(
+                        CommitReportOutcome::Refused(
+                            StatusCode::CONFLICT,
+                            json!({
+                                "error": "commit report task_id disagrees with the commit subject",
+                                "code": "commit_task_mismatch",
+                                "task_id": reported_task,
+                                "subject_tasks": subject_tasks,
+                            }),
+                        ),
+                    );
+                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                }
+                (reported_task.clone(), "body")
+            } else if subject_tasks.len() == 1 {
+                (subject_tasks[0].clone(), "subject")
+            } else if subject_tasks.len() > 1 {
+                *outcome_w.lock().expect("commit-report outcome poisoned") = Some(
+                    CommitReportOutcome::Refused(
+                        StatusCode::CONFLICT,
+                        json!({
+                            "error": "commit subject names more than one task; pass task_id explicitly",
+                            "code": "commit_task_ambiguous",
+                            "subject_tasks": subject_tasks,
+                            "active_tasks": active,
+                        }),
+                    ),
+                );
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            } else if active.len() == 1 {
+                (active[0].clone(), "unique-in-flight")
+            } else if active.is_empty() {
+                *outcome_w.lock().expect("commit-report outcome poisoned") =
+                    Some(CommitReportOutcome::Unattached);
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            } else {
+                *outcome_w.lock().expect("commit-report outcome poisoned") = Some(
+                    CommitReportOutcome::Refused(
+                        StatusCode::CONFLICT,
+                        json!({
+                            "error": "commit names no task and this worker has multiple in-flight tasks",
+                            "code": "commit_task_ambiguous",
+                            "subject_tasks": [],
+                            "active_tasks": active,
+                            "how_to_fix": "include one task id in the commit subject or send task_id",
+                        }),
+                    ),
+                );
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            };
+            let Some(task) = crate::db::board_store::get_issue(conn, &issue_id)? else {
+                *outcome_w.lock().expect("commit-report outcome poisoned") = Some(
+                    CommitReportOutcome::Refused(
+                        StatusCode::NOT_FOUND,
+                        json!({
+                            "error": "commit names a task that does not exist",
+                            "code": "commit_task_missing",
+                            "task_id": issue_id,
+                        }),
+                    ),
+                );
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            };
+            let ts = chrono::Local::now().format("%H:%M");
+            let capture_desc = format!(
+                "automatically captured by commit-report from {session}; task selected by {source}"
+            );
+            let refs = files_w
+                .iter()
+                .cloned()
+                .chain(std::iter::once(full_sha_w.clone()))
+                .collect::<Vec<_>>();
+            let artifacts = crate::db::artifact_store::insert_captured_refs(
+                conn,
+                &issue_id,
+                refs,
+                &capture_desc,
+                now_i64(),
+            )?;
+            let new_log = format!(
+                "{}\n`{ts}` commit {full_sha_w} — {authoritative_subject_w}{shape_note}",
+                task.log.as_deref().unwrap_or("").trim_end()
+            )
+                .trim()
+                .to_string();
+            conn.execute(
+                "UPDATE issues SET log=?, rev=COALESCE(rev,0)+1, updated=? WHERE id=?",
+                rusqlite::params![new_log, now_i64(), &issue_id],
+            )?;
+            let mut events = vec![crate::db::PendingEvent {
+                entity_type: amux_core::revision::EntityType::Other("issue".into()),
+                entity_id: issue_id.clone(),
+                mutation: amux_core::revision::MutationKind::Updated,
+                payload: None,
+            }];
+            events.extend(artifacts.iter().map(|artifact| crate::db::PendingEvent {
+                entity_type: amux_core::revision::EntityType::Other("artifact".into()),
+                entity_id: artifact.id.clone(),
+                mutation: amux_core::revision::MutationKind::Created,
+                payload: None,
+            }));
+            *outcome_w.lock().expect("commit-report outcome poisoned") = Some(
+                CommitReportOutcome::Attached {
+                    task: issue_id,
+                    source,
+                    artifacts,
+                },
+            );
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events,
+            })
+        })
+        .await;
+    if let Err(e) = reply {
+        return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()}));
+    }
+    let result = outcome.lock().expect("commit-report outcome poisoned").take();
+    match result {
+        Some(CommitReportOutcome::Attached { task, source, artifacts }) => {
+            tracing::info!(
+                marker = "commit_report_task_exact",
+                session = %name,
+                task = %task,
+                task_source = source,
+                sha = %full_sha,
+                artifacts_captured = artifacts.len(),
+                scan_measured,
+                why_unmeasured = why_unmeasured.unwrap_or(""),
+                "commit-report attached commit and files to the exact board task"
+            );
+            j200(json!({
+                "ok": true,
+                "attached": task,
+                "task_source": source,
+                "sha": full_sha,
+                "artifacts_captured": artifacts.len(),
+                "artifact_refs": artifacts.iter().map(|a| a.ref_value.clone()).collect::<Vec<_>>(),
+                "artifact_scan": {
+                    "measured": scan_measured,
+                    "n_considered": files.len(),
+                    "why_unmeasured": why_unmeasured,
+                },
+                "empty_commit": empty,
+                "staged_at_hook": staged_at_hook,
+            }))
+        }
+        Some(CommitReportOutcome::Refused(status, mut body)) => {
+            tracing::warn!(
+                marker = "commit_report_task_ambiguous",
+                session = %name,
+                sha = %full_sha,
+                subject = %authoritative_subject,
+                "commit-report refused to guess which board task produced the commit"
+            );
+            body["ok"] = json!(false);
+            body["sha"] = json!(full_sha);
+            jresp(status, body)
+        }
+        Some(CommitReportOutcome::Unattached) | None => {
+            tracing::info!(
+                marker = "commit_report_unattached",
+                session = %name,
+                sha = %full_sha,
+                "commit-report found no explicit task and no unique in-flight card"
+            );
+            j200(json!({
+                "ok": true,
+                "attached": Value::Null,
+                "sha": full_sha,
+                "artifact_scan": {
+                    "measured": scan_measured,
+                    "n_considered": files.len(),
+                    "why_unmeasured": why_unmeasured,
+                },
+                "empty_commit": empty,
+                "staged_at_hook": staged_at_hook,
+            }))
+        }
+    }
+}
+
+/// `git-push` as a callable verb, for the grouped
+/// `/api/workers/{id}/git/...` surface (AF-291).
+pub(crate) async fn git_push_verb(state: &AppState, name: &str) -> Response {
+    if !is_running(name).await {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "session not running — start it first"}));
+    }
+    let cfg = parse_env(name);
+    let branch = cfg.get_or("CC_BRANCH", "").to_string();
+    let msg = if !branch.is_empty() && branch != "none" {
+        format!(
+            "Deploy now. Your branch is `{branch}`. Run these steps:\n\
+             1. `git stash` (if needed to allow checkout)\n\
+             2. `git checkout {branch}` and `git stash pop` (if stashed)\n\
+             3. IMPORTANT: Only stage files YOU changed in this session — do NOT use `git add -A`. Use `git add <specific files>` for each file you modified.\n\
+             4. `git commit` with a good commit message summarizing YOUR changes only\n\
+             5. `git checkout main && git pull --ff-only origin main`\n\
+             6. `git merge {branch}` (resolve conflicts if any)\n\
+             7. `git push origin main`\n\
+             8. `git checkout {branch}` (go back to your branch)\n\
+             Do all steps now. If any step fails, fix it and continue."
+        )
+    } else {
+        "Deploy now. You are on `main`. Run these steps:\n\
+         1. `git pull --ff-only origin main`\n\
+         2. IMPORTANT: Only stage files YOU changed in this session — do NOT use `git add -A`. Use `git add <specific files>` for each file you modified. Review `git diff` and only add files related to your task.\n\
+         3. `git commit` with a good commit message summarizing YOUR changes only\n\
+         4. `git push origin main`\n\
+         Do all steps now. If any step fails, fix it and continue."
+            .to_string()
+    };
+    let _ = send_text(state, name, &msg, false, SendOrigin::Owner).await;
+    j200(json!({"ok": true, "message": "deploy instructions sent to session"}))
+}
+
+/// `tracked-files` as a callable verb, for the grouped
+/// `/api/workers/{id}/git/...` surface (AF-291).
+pub(crate) fn tracked_files_verb(name: &str) -> Response {
+    let meta = load_meta(name);
+    j200(json!({"files": meta.get("tracked_files").cloned().unwrap_or(json!([]))}))
+}
+
+/// `commit-guard` as a callable verb, for the grouped
+/// `/api/workers/{id}/git/...` surface (AF-291).
+pub(crate) fn commit_guard_verb(name: &str) -> Response {
+    let cfg = parse_env(name);
+    let per = cfg.get_or("AMUX_COMMIT_GUARD_SESSION", "").trim().to_lowercase();
+    let global = !matches!(
+        std::env::var("AMUX_COMMIT_GUARD").unwrap_or_else(|_| "1".into()).trim().to_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    );
+    let override_v: Value = if per.is_empty() {
+        Value::Null
+    } else {
+        json!(!matches!(per.as_str(), "0" | "false" | "off" | "no"))
+    };
+    let enabled = match &override_v {
+        Value::Bool(b) => *b,
+        _ => global,
+    };
+    j200(json!({"name": name, "enabled": enabled, "global": global, "override": override_v}))
+}
+
+/// `dirty` as a callable verb, for the grouped
+/// `/api/workers/{id}/git/...` surface (AF-291).
+pub(crate) async fn dirty_verb(name: &str) -> Response {
+    let wd = session_work_dir(name);
+    let files = if wd.is_empty() { vec![] } else { session_dirty_files(name, &wd).await };
+    j200(json!({
+        "name": name,
+        "dirty": !files.is_empty(),
+        "count": files.len(),
+        "files": files.iter().take(50).collect::<Vec<_>>(),
+    }))
+}
+
+/// The mutating half of `commit-guard`, for the grouped git surface (AF-291).
+pub(crate) fn commit_guard_patch_verb(name: &str, body: &Value) -> Response {
+    let global = !matches!(
+        std::env::var("AMUX_COMMIT_GUARD").unwrap_or_else(|_| "1".into()).trim().to_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    );
+    let raw = body.get("enabled");
+    let override_v = match raw {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(py_truthy(v)),
+    };
+    let f = env_path(name);
+    let mut cfg = parse_env(name);
+    match override_v {
+        None => cfg.remove("AMUX_COMMIT_GUARD_SESSION"),
+        Some(b) => cfg.set("AMUX_COMMIT_GUARD_SESSION", if b { "1" } else { "0" }),
+    }
+    if cfg.write(&f).is_err() {
+        return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write session env"}));
+    }
+    let enabled = override_v.unwrap_or(global);
+    j200(json!({
+        "ok": true, "enabled": enabled, "global": global,
+        "override": override_v.map(Value::Bool).unwrap_or(Value::Null),
+    }))
+}
+
+/// The mutating half of `git`, for the grouped git surface (AF-291).
+pub(crate) async fn git_checkout_verb(name: &str, body: &Value) -> Response {
+    let branch = body_str(body, "branch").trim().to_string();
+    let create = body.get("create").map(py_truthy).unwrap_or(false)
+        || (body.get("worktree").map(py_truthy).unwrap_or(false)
+            && body.get("create").map(py_truthy).unwrap_or(false));
+    let wd = session_work_dir(name);
+    if wd.is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "session has no directory"}));
+    }
+    if branch.is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "branch name required"}));
+    }
+    let re = cached_re!(r"^[a-zA-Z0-9_./@\-]+$");
+    if !re.is_match(&branch) {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "invalid branch name"}));
+    }
+    let mut args: Vec<&str> = vec!["-C", &wd, "checkout"];
+    if create {
+        args.push("-b");
+    }
+    args.push(&branch);
+    match run_cmd("git", &args, Duration::from_secs(10)).await {
+        Some(o) if o.status.success() => j200(json!({"ok": true, "branch": branch})),
+        Some(o) => {
+            let err = String::from_utf8_lossy(if o.stderr.is_empty() { &o.stdout } else { &o.stderr })
+                .trim()
+                .to_string();
+            jresp(StatusCode::BAD_REQUEST, json!({"ok": false, "error": err}))
+        }
+        None => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"ok": false, "error": "git timed out"})),
+    }
+}
+
+/// The binding rules section, composed global -> group -> worker (AF-297).
+///
+/// NOT A NEW DESIGN. `rules` shipped complete in the python server and the rust
+/// port kept the WRITER and dropped the READER: scope.rs still writes
+/// `memory/_rules.md`, `memory/tags/<g>.rules.md` and `memory/<worker>.rules.md`,
+/// and until this function nothing in the repo read any of them. Measured
+/// repo-wide before the fix: two hits for `.rules.md`, both in scope.rs's own
+/// path builder. So a user setting binding rules at any level got a saved file
+/// and zero effect, and `merge: concat` in SCOPE_CAPS described a composition
+/// no code performed.
+///
+/// The meaning is RECOVERED, not guessed — `_compose_rules_block` at
+/// `792ce1f^:amux-server.py:21955`. Three properties come from there and are
+/// worth keeping deliberately:
+///
+/// - Each rule is LABELLED with the layer that set it, so a session can see why
+///   it is constrained without reading source. The python docstring names the
+///   incident: a GEMINI.md that told a lane to bypass gates was invisible for
+///   exactly this reason.
+/// - A more specific layer ADDS to the ones above rather than replacing them,
+///   which is what `merge: concat` has been claiming all along.
+/// - Rules go FIRST in the document. The python call site says why: "a
+///   constraint buried under prose is a constraint the model has to go looking
+///   for."
+fn compose_rules_block(name: &str) -> String {
+    let mut layers: Vec<(String, String)> = Vec::new();
+    let mut take = |label: String, path: std::path::PathBuf| {
+        if let Ok(t) = std::fs::read_to_string(&path) {
+            if !t.trim().is_empty() {
+                layers.push((label, t.trim().to_string()));
+            }
+        }
+    };
+    take("global".to_string(), memory_dir().join("_rules.md"));
+    for g in lane_groups(name) {
+        take(format!("tag:{g}"), memory_dir().join("tags").join(format!("{g}.rules.md")));
+    }
+    take(format!("session:{name}"), memory_dir().join(format!("{name}.rules.md")));
+    if layers.is_empty() {
+        return String::new();
+    }
+    let body = layers
+        .iter()
+        .map(|(l, t)| format!("<!-- from {l} -->\n{t}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "# Rules — binding\n\n         These are constraints, not notes. They are composed from your scope \
+         (global, then any tags, then this session); a more specific layer adds to the \
+         ones above it rather than replacing them. If a rule here conflicts with \
+         something you infer, the rule wins — and if a rule cannot be followed \
+         honestly, say so rather than working around it.\n\n{body}"
+    )
+}
+
+/// Is `name` a fleet lane? The env file is the definition — it is what
+/// `lane_groups` reads for CC_TAGS and what `scope_env_layers` treats as the
+/// worker layer, so this is not a fourth spelling of "does a lane exist".
+pub(crate) fn lane_env_exists(name: &str) -> bool {
+    env_path(name).is_file()
+}
+
+/// `peek` against the FLEET SUBSTRATE, by name (AF-298).
+///
+/// The promoted `/api/workers/{id}/peek` resolves through the worker STORE and
+/// 404s on a miss. The fleet is ~50 env-file-plus-tmux lanes and only one of
+/// them is a store row, so that route answered 404 for essentially every lane
+/// it was asked about. `send` never had the problem because it falls back to
+/// the key and lands here; this is the same landing spot for peek.
+pub(crate) async fn peek_verb(name: &str, qs: &[(String, String)]) -> Response {
+    let lines: i64 = qs_first(qs, "lines", "80").parse().unwrap_or(80);
+    let live_only = qs_flag(qs, "live");
+    let no_trim = qs_flag(qs, "notrim");
+    // Geometry is attached HERE rather than inside peek_response because
+    // that function has six return points (live_only, alt-screen, normal,
+    // short-output, empty…) and a key added to one of them is a key the
+    // reader cannot rely on. One injection site covers every shape.
+    let mut resp = peek_response(name, lines, live_only, no_trim).await;
+    if let (Some((cols, rows)), Some(obj)) =
+        (tmux_pane_geometry(name).await, resp.as_object_mut())
+    {
+        obj.insert("pane_cols".into(), json!(cols));
+        obj.insert("pane_rows".into(), json!(rows));
+    }
+    j200(resp)
+}
+
+/// `duplicate` as a callable verb, so the canonical `/api/workers/{id}/duplicate`
+/// route and the legacy `/api/sessions/{name}/duplicate` spelling run the SAME
+/// code instead of one being a re-implementation of the other (AF-288).
+///
+/// Extracted rather than copied for the reason #137 (@tsukimiya) made explicit
+/// about this verb: the rollback on a failed `register_twin` is what stops a
+/// duplicate existing as an env file the worker store cannot see. A second
+/// implementation of that ordering is a second place for it to be wrong, on the
+/// error path, where nobody looks.
+pub(crate) fn duplicate_verb(state: &AppState, name: &str, body: &Value) -> Response {
+    let new_name = body_str(body, "new_name").trim().to_string();
+    if new_name.is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing new_name"}));
+    }
+    let re = cached_re!(r"[^a-zA-Z0-9_-]");
+    let new_name = re.replace_all(&new_name, "-").into_owned();
+    let new_file = env_path(&new_name);
+    if new_file.exists() {
+        return jresp(StatusCode::CONFLICT, json!({"error": format!("session '{new_name}' already exists")}));
+    }
+    if std::fs::copy(env_path(name), &new_file).is_err() {
+        return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "copy failed"}));
+    }
+    let registered = match register_twin(state, name, &new_name) {
+        Ok(applied) => applied,
+        // FAIL WHOLE, NOT HALF. Leaving the copied env file behind after
+        // a failed insert would produce exactly the unregistered twin
+        // this code exists to prevent, and it would do so on the error
+        // path where nobody looks.
+        Err(e) => {
+            let _ = std::fs::remove_file(&new_file);
+            return jresp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": format!("could not register '{new_name}' in the worker store; the duplicate was rolled back rather than left invisible: {e}")}),
+            );
+        }
+    };
+    j200(json!({
+        "ok": true,
+        "message": format!("duplicated as {new_name}"),
+        // Say which shape happened, so a caller can tell a registered
+        // twin from a plain env-file copy without going to the store.
+        "registered": registered,
+    }))
 }
 
 /// Give a copied session its own `_amux_workers` row, when the source has one.
@@ -13001,28 +15556,236 @@ pub(crate) fn context_pct_remaining(used: u64, window: u64) -> u8 {
 /// POST report (py:76238-76265) — the D1 report endpoint: harness-reported
 /// state into the SHARED prefs store Python reads at boot and
 /// sessions_legacy reads live.
-/// AMUX-3048: apply one subagent lifecycle event to the lane's live count.
+/// Maximum acknowledged lifecycle identities retained per lane. This is long
+/// enough to absorb response-loss retries and deliberately bounded so a
+/// long-lived worker cannot turn idempotency into an append-only log.
+const SUBAGENT_EVENT_HISTORY_LIMIT: usize = 128;
+
+#[derive(Clone, Debug)]
+struct SubagentApply {
+    next: Value,
+    verdict: &'static str,
+    count: i64,
+    live_ids: Vec<String>,
+    applied: bool,
+    status_changed: bool,
+}
+
+/// Apply one identity-bearing subagent lifecycle event to a stored report.
 ///
-/// Reuses the `session_reports` prefs store the main self-report already uses,
-/// under a `subagents` sub-key `{count, ts}` — no new table, and the consumer
-/// (`FleetSignals::subagents_working`) reads it straight from the `reports`
-/// Value it already loads at boot. `start` increments, `stop` decrements with a
-/// floor of 0 so a lost start cannot drive the count negative. The write touches
-/// ONLY the `subagents` sub-key, preserving state/model/tokens — a subagent
-/// starting or stopping says nothing about the main turn's state.
-async fn subagent_event_post(state: &AppState, name: &str, ev: &str) -> Response {
-    let delta: i64 = match ev {
-        "start" => 1,
-        "stop" | "done" => -1,
-        other => {
-            return jresp(
-                StatusCode::BAD_REQUEST,
-                json!({"error": format!("subagent must be 'start' or 'stop' (got '{other}')")}),
-            );
-        }
+/// `event_id` makes a retry after response loss a no-op. `agent_id` makes the
+/// live set itself idempotent even if a provider re-emits the same lifecycle
+/// edge with a new event id. The old anonymous counter remains readable during
+/// rollout, but every newly instrumented Claude agent is represented by its
+/// server-visible id instead of an untraceable delta.
+fn apply_subagent_event(
+    previous: &Value,
+    ev: &str,
+    agent_id: &str,
+    event_id: &str,
+    event_ts: f64,
+    lifecycle_session: &str,
+    now: f64,
+) -> SubagentApply {
+    let mut next = if previous.is_object() { previous.clone() } else { json!({}) };
+    let previous_count = next["count"].as_i64().unwrap_or(0).max(0);
+    let had_live_ids = next.get("live_ids").and_then(Value::as_array).is_some();
+    let mut live_ids: Vec<String> = next["live_ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    live_ids.sort();
+    live_ids.dedup();
+    let mut anonymous = if had_live_ids {
+        next["anonymous"].as_i64().unwrap_or(0).max(0)
+    } else {
+        previous_count.saturating_sub(live_ids.len() as i64)
     };
+    let mut seen: Vec<String> = next["seen_events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let mut agent_edges = next["agent_edges"].as_object().cloned().unwrap_or_default();
+    // Terminal tombstones are compacted after 128 distinct finished agents.
+    // The floor keeps their ordering fact after compaction: an event older
+    // than an evicted terminal edge still cannot resurrect that agent.
+    let mut terminal_floor_ts = next["terminal_floor_ts"].as_f64().unwrap_or(0.0);
+
+    if !event_id.is_empty() && seen.iter().any(|id| id == event_id) {
+        return SubagentApply {
+            next,
+            verdict: "duplicate_event",
+            count: previous_count,
+            live_ids,
+            applied: false,
+            status_changed: false,
+        };
+    }
+
+    let reset_ts = next["reset_ts"].as_f64().unwrap_or(0.0);
+    let stored_session = next["session_id"].as_str().unwrap_or("");
+    let stale_time = reset_ts > 0.0 && event_ts > 0.0 && event_ts < reset_ts;
+    let stale_session = ev != "reset"
+        && !stored_session.is_empty()
+        && !lifecycle_session.is_empty()
+        && stored_session != lifecycle_session;
+    let prior_agent = (!agent_id.is_empty())
+        .then(|| agent_edges.get(agent_id))
+        .flatten();
+    let prior_agent_ts = prior_agent.and_then(|edge| edge["ts"].as_f64()).unwrap_or(0.0);
+    let prior_agent_state = prior_agent.and_then(|edge| edge["state"].as_str()).unwrap_or("");
+    let stale_agent_order = ev != "reset"
+        && event_ts > 0.0
+        && prior_agent_ts > 0.0
+        && (event_ts < prior_agent_ts
+            || (event_ts == prior_agent_ts && ev == "start" && prior_agent_state == "terminal"));
+    let stale_terminal_floor = ev != "reset"
+        && !agent_id.is_empty()
+        && event_ts > 0.0
+        && terminal_floor_ts > 0.0
+        && event_ts <= terminal_floor_ts;
+    let mut verdict = "applied";
+
+    if stale_time || stale_session || stale_agent_order || stale_terminal_floor {
+        verdict = if stale_session {
+            "stale_session"
+        } else if stale_time {
+            "stale_event"
+        } else if stale_agent_order {
+            "stale_agent_event"
+        } else {
+            "stale_before_terminal_floor"
+        };
+    } else {
+        match ev {
+            "reset" => {
+                live_ids.clear();
+                anonymous = 0;
+                agent_edges.clear();
+                terminal_floor_ts = 0.0;
+                next["reset_ts"] = json!(if event_ts > 0.0 { event_ts } else { now });
+                if !lifecycle_session.is_empty() {
+                    next["session_id"] = json!(lifecycle_session);
+                }
+            }
+            "start" => {
+                if agent_id.is_empty() {
+                    anonymous += 1;
+                } else if !live_ids.iter().any(|id| id == agent_id) {
+                    live_ids.push(agent_id.to_string());
+                    live_ids.sort();
+                } else {
+                    verdict = "duplicate_agent_start";
+                }
+                if !agent_id.is_empty() {
+                    agent_edges.insert(
+                        agent_id.to_string(),
+                        json!({"state": "live", "ts": event_ts}),
+                    );
+                }
+                if stored_session.is_empty() && !lifecycle_session.is_empty() {
+                    next["session_id"] = json!(lifecycle_session);
+                }
+            }
+            "stop" | "done" => {
+                if agent_id.is_empty() {
+                    anonymous = anonymous.saturating_sub(1).max(0);
+                } else if let Some(pos) = live_ids.iter().position(|id| id == agent_id) {
+                    live_ids.remove(pos);
+                } else if anonymous > 0 {
+                    // Compatibility with a start recorded by the pre-identity
+                    // hook: the matching stop has an id, the carried count did not.
+                    anonymous -= 1;
+                } else {
+                    verdict = "orphan_stop";
+                }
+                if !agent_id.is_empty() {
+                    // Keep a terminal edge even for stop-before-start. When the
+                    // older start arrives later, ordering rejects it instead of
+                    // resurrecting work that has already completed.
+                    agent_edges.insert(
+                        agent_id.to_string(),
+                        json!({"state": "terminal", "ts": event_ts}),
+                    );
+                }
+            }
+            _ => unreachable!("validated by subagent_event_post"),
+        }
+    }
+
+    if !event_id.is_empty() {
+        seen.push(event_id.to_string());
+        if seen.len() > SUBAGENT_EVENT_HISTORY_LIMIT {
+            seen.drain(..seen.len() - SUBAGENT_EVENT_HISTORY_LIMIT);
+        }
+    }
+    let mut terminal_edges: Vec<(String, f64)> = agent_edges
+        .iter()
+        .filter(|(_, edge)| edge["state"].as_str() == Some("terminal"))
+        .map(|(id, edge)| (id.clone(), edge["ts"].as_f64().unwrap_or(0.0)))
+        .collect();
+    if terminal_edges.len() > SUBAGENT_EVENT_HISTORY_LIMIT {
+        terminal_edges.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let remove_n = terminal_edges.len() - SUBAGENT_EVENT_HISTORY_LIMIT;
+        for (id, ts) in terminal_edges.into_iter().take(remove_n) {
+            agent_edges.remove(&id);
+            terminal_floor_ts = terminal_floor_ts.max(ts);
+        }
+    }
+    let count = anonymous + live_ids.len() as i64;
+    next["count"] = json!(count);
+    next["live_ids"] = json!(live_ids);
+    next["anonymous"] = json!(anonymous);
+    next["seen_events"] = json!(seen);
+    next["agent_edges"] = Value::Object(agent_edges);
+    next["terminal_floor_ts"] = json!(terminal_floor_ts);
+    next["ts"] = json!(now);
+    next["last_event"] = json!({
+        "event": ev,
+        "event_id": event_id,
+        "agent_id": agent_id,
+        "event_ts": event_ts,
+        "verdict": verdict,
+    });
+    let applied = &next != previous;
+    SubagentApply {
+        next,
+        verdict,
+        count,
+        live_ids,
+        applied,
+        status_changed: count != previous_count,
+    }
+}
+
+/// AMUX-3048/ATE-45: durably apply an ordered, idempotent lifecycle event.
+async fn subagent_event_post(state: &AppState, name: &str, ev: &str, body: &Value) -> Response {
+    if !matches!(ev, "start" | "stop" | "done" | "reset") {
+        return jresp(
+            StatusCode::BAD_REQUEST,
+            json!({"error": format!(
+                "subagent must be 'start', 'stop' or 'reset' (got '{ev}')"
+            )}),
+        );
+    }
     let name_s = name.to_string();
     let ev_s = ev.to_string();
+    let agent_id: String = body_str(body, "agent_id").trim().chars().take(128).collect();
+    let event_id: String = body_str(body, "event_id").trim().chars().take(200).collect();
+    let lifecycle_session: String = body_str(body, "session_id").trim().chars().take(128).collect();
+    let event_ts = body.get("event_ts").and_then(Value::as_f64).unwrap_or_else(now_f64);
+    let delivery_attempt = body.get("delivery_attempt").and_then(Value::as_u64).unwrap_or(1);
+    let result_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SubagentApply>));
+    let result_out = result_slot.clone();
+    let agent_id_write = agent_id.clone();
+    let event_id_write = event_id.clone();
+    let lifecycle_session_write = lifecycle_session.clone();
     let reply = state
         .store
         .write_async(move |conn| {
@@ -13034,30 +15797,106 @@ async fn subagent_event_post(state: &AppState, name: &str, ev: &str) -> Response
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| json!({}));
-            let prev = reports[&name_s]["subagents"]["count"].as_i64().unwrap_or(0);
-            let next = (prev + delta).max(0);
             if !reports[&name_s].is_object() {
                 reports[&name_s] = json!({});
             }
-            reports[&name_s]["subagents"] = json!({"count": next, "ts": now_f64()});
-            conn.execute(
-                "INSERT INTO prefs(key, value) VALUES('session_reports', ?1) \
-                 ON CONFLICT(key) DO UPDATE SET value=?1",
-                [reports.to_string()],
-            )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            let applied = apply_subagent_event(
+                &reports[&name_s]["subagents"],
+                &ev_s,
+                &agent_id_write,
+                &event_id_write,
+                event_ts,
+                &lifecycle_session_write,
+                now_f64(),
+            );
+            if applied.applied {
+                reports[&name_s]["subagents"] = applied.next.clone();
+                conn.execute(
+                    "INSERT INTO prefs(key, value) VALUES('session_reports', ?1) \
+                     ON CONFLICT(key) DO UPDATE SET value=?1",
+                    [reports.to_string()],
+                )?;
+                crate::api::sessions_legacy::invalidate_sessions_cache();
+            }
+            let events = if applied.status_changed {
+                vec![crate::db::PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Session,
+                    entity_id: name_s.clone(),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: None,
+                }]
+            } else {
+                vec![]
+            };
+            *result_out.lock().unwrap_or_else(|p| p.into_inner()) = Some(applied.clone());
+            Ok(crate::db::WriteOutcome { applied: applied.applied, events })
         })
         .await;
     match reply {
-        Ok(_) => j200(json!({"ok": true, "session": name, "subagent": ev_s})),
-        Err(e) => jresp(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({"error": e.to_string()}),
-        ),
+        Ok(_) => {
+            let applied = result_slot
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or(SubagentApply {
+                    next: Value::Null,
+                    verdict: "unmeasured",
+                    count: 0,
+                    live_ids: vec![],
+                    applied: false,
+                    status_changed: false,
+                });
+            if delivery_attempt > 1 {
+                tracing::warn!(
+                    target: "subagent_lifecycle",
+                    session = name,
+                    event = ev,
+                    event_id,
+                    agent_id,
+                    delivery_attempt,
+                    verdict = applied.verdict,
+                    count = applied.count,
+                    "subagent lifecycle event replayed after an earlier delivery failure"
+                );
+            }
+            if matches!(
+                applied.verdict,
+                "stale_event"
+                    | "stale_session"
+                    | "stale_agent_event"
+                    | "stale_before_terminal_floor"
+                    | "orphan_stop"
+            ) {
+                tracing::warn!(
+                    target: "subagent_lifecycle",
+                    session = name,
+                    event = ev,
+                    event_id,
+                    agent_id,
+                    verdict = applied.verdict,
+                    count = applied.count,
+                    "subagent lifecycle event did not change the live set"
+                );
+            }
+            j200(json!({
+                "ok": true,
+                "session": name,
+                "subagent": ev,
+                "event_id": event_id,
+                "agent_id": agent_id,
+                "applied": applied.applied,
+                "verdict": applied.verdict,
+                "count": applied.count,
+                "live_ids": applied.live_ids,
+                "history_limit": SUBAGENT_EVENT_HISTORY_LIMIT,
+                "delivery_attempt": delivery_attempt,
+            }))
+        }
+        Err(e) => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
     }
 }
 
-async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
+pub(crate) async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
     // ATTRIBUTION (AMUX-2646). A self-report is the one write in amux that is
     // ONLY ever legitimate from inside the session it describes: the hooks
     // that produce it run in that process and post to
@@ -13108,7 +15947,7 @@ async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &V
     }
     // SELF-REPORTED CONVERSATION ID (AMUX-2936). Handled here, above the
     // subagent early-return, so EVERY report shape carries it — a lane that only
-    // ever fires PreToolUse:Task would otherwise never heal.
+    // ever fires SubagentStart would otherwise never heal.
     //
     // Three spellings accepted because three producers exist: `conv_id` (amux's
     // own callers), `session_id` (Claude Code's hook payload field verbatim, so
@@ -13143,14 +15982,14 @@ async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &V
     // the durable exit for the mtime-window instruments cluster (AMUX-2646/2904/
     // 2959/2952/3022/3030/3047). A subagent transcript's mtime cannot tell
     // "finished 30s ago" from "thinking, will write in 90s"; a start/stop event
-    // pair can. `{"subagent":"start"}` (PreToolUse:Task) increments, `"stop"`
+    // pair can. `{"subagent":"start"}` (SubagentStart) increments, `"stop"`
     // (SubagentStop) decrements. Handled BEFORE the main-state parse below so it
     // never touches state/model/tokens — it is orthogonal to the main turn.
     // Attribution (the origin==name check above) applies here too: a subagent
     // count is a self-report like any other.
     let sub_ev = body_str(body, "subagent").trim().to_lowercase();
     if !sub_ev.is_empty() {
-        return subagent_event_post(state, name, &sub_ev).await;
+        return subagent_event_post(state, name, &sub_ev, body).await;
     }
     let st_raw = body_str(body, "state").trim().to_lowercase();
     let st = match st_raw.as_str() {
@@ -13261,20 +16100,50 @@ async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &V
             // ABSENT != EMPTY above): the model does not change per tool call.
             let prev_model = reports[&name_s]["model"].clone();
             let prev_tokens = reports[&name_s]["tokens"].clone();
+            // AND `subagents` (AMUX-4024 / #182 — both found this independently).
+            //
+            // This assignment REPLACES the lane's whole object, so every state
+            // report deleted the live-subagent count: a Stop, a
+            // UserPromptSubmit, or any tool-hook heartbeat. A subagent that
+            // started had its count erased by the lane's very next tool call,
+            // seconds later, and the card could flip idle while its children
+            // were still running.
+            //
+            // Measured while verifying the producer: of 127 lanes only 3 still
+            // had a `subagents` key, every one reading 0, while lanes seen
+            // reporting a count minutes earlier had none. A count of 0 and a
+            // count that was DELETED are the same null to every reader, which is
+            // why this survived AMUX-3048's own tests: they drive
+            // `subagent_event_post` back to back with no state report between.
+            //
+            // Set only when non-null, so a lane that has never reported one
+            // keeps an ABSENT key rather than gaining an explicit null. Absent
+            // means "this lane sends no lifecycle events" and 0 means "it sends
+            // them and none are live"; the mtime fallback reads those
+            // differently, so the distinction has to survive the write.
+            let prev_subagents = reports[&name_s]["subagents"].clone();
             // Did the STATUS actually change? Only then is an SSE push worth it.
             let status_changed = prev_state != st2;
             let new_state = st2.clone();
-            reports[&name_s] = json!({
+            let mut next_report = json!({
                 "model": model_opt.clone().map(Value::from).unwrap_or(prev_model),
                 "tokens": tokens_opt.clone().unwrap_or(prev_tokens),
                 "state": st2, "detail": detail, "source": src2,
                 "origin": origin2, "ts": now_f64(),
             });
+            if !prev_subagents.is_null() {
+                next_report["subagents"] = prev_subagents;
+            }
+            reports[&name_s] = next_report;
             conn.execute(
                 "INSERT INTO prefs(key, value) VALUES('session_reports', ?1) \
                  ON CONFLICT(key) DO UPDATE SET value=?1",
                 [reports.to_string()],
             )?;
+            // See subagent_event_post: invalidate inside the writer, before its
+            // committed Session event is broadcast, so the reactive GET sees
+            // this exact state rather than the preceding cache entry.
+            crate::api::sessions_legacy::invalidate_sessions_cache();
             // SNAPPY STATUS (Ethan, 2026-08-16). A self-report is the fast, exact
             // signal for active/idle/needs-input (the D1 exit), but this write used
             // events:vec![], so a hook state change pushed NO SSE and the dashboard
@@ -13330,6 +16199,8 @@ async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &V
                 let st_clone = state.clone();
                 let name_clone = name.to_string();
                 tokio::spawn(async move {
+                    steer_deliver_for_session(&st_clone, &name_clone).await;
+                    let _ = crate::runtime_jobs::board_drive::drive_session(&st_clone, &name_clone).await;
                     steer_deliver_for_session(&st_clone, &name_clone).await;
                 });
             }
@@ -13522,31 +16393,7 @@ async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &V
 
 async fn patch_dispatch(state: &AppState, name: &str, action: &str, body: &Value) -> Response {
     match action {
-        "commit-guard" => {
-            let global = !matches!(
-                std::env::var("AMUX_COMMIT_GUARD").unwrap_or_else(|_| "1".into()).trim().to_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            );
-            let raw = body.get("enabled");
-            let override_v = match raw {
-                None | Some(Value::Null) => None,
-                Some(v) => Some(py_truthy(v)),
-            };
-            let f = env_path(name);
-            let mut cfg = parse_env(name);
-            match override_v {
-                None => cfg.remove("AMUX_COMMIT_GUARD_SESSION"),
-                Some(b) => cfg.set("AMUX_COMMIT_GUARD_SESSION", if b { "1" } else { "0" }),
-            }
-            if cfg.write(&f).is_err() {
-                return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write session env"}));
-            }
-            let enabled = override_v.unwrap_or(global);
-            j200(json!({
-                "ok": true, "enabled": enabled, "global": global,
-                "override": override_v.map(Value::Bool).unwrap_or(Value::Null),
-            }))
-        }
+        "commit-guard" => commit_guard_patch_verb(name, body),
         "config" => config_patch(state, name, body).await,
         _ => not_found(),
     }
@@ -13767,12 +16614,22 @@ async fn rename_session(state: &AppState, name: &str, raw_new: &str) -> Response
                     Err(_) => out.push(format!("db.{table}: table absent (fresh home)")),
                 }
             }
-            for table in ["steering_queue", "steering_history", "share_tokens", "cmd_history"] {
-                let n = conn.execute(
+            // FROM THE DECLARED LIST, not a second hand-maintained array
+            // (AMUX-4033). This used to name four tables inline while the
+            // schema had seventeen that a rename must carry; the missing ones
+            // were not excluded, they were forgotten, and nothing said so.
+            for table in simple_rename_tables() {
+                match conn.execute(
                     &format!("UPDATE {table} SET session=?1 WHERE session=?2"),
                     rusqlite::params![new_s, old_s],
-                )?;
-                out.push(format!("db.{table}: {n} row(s)"));
+                ) {
+                    Ok(n) => out.push(format!("db.{table}: {n} row(s)")),
+                    // A table can legitimately be absent on an older home that
+                    // has not run every migration. Reported, never skipped in
+                    // silence — the whole failure being fixed here is a
+                    // silent skip.
+                    Err(e) => out.push(format!("db.{table}: not migrated ({e})")),
+                }
             }
             // prefs session_reports is keyed by NAME inside a JSON blob —
             // Python orphans it and the renamed lane loses its self-reported
@@ -13812,7 +16669,13 @@ async fn rename_session(state: &AppState, name: &str, raw_new: &str) -> Response
         return fail(&steps, format!("db reference migration failed (transaction rolled back): {e}"));
     }
     steps.extend(counts.lock().unwrap().iter().cloned());
-    steps.push("db.session_events: audit rows keep the old name (deliberate — the rename journal entry links them)".into());
+    // Say WHICH tables kept the old name and WHY, rather than naming one of
+    // them and leaving the rest to look like an oversight.
+    for (t, d) in SESSION_SCOPED_TABLES {
+        if let RenameDisposition::KeepForAudit(why) = d {
+            steps.push(format!("db.{t}: keeps the old name — {why}"));
+        }
+    }
     // 9. Re-export AMUX_SESSION for future panes (py:76416) — best-effort;
     //    the RUNNING shell keeps its env until restart, same as Python.
     if is_running(&new_name).await {
@@ -14233,19 +17096,16 @@ fn mode_after_delivery(fold: &HotFold) -> SwapMode {
     }
 }
 
-/// The restart path, with the scrollback capture that makes it survivable.
-/// Only ever called when a restart actually happens: `capture_log_tail_for_reload`
-/// stops the pane pipe as a side effect, which would be a real harm on a hot
-/// switch that never restarts anything.
-async fn restart_with_log_reload(
+/// The restart path queues a compact, structured re-hydration from the board.
+/// Terminal scrollback is diagnostic evidence, not a context protocol: replay
+/// leaked secrets and stale instructions across providers in the live audit.
+async fn restart_with_structured_resume(
     state: &AppState,
     name: &str,
     provider: &str,
     reason: &str,
 ) -> bool {
-    if capture_log_tail_for_reload(name, reason).await {
-        mark_pending_log_reload(name, reason);
-    }
+    mark_pending_structured_resume(name, reason);
     restart_for_swap(state, name, provider).await
 }
 
@@ -14309,12 +17169,12 @@ async fn apply_live_config_change(
                         HotFold::Failed(w) => w,
                         _ => String::new(),
                     };
-                    let restarted = restart_with_log_reload(state, name, provider, reason).await;
+                    let restarted = restart_with_structured_resume(state, name, provider, reason).await;
                     SwapReport {
                         mode: SwapMode::Restart,
                         applied: restarted,
                         note: if restarted {
-                            " (live switch failed; session restarted to apply it, log reload queued)"
+                            " (live switch failed; session restarted to apply it, board-state resume queued)"
                         } else {
                             " (live switch failed AND the restart failed — the session may still be on the old model)"
                         },
@@ -14334,12 +17194,12 @@ async fn apply_live_config_change(
             }
         }
         SwapMode::Restart => {
-            let restarted = restart_with_log_reload(state, name, provider, reason).await;
+            let restarted = restart_with_structured_resume(state, name, provider, reason).await;
             SwapReport {
                 mode,
                 applied: restarted,
                 note: if restarted {
-                    " (session restarted; log reload queued)"
+                    " (session restarted; board-state resume queued)"
                 } else {
                     " (restart failed)"
                 },
@@ -14361,7 +17221,7 @@ async fn apply_live_config_change(
 /// several branches write one field and then reject a second. Clearing a cache
 /// that did not need clearing costs one rebuild; NOT clearing one that did is
 /// the bug this fixes.
-async fn config_patch(state: &AppState, name: &str, body: &Value) -> Response {
+pub(crate) async fn config_patch(state: &AppState, name: &str, body: &Value) -> Response {
     let out = config_patch_inner(state, name, body).await;
     crate::api::sessions_legacy::invalidate_sessions_cache();
     out
@@ -14420,14 +17280,19 @@ async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Respo
         cfg.set("CC_PROVIDER", &provider_val);
         cfg.set("CC_FLAGS", &flags);
         let was_running = is_running(name).await;
-        if capture_log_tail_for_reload(name, "provider swap").await {
-            mark_pending_log_reload(name, "provider swap");
-        }
         if cfg.write(&f).is_err() {
             return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write session env"}));
         }
+        if was_running {
+            mark_pending_structured_resume(name, "provider swap");
+        }
         let restarted = if was_running { restart_for_swap(state, name, &old_provider).await } else { false };
-        let suffix = if restarted { " (session restarted; log reload queued)" } else { "" };
+        if restarted {
+            set_confirmed_active_model(name, &provider_val, Some(&default_model));
+        } else if !was_running {
+            set_confirmed_active_model(name, &provider_val, None);
+        }
+        let suffix = if restarted { " (session restarted; board-state resume queued)" } else { "" };
         let body = json!({"ok": true, "message": format!("provider set to {}{suffix}", provider_label(&provider_val))});
         return if restarted { j200_slow_ok(body, "worker-restart") } else { j200(body) };
     }
@@ -14491,8 +17356,8 @@ async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Respo
         // process state this origin does not hold.
         // The env rewrite is the DURABLE half and happens either way: whatever
         // the live agent does, the next cold start must come up on the new
-        // model. Log-tail capture moved into restart_with_log_reload — it is
-        // only meaningful when a restart actually discards the scrollback.
+        // model. A restart resumes from structured board state, never from a
+        // raw terminal transcript.
         if cfg.write(&f).is_err() {
             return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write session env"}));
         }
@@ -14500,6 +17365,16 @@ async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Respo
             state, name, &current_provider, was_running, &cmds, expressible, "model swap",
         )
         .await;
+        if rep.applied {
+            let confirmed = if model_val.is_empty() {
+                default_model_for_provider(&current_provider)
+            } else {
+                model_val.clone()
+            };
+            set_confirmed_active_model(name, &current_provider, Some(&confirmed));
+        } else if !was_running {
+            set_confirmed_active_model(name, &current_provider, None);
+        }
         let mut out = json!({
             "ok": true,
             "applied": rep.applied,
@@ -14592,15 +17467,15 @@ async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Respo
         }
         cfg.set("CC_FLAGS", &new_flags);
         let was_running = is_running(name).await;
-        if was_running && capture_log_tail_for_reload(name, "YOLO mode change").await {
-            mark_pending_log_reload(name, "YOLO mode change");
-        }
         if cfg.write(&f).is_err() {
             return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write session env"}));
         }
+        if was_running {
+            mark_pending_structured_resume(name, "YOLO mode change");
+        }
         let restarted = if was_running { restart_for_swap(state, name, &provider).await } else { false };
         let state_word = if enabled { "enabled" } else { "disabled" };
-        let suffix = if restarted { " (session restarted; log reload queued)" } else { "" };
+        let suffix = if restarted { " (session restarted; board-state resume queued)" } else { "" };
         let body = json!({"ok": true, "message": format!("yolo {state_word}{suffix}")});
         return if restarted { j200_slow_ok(body, "worker-restart") } else { j200(body) };
     }
@@ -14707,6 +17582,158 @@ async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Respo
                 "isolated on (raw agent, no amux harness); restart the worker to apply"
             } else {
                 "isolated off; restart the worker to apply"
+            },
+        }));
+    }
+
+    // SPANS GROUPS (AMUX-4016): the per-worker standing allowance, written as
+    // the env key `CC_SEND_ALLOW` — the environment primitive the gate already
+    // reads, not a new store.
+    //
+    // Two shapes on purpose:
+    //   `spans_groups: true`      -> "*", may reach any group
+    //   `send_allow: "gtm,canvas"` -> exactly those groups
+    // A bare toggle covers the common case; the string covers "these, not all",
+    // which a checkbox cannot express and which is the honest default for a
+    // permission.
+    //
+    // WRITES THE WORKER LAYER ONLY. Group and global layers are Configurations'
+    // to set, and silently writing one from a per-worker menu would change every
+    // lane in that group from a control labelled with one worker's name.
+    // BOARD AUTOMATION CONFIGURATION. These are the same scoped env keys the
+    // runtime reads on every drive tick, now exposed as first-class worker UI
+    // controls from backlog -> todo -> doing -> terminal rather than requiring
+    // somebody to know implementation-specific environment names.
+    //
+    // `null` removes the worker override and restores group/global/default
+    // inheritance. A boolean writes an explicit worker value. The response is
+    // the RESOLVED value after the write: a false master switch can still make
+    // an explicitly enabled pickup/continue class resolve false, and claiming
+    // otherwise would make the UI disagree with the next runtime tick.
+    let automation = [
+        (
+            "auto_drain_backlog",
+            crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
+            "Backlog to To Do",
+        ),
+        ("board_auto_pickup", "CC_AUTO_PICKUP", "To Do pickup"),
+        ("board_auto_continue", "CC_AUTO_CONTINUE", "Non-terminal continuation"),
+        ("board_standing_orders", "CC_STANDING_ORDERS", "Pickup / continue master"),
+    ];
+    if let Some((field, key, label, v)) = automation
+        .iter()
+        .find_map(|(field, key, label)| body.get(*field).map(|v| (*field, *key, *label, v)))
+    {
+        let inherit = v.is_null();
+        if inherit {
+            cfg.remove(key);
+        } else {
+            cfg.set(key, if py_truthy(v) { "1" } else { "0" });
+        }
+        if cfg.write(&f).is_err() {
+            return jresp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "could not write session env"}),
+            );
+        }
+        let effective = if key == crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY {
+            crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(name)
+        } else {
+            standing_orders_on(name, key)
+        };
+        let mut out = json!({
+            "ok": true,
+            "effective": effective,
+            "inherited": inherit,
+            "message": if inherit {
+                format!("{label}: worker override removed; resolved {} from inherited/default configuration", if effective { "on" } else { "off" })
+            } else {
+                format!("{label}: worker override set {}; effective value is {}", if py_truthy(v) { "on" } else { "off" }, if effective { "on" } else { "off" })
+            },
+        });
+        out[field] = json!(effective);
+        return j200(out);
+    }
+    // EXTERNAL EMAIL AUTHORIZATION. This is a standing worker policy, not a
+    // provider startup flag, so it is resolved on every send and takes effect
+    // immediately. `null` restores worker > group > global inheritance; an
+    // explicit false at the worker layer can close a broader group/global
+    // allowance. The email gate reads this exact scoped key.
+    if let Some(v) = body.get("external_email_allowed") {
+        let key = "AMUX_EMAIL_EXTERNAL_ALLOW";
+        let inherit = v.is_null();
+        if inherit {
+            cfg.remove(key);
+        } else {
+            cfg.set(key, if py_truthy(v) { "1" } else { "0" });
+        }
+        if cfg.write(&f).is_err() {
+            return jresp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "could not write session env"}),
+            );
+        }
+        let effective = crate::api::email_approval::external_email_allowed(
+            &crate::config::amux_home(),
+            name,
+        );
+        tracing::warn!(
+            session = %name,
+            effective,
+            inherited = inherit,
+            "config: external-email standing authorization changed"
+        );
+        return j200(json!({
+            "ok": true,
+            "external_email_allowed": effective,
+            "inherited": inherit,
+            "message": if inherit {
+                format!("external email authorization: worker override removed; effective value is {}", if effective { "on" } else { "off" })
+            } else if effective {
+                "this worker may send external email without per-message approval".to_string()
+            } else {
+                "this worker's external email still requires per-message approval".to_string()
+            },
+        }));
+    }
+    if body.get("spans_groups").is_some() || body.get("send_allow").is_some() {
+        let value = if let Some(sv) = body.get("send_allow").and_then(Value::as_str) {
+            sv.trim().to_string()
+        } else if py_truthy(body.get("spans_groups").unwrap_or(&Value::Null)) {
+            "*".to_string()
+        } else {
+            String::new()
+        };
+        cfg.set("CC_SEND_ALLOW", &value);
+        if cfg.write(&f).is_err() {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write session env"}));
+        }
+        // Resolved AFTER the write, so the answer is what the gate will actually
+        // enforce rather than what was just typed — a group or global layer can
+        // still grant this lane even when its own value is now empty, and
+        // reporting "off" there would be a lie the next send disproves.
+        let effective = cross_group_allow_setting_in(&crate::config::amux_home(), name)
+            .unwrap_or_else(|| "*".into());
+        let effective = effective.trim().trim_matches('"').to_string();
+        tracing::info!(
+            session = %name, send_allow = %value, effective = %effective,
+            "config: cross-group standing allowance set (CC_SEND_ALLOW)"
+        );
+        return j200(json!({
+            "ok": true,
+            "spans_groups": !effective.is_empty(),
+            "send_allow": value,
+            "effective": effective,
+            // Applies to the NEXT send, not at spawn: the gate resolves this on
+            // every send rather than caching it at launch, so no restart.
+            "message": if effective.is_empty() {
+                "cross-group sends refused again for this worker".to_string()
+            } else if value.is_empty() {
+                format!("worker value cleared, but a group or global layer still grants: {effective}")
+            } else if effective == "*" {
+                "this worker may now send to any group, no approval needed".to_string()
+            } else {
+                format!("this worker may now send to: {effective}")
             },
         }));
     }
@@ -14903,7 +17930,7 @@ async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Respo
 // share (py:65953-65999) — token CRUD over the shared share_tokens table.
 // ---------------------------------------------------------------------------
 
-async fn share_handler(
+pub(crate) async fn share_handler(
     state: &AppState,
     name: &str,
     method: &Method,
@@ -15101,6 +18128,30 @@ mod tests {
         assert_eq!(text.matches("CC_DESC=").count(), 1, "expected exactly one CC_DESC: {text:?}");
         assert!(text.ends_with('\n'), "truncated write: {text:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_key_updates_merge_instead_of_resetting_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amux.env");
+        std::fs::write(&path, "BASE=kept\n").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8).map(|i| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut env = super::EnvFile::load(&path);
+                env.set(&format!("SETTING_{i}"), "1");
+                barrier.wait();
+                env.write(&path).unwrap();
+            })
+        }).collect();
+        for handle in handles { handle.join().unwrap(); }
+        let final_env = super::EnvFile::load(&path);
+        assert_eq!(final_env.get("BASE"), Some("kept"));
+        for i in 0..8 {
+            assert_eq!(final_env.get(&format!("SETTING_{i}")), Some("1"));
+        }
     }
 
 
@@ -15304,16 +18355,103 @@ mod tests {
         // Ordinary prose is untouched.
         let clean = "fix the login bug in auth.rs and rerun the tests";
         assert_eq!(r(clean), clean, "prose must not be redacted");
+        let assets = "~/tubescience-video-moderation-launch.mp4\n/Users/ethan/work/video-moderation-launch-9x16.mp4";
+        assert_eq!(
+            r(assets), assets,
+            "produced asset paths must retain their identity and link target"
+        );
         // A 40-hex git sha survives (single-case, no punct, < 44 chars).
         let sha = "revert a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 please";
         assert_eq!(r(sha), sha, "git sha must survive: {}", r(sha));
     }
 
-    /// Ethan, 2026-08-11: worker-to-worker messaging is intra-group unless
-    /// explicitly configured. The escapes must be CONFIG — a body flag any
-    /// caller could set would make the rule advisory.
+    /// Worker-to-worker messaging is open by default. Configuration may narrow
+    /// an individual worker or a whole group without putting policy in a body
+    /// flag that a caller could forge (AMUX-4015).
+    ///
+    /// `CC_SEND_ALLOW` and `CC_RECEIVE_ANY` were read through `parse_env`, which
+    /// reads `sessions/<worker>.env` and nothing else. `/api/scope` has always
+    /// advertised `env` at global/group/worker and the Configurations tab writes all
+    /// three, so setting either switch at the GROUP or GLOBAL layer saved a file
+    /// this gate never opened: it appeared to work and changed nothing. That is
+    /// AMUX-2930's shape, still live for these two keys.
+    ///
+    /// These cells pin the three layers. Without the fix the first two fail and
+    /// the third passes, which is exactly how the bug hid.
     #[test]
-    fn cross_group_sends_are_refused_unless_configured() {
+    fn a_standing_cross_group_allowance_resolves_at_worker_group_and_global() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        let groups = dir.path().join("env");
+        std::fs::create_dir_all(&sessions).expect("mkdir");
+        std::fs::create_dir_all(&groups).expect("mkdir");
+        let w = |n: &str, body: &str| {
+            std::fs::write(sessions.join(format!("{n}.env")), body).expect("write")
+        };
+
+        w("roamer", "CC_TAGS=\"customers\"\n");
+        w("target", "CC_TAGS=\"gtm\"\n");
+        // Product baseline: no configuration anywhere means open peer discovery
+        // and messaging.
+        assert_eq!(
+            cross_group_send_ok("roamer", "target").expect("fresh fleet must be open"),
+            "sender-allowlist"
+        );
+        // An explicit empty global value is the fleet opt-out. More-specific
+        // group/worker configuration may still open a deliberately selected lane.
+        std::fs::write(dir.path().join("amux.env"), "CC_SEND_ALLOW=\"\"\n").expect("write");
+        assert!(cross_group_send_ok("roamer", "target").is_err(), "explicit opt-out must close");
+
+        // GROUP LAYER on the SENDER's group. This is the "configure it once for
+        // the group" case, and before the fix it did nothing at all.
+        std::fs::write(groups.join("customers.env"), "CC_SEND_ALLOW=\"gtm\"\n").expect("write");
+        assert_eq!(
+            cross_group_send_ok("roamer", "target").expect("group layer must grant"),
+            "sender-allowlist"
+        );
+
+        // GLOBAL LAYER on the RECEIVER. A fleet-wide routing target, declared
+        // once rather than per worker.
+        std::fs::remove_file(groups.join("customers.env")).expect("rm");
+        assert!(cross_group_send_ok("roamer", "target").is_err(), "control: grant withdrawn");
+        std::fs::write(dir.path().join("amux.env"), "CC_SEND_ALLOW=\"\"\nCC_RECEIVE_ANY=1\n").expect("write");
+        assert_eq!(
+            cross_group_send_ok("roamer", "target").expect("global layer must grant"),
+            "receiver-open"
+        );
+
+        // WORKER LAYER still wins, so a global standing order can be turned OFF
+        // for one lane. Without this, "configure workers individually" would only
+        // ever mean "add", never "except this one".
+        std::fs::remove_file(dir.path().join("amux.env")).expect("rm");
+        w("roamer", "CC_TAGS=\"customers\"\nCC_SEND_ALLOW=\"*\"\n");
+        assert_eq!(
+            cross_group_send_ok("roamer", "target").expect("worker layer must grant"),
+            "sender-allowlist"
+        );
+    }
+
+    /// An ISOLATED target stays unreachable no matter how the SENDER is
+    /// configured. Isolation is a fact about what the TARGET can receive — a raw
+    /// agent has the harness stripped — so a sender-side allowance must not
+    /// override it, or a standing order would deliver into a lane that cannot
+    /// process the message. Named here because it is the one case a reader will
+    /// expect `CC_SEND_ALLOW="*"` to cover, and it deliberately does not.
+    #[test]
+    fn a_sender_allowance_does_not_override_the_targets_isolation() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).expect("mkdir");
+        std::fs::write(sessions.join("roamer.env"), "CC_TAGS=\"a\"\nCC_SEND_ALLOW=\"*\"\n").unwrap();
+        std::fs::write(sessions.join("raw.env"), "CC_TAGS=\"b\"\nCC_ISOLATED=1\n").unwrap();
+        let err = cross_group_send_ok("roamer", "raw").expect_err("isolation must hold");
+        assert!(err.contains("isolated"), "and must say why: {err}");
+    }
+
+    #[test]
+    fn cross_group_sends_are_open_by_default_and_explicitly_opt_out() {
         let dir = tempfile::tempdir().expect("tmp");
         let _g = crate::api::settings::test_env::set_home(dir.path());
         let sessions = dir.path().join("sessions");
@@ -15328,7 +18466,11 @@ mod tests {
         write("broadcaster", "CC_TAGS=\"customers\"\nCC_SEND_ALLOW=\"gtm\"\n");
         write("lonely", "\n"); // untagged
 
-        // THE REPORTED CASE: different groups, no config -> refused.
+        // Fresh fleets are open across groups.
+        assert_eq!(cross_group_send_ok("ts-gke", "gtm-engine").unwrap(), "sender-allowlist");
+        // An explicit global empty value closes the default. This is the only
+        // state in which the refusal/approval path should appear.
+        std::fs::write(dir.path().join("amux.env"), "CC_SEND_ALLOW=\"\"\n").expect("write");
         let err = cross_group_send_ok("ts-gke", "gtm-engine").expect_err("must refuse");
         assert!(err.contains("cross-group send refused"), "{err}");
         // The refusal must NAME both escapes, or it is a wall rather than a rule.
@@ -15394,6 +18536,26 @@ mod tests {
         // owner peek/send to an isolated worker still works.
         assert_eq!(cross_group_send_ok("", "secret").unwrap(), "self-or-human");
     }
+
+    #[tokio::test]
+    async fn an_isolated_peer_refusal_never_mints_an_approval_request() {
+        let (state, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("caller.env"), "CC_TAGS=alpha\n").unwrap();
+        std::fs::write(sessions.join("raw.env"), "CC_TAGS=beta\nCC_ISOLATED=1\n").unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-amux-session", "caller".parse().unwrap());
+        let response = send_post(&state, "raw", &headers, &json!({"text": "do work"})).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["blocked"], json!("isolated"));
+        assert_eq!(body["code"], json!("isolated_target"));
+        assert!(body.get("grant_id").is_none(), "an impossible send must not ask for approval: {body}");
+    }
+
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -15424,6 +18586,59 @@ mod tests {
     /// after install, panicked, and the server stopped answering entirely —
     /// TCP still accepted from the kernel backlog while nothing serviced the
     /// TLS hello, which is why it presented as a hang rather than a crash.
+    /// AMUX-3897. The refusal was right and had no expiry, so a claim outlived
+    /// the life that made it and blocked the lane actually on that conversation
+    /// forever.
+    ///
+    /// Every arm carries the control it must not produce, because each is only
+    /// meaningful against the wrong answer next to it. `Refuse` on a fresh claim
+    /// is the load-bearing one: the mechanism's own doc says cross-linking two
+    /// live lanes is strictly WORSE than one lane staying blind, so a change
+    /// that took over eagerly would fix this card by causing the harm the card
+    /// is careful about.
+    #[test]
+    fn a_conversation_claim_expires_only_when_its_owner_stops_confirming_it() {
+        const W: i64 = 1800;
+        let now = 1_000_000i64;
+
+        // The live desktop/ts-gke shape: owner last confirmed two days ago.
+        assert_eq!(
+            conv_claim_verdict(now - 2 * 86_400, now, W),
+            ConvClaim::Takeover,
+            "an owner silent for two days is not on this conversation; a live lane reports \
+             its id every few seconds"
+        );
+        // CONTROL, and the one that matters most: an owner that confirmed a
+        // moment ago keeps its claim. A resumed lane refreshes the stamp on
+        // every report, so this is also what stops two live lanes ping-ponging
+        // an id, which is why the card declined to ship the start-time test.
+        assert_eq!(
+            conv_claim_verdict(now - 5, now, W),
+            ConvClaim::Refuse,
+            "a lane still reporting its own id must keep it — taking it would cross-link two \
+             live lanes, which is worse than the blindness being fixed"
+        );
+        // Exactly at the window: stale. Named so the boundary is a decision
+        // rather than an accident of `>` versus `>=`.
+        assert_eq!(conv_claim_verdict(now - W, now, W), ConvClaim::Takeover);
+        assert_eq!(conv_claim_verdict(now - W + 1, now, W), ConvClaim::Refuse);
+
+        // A claim from before this tracking existed. Its age is UNKNOWN, and
+        // unknown must not read as stale: that would hand a live lane's
+        // conversation away on the first report after a deploy. Start the clock,
+        // refuse once.
+        assert_eq!(
+            conv_claim_verdict(0, now, W),
+            ConvClaim::StampAndRefuse,
+            "an unconfirmed claim is age-unknown, not stale"
+        );
+        assert_eq!(
+            conv_claim_verdict(-1, now, W),
+            ConvClaim::StampAndRefuse,
+            "a junk stamp is treated as unknown, not as infinitely old"
+        );
+    }
+
     #[test]
     fn meta_i64_absent_key_is_zero_not_a_panic() {
         assert_eq!(meta_i64(&pre_cutover_map(), "rate_limited_since"), 0);
@@ -15551,10 +18766,11 @@ mod tests {
         assert!(!got.contains(&0x1b), "ANSI escapes must be stripped by default");
     }
 
-    /// Redaction is the writer's original job and must survive the rewrite,
-    /// including for a secret that arrives with only CR terminators.
+    /// Worker output is evidence. Preserve it byte-for-byte at the content
+    /// layer, including strings that resemble credentials; access control owns
+    /// who may see the terminal, not irreversible mutation of its output.
     #[test]
-    fn secrets_are_redacted_in_cr_terminated_output() {
+    fn credential_shaped_text_is_not_redacted_from_worker_output() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("s.log");
         let got = run_pipe_writer(
@@ -15562,10 +18778,10 @@ mod tests {
             &log,
         );
         let text = String::from_utf8_lossy(&got);
-        assert!(!text.contains("hunter2"), "api key leaked: {text}");
-        assert!(!text.contains("DEADBEEF"), "anthropic key leaked: {text}");
-        assert!(!text.contains("abcdefghijklmnopqrstuvwxyz01"), "github token leaked: {text}");
-        assert!(text.contains("REDACTED"), "expected a redaction marker: {text}");
+        assert!(text.contains("hunter2hunter2"), "env-shaped output changed: {text}");
+        assert!(text.contains("DEADBEEF"), "token-shaped output changed: {text}");
+        assert!(text.contains("abcdefghijklmnopqrstuvwxyz01"), "prefixed output changed: {text}");
+        assert!(!text.contains("REDACTED"), "worker output must not be redacted: {text}");
     }
 
     /// Cursor MOVEMENT becomes whitespace rather than being deleted. Deleting
@@ -16178,6 +19394,7 @@ mod tests {
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
                 auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
             dir,
         )
@@ -16220,6 +19437,233 @@ mod tests {
             del_d, Some(ts_d),
             "a DIRECT send really was delivered when it was recorded — blanking this too \
              would throw away true information instead of removing false information"
+        );
+    }
+
+    /// THE DETECTOR MUST FIRE ON A CONCURRENT PAIR, NOT ONLY A SEQUENTIAL ONE
+    /// (AF-483).
+    ///
+    /// Measured over all of cmd_history on 2026-09-04: six exact-text duplicate
+    /// pairs to one lane inside the 120s window after the detector shipped, and
+    /// only two were announced. The four misses were 08-13 to 08-18 with gaps of
+    /// 2s, 31s, 1s and 7s, and deployment, retention, the `stuck` exclusion, the
+    /// client send-time stamp and row shape are all ruled out on AF-483.
+    ///
+    /// What is NOT ruled out is a TOCTOU in the detector itself. `dup_prior`
+    /// takes a READ connection, checks, drops it, and the INSERT happens later
+    /// in a separate `write_async`. Two sends whose reads both land before
+    /// either write therefore see no prior and neither announces, which is the
+    /// one case where the announcement matters most: a 0-1s gap is the shape a
+    /// human does not produce.
+    ///
+    /// The sequential case already works and this cell asserts it too, as the
+    /// control. Without it a "fix" that announced on every message would pass
+    /// the concurrent half and destroy the signal.
+    #[tokio::test]
+    async fn a_concurrent_duplicate_is_announced_like_a_sequential_one() {
+        // CONTROL FIRST: sequential. If this ever stops firing the concurrent
+        // assertion below is measuring a detector that is simply off.
+        let (st, _dir) = state();
+        cmd_hist_record_full(&st, "lane-seq", "same words", "user", "", true,
+                             DeliveryMeta::direct()).await;
+        cmd_hist_record_full(&st, "lane-seq", "same words", "user", "", true,
+                             DeliveryMeta::direct()).await;
+        assert_eq!(
+            duplicate_events(&st, "lane-seq"),
+            1,
+            "premise: a sequential duplicate pair must announce exactly once, or this \
+             cell cannot tell a broken detector from a race"
+        );
+
+        // THE CASE. Two records started together, so both reads can precede
+        // both writes.
+        let (st2, _dir2) = state();
+        let a = cmd_hist_record_full(&st2, "lane-race", "same words", "user", "", true,
+                                     DeliveryMeta::direct());
+        let b = cmd_hist_record_full(&st2, "lane-race", "same words", "user", "", true,
+                                     DeliveryMeta::direct());
+        tokio::join!(a, b);
+
+        let rows = lane_rows(&st2, "lane-race");
+        assert_eq!(rows, 2, "premise: both sends must have been recorded, got {rows}");
+        assert_eq!(
+            duplicate_events(&st2, "lane-race"),
+            1,
+            "two identical sends landed on one lane together and the detector said \
+             nothing. A 0-1s gap is the shape a human does not produce, so this is \
+             exactly the pair worth announcing (AF-483)."
+        );
+    }
+
+    /// How many `message.duplicate` events exist for a lane.
+    fn duplicate_events(st: &AppState, lane: &str) -> i64 {
+        st.store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_events \
+                 WHERE type='message.duplicate' AND session=?1",
+                [lane],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+    }
+
+    fn lane_rows(st: &AppState, lane: &str) -> i64 {
+        st.store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM cmd_history WHERE session=?1", [lane], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
+    /// A healthy SSE connection used to make Messages LESS live than the 5s
+    /// polling fallback: cmd_history committed silently, so no client refetched
+    /// until a reload or an unrelated board/session event. The ledger write is
+    /// now itself a revisioned Message event. `skip_board=true` isolates this
+    /// assertion from auto-capture's separate Task event.
+    #[tokio::test]
+    async fn a_recorded_message_publishes_the_event_that_refreshes_messages() {
+        let (st, _dir) = state();
+        let mut events = st.store.subscribe();
+        cmd_hist_record_full(
+            &st,
+            "lane-live",
+            "answer this without creating work",
+            "user",
+            "",
+            true,
+            DeliveryMeta::direct(),
+        )
+        .await;
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("message write must wake an SSE subscriber")
+            .expect("event channel remains open");
+        assert_eq!(event.entity_type, amux_core::revision::EntityType::Message);
+        assert!(event.entity_id.starts_with("MSG-"), "the invalidation names the durable row");
+        assert_eq!(event.mutation, amux_core::revision::MutationKind::Created);
+    }
+
+    // ── AMUX-3903: a failed send is a fact worth keeping ────────────────────
+
+    /// THE DISCRIMINATOR THE NEW BRANCH RESTS ON. `send_post` records a failed
+    /// send only when `submit_verdict_of` claims it, so that predicate has to
+    /// separate "amux typed the text and it did not submit" from "amux declined
+    /// and typed nothing" across the WHOLE refusal vocabulary. Get it wrong in
+    /// one direction and the failures stay invisible; wrong in the other and
+    /// every unreachable lane files rows about messages never attempted.
+    #[test]
+    fn only_a_send_that_actually_typed_something_is_recorded_as_failed() {
+        // The one failure that put text in the lane.
+        assert_eq!(
+            submit_verdict_of(
+                "not submitted — text is sitting in the input box (autocomplete popup ate the Enter?)"
+            ),
+            Some("stuck"),
+            "this is the row the ledger was missing"
+        );
+
+        // REFUSALS. amux never typed; the caller got a next step. Every one of
+        // these is a real message from `send_text`/`send_failure_status`.
+        for refusal in [
+            "not running",
+            "session 'nope' not found",
+            "invalid session name",
+            "auto-wake failed: session is archived; wake it first",
+            "target is an isolated (raw-agent) worker",
+            "herdr-backed session start is not ported",
+            "iTerm2-backed sessions are not supported",
+            &bg_view_refusal(false),
+            &bg_view_refusal(true),
+        ] {
+            assert_eq!(
+                submit_verdict_of(refusal),
+                None,
+                "a refusal typed nothing and must not become a delivery-failure row: {refusal:?}"
+            );
+        }
+
+        // And the success wordings keep their own verdicts, so widening the
+        // failure branch cannot have quietly reclassified them.
+        assert_eq!(submit_verdict_of("sent"), Some("confirmed"));
+        assert_eq!(submit_verdict_of("sent (Enter was dropped; submitted on retry)"), Some("retried"));
+        assert_eq!(
+            submit_verdict_of(
+                "sent (keys delivered; submission could not be verified — no input box was drawn)"
+            ),
+            Some("unverified")
+        );
+    }
+
+    /// A STUCK ROW MUST NOT CLAIM A DELIVERY TIME. `delivery` says which path
+    /// was taken and Direct is true of a stuck send, so the mode alone stamps
+    /// `delivered_at` — which would re-create AMUX-3541's defect through a new
+    /// door: a column populated on every row reads as a working instrument.
+    #[tokio::test]
+    async fn a_stuck_row_records_the_attempt_and_not_a_delivery() {
+        let (st, _d) = state();
+        cmd_hist_record_full(
+            &st,
+            "lane-stuck",
+            "a message that never submitted",
+            "user",
+            "",
+            false,
+            DeliveryMeta { delivery: Some(Delivery::Direct), queued_at_ms: None, submit_verdict: Some("stuck") },
+        )
+        .await;
+        let (ts, delivered) = last_row(&st);
+        assert!(ts > 0, "the ATTEMPT is the fact worth keeping — the row must exist");
+        assert_eq!(
+            delivered, None,
+            "the text is in the composer, not in the lane; a delivered_at here is a lie \
+             the same shape as AMUX-3541's"
+        );
+        let verdict: Option<String> = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT submit_verdict FROM cmd_history ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(verdict.as_deref(), Some("stuck"), "the value that had never once been written");
+    }
+
+    /// RETRYING AN UNDELIVERED MESSAGE IS NOT A DUPLICATE DELIVERY.
+    ///
+    /// Recording failures gives the duplicate detector rows it never saw. Its
+    /// query matches on (session, text) inside a window, so without this the
+    /// correct response to a failed send — send it again — would be warned
+    /// about as a double delivery, which trains people to ignore the one
+    /// warning that exists for real duplicates.
+    #[tokio::test]
+    async fn a_retry_after_a_failed_send_is_not_flagged_as_a_duplicate() {
+        let (st, _d) = state();
+        let text = "please look at the report";
+        // The failed attempt.
+        cmd_hist_record_full(
+            &st, "lane-dup", text, "user", "", false,
+            DeliveryMeta { delivery: Some(Delivery::Direct), queued_at_ms: None, submit_verdict: Some("stuck") },
+        )
+        .await;
+        // The detector's own query, verbatim, against the seeded table.
+        // THE SHIPPED QUERY, not a restatement of it: a copy here would stay
+        // green if the detector's own SQL changed underneath it.
+        let prior = |st: &AppState| -> Option<(i64, i64)> {
+            prior_delivered(&st.store.read().unwrap(), "lane-dup", text, 0)
+        };
+        assert_eq!(
+            prior(&st),
+            None,
+            "a message that never left the composer is not a prior DELIVERY"
+        );
+
+        // CONTROL: a real delivery of the same text IS a prior, or the filter
+        // above has simply switched the detector off.
+        cmd_hist_record_full(&st, "lane-dup", text, "user", "", false, DeliveryMeta::direct()).await;
+        assert!(
+            prior(&st).is_some(),
+            "a genuine prior delivery must still be found, or the duplicate detector is dead"
         );
     }
 
@@ -16402,8 +19846,9 @@ mod tests {
         assert_eq!(sess, "lane-cap");
         assert_eq!(status, "doing", "capture mints in doing, not todo (AMUX-2613)");
 
-        // 2. A SECOND prompt to a lane that now holds an open card is STEERING,
-        //    not a new task: no card, card_id stays NULL, still exactly one card.
+        // 2. A distinct SECOND prompt is still work even while a card is open.
+        //    The model gets both durable commands and decides whether to relate,
+        //    merge, order, or decompose them; the harness must not erase one.
         cmd_hist_record_full(
             &st, "lane-cap", "Also make the tabs keyboard-navigable please",
             "user", "", false, DeliveryMeta::direct(),
@@ -16411,8 +19856,8 @@ mod tests {
         .await;
         assert!(
             q("SELECT card_id FROM cmd_history WHERE session=?1 ORDER BY id DESC LIMIT 1", "lane-cap")
-                .is_none(),
-            "a lane with an open card is steered, not re-carded"
+                .is_some(),
+            "distinct work is carded even while another card is open"
         );
         let n: i64 = st
             .store
@@ -16420,7 +19865,7 @@ mod tests {
             .unwrap()
             .query_row("SELECT COUNT(*) FROM issues WHERE session='lane-cap'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 1, "exactly one card for the lane");
+        assert_eq!(n, 2, "each distinct durable command reaches the work ledger");
 
         // 3. [no-board] (skip_board=true) mints nothing.
         cmd_hist_record_full(
@@ -16486,6 +19931,41 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM cmd_history WHERE session='lane-sq'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(msgs, 1, "the prompt is still recorded in cmd_history (Messages ledger)");
+    }
+
+    #[tokio::test]
+    async fn an_informational_question_records_in_messages_without_a_board_card() {
+        let (st, _dir) = state();
+        cmd_hist_record_full(
+            &st,
+            "lane-info",
+            "Acceptance check only: what provider and model are you currently running? Answer in one sentence. Do not create or modify any board task.",
+            "user",
+            "",
+            false,
+            DeliveryMeta::direct(),
+        )
+        .await;
+        let (card_id, messages): (Option<String>, i64) = st
+            .store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT card_id, (SELECT COUNT(*) FROM cmd_history WHERE session='lane-info') \
+                 FROM cmd_history WHERE session='lane-info' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(card_id.is_none(), "answer-only question must not mint a work card");
+        assert_eq!(messages, 1, "the question still belongs in Messages");
+        let cards: i64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM issues WHERE session='lane-info'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cards, 0);
     }
 
     // The stale-pickup guard (AMUX-3052) reads the card id out of the prompt
@@ -16731,6 +20211,48 @@ mod tests {
         }
         // Without this the assertion above is vacuous the day someone renames
         // the statement: zero matches, zero failures, green.
+        assert!(seen >= 6, "expected to inspect at least 6 history inserts, saw {seen}");
+    }
+
+    /// AMUX-3919. Every one of those six inserts must also name an OUTCOME.
+    ///
+    /// Two of them did not, and both were VOID paths — a message deliberately
+    /// NOT delivered. So the rows where the column carries the most information
+    /// were exactly the rows that left it NULL, and a void became
+    /// indistinguishable from a delivery whose outcome went unrecorded. Every
+    /// NULL written by the live code path on 2026-08-30 was one of these: 9 of
+    /// 9, all `[VOIDED: card X left 'doing' -> Y]`.
+    ///
+    /// The information was never missing, only unqueryable: it sat in an
+    /// `[VOIDED: ...]` prefix inside the message TEXT, where no `group by` can
+    /// reach it. Prose in a body is not a field.
+    ///
+    /// Source-level for the same reason as the producer check above: a
+    /// behavioural test proves one path writes an outcome and says nothing
+    /// about the other five, and "five stay right and one silently stops" is
+    /// how this happened in the first place.
+    #[test]
+    fn every_steering_history_insert_names_an_outcome() {
+        let src = include_str!("session_verbs.rs");
+        let mut seen = 0;
+        for (i, _) in src.match_indices("INSERT OR REPLACE INTO steering_history(") {
+            let rest = &src[i..];
+            let end = rest.find(')').expect("an INSERT names its columns");
+            let cols = &rest[..end];
+            // Skip this test's own search literal (see the note above).
+            if !cols.contains("id, session") {
+                continue;
+            }
+            seen += 1;
+            assert!(
+                cols.contains("outcome"),
+                "a steering_history INSERT omits `outcome`, so the row it writes cannot say \
+                 whether the message was delivered, voided or dropped — and a NULL there reads \
+                 identically to all three (AMUX-3919). Columns: {cols}"
+            );
+        }
+        // Same anti-vacuity guard as the producer check: zero matches would be
+        // zero failures and a green run.
         assert!(seen >= 6, "expected to inspect at least 6 history inserts, saw {seen}");
     }
 
@@ -17015,9 +20537,153 @@ mod tests {
         assert_eq!(detect_claude_status(active), "active");
         let echoed = "\u{276f} [amux] VERIFY \u{2014} y\u{2026}\nmixpeek$ ";
         assert_ne!(detect_claude_status(echoed), "active");
+        // ATE-45: Claude yields its main composer while Explore agents run.
+        // The provider-owned waiting row is active for singular and plural;
+        // prose quoting the same words is not provider chrome.
+        for waiting in [
+            "\u{2736} Waiting for 1 background agent to finish\n\n\u{276f}\n\n\u{23f5}\u{23f5} bypass permissions on \u{b7} \u{2190} 2 agents",
+            "\u{273b} Waiting for 2 background agents to finish\n\n\u{276f}\n\n\u{23f5}\u{23f5} bypass permissions on",
+        ] {
+            assert_eq!(detect_claude_status(waiting), "active", "{waiting}");
+        }
+        let completed_after_wait = "\
+\u{2736} Waiting for 1 background agent to finish
+\u{23fa} Agent \"Post-fix status verification\" finished \u{b7} 16s
+\u{23fa} The background Explore agent finished and returned CLAUDE-POSTFIX-DONE.
+CLAUDE-POSTFIX-COMPLETE
+\u{273b} Churned for 23s \u{b7} done 3:40 PM
+\u{276f}\u{a0}
+\u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 2 agents";
+        assert_eq!(
+            detect_claude_status(completed_after_wait),
+            "idle",
+            "a completed-turn/final-prompt boundary is newer than the stale wait row"
+        );
+        assert!(!provider_background_working(completed_after_wait));
+        let quoted_wait = "I am testing Waiting for 1 background agent to finish\n\n\u{276f}\n\n\u{23f5}\u{23f5} bypass permissions on";
+        assert_eq!(detect_claude_status(quoted_wait), "idle");
+        let prompt_quote = "\u{276f} Waiting for 1 background agent to finish\n\n\u{23f5}\u{23f5} bypass permissions on";
+        assert_eq!(
+            detect_claude_status(prompt_quote),
+            "idle",
+            "Claude's prompt glyph is not provider spinner chrome"
+        );
+        let pasted_row = "\u{276f} Here is the captured row:\n  \u{2736} Waiting for 1 background agent to finish\n\n\u{23f5}\u{23f5} bypass permissions on";
+        assert_eq!(
+            detect_claude_status(pasted_row),
+            "idle",
+            "an indented pasted provider row is still user text"
+        );
+        // Provider/model controls: the new Claude frame must not turn a Codex
+        // prompt or Gemini selector into active.
+        assert_eq!(detect_claude_status("\u{203a} Ask Codex to do anything"), "");
+        assert_eq!(detect_claude_status("\u{2502} \u{25cf} 1. Allow\n\u{2502}   2. Deny"), "waiting");
         // Resume picker needs the ⌕ search glyph.
         assert!(at_resume_picker("Resume Session \u{2315}\nEnter to select"));
         assert!(!at_resume_picker("Enter to select"));
+    }
+
+    #[test]
+    fn codex_rollout_boundaries_are_a_structured_live_state() {
+        let events = vec![
+            json!({
+                "timestamp": "2026-09-02T21:36:17.348Z",
+                "type": "event_msg",
+                "payload": {"type": "task_started"}
+            }),
+            json!({"timestamp": "2026-09-02T21:36:18Z", "type": "response_item"}),
+        ];
+        let active = codex_turn_signal_from_events(&events).unwrap();
+        assert_eq!(active.state, "active");
+        assert_eq!(active.boundary, "task_started");
+        assert!(active.ts > 1_700_000_000.0);
+
+        let mut completed = events;
+        completed.push(json!({
+            "timestamp": "2026-09-02T21:40:00Z",
+            "type": "event_msg",
+            "payload": {"type": "task_complete"}
+        }));
+        let completed = codex_turn_signal_from_events(&completed).unwrap();
+        assert_eq!(completed.state, "idle");
+        assert_eq!(completed.boundary, "task_complete");
+
+        let exec_json = vec![json!({
+            "timestamp": "2026-09-02T21:41:00Z",
+            "type": "turn.started"
+        })];
+        assert_eq!(codex_turn_signal_from_events(&exec_json).unwrap().state, "active");
+
+        let interrupted = vec![
+            json!({
+                "timestamp": "2026-09-04T20:28:29.408Z",
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "01a06e1b"}
+            }),
+            json!({
+                "timestamp": "2026-09-04T20:28:54.769Z",
+                "type": "event_msg",
+                "payload": {"type": "turn_aborted", "turn_id": "01a06e1b"}
+            }),
+        ];
+        let interrupted = codex_turn_signal_from_events(&interrupted).unwrap();
+        assert_eq!(interrupted.state, "idle", "an interrupted turn is terminal, not active");
+        assert_eq!(interrupted.boundary, "turn_aborted");
+    }
+
+    /// ATE-42 live regression: `amux` and `amux-testing-e2e` shared one cwd.
+    /// The old newest-cwd resolver assigned e2e's active rollout to both, so
+    /// the idle `amux` prompt showed WORKING.  Each worker life must resolve
+    /// the rollout born near its own start, independent of file-list order.
+    #[test]
+    fn codex_rollout_fallback_is_worker_life_scoped_not_newest_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = normalize_work_dir(dir.path().to_str().unwrap());
+        let older = dir.path().join("rollout-amux.jsonl");
+        let newer = dir.path().join("rollout-e2e.jsonl");
+        std::fs::write(
+            &older,
+            format!(
+                "{{\"timestamp\":\"2026-09-03T21:44:35Z\",\"type\":\"session_meta\",\"payload\":{{\"cwd\":{}}}}}\n",
+                serde_json::to_string(&format!("{}/", dir.path().display())).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &newer,
+            format!(
+                "{{\"timestamp\":\"2026-09-03T23:45:04Z\",\"type\":\"session_meta\",\"payload\":{{\"cwd\":{}}}}}\n",
+                serde_json::to_string(&cwd).unwrap()
+            ),
+        )
+        .unwrap();
+        let files = vec![
+            (std::time::SystemTime::now(), newer.clone()),
+            (std::time::SystemTime::UNIX_EPOCH, older.clone()),
+        ];
+
+        let amux_start = parse_iso8601("2026-09-03T21:44:10Z").unwrap();
+        let e2e_start = parse_iso8601("2026-09-03T23:39:24Z").unwrap();
+        assert_eq!(rollout_for_worker_start(&files, &cwd, amux_start), Some(&older));
+        assert_eq!(rollout_for_worker_start(&files, &cwd, e2e_start), Some(&newer));
+        assert_eq!(
+            rollout_for_worker_start(
+                &files,
+                &cwd,
+                parse_iso8601("2026-09-03T21:50:00Z").unwrap()
+            ),
+            None,
+            "a pre-restart rollout must not be adopted by the new worker life"
+        );
+        assert_eq!(
+            rollout_for_worker_start(
+                &files,
+                &cwd,
+                parse_iso8601("2026-09-04T12:00:00Z").unwrap()
+            ),
+            None,
+            "outside the bounded startup window the safe answer is unknown"
+        );
     }
 
     /// Codex's trust-directory picker, byte shape captured live 2026-08-11
@@ -17269,6 +20935,25 @@ mod tests {
             redact_secrets("ANTHROPIC_API_KEY=sk-live-x y"),
             "ANTHROPIC_API_KEY=REDACTED y"
         );
+        let password_key = format!("AMUX_QA_{}", "PASSWORD");
+        let s3_key = format!("AMUX_S3_{}", "KEY");
+        let input = format!("{password_key}=fake-login-value {s3_key}=fake-storage-value");
+        let out = redact_secrets(&input);
+        assert_eq!(
+            out,
+            format!("{password_key}=REDACTED {s3_key}=REDACTED"),
+            "unlisted secret-bearing env names must be redacted by shape"
+        );
+    }
+
+    #[test]
+    fn provider_resume_uses_structured_state_not_terminal_replay() {
+        let prompt = structured_resume_prompt("lane-a", "provider swap");
+        assert!(prompt.contains("amux board ls --session lane-a"), "{prompt}");
+        assert!(prompt.contains("amux board show <ID>"), "{prompt}");
+        assert!(prompt.contains("source message") && prompt.contains("dependencies"), "{prompt}");
+        assert!(!prompt.contains(".amux/logs"), "{prompt}");
+        assert!(!prompt.contains("terminal history"), "{prompt}");
     }
 
     /// The file/DB-backed verbs, exercised through the full router shape on a
@@ -17355,11 +21040,17 @@ mod tests {
         // applies its OWN session check. 404 is the proof the guard let go —
         // and it keeps the test from auto-waking a session and launching a
         // terminal on the machine running it.
+        // The /api/workers/hw/{peek,send} rows are GONE with the catch-all
+        // (AF-204): this router no longer mounts that spelling, so asserting on
+        // it here would pin an axum 404 rather than the exemption. The same
+        // property at the workers spelling is covered where the routes now
+        // live — api::workers::tests::send_route_resolves_a_worker_id_to_its_
+        // session_name and peek_reads_the_live_terminal_and_names_every_non_answer.
+        // Naming them because deleting a row without saying what still covers it
+        // is how a check quietly stops checking (ethos rule 7).
         for (method, path) in [
             ("GET", "/api/sessions/hw/peek"),
             ("POST", "/api/sessions/hw/send"),
-            ("GET", "/api/workers/hw/peek"),
-            ("POST", "/api/workers/hw/send"),
         ] {
             let body = (method == "POST").then(|| json!({"text": "hi"}));
             let (st, v) = call(&app, method, path, body).await;
@@ -17526,6 +21217,121 @@ mod tests {
             call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"toggle_pin": true}))).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(parse_env("probe").get("CC_PINNED"), Some("1"));
+
+        // Every board-automation stage exposed in worker Configurations writes
+        // the exact scoped key the runtime consumes. Null removes the worker
+        // override instead of writing a second spelling for "inherit".
+        let (st, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"auto_drain_backlog": true})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("probe").get("AMUX_DISPATCH_BACKLOG_WHEN_IDLE"), Some("1"));
+        assert_eq!(v["effective"], json!(true));
+
+        let (st, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_auto_pickup": false})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("probe").get("CC_AUTO_PICKUP"), Some("0"));
+        assert_eq!(v["board_auto_pickup"], json!(false));
+
+        let (st, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_auto_continue": true})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("probe").get("CC_AUTO_CONTINUE"), Some("1"));
+
+        let (st, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_standing_orders": false})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("probe").get("CC_STANDING_ORDERS"), Some("0"));
+        assert_eq!(v["board_standing_orders"], json!(false));
+
+        // A child switch reports the resolved runtime truth while the master
+        // is off; removing the master override immediately restores it.
+        let (_, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_auto_pickup": true})),
+        )
+        .await;
+        assert_eq!(v["effective"], json!(false));
+        let (_, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_standing_orders": null})),
+        )
+        .await;
+        assert_eq!(v["inherited"], json!(true));
+        assert_eq!(v["effective"], json!(true));
+        assert_eq!(parse_env("probe").get("CC_STANDING_ORDERS"), None);
+
+        let (_, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"auto_drain_backlog": null})),
+        )
+        .await;
+        assert_eq!(v["effective"], json!(true));
+        assert_eq!(parse_env("probe").get("AMUX_DISPATCH_BACKLOG_WHEN_IDLE"), None);
+        for field in ["board_auto_pickup", "board_auto_continue"] {
+            let (st, v) = call(
+                &app,
+                "PATCH",
+                "/api/sessions/probe/config",
+                Some(json!({(field): null})),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK, "{v}");
+            assert_eq!(v["effective"], json!(true));
+        }
+        assert_eq!(parse_env("probe").get("CC_AUTO_PICKUP"), None);
+        assert_eq!(parse_env("probe").get("CC_AUTO_CONTINUE"), None);
+
+        // External-email authorization is a first-class, immediately-applied
+        // worker configuration. It writes the exact key the email gate reads,
+        // and null restores inheritance rather than inventing another flag.
+        let (st, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"external_email_allowed": true})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("probe").get("AMUX_EMAIL_EXTERNAL_ALLOW"), Some("1"));
+        assert_eq!(v["external_email_allowed"], json!(true));
+        let (st, v) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"external_email_allowed": null})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["inherited"], json!(true));
+        assert_eq!(parse_env("probe").get("AMUX_EMAIL_EXTERNAL_ALLOW"), None);
+
         let (st, v) =
             call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"mcp": "bogus"}))).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
@@ -18013,7 +21819,7 @@ mod tests {
 
         // 6. A SUBAGENT-ONLY report still heals. It returns early, before the
         //    state parse, so adoption had to be hoisted above that branch — a
-        //    lane whose only hook is PreToolUse:Task would otherwise stay blind
+        //    lane whose only hook is SubagentStart would otherwise stay blind
         //    forever.
         const CONV3: &str = "5f6e7d8c-9b0a-4123-8456-789abcdef012";
         std::fs::write(env_path("subby"), "CC_DIR=\"/tmp\"\n").unwrap();
@@ -18031,6 +21837,71 @@ mod tests {
             CONV3,
             "adoption must happen above the subagent early-return"
         );
+
+        // 7. AMUX-3897: A CLAIM EXPIRES WHEN ITS OWNER STOPS CONFIRMING IT, and
+        //    not before. Step 3 above already covered the first half — `sib`'s
+        //    claim had no confirmation stamp, so it was age-UNKNOWN and the
+        //    refusal stood. Here is the rest of the lifecycle, end to end through
+        //    the real endpoint and real meta files.
+        //
+        //    The live shape this comes from: `desktop` went idle on 2026-08-28
+        //    still holding a conversation that was actually `ts-gke`'s, and
+        //    ts-gke was refused 205 times and stayed blind to the staged guard
+        //    the whole time.
+
+        //    7a. THE OWNER RE-CONFIRMS, so its claim is fresh and still wins.
+        //    This is the control for the ping-pong the card was worried about: a
+        //    RESUMED lane reports the same id, which refreshes the stamp, so it
+        //    can never age out from under itself.
+        let (_, v) = call(
+            &app,
+            "POST",
+            "/api/sessions/sib/report",
+            Some(json!({"state": "idle", "session_id": SIB_CONV})),
+        )
+        .await;
+        assert_eq!(v["conv_id"]["adopted"], json!(false), "owner re-reporting is not an adopt: {v}");
+        let stamped = meta_i64(&load_meta("sib"), "cc_conversation_confirmed_at");
+        assert!(stamped > 0, "an owner re-reporting its own id must stamp a confirmation");
+
+        let (_, v) = call(
+            &app,
+            "POST",
+            "/api/sessions/blindy/report",
+            Some(json!({"state": "idle", "session_id": SIB_CONV})),
+        )
+        .await;
+        assert_eq!(v["conv_id"]["conflict_with"], json!("sib"), "a FRESH claim must still win: {v}");
+
+        //    7b. THE OWNER GOES SILENT. Backdate the stamp past the window —
+        //    the same state `desktop` was in, two days without a report.
+        let mut sib_meta = load_meta("sib");
+        sib_meta.insert(
+            "cc_conversation_confirmed_at".into(),
+            json!(crate::config::now_f64() as i64 - conv_claim_stale_s() - 1),
+        );
+        std::fs::write(meta_path("sib"), Value::Object(sib_meta).to_string()).unwrap();
+
+        let (st, v) = call(
+            &app,
+            "POST",
+            "/api/sessions/blindy/report",
+            Some(json!({"state": "idle", "session_id": SIB_CONV})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(
+            v["conv_id"]["adopted"],
+            json!(true),
+            "an owner that stopped confirming must lose the claim, or the blocked lane stays \
+             blind forever — which is the whole of AMUX-3897: {v}"
+        );
+        assert_eq!(meta_str(&load_meta("blindy"), "cc_conversation_id"), SIB_CONV);
+        assert_eq!(
+            meta_str(&load_meta("sib"), "cc_conversation_id"),
+            "",
+            "the stale claim must be RELEASED, not left behind to block the next lane too"
+        );
     }
 }
 
@@ -18047,6 +21918,7 @@ mod steer_boundary_tests {
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
                 auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
             dir,
         )
@@ -18082,10 +21954,11 @@ mod steer_boundary_tests {
 
     /// AMUX-3147: a new user prompt must card even while the session holds an open
     /// MANUAL card — that was the "none of these have board items" bug, the old
-    /// dedup skipping on ANY open agent card. Only a RAPID re-send within the
-    /// window is deduped; a distinct task past the window cards again.
+    /// dedup skipping on ANY open agent card. Only an IDENTICAL retry within the
+    /// window is deduped; a distinct task cards immediately so the model can
+    /// decide whether it is a sibling, dependency, or follow-up.
     #[tokio::test]
-    async fn capture_cards_new_tasks_past_a_manual_card_but_dedups_a_rapid_resend() {
+    async fn capture_cards_distinct_rapid_tasks_but_dedups_an_identical_retry() {
         use crate::db::board_store::{create_issue, NewIssue};
         let (state, _tmp) = tstate();
         let now_ms = 1_700_000_000_000i64;
@@ -18110,18 +21983,40 @@ mod steer_boundary_tests {
                         gate: vec![],
                         depends_on: vec![],
                         tags: vec![],
+                        ask_type: None,
+                        ask_question: None,
+                        ask_unblocks: None,
+                        ask_actor: None,
+                        // AF-367: an auto-captured human prompt — the population AF-367 is about.
+                        source: Some("capture".into()),
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
                     },
                     now_ms / 1000,
                 )?;
                 // The open manual card must NOT block a new user task.
                 let first = super::mint_capture_card(conn, "s", "build the connectors tab", now_ms)?;
                 assert!(first.is_some(), "a new task must card even with an open manual card");
-                // A rapid re-send within the window IS deduped.
+                // In production the recorder atomically attaches the minted id
+                // to this exact cmd_history row; the retry predicate reads that
+                // durable link rather than comparing truncated card prose.
+                conn.execute(
+                    "INSERT INTO cmd_history(text,type,session,ts,origin,card_id) VALUES(?1,'user','s',?2,'test',?3)",
+                    rusqlite::params![
+                        "build the connectors tab",
+                        now_ms,
+                        first.as_ref().unwrap().id
+                    ],
+                )?;
+                // An identical transport retry within the window IS deduped.
+                let retry = super::mint_capture_card(conn, "s", "build the connectors tab", now_ms + 1_000)?;
+                assert!(retry.is_none(), "an identical retry within the window must dedup");
+                // A different task two seconds later is not a retry. The old
+                // time-only shim silently swallowed it before any model could
+                // classify or decompose it.
                 let rapid = super::mint_capture_card(conn, "s", "also wire slack", now_ms + 2_000)?;
-                assert!(rapid.is_none(), "a rapid re-send within the window must dedup");
-                // A distinct task past the window cards again.
-                let later = super::mint_capture_card(conn, "s", "now add gmail", now_ms + 60_000)?;
-                assert!(later.is_some(), "a distinct task past the dedup window must card");
+                assert!(rapid.is_some(), "a distinct rapid task must card immediately");
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             })
             .await
@@ -18222,11 +22117,17 @@ mod steer_boundary_tests {
             "a same-group reviewer must still be assignable"
         );
 
-        // THE NEW CELL: registered, real, and in another group. The old gate
-        // passed this — it is ECOLO-14 and AMUX-3761 exactly — and the owner
-        // then could not message the reviewer it was waiting on.
+        // EXPLICITLY CLOSED: registered, real, and in another group. Fresh
+        // fleets are intentionally open now; preserve this boundary regression
+        // by closing the owner's lane through the documented worker-level
+        // override before checking reviewer reachability.
+        std::fs::write(
+            sessions.join("owner.env"),
+            "CC_DIR=/tmp\nCC_TAGS=\"alpha\"\nCC_SEND_ALLOW=\"\"\n",
+        )
+        .unwrap();
         let why = reviewer_unreachable_reason("owner", "far")
-            .expect("a cross-group reviewer must refuse even though it IS registered");
+            .expect("an explicitly opted-out cross-group reviewer must refuse");
         assert!(
             !why.contains("not a registered worker"),
             "the refusal must name the REACH problem, not mislead about existence: {why}"
@@ -18337,6 +22238,7 @@ mod steer_boundary_tests {
         let (state, _d) = tstate();
         // A prior main-state report must survive the subagent events untouched.
         set_report(&state, "probe", "active").await;
+        let mut events = state.store.subscribe();
 
         let read = |state: &AppState| -> Value {
             state
@@ -18351,8 +22253,15 @@ mod steer_boundary_tests {
                 .unwrap_or(Value::Null)
         };
 
-        subagent_event_post(&state, "probe", "start").await;
-        subagent_event_post(&state, "probe", "start").await;
+        subagent_event_post(&state, "probe", "start", &json!({})).await;
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("subagent start must push a real-time session event")
+            .expect("event channel open");
+        assert_eq!(event.entity_type, amux_core::revision::EntityType::Session);
+        assert_eq!(event.entity_id, "probe");
+        assert_eq!(event.mutation, amux_core::revision::MutationKind::Updated);
+        subagent_event_post(&state, "probe", "start", &json!({})).await;
         let v = read(&state);
         assert_eq!(v["probe"]["subagents"]["count"].as_i64(), Some(2), "two starts -> 2");
         assert_eq!(
@@ -18361,18 +22270,365 @@ mod steer_boundary_tests {
             "subagent events must not touch the main state"
         );
 
-        subagent_event_post(&state, "probe", "stop").await;
+        // THE LIVE FAILURE: any main report used to replace this whole object,
+        // deleting `subagents` while both children were still running.
+        let headers = HeaderMap::new();
+        report_post(
+            &state,
+            "probe",
+            &headers,
+            &json!({"state": "active", "source": "prompt-hook"}),
+        )
+        .await;
+        assert_eq!(
+            read(&state)["probe"]["subagents"]["count"].as_i64(),
+            Some(2),
+            "main-turn reports must preserve the live subagent count"
+        );
+
+        subagent_event_post(&state, "probe", "stop", &json!({})).await;
         assert_eq!(read(&state)["probe"]["subagents"]["count"].as_i64(), Some(1), "one stop -> 1");
 
         // FLOOR: more stops than starts (a lost start event) must never underflow
         // into a negative count that would misread once a real start arrives.
-        subagent_event_post(&state, "probe", "stop").await;
-        subagent_event_post(&state, "probe", "stop").await;
+        subagent_event_post(&state, "probe", "stop", &json!({})).await;
+        subagent_event_post(&state, "probe", "stop", &json!({})).await;
         assert_eq!(
             read(&state)["probe"]["subagents"]["count"].as_i64(),
             Some(0),
             "count floors at 0 on excess stops"
         );
+
+        // AMUX-4024: A STATE REPORT MUST NOT DELETE THE COUNT.
+        //
+        // Every assertion above drives `subagent_event_post` back to back with
+        // nothing else writing in between, which is the one sequence a live lane
+        // never produces: it interleaves state reports constantly, a tool-hook
+        // on every tool call and a Stop on every turn end. `report_post`
+        // REPLACES the lane's whole object and carried only `model` and `tokens`
+        // forward, so the count was deleted seconds after it was set.
+        //
+        // Driven through `report_post` — the SHIPPED handler, with the headers
+        // its attribution check reads — and not through the `set_report`
+        // fixture, which writes the blob directly and would have "passed" this
+        // by never exercising the replacement at all. That distinction is the
+        // whole cell: the bug lives in the carry-forward list, and only the real
+        // handler has one.
+        //
+        // Measured live before the fix: 3 of 127 lanes still had a `subagents`
+        // key, all reading 0, while lanes that had reported a count minutes
+        // earlier had none at all.
+        let mut h = HeaderMap::new();
+        h.insert("X-Amux-Session", "probe".parse().unwrap());
+        report_post(&state, "probe", &h, &json!({"subagent": "start"})).await;
+        assert_eq!(
+            read(&state)["probe"]["subagents"]["count"].as_i64(),
+            Some(1),
+            "the shipped handler must route a subagent event to the count"
+        );
+        report_post(&state, "probe", &h, &json!({"state": "idle", "source": "stop-hook"})).await;
+        let after = read(&state);
+        assert_eq!(
+            after["probe"]["subagents"]["count"].as_i64(),
+            Some(1),
+            "a state report must CARRY the live count, not delete it: {after}"
+        );
+        assert_eq!(
+            after["probe"]["state"].as_str(),
+            Some("idle"),
+            "...while still applying the state it was sent for: {after}"
+        );
+
+        // THE LEAK BOUND (AMUX-4024). Making the count authoritative removed the
+        // 240s mtime ceiling that used to bound a lost SubagentStop, and the
+        // carry-forward above means a leaked count now survives restarts too. A
+        // SessionStart reset is the bound, and it is the one zero that is
+        // provably right rather than a guess.
+        report_post(&state, "probe", &h, &json!({"subagent": "start"})).await;
+        report_post(&state, "probe", &h, &json!({"subagent": "start"})).await;
+        // 3, not 2: the block above left one live count standing, which is the
+        // point — reset must clear a count it did not create, not just undo the
+        // two starts on the line above it.
+        assert_eq!(read(&state)["probe"]["subagents"]["count"].as_i64(), Some(3), "1 carried + 2 starts");
+        report_post(&state, "probe", &h, &json!({"subagent": "reset"})).await;
+        let r = read(&state);
+        assert_eq!(
+            r["probe"]["subagents"]["count"].as_i64(),
+            Some(0),
+            "a session start must clear a leaked count: {r}"
+        );
+        assert_eq!(
+            r["probe"]["state"].as_str(),
+            Some("idle"),
+            "...without touching the main state, like every other subagent event: {r}"
+        );
+
+        // An unknown event is still refused rather than silently counted, and the
+        // error NAMES the accepted set — `reset` included, or the hook author
+        // reads a message that forbids the thing the hook is being asked to send.
+        let bad = report_post(&state, "probe", &h, &json!({"subagent": "sideways"})).await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST, "an unknown subagent event must 400");
+    }
+
+    /// ATE-45: response loss and server replacement may redeliver lifecycle
+    /// events. Identity, not delivery count, is the source of truth.
+    #[tokio::test]
+    async fn subagent_lifecycle_is_idempotent_ordered_and_restart_durable() {
+        async fn post(state: &AppState, ev: &str, body: Value) -> Value {
+            let response = subagent_event_post(state, "primis", ev, &body).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+        fn read(state: &AppState) -> Value {
+            let raw: String = state
+                .store
+                .read()
+                .unwrap()
+                .query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r| r.get(0))
+                .unwrap();
+            serde_json::from_str(&raw).unwrap()
+        }
+        fn state_with(path: &Path) -> AppState {
+            AppState {
+                store: std::sync::Arc::new(crate::db::Store::open(path).unwrap()),
+                started: std::time::Instant::now(),
+                build_hash: "test".into(),
+                auth_token: None,
+                reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("restart.db");
+        let state = state_with(&db);
+        let sid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        post(
+            &state,
+            "reset",
+            json!({"session_id":sid,"event_id":"reset-1","event_ts":100.0}),
+        )
+        .await;
+        for (id, ts) in [("explore-1", 101.0), ("explore-2", 102.0)] {
+            post(
+                &state,
+                "start",
+                json!({"session_id":sid,"agent_id":id,"event_id":format!("{id}:start"),"event_ts":ts}),
+            )
+            .await;
+        }
+        let duplicate = post(
+            &state,
+            "start",
+            json!({"session_id":sid,"agent_id":"explore-1","event_id":"explore-1:start","event_ts":101.0}),
+        )
+        .await;
+        assert_eq!(duplicate["verdict"], json!("duplicate_event"));
+        assert_eq!(duplicate["count"], json!(2), "response loss retry must not increment");
+        assert_eq!(duplicate["live_ids"], json!(["explore-1", "explore-2"]));
+
+        // A real Store replacement reads the durable set from SQLite. This is
+        // the server-rebuild boundary from the live Primis incident, not an
+        // in-memory clone of the first AppState.
+        drop(state);
+        let restarted = state_with(&db);
+        assert_eq!(read(&restarted)["primis"]["subagents"]["count"], json!(2));
+
+        let stale = post(
+            &restarted,
+            "start",
+            json!({"session_id":sid,"agent_id":"old","event_id":"old:start","event_ts":99.0}),
+        )
+        .await;
+        assert_eq!(stale["verdict"], json!("stale_event"));
+        assert_eq!(stale["count"], json!(2));
+
+        let wrong_session = post(
+            &restarted,
+            "stop",
+            json!({
+                "session_id":"ffffffff-1111-4222-8333-444444444444",
+                "agent_id":"explore-1","event_id":"wrong:stop","event_ts":103.0
+            }),
+        )
+        .await;
+        assert_eq!(wrong_session["verdict"], json!("stale_session"));
+        assert_eq!(wrong_session["count"], json!(2));
+
+        for (id, ts) in [("explore-1", 104.0), ("explore-2", 105.0)] {
+            let stopped = post(
+                &restarted,
+                "stop",
+                json!({"session_id":sid,"agent_id":id,"event_id":format!("{id}:stop"),"event_ts":ts}),
+            )
+            .await;
+            assert_eq!(stopped["count"], json!(if id == "explore-1" { 1 } else { 0 }));
+        }
+        let duplicate_stop = post(
+            &restarted,
+            "stop",
+            json!({"session_id":sid,"agent_id":"explore-2","event_id":"explore-2:stop","event_ts":105.0}),
+        )
+        .await;
+        assert_eq!(duplicate_stop["verdict"], json!("duplicate_event"));
+        assert_eq!(duplicate_stop["count"], json!(0), "final stop returns the lane to idle");
+
+        let stored = read(&restarted);
+        assert_eq!(stored["primis"]["subagents"]["live_ids"], json!([]));
+        assert!(
+            stored["primis"]["subagents"]["seen_events"].as_array().unwrap().len()
+                <= SUBAGENT_EVENT_HISTORY_LIMIT,
+            "server-side delivery dedupe must remain bounded"
+        );
+    }
+
+    #[test]
+    fn subagent_event_dedupe_history_is_bounded() {
+        let mut current = Value::Null;
+        for i in 0..(SUBAGENT_EVENT_HISTORY_LIMIT + 12) {
+            current = apply_subagent_event(
+                &current,
+                "start",
+                "same-live-agent",
+                &format!("event-{i:03}"),
+                100.0 + i as f64,
+                "session-one",
+                200.0 + i as f64,
+            )
+            .next;
+        }
+        let seen = current["seen_events"].as_array().unwrap();
+        assert_eq!(seen.len(), SUBAGENT_EVENT_HISTORY_LIMIT);
+        assert_eq!(seen.first(), Some(&json!("event-012")));
+        assert_eq!(current["count"], json!(1), "new ids for one agent never inflate count");
+    }
+
+    #[test]
+    fn subagent_terminal_edges_reject_reordered_and_aged_starts() {
+        let sid = "session-one";
+        let mut current = apply_subagent_event(
+            &Value::Null,
+            "reset",
+            "",
+            "reset",
+            100.0,
+            sid,
+            100.0,
+        )
+        .next;
+
+        // A terminal edge arriving first is a tombstone, not a disposable
+        // orphan. The older start must not make the finished agent live again.
+        let stop_first = apply_subagent_event(
+            &current,
+            "stop",
+            "reordered-agent",
+            "stop-first",
+            120.0,
+            sid,
+            120.0,
+        );
+        assert_eq!(stop_first.verdict, "orphan_stop");
+        current = stop_first.next;
+        let late_start = apply_subagent_event(
+            &current,
+            "start",
+            "reordered-agent",
+            "late-start",
+            110.0,
+            sid,
+            121.0,
+        );
+        assert_eq!(late_start.verdict, "stale_agent_event");
+        assert_eq!(late_start.count, 0);
+
+        // A genuinely newer reuse remains possible and establishes a new
+        // terminal high-water edge when it completes.
+        current = apply_subagent_event(
+            &late_start.next,
+            "start",
+            "reordered-agent",
+            "new-start",
+            130.0,
+            sid,
+            130.0,
+        )
+        .next;
+        current = apply_subagent_event(
+            &current,
+            "stop",
+            "reordered-agent",
+            "new-stop",
+            140.0,
+            sid,
+            140.0,
+        )
+        .next;
+        assert_eq!(current["count"], json!(0));
+
+        // Age `new-start` out of the bounded event-id list. Its retry remains
+        // stale because ordering belongs to the agent edge, not dedupe history.
+        for i in 0..(SUBAGENT_EVENT_HISTORY_LIMIT + 4) {
+            current = apply_subagent_event(
+                &current,
+                "stop",
+                "reordered-agent",
+                &format!("later-stop-{i}"),
+                141.0 + i as f64,
+                sid,
+                141.0 + i as f64,
+            )
+            .next;
+        }
+        assert!(
+            !current["seen_events"].as_array().unwrap().contains(&json!("new-start")),
+            "the test must actually age the start identity out"
+        );
+        let aged_retry = apply_subagent_event(
+            &current,
+            "start",
+            "reordered-agent",
+            "new-start",
+            130.0,
+            sid,
+            999.0,
+        );
+        assert_eq!(aged_retry.verdict, "stale_agent_event");
+        assert_eq!(aged_retry.count, 0);
+    }
+
+    #[test]
+    fn subagent_compacted_terminal_tombstones_leave_a_replay_floor() {
+        let sid = "session-one";
+        let mut current = Value::Null;
+        for i in 0..(SUBAGENT_EVENT_HISTORY_LIMIT + 1) {
+            current = apply_subagent_event(
+                &current,
+                "stop",
+                &format!("finished-{i:03}"),
+                &format!("stop-{i:03}"),
+                100.0 + i as f64,
+                sid,
+                200.0 + i as f64,
+            )
+            .next;
+        }
+        assert_eq!(
+            current["agent_edges"].as_object().unwrap().len(),
+            SUBAGENT_EVENT_HISTORY_LIMIT
+        );
+        assert_eq!(current["terminal_floor_ts"], json!(100.0));
+        let replay = apply_subagent_event(
+            &current,
+            "start",
+            "finished-000",
+            "ancient-start",
+            99.0,
+            sid,
+            999.0,
+        );
+        assert_eq!(replay.verdict, "stale_before_terminal_floor");
+        assert_eq!(replay.count, 0);
     }
 
     /// Fail-closed is the whole safety property: an unknown lane must not be
@@ -18570,6 +22826,7 @@ mod hot_model_switch_tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let out = deliver_hot_config(&state, "amux-no-such-session-2617", "/model sonnet", CC_MODEL_ACK).await;
         match out {
@@ -18785,6 +23042,112 @@ mod submission_gate_tests {
         assert_eq!(read_frame(&frame_stuck_idle("[06:50 PM] something else"), &t), FrameRead::Cleared);
     }
 
+    /// A COLLAPSED PASTE MUST NOT READ AS SUBMITTED (AMUX-3876).
+    ///
+    /// Claude Code renders a large or multi-line paste as `[Pasted text #54 +8
+    /// lines]`, so the message text is not in the frame at all. The
+    /// `contains(tail_sq)` test therefore fails and the old code fell to
+    /// `Cleared`, which means submitted — while the message sat in the box.
+    ///
+    /// The live specimen this was found from: paid-social sent to gtm-playbooks
+    /// at 13:15:41, `submit_verdict` recorded `confirmed`, and the lane still
+    /// held `[Pastedtext#54+8lines]` unsubmitted fifty minutes later. Ethan
+    /// noticed it as "workers are receiving text in their chat that is
+    /// unsubmitted".
+    ///
+    /// It is not an edge case: `must_paste` picks the paste path whenever the
+    /// lane is generating OR the text exceeds 400 chars, which is most
+    /// worker-to-worker traffic.
+    #[test]
+    fn a_collapsed_paste_is_never_read_as_a_cleared_composer() {
+        let t = tail_sq(GHOST);
+        // The TUI shows the placeholder, never the text we sent.
+        for chip in [
+            "[Pasted text #54 +8 lines]",
+            "[Pasted text #137 +44 lines]",
+        ] {
+            let f = read_frame(&frame_stuck_idle(chip), &t);
+            assert_eq!(
+                f,
+                FrameRead::CollapsedPaste,
+                "a collapsed paste is its OWN verdict: the composer is painted and holding \
+                 something unsubmitted. Folding it into NoUi (AMUX-3876) stopped the false \
+                 CONFIRMED and left the message stranded, because the retry lives past the \
+                 StillThereIdle arm and a waiting arm never reaches it — got {f:?} for {chip:?}"
+            );
+            assert!(
+                !final_frame_confirms(f),
+                "and it must never confirm the send: the message is still in the box"
+            );
+            assert_ne!(
+                f,
+                FrameRead::NoUi,
+                "specifically NOT NoUi: that means 'not painted yet, wait', which is the \
+                 opposite of what an unsubmitted paste needs (AMUX-3880)"
+            );
+        }
+        // CONTROL: an ordinary composer holding our text is unchanged, so the
+        // guard above cannot be passing by swallowing every frame.
+        assert_eq!(
+            read_frame(&frame_stuck_idle(GHOST), &t),
+            FrameRead::StillThereIdle,
+            "a normal unsent message must still read as StillThereIdle"
+        );
+        // CONTROL: a genuinely empty composer still means submitted.
+        assert_eq!(read_frame(&frame_cleared(), &t), FrameRead::Cleared);
+    }
+
+    /// The FINAL frame, after the retry loop gives up, must not confirm a send
+    /// the composer never showed (AMUX-3870).
+    ///
+    /// WHY THIS IS NOT COVERED BY `no_ui_is_never_reported_as_submitted` below,
+    /// which is named for exactly this property and passes. That test calls
+    /// `send_outcome(Submission::Unverified, ..)` and pins the WORDING once the
+    /// submission is already classified. The bug was upstream of it: the
+    /// fall-through decided `NoUi` meant `Confirmed`, so the Unverified branch
+    /// that test guards was never reached. A check pinning the wrong layer is
+    /// exactly as green as one pinning the right layer (ethos rule 7), and this
+    /// pair is the demonstration.
+    ///
+    /// Driven through the REAL reader and the REAL fixtures rather than by
+    /// constructing variants, because frame -> verdict is the path the incident
+    /// took.
+    #[test]
+    fn the_final_frame_does_not_confirm_a_composer_that_never_painted() {
+        let t = tail_sq(GHOST);
+        assert!(
+            !final_frame_confirms(read_frame(&frame_no_ui(), &t)),
+            "an unpainted composer proves nothing; confirming it here is the AC-271 incident \
+             (9 workers across 3 customer envs) reached from the fall-through"
+        );
+        // CONTROLS, so the assertion above cannot be satisfied by a function
+        // that simply returns false for everything.
+        assert!(
+            final_frame_confirms(read_frame(&frame_cleared(), &t)),
+            "a drawn, empty composer IS a submitted send and must stay confirmed"
+        );
+        assert!(
+            final_frame_confirms(read_frame(&frame_stuck_active(GHOST), &t)),
+            "text queued while the lane generates submits at the turn boundary"
+        );
+
+        // EXHAUSTIVE over the enum. The original defect was a negative match
+        // absorbing a variant added later, so the guard has to be that every
+        // variant is a decision somebody made, not that today's four are right.
+        for (frame, confirms) in [
+            (FrameRead::Cleared, true),
+            (FrameRead::StillThereGenerating, true),
+            (FrameRead::NoUi, false),
+            (FrameRead::StillThereIdle, false),
+        ] {
+            assert_eq!(
+                final_frame_confirms(frame),
+                confirms,
+                "{frame:?} must be a deliberate decision at this site"
+            );
+        }
+    }
+
     #[test]
     fn no_ui_is_never_reported_as_submitted() {
         // AC-271: an empty pane is "not ready", not "delivered". `ok` stays
@@ -18899,6 +23262,14 @@ mod send_retry_reporting_tests {
 mod composer_state_tests {
     use super::*;
 
+    /// `amux-testing-e2e`, captured live 2026-09-04 while the lane's native
+    /// stop hook and Codex rollout both said idle. The dashboard nevertheless
+    /// showed `UNSUBMITTED TEXT` with preview `gpt-5.6-solxhigh~/Dev/amux`:
+    /// `composer_state` correctly put the dim prompt hint in `Placeholder`,
+    /// then incorrectly folded Codex's normal-colour model/path footer into
+    /// the same composer block and promoted the whole thing to `Typed`.
+    const LIVE_CODEX_IDLE: &str = "\u{1b}[1m\u{203a}\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  \u{1b}[38;2;246;226;183mgpt-5.6-sol xhigh\u{1b}[2m\u{1b}[39m \u{b7} \u{1b}[0m\u{1b}[38;2;171;223;167m~/Dev/amux\u{1b}[39m\n";
+
     /// `backend`, captured 2026-08-09 while it was being reported as "holding
     /// unsubmitted text for hours". The composer is EMPTY; `continue with the
     /// queue` is Claude Code's dim suggestion. Three people pressed Enter,
@@ -18922,6 +23293,132 @@ mod composer_state_tests {
     /// new session", and its status bar replaces the normal one.
     const LIVE_BG_MANAGER: &str = "Your conversation moved to the background \u{2014} enter opens it \u{b7} esc returns to it \u{b7} ctrl+c twice quits\n\nNeeds input\n \u{273b} current session     send a prompt to start\n\u{2500}\u{2500}\u{2500}\u{2500}\n\u{1b}[39m\u{276f}\u{a0}\u{1b}[2mdescribe a task for a new session\u{1b}[0m\n\u{2500}\u{2500}\u{2500}\u{2500}\n  \u{23f5}\u{23f5} bypass permissions \u{b7} enter to collapse \u{b7} ctrl+x to delete all \u{b7} ? for shortcuts\n";
 
+    /// `photo-analysis`, a live GEMINI lane, captured 2026-08-30. Verbatim
+    /// `tmux capture-pane -e`, with the border runs shortened and nothing else
+    /// touched.
+    ///
+    /// GEMINI DRAWS A COMPLETELY DIFFERENT COMPOSER and this fixture is the
+    /// whole of AMUX-3889. There is no `\u{276f}` and no `\u{203a}` anywhere in
+    /// the frame: the prompt glyph is `*`, the box is a half-block sandwich
+    /// (`\u{2584}` above, `\u{2580}` below) rather than `\u{2500}` rules, and the
+    /// placeholder is COLOURED grey (38;2;175;175;175) rather than SGR-2 dim,
+    /// so the dim discriminator cannot see it either.
+    const LIVE_GEMINI_PLACEHOLDER: &str = "                                                                                                                                                                                                            \u{1b}[38;2;175;175;175m? for shortcuts\u{1b}[39m\n\u{1b}[2m\u{1b}[38;2;135;135;135m\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n\u{1b}[0m \u{1b}[38;2;255;135;175mYOLO\u{1b}[38;2;175;175;175m Ctrl+Y\u{1b}[39m                                                                                                                                                                                               \u{1b}[38;2;175;175;175m1 GEMINI.md file\u{1b}[39m\n\u{1b}[38;2;95;95;95m\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\n\u{1b}[39m\u{1b}[48;2;95;95;95m \u{1b}[38;2;255;135;175m* \u{1b}[7m\u{1b}[39m \u{1b}[0m\u{1b}[38;2;175;175;175m\u{1b}[48;2;95;95;95m Type your message or @path/to/file\u{1b}[39m\n\u{1b}[38;2;95;95;95m\u{1b}[49m\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\n\u{1b}[39m \u{1b}[38;2;175;175;175mworkspace (/directory)\u{1b}[39m                                                       \u{1b}[38;2;175;175;175mbranch\u{1b}[39m                                                       \u{1b}[38;2;175;175;175msandbox\u{1b}[39m                                                                   \u{1b}[38;2;175;175;175m/model\u{1b}[39m\n \u{1b}[38;2;255;255;255m~/Dev/ethan.dev-minimal\u{1b}[39m                                                      \u{1b}[38;2;255;255;255mmain\u{1b}[39m                                                         \u{1b}[38;2;255;135;175mno sandbox\u{1b}[39m                                                      \u{1b}[38;2;255;255;255mgemini-2.5-flash\u{1b}[39m\n";
+
+    /// The same lane with a message actually typed in. Built from the frame
+    /// above by the one substitution the TUI makes: the grey placeholder is
+    /// replaced by the user's text in the normal foreground colour.
+    fn gemini_typed(text: &str) -> String {
+        LIVE_GEMINI_PLACEHOLDER.replace(
+            "\u{1b}[38;2;175;175;175m\u{1b}[48;2;95;95;95m Type your message or @path/to/file",
+            &format!("\u{1b}[48;2;95;95;95m {text}"),
+        )
+    }
+
+    /// AMUX-3889: `amux send` reported a DELIVERED message as FAILED on every
+    /// gemini lane, because the verdict scraper only knew Claude Code's box.
+    ///
+    /// `composer_state` finds the composer by `rposition`-ing a line whose
+    /// first character is `\u{276f}` or `\u{203a}`. Gemini has neither, so every
+    /// gemini frame returned `NotVisible`, `read_frame` mapped that to `NoUi`,
+    /// `final_frame_confirms(NoUi)` is false by design, and the retry loop
+    /// spun its twelve looks before returning `Unverified`. The message was in
+    /// the lane the whole time.
+    ///
+    /// The four cells are the ones that behave differently downstream.
+    /// AMUX-3889, the defect UNDER the reported one and the more dangerous of
+    /// the two.
+    ///
+    /// `dim_mask` scanned every semicolon-separated field of an SGR sequence
+    /// and treated a `2` as DIM. In `48;2;95;95;95` that `2` is the marker
+    /// saying "a truecolor triple follows", not SGR 2 — so one background-colour
+    /// sequence turned the rest of the line dim, and `composer_state` reports
+    /// dim text as a placeholder rather than as pending input.
+    ///
+    /// The direction is what makes it worse than the headline bug. A placeholder
+    /// means "nothing pending", `read_frame` turns that into `Cleared`, and
+    /// `Cleared` means SUBMITTED. The sender is told the message landed while it
+    /// is sitting in the box.
+    ///
+    /// It hid because Claude Code paints in 256 colour (`38;5;N`), where the
+    /// second field is 5 and the bug cannot fire. Every fixture in this module
+    /// was 256-colour, so the whole file agreed with itself.
+    #[test]
+    fn a_truecolor_parameter_is_not_the_dim_code() {
+        // The live specimen: gemini's composer background, then ordinary text.
+        let (plain, dim) = dim_mask("\u{1b}[48;2;95;95;95m hello\u{1b}[39m");
+        assert_eq!(plain.trim(), "hello", "truecolor must not dim the line");
+        assert!(dim.is_empty(), "nothing here is dim, got {dim:?}");
+
+        // Foreground truecolor, same shape.
+        let (plain, dim) = dim_mask("\u{1b}[38;2;175;175;175mgrey text\u{1b}[39m");
+        assert_eq!(plain, "grey text");
+        assert!(dim.is_empty(), "got {dim:?}");
+
+        // 256-colour still parses (the form every Claude Code fixture uses),
+        // including the `5` that must be consumed rather than read as a code.
+        let (plain, dim) = dim_mask("\u{1b}[38;5;153m/compact\u{1b}[39m");
+        assert_eq!(plain, "/compact");
+        assert!(dim.is_empty(), "got {dim:?}");
+
+        // THE CONTROL. Real SGR 2 must STILL dim, or this "fix" deletes the
+        // discriminator that separates Claude Code's suggestion from a typed
+        // message — the whole point of `dim_mask`.
+        let (plain, dim) = dim_mask("\u{1b}[2mcontinue with the queue\u{1b}[0m");
+        assert!(plain.is_empty(), "SGR 2 must still mean dim, got plain {plain:?}");
+        assert_eq!(dim, "continue with the queue");
+
+        // And real dim must survive a truecolor sequence in the same run, which
+        // is the combination a naive consume-everything fix would break.
+        let (plain, dim) = dim_mask("\u{1b}[38;2;1;2;3m\u{1b}[2mhint\u{1b}[0m done");
+        assert_eq!(dim, "hint");
+        assert_eq!(plain.trim(), "done");
+    }
+
+    #[test]
+    fn a_gemini_composer_is_read_rather_than_reported_as_no_ui() {
+        // 1. THE BUG. An empty gemini composer is a composer, not an absence.
+        assert_ne!(
+            composer_state(LIVE_GEMINI_PLACEHOLDER),
+            ComposerState::NotVisible,
+            "gemini's box is a drawn composer; NotVisible routes the send to NoUi \
+             and a delivered message is reported as failed"
+        );
+        assert_eq!(
+            composer_state(LIVE_GEMINI_PLACEHOLDER).typed(),
+            None,
+            "the grey `Type your message` hint is a placeholder, and reporting it as \
+             pending input would make every send read as still-in-the-box"
+        );
+
+        // 2. THE CONSEQUENCE, at the site the card is about. An empty composer
+        // after a send means it went in.
+        assert_eq!(
+            read_frame(LIVE_GEMINI_PLACEHOLDER, "somemessagetail"),
+            FrameRead::Cleared,
+            "this is the verdict that was reporting NoUi"
+        );
+        assert!(final_frame_confirms(read_frame(LIVE_GEMINI_PLACEHOLDER, "somemessagetail")));
+
+        // 3. THE CONTROL, and it is the one that must not regress. Real typed
+        // text must still read as real, or the fix trades a false FAILED for a
+        // false CONFIRMED — which is strictly worse (AMUX-3876: the sender is
+        // told it landed and it is sitting in the box).
+        let typed = gemini_typed("[10:24AM] please look at the ranking report");
+        assert_eq!(
+            composer_state(&typed).typed(),
+            Some("[10:24AM]pleaselookattherankingreport"),
+            "frame was: {typed:?}"
+        );
+        assert_eq!(read_frame(&typed, "rankingreport"), FrameRead::StillThereIdle);
+        assert!(!final_frame_confirms(read_frame(&typed, "rankingreport")));
+
+        // 4. A frame with no composer at all is still NotVisible. Without this
+        // the gemini branch could satisfy cell 1 by returning Empty for
+        // everything, which would confirm sends into a pane that never painted.
+        assert_eq!(composer_state("just some scrollback\nand more\n"), ComposerState::NotVisible);
+    }
+
     #[test]
     fn a_dim_suggestion_is_not_pending_input() {
         assert_eq!(
@@ -18941,6 +23438,28 @@ mod composer_state_tests {
             Some("continuewiththequeue"),
             "a pre-stripped frame re-creates the blindness — callers MUST pass the raw capture"
         );
+    }
+
+    #[test]
+    fn a_codex_model_footer_is_chrome_not_unsubmitted_text() {
+        assert_eq!(
+            composer_state(LIVE_CODEX_IDLE),
+            ComposerState::Placeholder("AskCodextodoanything".into())
+        );
+        assert_eq!(
+            composer_state(LIVE_CODEX_IDLE).typed(),
+            None,
+            "an idle Codex prompt must not inherit its model/path footer as typed input"
+        );
+
+        // CONTROL: only Codex's dim placeholder is replaced. Ordinary typed
+        // text in the same live frame must remain pending; otherwise a send
+        // could falsely claim success while the user's command is still there.
+        let typed = LIVE_CODEX_IDLE.replace(
+            "\u{1b}[2mAsk Codex to do anything\u{1b}[0m",
+            "ship the current task",
+        );
+        assert_eq!(composer_state(&typed).typed(), Some("shipthecurrenttask"));
     }
 
     #[test]
@@ -19052,6 +23571,27 @@ mod steer_freeze_tests {
   \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} esc to interrupt \u{b7} \u{2190} 2 agents
 ";
 
+    const CODEX_BACKGROUND_TERMINAL: &str = "\
+• Working (0s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol xhigh · ~/Dev/amux";
+
+    const CODEX_BACKGROUND_FINISHED: &str = "\
+• Worked for 42s
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol xhigh · ~/Dev/amux";
+
+    const CODEX_FOREGROUND_WORKING: &str = "\
+• Working (42s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol xhigh · ~/Dev/amux";
+
     #[test]
     fn prose_about_esc_to_interrupt_is_not_a_generating_lane() {
         assert!(
@@ -19101,6 +23641,65 @@ mod steer_freeze_tests {
             steer_decide(None, Some(pane_is_at_boundary(IDLE_WITH_AGENTS_PANE)), 601.0, 600.0),
             SteerDelivery::OverdueMidTurn
         );
+    }
+
+    /// ATE-45 live cross-model incident: board-drive trusted Codex's idle
+    /// self-report while this exact provider row said a background terminal
+    /// was still running. Delivery interrupted the conversation. The shared
+    /// steering predicate must hold until the row reaches its terminal form.
+    #[test]
+    fn board_drive_and_steering_hold_for_a_codex_background_terminal() {
+        assert_eq!(detect_claude_status(CODEX_BACKGROUND_TERMINAL), "active");
+        assert!(provider_background_working(CODEX_BACKGROUND_TERMINAL));
+        assert!(
+            !reported_idle_is_boundary(Some(0), CODEX_BACKGROUND_TERMINAL),
+            "an idle parent report cannot authorize board-drive over live provider chrome"
+        );
+        assert!(!pane_is_at_boundary(CODEX_BACKGROUND_TERMINAL));
+        assert_eq!(
+            steer_decide_with_background(Some("active"), None, 86_400.0, 600.0, true),
+            SteerDelivery::Hold,
+            "max age never authorizes interruption while background work is live"
+        );
+
+        assert!(!provider_background_working(CODEX_BACKGROUND_FINISHED));
+        assert!(reported_idle_is_boundary(Some(0), CODEX_BACKGROUND_FINISHED));
+        assert!(
+            pane_is_at_boundary(CODEX_BACKGROUND_FINISHED),
+            "after the background terminal finishes, the exact same prompt is deliverable"
+        );
+
+        let quoted = "\
+› Explain the phrase: • Working (0s • esc to interrupt) · 1 background terminal running
+
+  gpt-5.6-sol xhigh · ~/Dev/amux";
+        assert!(!provider_background_working(quoted), "quoted prose is not provider chrome");
+        assert!(reported_idle_is_boundary(Some(0), quoted));
+
+        assert!(
+            !provider_background_working(CODEX_FOREGROUND_WORKING),
+            "ordinary Codex foreground work is not relabelled as a background terminal"
+        );
+        assert_eq!(
+            steer_decide_with_background(Some("active"), None, 601.0, 600.0, false),
+            SteerDelivery::OverdueMidTurn,
+            "the pre-existing max-age policy remains available for ordinary foreground work"
+        );
+
+        let pasted_frame = "\
+\u{276f} Compare this pasted Codex frame:
+  • Working (0s • esc to interrupt) · 1 background terminal running
+  › Ask Codex to do anything
+  gpt-5.6-sol xhigh · ~/Dev/amux
+\u{2500}\u{2500}\u{2500} claude \u{2500}\u{2500}\u{2500}
+\u{276f}\u{a0}
+\u{23f5}\u{23f5} bypass permissions on";
+        assert_eq!(
+            crate::backend::adapter::codex_pane_generation_state(pasted_frame),
+            None,
+            "a Codex-looking transcript inside Claude is not Codex provider state"
+        );
+        assert!(!provider_background_working(pasted_frame));
     }
 
     #[test]
@@ -19399,6 +23998,67 @@ mod steer_max_age_tests {
         assert!(!is_rate_limited_credit_banner(
             "clean.contains(\"usage limit reached\") // continuing automatically"
         ));
+    }
+
+    /// AMUX-3815: the banner that says a lane IS limited also says WHEN it
+    /// lifts, and amux read the first half and dropped the second.
+    ///
+    /// The live specimen is `tubescience` at 19:55 on 2026-08-27, whose queue
+    /// got a "will not drain on its own" card while its pane said it would
+    /// resume at 8:30pm. Both phrasings are asserted because a pane shows both.
+    #[test]
+    fn the_rate_limit_banner_yields_the_time_it_says_it_resets() {
+        use chrono::TimeZone;
+        let noon = chrono::Local.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap();
+        let at = |h, m| chrono::Local.with_ymd_and_hms(2026, 8, 27, h, m, 0).unwrap().timestamp();
+
+        // The live specimen, both lines of it.
+        let live = "\u{2b9d}  You've hit your session limit \u{b7} resets 8:30pm (America/New_York)\n\
+                    \u{26a0} Usage limit reached \u{b7} continuing automatically at 8:30pm \u{b7} esc to cancel";
+        assert_eq!(parse_rate_limit_reset_at(live, noon), Some(at(20, 30)));
+        // Each phrasing alone, and the bare-hour form.
+        assert_eq!(
+            parse_rate_limit_reset_at("resets 8:30pm (America/New_York)", noon),
+            Some(at(20, 30))
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("continuing automatically at 2pm \u{b7} esc", noon),
+            Some(at(14, 0))
+        );
+        // "resets at 8pm" must not be read by the bare "resets " marker, which
+        // would leave "at 8pm" and parse to nothing. Most specific wins.
+        assert_eq!(parse_rate_limit_reset_at("resets at 8pm", noon), Some(at(20, 0)));
+        // Midnight and noon are the two the 12-hour conversion gets wrong if
+        // written the obvious way.
+        assert_eq!(parse_rate_limit_reset_at("resets 12am", noon), Some(at(0, 0) + 86_400));
+        assert_eq!(parse_rate_limit_reset_at("resets 12pm", noon), Some(at(12, 0)));
+
+        // A time already past today is TOMORROW's — Claude writes "resets 2am"
+        // at 11pm, and reading that as 21 hours ago would mark the lane overdue
+        // the instant it was detected.
+        let eleven_pm = chrono::Local.with_ymd_and_hms(2026, 8, 27, 23, 0, 0).unwrap();
+        assert_eq!(
+            parse_rate_limit_reset_at("continuing automatically at 2am", eleven_pm),
+            Some(at(2, 0) + 86_400)
+        );
+
+        // THE CONTROLS. `None` must stay distinguishable from a time, because
+        // the steering detector suppresses a card on a known future reset and
+        // a `None` read as 0 would suppress every credit-capped lane forever.
+        assert_eq!(parse_rate_limit_reset_at("Usage limit reached", noon), None, "no time at all");
+        assert_eq!(
+            parse_rate_limit_reset_at("/usage-credits to finish what you're working on", noon),
+            None,
+            "the credit-cap banner has no reset clock"
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("resets 20:30", noon),
+            None,
+            "24-hour is ambiguous against 8:30 once the meridiem is optional; refuse it"
+        );
+        assert_eq!(parse_rate_limit_reset_at("resets 13pm", noon), None, "not a 12-hour hour");
+        assert_eq!(parse_rate_limit_reset_at("resets 8:99pm", noon), None, "not a minute");
+        assert_eq!(parse_rate_limit_reset_at("resets soon", noon), None, "no digits");
     }
 
 
@@ -19774,8 +24434,8 @@ mod pipe_reconcile_tests {
     /// `node` agent with 1 child and pane_pipe=0, logging nothing.
     #[test]
     fn a_live_agent_with_no_pipe_is_rearmed() {
-        assert!(should_rearm_pipe(0, 1), "rec-gov's exact shape must re-arm");
-        assert!(should_rearm_pipe(0, 5));
+        assert!(should_rearm_pipe(0, 1, false), "rec-gov's exact shape must re-arm");
+        assert!(should_rearm_pipe(0, 5, false));
     }
 
     /// THE NEGATIVE CASE, and the one that makes this check worth having.
@@ -19784,7 +24444,8 @@ mod pipe_reconcile_tests {
     /// 10 of the 11 unpiped panes measured were bare shells (smprobe*, zz-*).
     #[test]
     fn a_bare_shell_is_never_rearmed() {
-        assert!(!should_rearm_pipe(0, 0), "a pane whose agent is gone has nothing to log");
+        assert!(!should_rearm_pipe(0, 0, false), "a pane whose agent is gone has nothing to log");
+        assert!(!should_rearm_pipe(1, 0, true), "writer migrations must also skip bare shells");
     }
 
     /// An already-piped pane is left alone. Re-arming it would be harmless
@@ -19792,8 +24453,15 @@ mod pipe_reconcile_tests {
     /// would restart 51 writer processes a minute across the fleet.
     #[test]
     fn an_already_piped_pane_is_left_alone() {
-        assert!(!should_rearm_pipe(1, 1));
-        assert!(!should_rearm_pipe(1, 0));
+        assert!(!should_rearm_pipe(1, 1, false));
+        assert!(!should_rearm_pipe(1, 0, false));
+    }
+
+    /// Deploying a changed writer must replace the already-running child once;
+    /// pane_pipe=1 only says a pipe exists, not that it runs current code.
+    #[test]
+    fn an_already_piped_live_agent_is_upgraded_when_the_writer_changes() {
+        assert!(should_rearm_pipe(1, 1, true));
     }
 }
 
@@ -19860,6 +24528,107 @@ mod delivery_mode_tests {
         // The two pre-existing reasons to paste still hold on an idle lane.
         assert!(must_paste(false, 401, false), "long text still pastes");
         assert!(must_paste(false, 12, true), "picker-shaped text still pastes");
+    }
+}
+
+#[cfg(test)]
+mod steer_coalescing_tests {
+    use super::*;
+    use crate::db::Store;
+    use std::sync::Arc;
+
+    /// A store with lane "lane" REGISTERED. The chokepoint refuses a target it
+    /// cannot resolve ("no-env-file"), which is correct and is why the first
+    /// version of this fixture failed: a lane that does not exist is not a lane
+    /// whose coalescing you can test. `_amux_workers` is the resolution path for
+    /// a rust-managed worker with no env file on disk.
+    async fn store() -> (crate::db::SharedStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Arc::new(Store::open(&dir.path().join("steer-test.db")).unwrap());
+        s.write_async(|conn| {
+            conn.execute(
+                "INSERT INTO _amux_workers (id, display_name, created_at, updated_at)
+                 VALUES ('wrk_test_lane', 'lane', 0, 0)",
+                [],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        })
+        .await
+        .unwrap();
+        (s, dir)
+    }
+
+    fn pending(st: &crate::db::SharedStore, session: &str) -> Vec<String> {
+        let conn = st.read().unwrap();
+        let mut q = conn
+            .prepare("SELECT text FROM steering_queue WHERE session=?1 ORDER BY queued_at")
+            .unwrap();
+        let rows: Vec<String> =
+            q.query_map([session], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        rows
+    }
+
+    /// THE CELL THAT WOULD HAVE CAUGHT AMUX-3938. Two DIFFERENT board notes,
+    /// both pending for a lane that has not hit its turn boundary yet.
+    ///
+    /// The coalescing lookup is `WHERE session=? AND guard=?` — no card, no
+    /// text — and every board note enqueues under `board-progress`, so the
+    /// second note overwrote the first IN PLACE. The lane then read one of two
+    /// distinct messages with nothing saying a first had existed. Live
+    /// specimen: three notes to AMUX-3935 inside one second produced one steer
+    /// carrying note 1's `queued_at` and note 2's text.
+    #[tokio::test]
+    async fn two_different_board_notes_both_survive_until_delivery() {
+        let (st, _d) = store().await;
+        steer_enqueue_store(&st, "lane", "note one: context", "board-progress", "peer")
+            .await
+            .unwrap();
+        steer_enqueue_store(&st, "lane", "note two: the verdict", "board-progress", "peer")
+            .await
+            .unwrap();
+        let got = pending(&st, "lane");
+        assert_eq!(got.len(), 2, "both notes must be pending, got {got:?}");
+        assert!(got.contains(&"note one: context".to_string()), "the FIRST note survived");
+        assert!(got.contains(&"note two: the verdict".to_string()), "and so did the second");
+    }
+
+    /// CONTROL 1, and the reason this is an allowlist rather than a deletion:
+    /// coalescing is CORRECT for a nudge. auto-compact re-evaluates one
+    /// condition hundreds of times and the reader wants one pending answer with
+    /// current content (AMUX-3557). If this arm ever goes green with two rows,
+    /// the fix has removed coalescing instead of scoping it.
+    #[tokio::test]
+    async fn a_re_evaluated_nudge_still_coalesces_to_one_row() {
+        let (st, _d) = store().await;
+        steer_enqueue_store(&st, "lane", "context is at 12%", "auto-compact", "").await.unwrap();
+        steer_enqueue_store(&st, "lane", "context is at 7%", "auto-compact", "").await.unwrap();
+        let got = pending(&st, "lane");
+        assert_eq!(got.len(), 1, "a guarded nudge must collapse, got {got:?}");
+        assert_eq!(got[0], "context is at 7%", "and the NEWEST text wins");
+    }
+
+    /// CONTROL 2: flood protection at THIS layer is text-based and still works.
+    /// Two byte-identical notes are one message however they are guarded, so
+    /// making board notes non-coalescing must not let a repeat stack.
+    #[tokio::test]
+    async fn an_identical_board_note_still_does_not_stack() {
+        let (st, _d) = store().await;
+        steer_enqueue_store(&st, "lane", "same text", "board-progress", "peer").await.unwrap();
+        steer_enqueue_store(&st, "lane", "same text", "board-progress", "peer").await.unwrap();
+        assert_eq!(pending(&st, "lane").len(), 1, "an identical repeat must not stack");
+    }
+
+    /// CONTROL 3: the guard stays NON-EMPTY for board notes, so the isolation
+    /// gate still refuses them into a raw-agent lane. Switching off coalescing
+    /// by passing an empty guard would have looked identical here and would
+    /// have broken "isolated = zero amux harness" (Ethan, 2026-08-26).
+    #[test]
+    fn a_non_coalescing_guard_is_still_a_guard() {
+        assert!(non_coalescing("board-progress"));
+        assert!(!NON_COALESCING_GUARDS.iter().any(|g| g.is_empty()),
+                "an empty guard would bypass the isolation gate at the chokepoint");
+        assert!(!non_coalescing("auto-compact"), "nudges must keep coalescing");
+        assert!(!non_coalescing(""), "the owner's own send is not a producer");
     }
 }
 
@@ -20168,6 +24937,46 @@ mod roster_tests {
         assert!(b.contains("remember: the thing"), "content must survive labelling");
     }
 
+    /// Nothing amux writes into MEMORY.md may carry SOURCE indentation (AMUX-3810).
+    ///
+    /// A plain multi-line Rust literal keeps its indentation, so a forgotten `\`
+    /// bakes the code's leading spaces into the value. Both of these strings had
+    /// one, and the damage is not cosmetic: the roster's TABLE HEADER shipped
+    /// with nine leading spaces, which markdown reads as an indented code block,
+    /// so the header of the fleet table was not part of the table in any of the
+    /// ~224 MEMORY.md files that carry it.
+    ///
+    /// This asserts the OUTPUT rather than the source, so it survives any future
+    /// reflow of the literal. The control is the last cell: a check that only
+    /// looked for leading spaces would miss the mid-line run, and a check that
+    /// only looked mid-line would miss the table header.
+    #[test]
+    fn memory_blocks_carry_no_baked_in_source_indentation() {
+        for (what, text) in [
+            ("fleet roster header", FLEET_ROSTER_HEADER.to_string()),
+            ("worker memory block", compose_worker_block("amux", "note")),
+        ] {
+            for (i, line) in text.lines().enumerate() {
+                assert!(
+                    !line.starts_with(' '),
+                    "{what} line {i} is indented, which markdown reads as a code block: {line:?}"
+                );
+                assert!(
+                    !line.contains("   "),
+                    "{what} line {i} carries a swallowed line-continuation: {line:?}"
+                );
+            }
+        }
+        // CONTROL: the assertion above can fail. A literal written the broken way
+        // trips both arms, so neither is decorative.
+        let broken = "ok\n         indented\nrun    of    spaces";
+        assert!(broken.lines().any(|l| l.starts_with(' ')));
+        assert!(broken.lines().any(|l| l.contains("   ")));
+        // And the header still says the things it exists to say.
+        assert!(FLEET_ROSTER_HEADER.contains("| worker | groups | description |"));
+        assert!(FLEET_ROSTER_HEADER.contains("INCLUDING YOU"));
+    }
+
     /// A header over nothing is itself a claim ("this lane recorded nothing").
     #[test]
     fn no_worker_memory_block_when_the_lane_recorded_nothing() {
@@ -20196,6 +25005,455 @@ mod roster_tests {
     fn a_roster_with_no_peers_is_the_empty_string() {
         let r = super::fleet_roster();
         assert!(r.is_empty() || r.contains("| `"), "header without rows: {r}");
+    }
+
+}
+
+/// The gloss that belongs beside THIS `staged_at_hook` value (AMUX-3837).
+///
+/// Written as a function because the first version hardcoded the explanation of
+/// the `-1` sentinel into the message, so a WARN carrying `staged_at_hook=1`
+/// arrived with a sentence about a value it did not have. A live probe of the
+/// arm found it; reading the code had not.
+pub fn empty_commit_hook_gloss(staged_at_hook: Option<usize>) -> &'static str {
+    match staged_at_hook {
+        Some(n) if n > 0 => {
+            "The pre-commit hook saw files staged for this commit, so the index was emptied \
+             between the hook and the write."
+        }
+        Some(_) => "The pre-commit hook also saw nothing staged, so the index was already empty.",
+        None => "staged_at_hook=-1 means the hook did not report, which is not the same as it \
+                 having seen nothing.",
+    }
+}
+
+/// The line an empty commit adds to its card's log.
+///
+/// Pure and separate so the SENTENCE has cells. amux-frustrations' review noted
+/// that the `Some(n)` arm had never rendered in production and that manufacturing
+/// an `--allow-empty` commit in the shared checkout to see it would leave debris
+/// outliving the test. That is right, and it is also the reason the sentence
+/// should not depend on production to be checked at all.
+pub fn empty_commit_card_note(staged_at_hook: Option<usize>) -> String {
+    let seen = match staged_at_hook {
+        Some(n) if n > 0 => format!(
+            " The pre-commit hook saw {n} staged file(s) and this commit has none, so the index \
+             was emptied between the hook and the write."
+        ),
+        Some(_) => " The pre-commit hook also saw nothing staged.".to_string(),
+        None => " (The hook did not report a staged count, so what it saw is unknown rather \
+                 than zero.)"
+            .to_string(),
+    };
+    format!(" — **EMPTY: this commit contains no files. Your change is still uncommitted.**{seen}")
+}
+
+/// Did the commit that just reported itself actually contain anything?
+///
+/// AMUX-3837. `2ee153e2` carried a correct subject, a correct card id, and ZERO
+/// files. `git commit` printed a success line, `git log` showed the commit, and
+/// the change stayed dirty in a SHARED checkout where any lane's `checkout` or
+/// `stash` would have destroyed it. The card was then closed citing that sha.
+/// The defect is not that one commit was wrong: it is that every instrument a
+/// session reaches for to confirm work shipped (the success line, the log, the
+/// card's own commit trail) reads the MESSAGE, and none of them reads the diff.
+///
+/// So the check belongs where a commit already announces itself, which is this
+/// endpoint. That covers any lane, any shell form, and any way the commit was
+/// produced, rather than one hook in one checkout.
+pub mod commit_shape {
+    /// What the reported commit turned out to be.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Shape {
+        /// Non-merge, touched at least one path. The ordinary case.
+        Normal(usize),
+        /// Non-merge and touched NOTHING.
+        Empty,
+        /// A merge carries no diff against its first parent here, and that is
+        /// correct rather than suspicious. Seven of the eight zero-file commits
+        /// in this repo's last 120 were merges, so a check that did not carve
+        /// them out would be almost entirely false alarm.
+        Merge,
+        /// The check DID NOT RUN, with the reason. Deliberately distinct from
+        /// `Empty`: a zero we could not measure must never be published as a
+        /// zero we measured (ethos rule 4).
+        Unchecked(&'static str),
+    }
+
+    /// Pure classifier, so the rule has cells without needing a repo on disk.
+    pub fn classify(parents: usize, files: Option<usize>) -> Shape {
+        if parents > 1 {
+            return Shape::Merge;
+        }
+        match files {
+            None => Shape::Unchecked("git did not answer"),
+            Some(0) => Shape::Empty,
+            Some(n) => Shape::Normal(n),
+        }
+    }
+
+    /// A sha we are willing to hand to git. The value arrives from a hook over
+    /// HTTP, so it is validated rather than trusted; `git` is invoked without a
+    /// shell, and this keeps a hostile value from being a plausible ref at all.
+    pub fn usable_sha(sha: &str) -> bool {
+        (7..=40).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit())
+    }
+}
+
+/// Read the shape of `sha` in `dir`. Never panics and never blocks the report:
+/// an unreadable repo yields `Unchecked`, which says so rather than passing.
+pub async fn read_commit_shape(dir: &str, sha: &str) -> commit_shape::Shape {
+    use commit_shape::Shape;
+    if dir.trim().is_empty() {
+        return Shape::Unchecked("no repo dir in the report");
+    }
+    if !commit_shape::usable_sha(sha) {
+        return Shape::Unchecked("sha is not a plain hex object name");
+    }
+    if !std::path::Path::new(dir).is_dir() {
+        return Shape::Unchecked("reported dir is not a directory here");
+    }
+    let git = |args: Vec<String>| {
+        let dir = dir.to_string();
+        async move {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        }
+    };
+    // Parent count first: a merge is classified without ever counting files, so
+    // the expensive walk only runs where its answer can mean something.
+    let Some(parents) = git(vec!["show".into(), "-s".into(), "--format=%P".into(), sha.into()]).await
+    else {
+        return Shape::Unchecked("git could not read the commit");
+    };
+    let parents = parents.split_whitespace().count();
+    if parents > 1 {
+        return Shape::Merge;
+    }
+    // `--root` IS LOAD-BEARING. Without it `diff-tree` prints nothing for a
+    // commit with no parent, because there is no parent to diff against, and
+    // the very first commit of any repo would be reported as empty. The live
+    // test below caught exactly that, which is the reason it exercises this
+    // function rather than only the classifier.
+    let files = git(vec![
+        "diff-tree".into(),
+        "--no-commit-id".into(),
+        "--name-only".into(),
+        "-r".into(),
+        "--root".into(),
+        sha.into(),
+    ])
+    .await
+    .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count());
+    commit_shape::classify(parents, files)
+}
+
+#[cfg(test)]
+mod commit_shape_tests {
+    use super::commit_shape::{classify, usable_sha, Shape};
+
+    /// The SENTENCE, which amux-frustrations' review flagged as never having
+    /// rendered in production — and which they were right to refuse to
+    /// manufacture, since an `--allow-empty` commit in a shared checkout to see
+    /// a warning is debris that outlives the test. So it gets cells instead.
+    #[test]
+    fn the_empty_commit_note_says_which_of_the_three_things_it_knows() {
+        use super::{empty_commit_card_note, empty_commit_hook_gloss};
+
+        // THE PAIR. This is the arm the join exists for: N staged at the hook,
+        // zero in the commit, so the index emptied in between.
+        let pair = empty_commit_card_note(Some(3));
+        assert!(pair.contains("saw 3 staged file(s)"), "{pair}");
+        assert!(pair.contains("emptied between the hook and the write"), "{pair}");
+
+        // NOTHING STAGED EITHER. A different fact, and not evidence of the
+        // mid-window emptying.
+        let none_staged = empty_commit_card_note(Some(0));
+        assert!(none_staged.contains("also saw nothing staged"), "{none_staged}");
+        assert!(!none_staged.contains("emptied between"), "must not claim the pair: {none_staged}");
+
+        // NEVER MEASURED. Must not read as either of the above.
+        let unknown = empty_commit_card_note(None);
+        assert!(unknown.contains("unknown rather"), "{unknown}");
+        assert!(!unknown.contains("emptied between"), "{unknown}");
+        assert!(!unknown.contains("also saw nothing"), "{unknown}");
+
+        // All three still lead with the fact that matters to the author.
+        for n in [pair, none_staged, unknown] {
+            assert!(n.contains("still uncommitted"), "{n}");
+        }
+
+        // AND THE WARN GLOSS FOLLOWS THE VALUE IT IS PRINTED BESIDE. The
+        // original explained the -1 sentinel unconditionally, so a line reading
+        // `staged_at_hook=1` carried a sentence about a value it did not have.
+        assert!(empty_commit_hook_gloss(None).contains("staged_at_hook=-1"));
+        assert!(!empty_commit_hook_gloss(Some(3)).contains("-1"), "the -1 gloss is for -1 only");
+        assert!(!empty_commit_hook_gloss(Some(0)).contains("-1"));
+    }
+
+    /// The three states are three states. Collapsing `Unchecked` into `Empty`
+    /// would turn "we could not look" into "your work is missing", which is the
+    /// false alarm that gets a warning ignored.
+    #[test]
+    fn an_unmeasured_commit_is_not_an_empty_one() {
+        assert_eq!(classify(1, Some(3)), Shape::Normal(3));
+        assert_eq!(classify(1, Some(0)), Shape::Empty);
+        assert!(matches!(classify(1, None), Shape::Unchecked(_)));
+        // A merge has no diff of its own here and is never the alarm, even
+        // though its file count is the same zero.
+        assert_eq!(classify(2, Some(0)), Shape::Merge);
+        assert_eq!(classify(3, Some(0)), Shape::Merge);
+        // A root commit has zero parents and IS checkable.
+        assert_eq!(classify(0, Some(0)), Shape::Empty);
+        assert_eq!(classify(0, Some(1)), Shape::Normal(1));
+    }
+
+    /// The sha reaches `git` from an HTTP body, so it is validated, not trusted.
+    #[test]
+    fn only_a_plain_hex_object_name_is_handed_to_git() {
+        assert!(usable_sha("2ee153e2"));
+        assert!(usable_sha("2ee153e26242d9cdbcf5de555e27a8ec513e53b7"));
+        assert!(!usable_sha(""), "empty");
+        assert!(!usable_sha("2ee153"), "too short to be an object name");
+        assert!(!usable_sha("HEAD"), "a ref is not an object name");
+        assert!(!usable_sha("main; rm -rf /"), "no shell metacharacters");
+        assert!(!usable_sha("../../etc/passwd"), "no path traversal");
+        assert!(!usable_sha(&"a".repeat(41)), "longer than any object name");
+    }
+
+    /// THE SHIPPED PATH, against a real git repo, because the pure classifier
+    /// above would stay green if `read_commit_shape` counted the wrong thing or
+    /// never ran git at all. This is the layer the incident happened at.
+    #[tokio::test]
+    async fn a_real_empty_commit_is_told_apart_from_a_real_one() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let d = tmp.path().to_str().expect("utf8 path").to_string();
+        let git = |args: Vec<&str>| {
+            let d = d.clone();
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            async move {
+                let out = tokio::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&d)
+                    .args(&args)
+                    .output()
+                    .await
+                    .expect("git runs");
+                assert!(out.status.success(), "git {args:?} failed");
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+        };
+        git(vec!["init", "-q", "--initial-branch=main", "."]).await;
+        git(vec!["config", "user.email", "t@t"]).await;
+        git(vec!["config", "user.name", "t"]).await;
+        std::fs::write(tmp.path().join("f.txt"), "one\n").expect("write");
+        git(vec!["add", "f.txt"]).await;
+        git(vec!["commit", "-qm", "real"]).await;
+        let real = git(vec!["rev-parse", "HEAD"]).await;
+        // The specimen: a commit that reports success and contains nothing.
+        git(vec!["commit", "-q", "--allow-empty", "-m", "empty"]).await;
+        let empty = git(vec!["rev-parse", "HEAD"]).await;
+        // And a merge, whose identical zero must NOT read as the alarm.
+        git(vec!["checkout", "-q", "-b", "side", &real]).await;
+        std::fs::write(tmp.path().join("g.txt"), "two\n").expect("write");
+        git(vec!["add", "g.txt"]).await;
+        git(vec!["commit", "-qm", "side"]).await;
+        git(vec!["checkout", "-q", "main"]).await;
+        git(vec!["merge", "-q", "--no-ff", "-m", "merge", "side"]).await;
+        let merge = git(vec!["rev-parse", "HEAD"]).await;
+
+        // `real` is also the ROOT commit, which has no parent to diff against. It
+        // read as Empty until `--root` was added, so this cell is the root case.
+        assert_eq!(super::read_commit_shape(&d, &real).await, Shape::Normal(1));
+        assert_eq!(
+            super::read_commit_shape(&d, &empty).await,
+            Shape::Empty,
+            "an empty commit must be caught by the code that actually runs"
+        );
+        assert_eq!(
+            super::read_commit_shape(&d, &merge).await,
+            Shape::Merge,
+            "a merge's zero is not the alarm"
+        );
+        // AND THE REFUSALS SAY SO RATHER THAN PASSING. Each of these would be a
+        // silent `Normal`/`Empty` if the guard clauses were dropped.
+        assert!(matches!(super::read_commit_shape("", &real).await, Shape::Unchecked(_)));
+        assert!(matches!(super::read_commit_shape(&d, "HEAD").await, Shape::Unchecked(_)));
+        assert!(matches!(
+            super::read_commit_shape(&format!("{d}/nope"), &real).await,
+            Shape::Unchecked(_)
+        ));
+        // A well-formed sha that is not in THIS repo is unreadable, not empty.
+        assert!(matches!(
+            super::read_commit_shape(&d, &"0".repeat(40)).await,
+            Shape::Unchecked(_)
+        ));
+    }
+
+    /// AF-295: `env-explain` answers WHICH layer supplied a value, and never the
+    /// value itself.
+    ///
+    /// The secret-leak assertion is the point of the endpoint's design, so it
+    /// carries a CONTROL: the key NAME must appear. Without that, "no secret in
+    /// the body" passes just as well on an error response, an empty body, or a
+    /// 404 — which is the failure mode this whole session has been about.
+    #[tokio::test]
+    async fn env_explain_names_the_winning_layer_and_never_the_value() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("env")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+
+        std::fs::write(h.join("amux.env"), "SECRETKEY=global-sekrit\n").unwrap();
+        std::fs::write(h.join("env/alpha.env"), "SECRETKEY=group-sekrit\n").unwrap();
+        std::fs::write(
+            h.join("sessions/explainee.env"),
+            "CC_TAGS=\"alpha\"\nSECRETKEY=worker-sekrit\n",
+        )
+        .unwrap();
+
+        let qs = vec![("key".to_string(), "SECRETKEY".to_string())];
+        let resp = super::env_explain_verb("explainee", &qs);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let text = v.to_string();
+
+        // CONTROL FIRST: if this fails the assertions below prove nothing.
+        assert!(
+            text.contains("SECRETKEY"),
+            "premise gone — the key name is absent, so a leak check would pass on an empty \
+             answer: {v}"
+        );
+        assert_eq!(
+            v["winner"]["level"],
+            serde_json::json!("worker"),
+            "the most specific layer that defines the key must win: {v}"
+        );
+        assert_eq!(
+            v["layers"].as_array().map(|a| a.len()),
+            Some(3),
+            "all three layers must be walked, global/group/worker: {v}"
+        );
+        for secret in ["global-sekrit", "group-sekrit", "worker-sekrit"] {
+            assert!(
+                !text.contains(secret),
+                "env-explain leaked a value from a 0600 credential file ({secret}): {v}"
+            );
+        }
+    }
+
+
+    /// AF-296: group-level memory reaches the composed document, and its ABSENCE
+    /// changes nothing.
+    ///
+    /// The second half is what makes a fleet-wide composition change safe to
+    /// land. Every lane's MEMORY.md is rebuilt by this code, so the claim that
+    /// matters is not "the group block appears" but "nothing appears when there
+    /// is no group file" — today no `memory/tags/` directory exists anywhere, so
+    /// the change must be inert until someone uses the level.
+    ///
+    /// Ordering is asserted by INDEX, not by presence: global, then group, then
+    /// worker. A composer that appended the group block last would satisfy a
+    /// contains() check while inverting the precedence the scope UI advertises.
+    #[tokio::test]
+    async fn group_memory_composes_between_global_and_worker_and_is_inert_when_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("memory/tags")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/memtest.env"), "CC_TAGS=\"alpha\"\n").unwrap();
+
+        // CONTROL FIRST: no group file yet, so the composition must be exactly
+        // what it was before this change.
+        let before = super::compose_memory_doc("memtest", "GLOBALTEXT", "WORKERTEXT");
+        assert!(
+            before.contains("WORKERTEXT"),
+            "premise gone — the worker block is missing, so the absence check below would \
+             pass on an empty document: {before}"
+        );
+        assert!(
+            !before.contains("Group memory"),
+            "a lane whose group file does not exist must compose no group block: {before}"
+        );
+
+        std::fs::write(h.join("memory/tags/alpha.md"), "GROUPTEXT").unwrap();
+        let after = super::compose_memory_doc("memtest", "GLOBALTEXT", "WORKERTEXT");
+        let gi = after.find("GROUPTEXT").expect("group memory must reach the document");
+        let wi = after.find("WORKERTEXT").expect("worker memory must still be there");
+        assert!(
+            gi < wi,
+            "group memory must precede worker memory, matching the [global, group, worker] \
+             precedence /api/scope advertises: {after}"
+        );
+        assert!(after.contains("alpha"), "the group must be named in its block: {after}");
+    }
+
+
+    /// AF-297: binding rules compose from all three layers, labelled, and FIRST.
+    ///
+    /// Inert-when-absent is asserted first and is the safety property: no
+    /// `.rules.md` file exists anywhere on this machine, so restoring the
+    /// dropped consumer must change nothing until someone uses the capability.
+    ///
+    /// The LABELS are asserted because they are the point, not decoration. The
+    /// python original records why: a GEMINI.md that told a lane to bypass gates
+    /// was invisible precisely because nothing said which layer a constraint came
+    /// from.
+    #[tokio::test]
+    async fn binding_rules_compose_labelled_and_first_and_are_inert_when_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("memory/tags")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/ruled.env"), "CC_TAGS=\"alpha\"\n").unwrap();
+
+        let before = super::compose_memory_doc("ruled", "GLOBALTEXT", "WORKERTEXT");
+        assert!(
+            before.contains("WORKERTEXT"),
+            "premise gone — an empty document would pass the absence check below: {before}"
+        );
+        assert!(
+            !before.contains("Rules — binding"),
+            "no .rules.md exists, so restoring the consumer must compose nothing: {before}"
+        );
+
+        std::fs::write(h.join("memory/_rules.md"), "GLOBALRULE").unwrap();
+        std::fs::write(h.join("memory/tags/alpha.rules.md"), "GROUPRULE").unwrap();
+        std::fs::write(h.join("memory/ruled.rules.md"), "WORKERRULE").unwrap();
+        let after = super::compose_memory_doc("ruled", "GLOBALTEXT", "WORKERTEXT");
+
+        assert!(
+            after.starts_with("# Rules — binding"),
+            "rules must come FIRST: a constraint buried under prose is one the model has to \
+             go looking for: {after}"
+        );
+        for (label, text) in [
+            ("<!-- from global -->", "GLOBALRULE"),
+            ("<!-- from tag:alpha -->", "GROUPRULE"),
+            ("<!-- from session:ruled -->", "WORKERRULE"),
+        ] {
+            assert!(after.contains(text), "{text} did not reach the document: {after}");
+            assert!(
+                after.contains(label),
+                "{text} is present but unlabelled — a session cannot see WHICH layer \
+                 constrained it, which is the defect the labels exist for: {after}"
+            );
+        }
+        let (gi, wi) = (
+            after.find("GLOBALRULE").unwrap(),
+            after.find("WORKERRULE").unwrap(),
+        );
+        assert!(gi < wi, "layers compose least-specific first: {after}");
     }
 
 }

@@ -212,6 +212,64 @@ def similarity(a, b):
     return len(A & B) / len(A | B)
 
 
+
+# ---- DELIVERY IS COMPUTABLE; "WAS IT ANSWERED" IS NOT (AF-281) -------------
+#
+# Two consecutive sweeps hand-checked delivery one message at a time through
+# `GET /api/history/<id>` before daring to call a `repeat` ordinary -- four
+# lookups on 2026-08-28 alone. That is the model doing arithmetic (ethos rule
+# 2), and worse, it made the CHEAP question look as expensive as the one that
+# genuinely cannot be answered, so both got the same shrug in the write-up.
+#
+# The verdict logic is AF-267's, and its three states matter: `cmd_history`
+# alone CANNOT answer this. AMUX-3541 deliberately stopped stamping
+# `delivered_at` for queued rows, so a NULL there means "nobody writes here",
+# not "not delivered" -- one sweep read it the first way and was one step from
+# filing 92 lost messages. `steering_history` is stamped by the deliverer and
+# is the only thing that knows.
+#
+# The join is on SESSION and a +/-10s window around the timestamp, NEVER on
+# text: cmd_history keeps the "[08:19 AM] " prefix the composer adds and
+# steering_history does not, so a text match silently misses exactly the rows
+# that matter.
+def annotate_delivery(conn, msgs):
+    """Stamp each message with delivered / not delivered / unknown."""
+    have_steer = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='steering_history'"
+    ).fetchone() is not None
+    for m in msgs:
+        if (m.get("delivery") or "") == "direct":
+            m["delivered"] = "delivered"
+            m["delivered_why"] = "cmd_history - a direct send is delivered when it is recorded"
+            continue
+        if not have_steer:
+            # ABSENCE OF THE TABLE IS NOT ABSENCE OF DELIVERY. Saying "unknown"
+            # here is the whole point: a synthetic store has no steering_history
+            # and must not therefore report every message as undelivered.
+            m["delivered"] = "unknown"
+            m["delivered_why"] = "no steering_history in this store - the deliverer's record is absent"
+            continue
+        ts_s = (m["ts"] or 0) / 1000.0
+        row = conn.execute(
+            "SELECT delivered_at FROM steering_history "
+            "WHERE session = ? AND queued_at BETWEEN ? AND ? "
+            "ORDER BY ABS(queued_at - ?) LIMIT 1",
+            (m["session"], ts_s - 10, ts_s + 10, ts_s),
+        ).fetchone()
+        if row is None:
+            m["delivered"] = "unknown"
+            m["delivered_why"] = (
+                "no matching steering_history row, and cmd_history.delivered_at is NOT "
+                "stamped for queued rows (AMUX-3541), so its NULL is not evidence either way"
+            )
+        elif row[0] is None:
+            m["delivered"] = "not delivered"
+            m["delivered_why"] = "steering_history - the deliverer holds this row and has not stamped it"
+        else:
+            m["delivered"] = "delivered"
+            m["delivered_why"] = "steering_history - stamped by the deliverer when it landed"
+
+
 def main():
     if not os.path.exists(DB):
         print(json.dumps({"error": f"no db at {DB}"}))
@@ -219,14 +277,14 @@ def main():
     cutoff_ms = int((time.time() - DAYS * 86400) * 1000)
     conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     rows = conn.execute(
-        "SELECT id, ts, COALESCE(session,''), text FROM cmd_history "
+        "SELECT id, ts, COALESCE(session,''), text, COALESCE(delivery,'') FROM cmd_history "
         "WHERE type='user' AND COALESCE(origin,'')='' AND ts >= ? "
         "AND COALESCE(text,'') <> '' ORDER BY ts ASC",
         (cutoff_ms,),
     ).fetchall()
 
     msgs = []
-    for mid, ts, sess, text in rows:
+    for mid, ts, sess, text, _delivery in rows:
         norm = normalize(text)
         # SHORT = NOT A REQUEST, which is a statement about the REPEAT branch and
         # was being applied to both (AF-224). Its own comment says "cannot be a
@@ -250,7 +308,7 @@ def main():
         # repeat branch (what the gate wanted) and kept for the re-prompt branch,
         # where the timing carries the meaning.
         if len(norm) < 8:
-            msgs.append({"id": mid, "ts": ts, "session": sess, "text": text,
+            msgs.append({"id": mid, "ts": ts, "session": sess, "text": text, "delivery": _delivery,
                          "norm": norm, "own": own_words(text), "control": True})
             continue
         # CONTROL WORDS ARE NOT REQUESTS. "continue" appeared six times in the
@@ -260,11 +318,13 @@ def main():
         # forever. They are still eligible for the re-prompt signal, where the
         # timing is what carries the meaning.
         if CONTROL.fullmatch(norm):
-            msgs.append({"id": mid, "ts": ts, "session": sess, "text": text,
+            msgs.append({"id": mid, "ts": ts, "session": sess, "text": text, "delivery": _delivery,
                          "norm": norm, "own": own_words(text), "control": True})
             continue
-        msgs.append({"id": mid, "ts": ts, "session": sess, "text": text,
+        msgs.append({"id": mid, "ts": ts, "session": sess, "text": text, "delivery": _delivery,
                      "norm": norm, "own": own_words(text), "control": False})
+
+    annotate_delivery(conn, msgs)
 
     findings = defaultdict(lambda: {"score": 0, "why": [], "msgs": []})
 
@@ -300,26 +360,94 @@ def main():
                 if a["session"] != b["session"]:
                     continue
                 if gap_s < 60 and sim > 0.98:
-                    # SAME SESSION OR IT IS NOT A DELIVERY DEFECT. Measured
-                    # 2026-08-23: ids 31157/31158 are the SAME text 12s apart to
-                    # nissan and autodesk — Ethan fanning one instruction to two
-                    # lanes, which is ordinary operation. This branch called it
-                    # "a DELIVERY defect, not frustration" and told the reader to
-                    # go check send_dedup, which is a confident wrong answer
-                    # about a bug that does not exist. A cross-session pair is
-                    # also NOT a `repeat` (he did not ask twice, he addressed two
-                    # workers), so it is skipped outright rather than falling
-                    # through to the repeat branch below.
-                    key = f"double-delivery:{a['id']}"
-                    f = findings[key]
-                    f["score"] = max(f["score"], 8)
-                    f["why"].append(
-                        f"IDENTICAL messages {gap_s:.0f}s apart (ids {a['id']}/{b['id']}) — "
-                        "this is a DELIVERY defect, not frustration: check send_dedup and "
-                        "cmd_history.delivery before reading anything into the wording"
-                    )
-                    f["msgs"] = [a, b]
-                    continue
+                    # THE COMPOSER'S PREFIX IS THE DISCRIMINATOR, and `normalize`
+                    # throws it away (AF-280, 2026-08-28).
+                    #
+                    # `[HH:MM AM/PM]` is stamped ONCE, at composition. So one
+                    # message delivered twice carries the SAME prefix on both
+                    # rows, while two separate submissions carry two different
+                    # ones. Stripping it is right for the repeat branch below --
+                    # the same complaint sent twice really does have two clock
+                    # times -- and it destroys the only evidence that separates
+                    # "amux delivered it twice" from "he sent it twice".
+                    #
+                    # Live specimen: ids 34324/34325 to refresh-house, 22s apart,
+                    # bodies identical, prefixes `[06:46 PM]` and `[06:47 PM]`.
+                    # Reported as a DELIVERY defect telling the reader to go check
+                    # send_dedup; both rows are `delivery=direct` and both
+                    # delivered, and the store has 4 send_dedup rows in total, so
+                    # the pointed-at evidence could not have settled it either.
+                    #
+                    # THIRD correction to this one branch (cross-session fan-out,
+                    # then the 31h pair one branch over, now this). Each time the
+                    # detector was confidently naming a bug that did not exist,
+                    # which is worse than silence because the reader acts on it.
+                    #
+                    # Differing prefixes fall THROUGH to the repeat branch rather
+                    # than being skipped: he did send the same thing twice to one
+                    # lane, which is a true and reportable fact -- it is just not
+                    # a delivery defect. A missing prefix on either side keeps the
+                    # old behaviour, because a prefix-less pair carries no
+                    # discriminator and a real double-delivery must still surface.
+                    _pa = TIME_PREFIX.match(a["text"] or "")
+                    _pb = TIME_PREFIX.match(b["text"] or "")
+                    _two_sends = bool(_pa and _pb) and _pa.group(0).strip() != _pb.group(0).strip()
+                    if _two_sends:
+                        pass  # -> repeat branch
+                    else:
+                        # SAME SESSION OR IT IS NOT A DELIVERY DEFECT. Measured
+                        # 2026-08-23: ids 31157/31158 are the SAME text 12s apart to
+                        # nissan and autodesk — Ethan fanning one instruction to two
+                        # lanes, which is ordinary operation. This branch called it
+                        # "a DELIVERY defect, not frustration" and told the reader to
+                        # go check send_dedup, which is a confident wrong answer
+                        # about a bug that does not exist. A cross-session pair is
+                        # also NOT a `repeat` (he did not ask twice, he addressed two
+                        # workers), so it is skipped outright rather than falling
+                        # through to the repeat branch below.
+                        # ASK DELIVERY BEFORE CALLING IT A DELIVERY DEFECT.
+                        #
+                        # This branch asserted "this is a DELIVERY defect" from
+                        # identical text plus a time gap alone, which is a claim
+                        # about delivery made without consulting delivery.
+                        # `annotate_delivery` already ran (line ~327) and the
+                        # verdicts are sitting on these very messages.
+                        #
+                        # Measured 2026-08-29 on the pair this caught: ids
+                        # 34662/34664, same text 16s apart to tubescience. Exactly
+                        # ONE of them reached the lane — steer-1787938118562,
+                        # delivered 13:32:29, matching 34664's ts to within 562ms.
+                        # Two sends, one delivery: that is the DEDUPE WORKING, and
+                        # reporting it as a delivery defect sends the reader to
+                        # audit a mechanism that just did its job. Same shape as
+                        # the cross-session fan-out this branch already learned
+                        # about, one field over.
+                        da = (a.get("delivered") or "unknown")
+                        db = (b.get("delivered") or "unknown")
+                        if da == "delivered" and db == "delivered":
+                            note = (
+                                f"IDENTICAL messages {gap_s:.0f}s apart (ids {a['id']}/{b['id']}) "
+                                "and BOTH were delivered — a genuine double-delivery: check "
+                                "send_dedup and cmd_history.delivery, and do not read anything "
+                                "into the wording"
+                            )
+                        elif "unknown" in (da, db):
+                            note = (
+                                f"IDENTICAL messages {gap_s:.0f}s apart (ids {a['id']}/{b['id']}), "
+                                f"delivery UNKNOWN for at least one ({a['id']}={da}, {b['id']}={db}) "
+                                "— cannot tell a double-delivery from the dedupe working. Not a "
+                                "finding on its own"
+                            )
+                        else:
+                            # One delivered, one not: the dedupe suppressed the
+                            # duplicate. Nothing to report.
+                            continue
+                        key = f"double-delivery:{a['id']}"
+                        f = findings[key]
+                        f["score"] = max(f["score"], 8 if "BOTH were delivered" in note else 3)
+                        f["why"].append(note)
+                        f["msgs"] = [a, b]
+                        continue
                 key = f"repeat:{a['id']}"
                 f = findings[key]
                 f["score"] = max(f["score"], 6 + int(sim * 4))
@@ -385,6 +513,8 @@ def main():
                         "when": time.strftime("%m-%d %H:%M", time.localtime(m["ts"] / 1000)),
                         "session": m["session"],
                         "text": m["text"][:400],
+                        "delivered": m.get("delivered", "unknown"),
+                        "delivered_why": m.get("delivered_why", ""),
                     }
                     for m in f["msgs"]
                 ],
@@ -399,6 +529,23 @@ def main():
                 "candidates": len(out),
                 "shown": min(len(out), MAX_OUT),
                 "findings": out[:MAX_OUT],
+                # ETHOS RULE 4, IN THE PAYLOAD RATHER THAN IN A SWEEP WRITE-UP.
+                # Two sweeps in a row concluded a `repeat` was ordinary on the
+                # strength of "every message was delivered", and both had to add
+                # by hand that the axis which would ACTUALLY explain a repeat was
+                # never checked -- because it cannot be. A lane answers in its
+                # own pane; nothing server-side records that a message was
+                # answered, so "he asked again because nobody replied" and "he
+                # asked again having read the reply" are the same absence of
+                # data. Stating it here means the next sweep reads it instead of
+                # rediscovering it, and cannot report a clean repeat without
+                # seeing the caveat attached to the same object.
+                "cannot_discriminate": [
+                    "whether a lane ANSWERED a message. Replies land in the lane's pane and "
+                    "are not recorded server-side, so a `repeat` cannot distinguish 'no reply "
+                    "arrived' from 'a reply arrived and he asked anyway'. `delivered` below "
+                    "answers only whether the message REACHED the lane."
+                ],
                 "note": (
                     "CANDIDATES, not verdicts. Judge each one: is there an amux defect "
                     "under it, or was this ordinary iteration? An empty list is a real "

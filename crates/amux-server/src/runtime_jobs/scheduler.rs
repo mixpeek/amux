@@ -1221,7 +1221,118 @@ fn days_in_month(y: i32, mo: u32) -> Option<u32> {
 
 /// How long a `kind=shell` command may run before it is killed. Python's
 /// `subprocess.run(..., timeout=600)`.
-const SHELL_TIMEOUT_S: u64 = 600;
+pub const SHELL_TIMEOUT_S: u64 = 600;
+
+/// Result of atomically claiming a manual shell run. A second tap while the
+/// first process is alive returns the existing row instead of launching the
+/// same side effect twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellRunClaim {
+    Started { run_id: i64, ran_at: i64 },
+    AlreadyRunning { run_id: i64, ran_at: i64 },
+}
+
+impl ShellRunClaim {
+    pub fn run_id(self) -> i64 {
+        match self {
+            Self::Started { run_id, .. } | Self::AlreadyRunning { run_id, .. } => run_id,
+        }
+    }
+
+    pub fn ran_at(self) -> i64 {
+        match self {
+            Self::Started { ran_at, .. } | Self::AlreadyRunning { ran_at, .. } => ran_at,
+        }
+    }
+
+    pub fn started(self) -> bool {
+        matches!(self, Self::Started { .. })
+    }
+}
+
+/// Create the durable `running` row before a long shell process starts.
+///
+/// This is one transaction with the overlap lookup. UI-only button disabling
+/// cannot stop the same user pressing Run Now in another tab, which produced
+/// four concurrent SCHED-173 signup ticks on 2026-09-03. A recent running row
+/// is the cross-tab/process lock and the visible progress record at once.
+pub fn claim_manual_shell_run(
+    conn: &Connection,
+    schedule_id: &str,
+    source: &str,
+) -> rusqlite::Result<ShellRunClaim> {
+    let now = chrono::Utc::now().timestamp();
+    let stale_before = now - SHELL_TIMEOUT_S as i64 - 30;
+    conn.execute(
+        "UPDATE schedule_runs
+         SET status='error', note='server stopped or the shell timeout elapsed before a result was recorded',
+             delivery='shell', submission=NULL
+         WHERE schedule_id=?1 AND status='running' AND ran_at < ?2",
+        rusqlite::params![schedule_id, stale_before],
+    )?;
+    let existing = match conn.query_row(
+        "SELECT id, ran_at FROM schedule_runs
+         WHERE schedule_id=?1 AND status='running' AND ran_at >= ?2
+         ORDER BY id DESC LIMIT 1",
+        rusqlite::params![schedule_id, stale_before],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e),
+    };
+    if let Some((run_id, ran_at)) = existing {
+        return Ok(ShellRunClaim::AlreadyRunning { run_id, ran_at });
+    }
+
+    let source: String = source.chars().take(64).collect();
+    conn.execute(
+        "INSERT INTO schedule_runs
+             (schedule_id, ran_at, status, note, source, delivery, submission)
+         VALUES (?1, ?2, 'running', 'started on host; result pending', ?3, 'shell', NULL)",
+        rusqlite::params![schedule_id, now, source],
+    )?;
+    let run_id = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE schedules SET run_count=COALESCE(run_count,0)+1, last_run=?1, updated=?1
+         WHERE id=?2",
+        rusqlite::params![now, schedule_id],
+    )?;
+    Ok(ShellRunClaim::Started { run_id, ran_at: now })
+}
+
+/// Replace a manual shell run's provisional row with its actual exit verdict.
+pub fn finish_manual_shell_run(
+    conn: &Connection,
+    run_id: i64,
+    outcome: &RunOutcome,
+) -> rusqlite::Result<usize> {
+    let note = outcome.note().map(|s| s.chars().take(500).collect::<String>());
+    conn.execute(
+        "UPDATE schedule_runs SET status=?1, note=?2, delivery=?3, submission=?4
+         WHERE id=?5 AND status='running'",
+        rusqlite::params![
+            outcome.status(),
+            note,
+            outcome.delivery(),
+            outcome.submission(),
+            run_id,
+        ],
+    )
+}
+
+/// A provisional manual shell row cannot survive the server process that owns
+/// its child. Reconcile those rows on scheduler startup so a restart never
+/// leaves a permanent yellow "running" dot.
+pub fn fail_orphaned_manual_shell_runs(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE schedule_runs
+         SET status='error', note='server restarted before the shell result was recorded',
+             delivery='shell', submission=NULL
+         WHERE status='running' AND delivery='shell'",
+        [],
+    )
+}
 
 /// Delivers through the REAL send path.
 ///
@@ -1256,9 +1367,13 @@ impl LiveDeliverer {
             .unwrap_or_default();
 
         let run_once = |cmd: String| async move {
+            // kill_on_drop: SHELL_TIMEOUT_S firing drops this future, and a
+            // scheduled shell command is precisely the kind that hangs. Without
+            // it the bash child is left unreaped (DESKT-30).
             let fut = tokio::process::Command::new("/bin/bash")
                 .arg("-c")
                 .arg(cmd)
+                .kill_on_drop(true)
                 .output();
             match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
                 Ok(Ok(o)) => Ok((
@@ -1371,6 +1486,18 @@ pub fn delivered_text(command: &str, source: &str) -> String {
     format!("{why}\n\n{command}")
 }
 
+/// Messages origin for a confirmed schedule delivery. The id is always
+/// present even when titles collide, and remains a plain `SCHED-N` token that
+/// the dashboard linkifier can open.
+pub fn schedule_message_origin(title: &str, id: &str, source: &str) -> String {
+    let title = if title.is_empty() { id } else { title };
+    if source == "cron-rs" {
+        format!("[{id}] {title}")
+    } else {
+        format!("[{id}] [{source}] {title}")
+    }
+}
+
 /// Does the background reserve gate a fire from this `source`?
 ///
 /// Extracted so the rule is testable without a live usage probe — `deliver`
@@ -1468,12 +1595,15 @@ impl Deliverer for LiveDeliverer {
             Some(false) => RunOutcome::Failed { reason: d.message },
             _ => {
                 // Record it in Messages history so a peek shows scheduled
-                // commands distinctly, origin = the schedule's title.
-                let origin = {
-                    let t = sched.str_field("title");
-                    let t = if t.is_empty() { sched.id() } else { t };
-                    if source == "cron-rs" { t.to_string() } else { format!("{t} [{source}]") }
-                };
+                // commands distinctly. The exact schedule id is part of the
+                // origin so the row is clickable and the health audit can
+                // prove this specific delivered run produced a message rather
+                // than guessing from a possibly-duplicated title.
+                let origin = schedule_message_origin(
+                    sched.str_field("title"),
+                    sched.id(),
+                    source,
+                );
                 crate::api::session_verbs::cmd_hist_record_schedule(
                     &self.state,
                     &session,
@@ -1814,6 +1944,19 @@ pub async fn run_scheduler(
     enabled: bool,
     deliverer: std::sync::Arc<dyn Deliverer>,
 ) {
+    let reconciled = store
+        .write_async(|conn| {
+            let n = fail_orphaned_manual_shell_runs(conn)?;
+            Ok(WriteOutcome { applied: n > 0, events: vec![] })
+        })
+        .await;
+    match reconciled {
+        Ok(r) if r.applied => {
+            tracing::warn!("scheduler startup marked orphaned manual shell runs as failed")
+        }
+        Err(e) => tracing::error!(error = %e, "scheduler could not reconcile manual shell runs"),
+        _ => {}
+    }
     let policy = missed_policy_from_env();
     let retry = RetryPolicy::default();
     let mut shadow_seen: HashMap<String, String> = HashMap::new();
@@ -2181,6 +2324,100 @@ mod tests {
         m.insert("updated".into(), Value::from(now_ts));
         m.insert("deleted".into(), Value::Null);
         DurableSchedule::from_map(m)
+    }
+
+    #[tokio::test]
+    async fn manual_shell_claim_is_visible_immediately_and_dedupes_overlap() {
+        let (store, _dir) = store();
+        store
+            .write_async(|conn| {
+                let mut row = make_row(
+                    "SCHED-173",
+                    "gtm-ticker",
+                    Some("7 */4 * * *"),
+                    "2026-09-03T20:07",
+                );
+                row.raw.insert("kind".into(), Value::from("shell"));
+                insert_schedule(conn, &row)?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        async fn claim(store: &SharedStore, source: &'static str) -> ShellRunClaim {
+            let slot = Arc::new(std::sync::Mutex::new(None));
+            let slot_w = slot.clone();
+            store
+                .write_async(move |conn| {
+                    let got = claim_manual_shell_run(conn, "SCHED-173", source)?;
+                    *slot_w.lock().unwrap() = Some(got);
+                    Ok(WriteOutcome { applied: got.started(), events: vec![] })
+                })
+                .await
+                .unwrap();
+            let got = slot.lock().unwrap().take().unwrap();
+            got
+        }
+        let first = claim(&store, "manual:browser-a").await;
+        let second = claim(&store, "manual:browser-b").await;
+        assert!(first.started());
+        assert_eq!(
+            second,
+            ShellRunClaim::AlreadyRunning {
+                run_id: first.run_id(),
+                ran_at: first.ran_at(),
+            },
+            "a second tab must attach to the running row, not launch another side effect"
+        );
+        let conn = store.read().unwrap();
+        let (status, note, runs): (String, String, i64) = conn
+            .query_row(
+                "SELECT sr.status, sr.note, s.run_count FROM schedule_runs sr
+                 JOIN schedules s ON s.id=sr.schedule_id WHERE sr.id=?1",
+                [first.run_id()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "running");
+        assert!(note.contains("result pending"));
+        assert_eq!(runs, 1, "a deduped tap is not another run");
+
+        drop(conn);
+        let run_id = first.run_id();
+        store
+            .write_async(move |conn| {
+                finish_manual_shell_run(
+                    conn,
+                    run_id,
+                    &RunOutcome::ShellOk {
+                        note: Some("exit 0; anomaly relayed".into()),
+                    },
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let third = claim(&store, "manual:browser-c").await;
+        assert!(third.started(), "a terminal prior run must not block a new run");
+        assert_ne!(third.run_id(), first.run_id());
+
+        store
+            .write_async(|conn| {
+                let n = fail_orphaned_manual_shell_runs(conn)?;
+                assert_eq!(n, 1, "only the still-running third attempt is orphaned");
+                Ok(WriteOutcome { applied: n > 0, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let conn = store.read().unwrap();
+        let orphan_status: String = conn
+            .query_row(
+                "SELECT status FROM schedule_runs WHERE id=?1",
+                [third.run_id()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_status, "error");
     }
 
     #[tokio::test]
@@ -2649,6 +2886,22 @@ mod tests {
         assert!(manual.ends_with("do the thing"), "{manual}");
         let trig = delivered_text("do the thing", "trigger:board");
         assert!(trig.contains("Off-cadence fire (trigger:board)"), "{trig}");
+    }
+
+    #[test]
+    fn schedule_message_origin_always_names_the_exact_schedule() {
+        assert_eq!(
+            schedule_message_origin("Nightly sync", "SCHED-9", "cron-rs"),
+            "[SCHED-9] Nightly sync"
+        );
+        assert_eq!(
+            schedule_message_origin("Nightly sync", "SCHED-9", "manual:ethan"),
+            "[SCHED-9] [manual:ethan] Nightly sync"
+        );
+        assert_eq!(
+            schedule_message_origin("", "SCHED-9", "cron-rs"),
+            "[SCHED-9] SCHED-9"
+        );
     }
 
     // ---- AMUX-2679: skip one occurrence ----------------------------------

@@ -58,6 +58,68 @@ pub fn routes() -> Router<AppState> {
             "/{id}/send",
             post(send_worker).layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        // AF-288, first of the nine RESOURCE verbs AF-203 classified. Promoted
+        // now rather than with the rest because its precondition was the one
+        // that had to land first: #137 (@tsukimiya) showed that exempting
+        // `duplicate` is exactly what makes an unregistered twin reachable, so
+        // the route had to wait on `register_twin`. That is settled (AF-236),
+        // and the handler delegates to the SAME `duplicate_verb` the catch-all
+        // runs, so the rollback-on-failed-registration has one implementation
+        // rather than two.
+        .route("/{id}/duplicate", post(duplicate_worker))
+        // AF-288, the mechanical remainder of the RESOURCE set. Each delegates
+        // to the same `*_verb` fn the catch-all runs, so promoting a verb moves
+        // where it is ADDRESSED without forking what it DOES. `report` and
+        // `steer` are deliberately absent: the classification calls them
+        // load-bearing (D1's exit condition and turn-boundary delivery), and
+        // they need their store-managed semantics decided rather than extracted.
+        .route("/{id}/wake", post(wake_worker))
+        .route("/{id}/reset", post(reset_worker))
+        .route("/{id}/clear", post(clear_worker))
+        .route("/{id}/resize", post(resize_worker))
+        .route("/{id}/keys", post(keys_worker))
+        // `report` is the harness reporting its own state — D1's exit condition
+        // in ethos.md, the durable inverse of terminal scraping. Promoted last
+        // of the routine set because it is the one whose UNAVAILABILITY on the
+        // canonical surface is most costly, not because it was hard: the arm
+        // was already a one-line delegation. Attribution is unchanged, since the
+        // headers ride through to the same `report_post`.
+        .route("/{id}/report", post(report_worker))
+        // `steer` is the last RESOURCE verb and the only one that is READ AND
+        // WRITE at one action: GET lists the lane's steering queue, POST queues,
+        // DELETE cancels. `any` rather than `get`+`post` because the method
+        // split lives inside the verb already, and splitting it here would put
+        // the same decision in two places that can disagree.
+        .route("/{id}/steer", axum::routing::any(steer_worker))
+        // AF-294, the GUARDS pair: reachable ONLY through the catch-all until
+        // now, which is what made them the awkward two. `config` is PATCH-only
+        // and `share` is its own family that takes any method.
+        .route("/{id}/config", axum::routing::patch(config_worker))
+        .route("/{id}/share", axum::routing::any(share_worker))
+        // AF-293. These two were filed under CONFIG READS, and they are not
+        // reads: each has a GET arm and a POST arm, so a route mounted with
+        // `get` would promote half a verb. Reclassified to RESOURCE in the doc.
+        .route("/{id}/instructions", axum::routing::any(instructions_worker))
+        .route("/{id}/memory", axum::routing::any(memory_worker))
+        // AF-291: the checkout SUB-RESOURCE, grouped rather than promoted flat.
+        // Six sibling routes on a worker for one sub-resource is the shape the
+        // classification calls a UX defect IN the primitives; git/commits,
+        // git/commit-detail and git/diff already had the right shape and are
+        // the argument for it.
+        //
+        // EXPLICIT PER SUB-VERB, never `/{id}/git/{*sub}`. A wildcard here would
+        // reproduce AF-204's defect one level down: an unrouted sub-verb would
+        // answer whatever it answers instead of 404ing, and the route table
+        // could not say which parts of the sub-resource exist.
+        .route("/{id}/git", post(git_checkout_worker))
+        .route("/{id}/git/commits", get(git_sub_read))
+        .route("/{id}/git/commit-detail", get(git_sub_read))
+        .route("/{id}/git/diff", get(git_sub_read))
+        .route("/{id}/git/dirty", get(git_dirty_worker))
+        .route("/{id}/git/push", post(git_push_worker))
+        .route("/{id}/git/commit-report", post(git_commit_report_worker))
+        .route("/{id}/git/tracked-files", axum::routing::any(git_tracked_files_worker))
+        .route("/{id}/git/commit-guard", axum::routing::any(git_commit_guard_worker))
 }
 
 /// `GET /api/ollama/models` — list locally installed Ollama models by running
@@ -694,6 +756,40 @@ enum StepOutcome {
 /// process spawn is the orchestrator's job (RR-0041) and lands there — this
 /// endpoint accepts the request, it does not pretend the process exists.
 pub async fn start_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    // Host admission check BEFORE any state is written (AMUX-3396 follow-through).
+    //
+    // amux published memory pressure on /health for nine days and never acted on
+    // it. The 2026-08-24 JetsamEvent names the top holders at kill time and they
+    // are Claude Code binaries — amux's own lanes — and three WindowServer
+    // watchdog kills followed in a week. Refusing here is the cheap half: it does
+    // not fix Apple's TCC deadlock, it stops amux being the reason the machine is
+    // too starved to service it inside the watchdog's 40-second budget.
+    //
+    // Deliberately a REFUSAL and not a kill. Draining someone's in-flight lane is
+    // a decision about a human's work (ethos rule 8); declining to start a NEW one
+    // costs nobody anything they had.
+    if crate::api::health::admission() == crate::api::health::Admission::Deny {
+        let m = crate::api::health::mem_health();
+        tracing::warn!(
+            worker = %key,
+            pressure = m.pressure,
+            swap_used_mb = m.swap_used_mb,
+            "REFUSED to start worker — the host is out of memory headroom. amux lanes were \
+             the top holders in the 2026-08-24 jetsam, and starvation is what turns the \
+             recurring WindowServer/tccd stall into a watchdog kill. Nothing was stopped; \
+             this only declines to start MORE (AMUX-3396)"
+        );
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({
+                "error": "host is out of memory headroom — refusing to start another worker",
+                "pressure": m.pressure,
+                "swap_used_mb": m.swap_used_mb,
+                "hint": "nothing was stopped. Free memory or stop a lane, then retry. \
+                         Threshold: AMUX_MEM_SWAP_DENY_MB (default 8192).",
+            }),
+        );
+    }
     let slot: Arc<Mutex<Option<StepOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let key_w = key.clone();
@@ -933,7 +1029,27 @@ pub async fn peek_worker(
     .await;
     let (row, live) = match joined {
         Ok(Ok(Some(v))) => v,
-        Ok(Ok(None)) => return not_found(&key),
+        // A STORE MISS IS NOT A MISSING WORKER (AF-298). The fleet is ~50
+        // env-file-plus-tmux lanes and exactly one of them is a row in this
+        // table, so returning not_found here answered 404 for essentially every
+        // lane anyone asked about. `send_worker` never had the problem: it falls
+        // back to the key and lets the fleet substrate answer by name. Same
+        // fallback, same landing spot — the substrate's own existence gate then
+        // reports a genuine miss under the name the caller used.
+        Ok(Ok(None)) => {
+            // ONLY for a name that IS a fleet lane. Delegating on every store
+            // miss turned "unknown worker" into whatever the substrate says for
+            // a name it also does not have, and in this crate's own test that
+            // was a 200 — a clean 404 becoming a plausible answer, which is the
+            // failure this surface exists to prevent. The existence gate is the
+            // lane's env file, the same artifact `lane_groups` and
+            // `scope_env_layers` treat as the definition of a lane.
+            if !crate::api::session_verbs::lane_env_exists(&key) {
+                return not_found(&key);
+            }
+            let qs = vec![("lines".to_string(), p.lines.unwrap_or(80).to_string())];
+            return crate::api::session_verbs::peek_verb(&key, &qs).await;
+        }
         Ok(Err(e)) => return internal(e),
         Err(e) => return internal(e),
     };
@@ -1059,6 +1175,380 @@ pub async fn send_worker(
     crate::api::session_verbs::send_verb(&state, &resolved, &headers, &body).await
 }
 
+/// Resolve a `/api/workers/{id}` path key to the session name the fleet verbs
+/// address, so a worker ID and its display name reach the same worker.
+///
+/// Factored out because every promoted verb needs it identically, and five
+/// copies of a resolution rule is five places for the id/name split to be
+/// fixed in only four of them.
+async fn resolve_key(state: &AppState, key: String) -> Result<String, Response> {
+    let store = state.store.clone();
+    let k = key.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let conn = store.read()?;
+        Ok(queries::get_worker(&conn, &k)?)
+    })
+    .await;
+    match joined {
+        Ok(Ok(Some(row))) if !row.display_name.is_empty() => Ok(row.display_name),
+        // A row with no display name has no env file to address either, so the
+        // key the caller used is the best remaining handle; the verb's own
+        // existence gate then reports the miss under the name they asked for.
+        Ok(Ok(_)) => Ok(key),
+        Ok(Err(e)) => Err(internal(e)),
+        Err(e) => Err(internal(e)),
+    }
+}
+
+/// `GET|POST /api/workers/{id}/instructions` — the worker's standing
+/// instructions, read and written.
+pub async fn instructions_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    method: axum::http::Method,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        return crate::api::session_verbs::instructions_get_verb(&name);
+    }
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::instructions_post_verb(&state, &name, &body).await
+}
+
+/// `GET|POST /api/workers/{id}/memory` — the worker's memory file.
+///
+/// NOT the same thing as the `memory` SCOPE capability, which is about which
+/// level a value comes from. This is the file's content.
+pub async fn memory_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    method: axum::http::Method,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        return crate::api::session_verbs::memory_get_verb(&name);
+    }
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::memory_post_verb(&name, &body)
+}
+
+/// The read sub-verbs of the git group: `commits`, `commit-detail`, `diff`.
+///
+/// One handler for three routes because `git_get` already dispatches on the
+/// sub-verb; the LAST path segment is passed through as that key. Routing them
+/// explicitly rather than with a wildcard is the point (AF-291) — the table has
+/// to be able to say which sub-verbs exist.
+pub async fn git_sub_read(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    uri: axum::http::Uri,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let sub = uri.path().rsplit('/').next().unwrap_or("").to_string();
+    let qs = crate::api::fs::parse_qs(q.as_deref().unwrap_or(""));
+    crate::api::session_verbs::git_get(&name, &sub, &qs).await
+}
+
+/// `POST /api/workers/{id}/git` — check out a branch in the worker's checkout.
+pub async fn git_checkout_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::git_checkout_verb(&name, &body).await
+}
+
+/// `GET /api/workers/{id}/git/dirty`
+pub async fn git_dirty_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    match resolve_key(&state, key).await {
+        Ok(name) => crate::api::session_verbs::dirty_verb(&name).await,
+        Err(r) => r,
+    }
+}
+
+/// `POST /api/workers/{id}/git/push` — the grouped spelling of `git-push`.
+pub async fn git_push_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    match resolve_key(&state, key).await {
+        Ok(name) => crate::api::session_verbs::git_push_verb(&state, &name).await,
+        Err(r) => r,
+    }
+}
+
+/// `POST /api/workers/{id}/git/commit-report`
+pub async fn git_commit_report_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::commit_report_verb(&state, &name, &body).await
+}
+
+/// `GET|POST|DELETE /api/workers/{id}/git/tracked-files`
+pub async fn git_tracked_files_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    method: axum::http::Method,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        return crate::api::session_verbs::tracked_files_verb(&name);
+    }
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::tracked_files_mutate(&name, &method, &body)
+}
+
+/// `GET|PATCH /api/workers/{id}/git/commit-guard`
+pub async fn git_commit_guard_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    method: axum::http::Method,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        return crate::api::session_verbs::commit_guard_verb(&name);
+    }
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::commit_guard_patch_verb(&name, &body)
+}
+
+/// `PATCH /api/workers/{id}/config` — edit the worker's env file.
+///
+/// PATCH-only because that is the whole verb: there is no `config` arm in
+/// `get_dispatch`, so mounting a GET here would invent a read that does not
+/// exist rather than promote one that does.
+///
+/// This does NOT displace the bare-PATCH alias on `/api/sessions/{name}`, which
+/// routes an empty action to `config` and exists because a tags edit sent to the
+/// resource once answered an unreadable 404. That alias lives on the sessions
+/// route and is untouched by anything the workers surface does.
+pub async fn config_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::config_patch(&state, &name, &body).await
+}
+
+/// `ANY /api/workers/{id}/share` — the share family, whose method split is its
+/// own (`share_handler` reads the method), so the router does not re-express it.
+pub async fn share_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::share_handler(&state, &name, &method, &headers, &body).await
+}
+
+/// `GET|POST|DELETE /api/workers/{id}/steer` — the lane's steering queue.
+///
+/// Carries BOTH halves deliberately. The GET arm reads like an observability
+/// endpoint on its own, and a promoted route that served only it would silently
+/// drop the half that queues work — the verb the classification calls
+/// load-bearing, since this is how board state reaches a lane at its turn
+/// boundary. The method split is the verb's own, not re-decided here.
+pub async fn steer_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        let qs = crate::api::fs::parse_qs(q.as_deref().unwrap_or(""));
+        return crate::api::session_verbs::steer_history_verb(&state, &name, &qs).await;
+    }
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::steer_mutate(&state, &name, &method, &headers, &body).await
+}
+
+/// `POST /api/workers/{id}/report` — a session reporting its own state.
+///
+/// The headers are passed through deliberately: a self-report is the one write
+/// in amux that is only ever legitimate from inside the session it describes,
+/// and `report_post` enforces that from them. Promoting the route must not
+/// become a way to post a report for somebody else.
+pub async fn report_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::report_post(&state, &name, &headers, &body).await
+}
+
+/// `POST /api/workers/{id}/wake`
+pub async fn wake_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    match resolve_key(&state, key).await {
+        Ok(name) => crate::api::session_verbs::wake_verb(&state, &name).await,
+        Err(r) => r,
+    }
+}
+
+/// `POST /api/workers/{id}/reset`
+pub async fn reset_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    match resolve_key(&state, key).await {
+        Ok(name) => crate::api::session_verbs::reset_verb(&state, &name).await,
+        Err(r) => r,
+    }
+}
+
+/// `POST /api/workers/{id}/clear`
+pub async fn clear_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    match resolve_key(&state, key).await {
+        Ok(name) => crate::api::session_verbs::clear_verb(&name).await,
+        Err(r) => r,
+    }
+}
+
+/// `POST /api/workers/{id}/resize`
+pub async fn resize_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::resize_verb(&name, &body).await
+}
+
+/// `POST /api/workers/{id}/keys` — write keystrokes to the terminal. NOT
+/// `send`, which delivers a prompt at a turn boundary; the classification keeps
+/// both because the names have to say which is which.
+pub async fn keys_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let name = match resolve_key(&state, key).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::keys_verb(&name, &body).await
+}
+
+/// `POST /api/workers/{id}/duplicate` — copy a worker's env file and register
+/// the twin in the worker store, or roll the copy back if it cannot.
+///
+/// Resolves the path key through the store exactly as `send_worker` does, so
+/// `/api/workers/{id}` accepts a worker id or its display name and the verb
+/// addresses the same worker either spelling reaches.
+pub async fn duplicate_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let store = state.store.clone();
+    let k = key.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let conn = store.read()?;
+        Ok(queries::get_worker(&conn, &k)?)
+    })
+    .await;
+    let resolved = match joined {
+        Ok(Ok(Some(row))) if !row.display_name.is_empty() => row.display_name,
+        Ok(Ok(_)) => key,
+        Ok(Err(e)) => return internal(e),
+        Err(e) => return internal(e),
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::duplicate_verb(&state, &resolved, &body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,6 +1566,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: token,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         (router(state), dir)
     }
@@ -1871,4 +2362,275 @@ mod tests {
         assert_eq!(st, StatusCode::BAD_GATEWAY, "{body}");
         assert!(body["error"].as_str().unwrap().contains("socket timeout"));
     }
+
+    /// AF-288: the promoted `duplicate` route resolves a worker ID, and the
+    /// twin it creates is registered in the store rather than left as a bare
+    /// env file.
+    ///
+    /// THE DEFECT THIS FAILS ON is the one `send` had: without a real
+    /// `/{id}/duplicate` route this falls to the catch-all
+    /// `/api/workers/{name}/{*verb}`, which addresses the fleet substrate BY
+    /// NAME. The ulid reaches `env_path(<id>)` verbatim, matches nothing, and
+    /// answers `session '<id>' not found`. So a caller holding the only handle
+    /// a rename does not move cannot duplicate with it.
+    ///
+    /// The `registered` flag is asserted, not just the 200, because that is the
+    /// half #137 was about: a copy that succeeds while the store insert fails
+    /// is precisely the invisible twin, and a 200 alone cannot tell the two
+    /// apart.
+    #[tokio::test]
+    async fn duplicate_route_resolves_a_worker_id_and_registers_the_twin() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+        let id = create(&app, "twinsrc").await;
+        // `duplicate` copies the source's env file, so the fixture needs one;
+        // without it the verb answers "copy failed" before it ever reaches the
+        // registration this test is about.
+        std::fs::write(home.path().join("sessions/twinsrc.env"), "CC_TAGS=\"x\"\n").unwrap();
+
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            &format!("/api/workers/{id}/duplicate"),
+            Some(json!({ "new_name": "twindst" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "promoted duplicate route must answer: {v}");
+        assert_eq!(
+            v["registered"],
+            json!(true),
+            "the twin must be registered in the worker store, not left as an env file \
+             /api/workers cannot see (#137): {v}"
+        );
+
+        let (st, _, list) = send(&app, "GET", "/api/workers", None).await;
+        assert_eq!(st, StatusCode::OK, "{list}");
+        // `{"items":[...]}`, not a bare array — asserted against the shape the
+        // live endpoint returns rather than the one that reads naturally.
+        let names: Vec<String> = list["items"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|w| w["display_name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            names.iter().any(|n| n == "twindst"),
+            "the duplicate must be visible to /api/workers; got {names:?}"
+        );
+    }
+
+
+    /// AF-288: every promoted RESOURCE verb resolves a worker ID to the session
+    /// name, instead of handing the ulid to the fleet substrate verbatim.
+    ///
+    /// THE DISCRIMINATOR WAS THE ID LEAK, and since AF-204 it is a 404. While
+    /// the catch-all existed an unrouted verb reached the substrate BY NAME and
+    /// the ulid came back in the answer; now it 404s. Both forms distinguish a
+    /// routed verb from an unrouted one, which is what the control at the end
+    /// pins — the id-absence assertions in the loop are meaningless without a
+    /// path that behaves differently.
+    ///
+    /// Asserted at the resolution gate rather than on a 200, for the reason the
+    /// send test gives: a 200 needs a live terminal and would launch one on the
+    /// machine running the suite.
+    #[tokio::test]
+    async fn promoted_resource_routes_resolve_a_worker_id_to_its_session_name() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+        let id = create(&app, "resverb").await;
+
+        for (verb, body) in [
+            ("wake", None),
+            ("reset", None),
+            ("clear", None),
+            ("resize", Some(json!({ "cols": 80, "rows": 24 }))),
+            ("keys", Some(json!({ "keys": "Enter" }))),
+            ("report", Some(json!({ "state": "idle" }))),
+            ("steer", Some(json!({ "text": "hi" }))),
+        ] {
+            let (_, _, v) = send(&app, "POST", &format!("/api/workers/{id}/{verb}"), body).await;
+            assert!(
+                !v.to_string().contains(&id),
+                "{verb}: the raw worker id reached the answer, so this fell to the catch-all and \
+                 addressed the substrate BY ID instead of resolving it to the session name: {v}"
+            );
+        }
+
+        // The GUARDS pair (AF-294), each at its own method: `config` is
+        // PATCH-only and `share` takes any. Covered here rather than in the
+        // POST loop above because a promoted route mounted at the wrong method
+        // 405s. The leak check alone WOULD catch that — the 405 body echoes the
+        // path, id included, as the mutation confirms — but it would report it
+        // as "the id reached the answer", which reads as a routing failure and
+        // sends the next reader to resolve_key. The explicit method assertion
+        // names the actual fault instead.
+        for (verb, m, body) in [
+            ("config", "PATCH", Some(json!({ "CC_TAGS": "x" }))),
+            ("share", "POST", None),
+        ] {
+            let (st, _, v) = send(&app, m, &format!("/api/workers/{id}/{verb}"), body).await;
+            assert_ne!(
+                st,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{verb}: promoted at the wrong method, so the route exists and cannot be \
+                 reached: {v}"
+            );
+            assert!(
+                !v.to_string().contains(&id),
+                "{verb}: the raw worker id reached the answer: {v}"
+            );
+        }
+
+        // AF-293's pair, both halves each: filed as CONFIG READS and actually
+        // read AND write, so a `get`-only route would have promoted half a verb
+        // and the POST half would have kept falling to the catch-all.
+        for (verb, m) in [
+            ("instructions", "GET"),
+            ("instructions", "POST"),
+            ("memory", "GET"),
+            ("memory", "POST"),
+        ] {
+            let (_, _, v) = send(&app, m, &format!("/api/workers/{id}/{verb}"), Some(json!({}))).await;
+            assert!(
+                !v.to_string().contains(&id),
+                "{verb} {m}: the raw worker id reached the answer, so this half fell to the \
+                 catch-all: {v}"
+            );
+        }
+
+        // The GET half of steer too: it is the one promoted verb that is read
+        // AND write at one action, so a route carrying only POST would drop the
+        // queue listing without failing anything above.
+        let (_, _, v) = send(&app, "GET", &format!("/api/workers/{id}/steer"), None).await;
+        assert!(
+            !v.to_string().contains(&id),
+            "steer GET: the raw worker id reached the answer, so the read half fell to the \
+             catch-all while the write half was promoted: {v}"
+        );
+
+        // CONTROL, flipped by AF-204. `commit-report` moved to /{id}/git/, so
+        // the FLAT spelling is unrouted — and with the catch-all retired an
+        // unrouted path now 404s instead of reaching the substrate by name. That
+        // 404 is the property this whole epic bought: a wrong guess FAILS rather
+        // than answering plausibly. Before the retirement this same call leaked
+        // the ulid, which is what the assertion used to pin.
+        let (st, _, v) = send(&app, "POST", &format!("/api/workers/{id}/commit-report"), None).await;
+        assert_eq!(
+            st,
+            StatusCode::NOT_FOUND,
+            "control failed: an unrouted worker verb must 404 now that the catch-all is gone, \
+             or the loop above cannot distinguish a routed verb from an unrouted one: {v}"
+        );
+    }
+
+
+    /// AF-291: every git sub-verb resolves a worker ID at its own explicit route.
+    ///
+    /// THE CONTROL IS AN UNROUTED SUB-VERB. While the catch-all still exists,
+    /// `/api/workers/{id}/git/not-a-subverb` does not 404 — it matches
+    /// `/api/workers/{name}/{*verb}` and reaches the substrate BY NAME, so the
+    /// ulid comes back in the answer. That is what makes "the id is absent" mean
+    /// "an explicit route handled this" rather than "something returned an empty
+    /// body". When AF-204 retires the catch-all this control flips to a 404, and
+    /// the assertion it guards is the reason the sub-verbs are routed explicitly
+    /// instead of behind a `/{*sub}` wildcard.
+    #[tokio::test]
+    async fn git_group_sub_verbs_resolve_a_worker_id_at_explicit_routes() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+        let id = create(&app, "gitgroup").await;
+
+        for (path, m) in [
+            ("git", "POST"),
+            ("git/commits", "GET"),
+            ("git/commit-detail", "GET"),
+            ("git/diff", "GET"),
+            ("git/dirty", "GET"),
+            ("git/push", "POST"),
+            ("git/commit-report", "POST"),
+            ("git/tracked-files", "GET"),
+            ("git/tracked-files", "POST"),
+            ("git/commit-guard", "GET"),
+            ("git/commit-guard", "PATCH"),
+        ] {
+            let (st, _, v) = send(
+                &app,
+                m,
+                &format!("/api/workers/{id}/{path}"),
+                Some(json!({ "branch": "x", "sha": "deadbeef", "subject": "s" })),
+            )
+            .await;
+            assert_ne!(
+                st,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{m} {path}: mounted at the wrong method: {v}"
+            );
+            assert!(
+                !v.to_string().contains(&id),
+                "{m} {path}: the raw worker id reached the answer, so this fell to the \
+                 catch-all instead of the grouped route: {v}"
+            );
+        }
+
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            &format!("/api/workers/{id}/git/not-a-subverb"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::NOT_FOUND,
+            "control failed: an unrouted git sub-verb must 404 now that the catch-all is gone. \
+             This is the assertion the explicit-per-sub-verb routing exists to make true, and \
+             it is why /{{id}}/git/{{*sub}} was never an option: a wildcard would answer here: {v}"
+        );
+    }
+
+
+    /// AF-298: peek at the workers spelling reaches a FLEET lane, which is not a
+    /// row in the workers store.
+    ///
+    /// The two misses have different bodies and that is what makes this test
+    /// possible: the store answers `{"error":"worker not found","key":...}`,
+    /// the substrate answers about the SESSION. Asserting the store shape is
+    /// absent is therefore "the fallback ran", not "something returned".
+    ///
+    /// Measured before the fix: GET /api/workers returns ONE row on this
+    /// machine while the fleet is ~50 lanes, so this route answered the store's
+    /// 404 for essentially every lane anyone asked about — and had since peek
+    /// was promoted in ea65b5bf, because axum prefers the static suffix over the
+    /// catch-all that used to sit beside it.
+    #[tokio::test]
+    async fn peek_at_the_workers_spelling_reaches_a_fleet_lane_not_in_the_store() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/fleetlane.env"), "CC_TAGS=\"x\"\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+
+        let (_, _, v) = send(&app, "GET", "/api/workers/fleetlane/peek", None).await;
+        let body = v.to_string();
+        assert!(
+            !body.contains("worker not found"),
+            "peek fell back to the STORE's miss for a lane that exists in the fleet: {v}"
+        );
+        // CONTROL: the substrate answered about this lane by NAME. Without it,
+        // "the store shape is absent" would also pass on an empty body.
+        assert!(
+            body.contains("fleetlane"),
+            "premise gone — the answer does not name the lane, so the assertion above \
+             cannot tell a fallback from an empty response: {v}"
+        );
+    }
+
 }

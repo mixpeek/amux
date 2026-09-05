@@ -34,7 +34,12 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0
 
 # Build: a bare origin, a clone, and the hook installed inside the clone.
 # `n_behind` commits land on origin after the clone; `n_ahead` land locally.
-mk() { # $1 name  $2 n_ahead  $3 n_behind
+mk() { # $1 name  $2 n_ahead  $3 n_behind  [$4 local snippet]  [$5 upstream snippet]
+  # $4 runs in the WORK tree after the fetch and before the hook, so a case can
+  # leave files dirty. $5 runs in the upstream clone before its commits, so a
+  # case can have origin modify a file that already exists in the base commit
+  # rather than only adding new ones. Both default to `:`; every case written
+  # before AF-385 passes neither and is unaffected.
   local d="$TMP/$1"
   git init -q --bare -b main "$d/origin.git"
   git clone -q "$d/origin.git" "$d/work" 2>/dev/null
@@ -42,12 +47,17 @@ mk() { # $1 name  $2 n_ahead  $3 n_behind
     git checkout -q -B main
     mkdir -p .claude
     cp "$HOOK" .claude/session-freshness.sh
-    echo seed > seed.txt; git add -A; git commit -qm seed
+    echo seed > seed.txt; echo seed2 > seed2.txt; git add -A; git commit -qm seed
     git push -q -u origin main
   )
   if [ "$3" -gt 0 ]; then   # commits that exist ONLY on origin
     git clone -q "$d/origin.git" "$d/other" 2>/dev/null
     ( cd "$d/other"; git checkout -q -B main origin/main
+      # Before the loop on purpose: the loop commits with `git add -A`, so an
+      # edit left here rides along in up1 and the behind COUNT stays $3. A
+      # snippet that committed for itself would silently break every caller's
+      # self-check.
+      eval "${5:-:}"
       for i in $(seq 1 "$3"); do echo "up$i" > "up$i.txt"; git add -A; git commit -qm "up$i"; done
       git push -q origin main )
   fi
@@ -72,6 +82,9 @@ mk() { # $1 name  $2 n_ahead  $3 n_behind
     # heard of — and case (a) fails on this machine while passing in CI, where
     # no such file exists. A test whose verdict depends on the host's state is
     # not testing the hook.
+    # After the self-check, so a dirty tree can never be mistaken for a setup
+    # failure, and before the hook, which is the whole point.
+    eval "${4:-:}"
     AMUX_RS_BUILD_PROVENANCE="$TMP/no-such-provenance.json" \
       bash .claude/session-freshness.sh 2>&1
   )
@@ -366,7 +379,13 @@ hooks_repo() { # $1 name
     echo seed > seed.txt; git add -A; git commit -qm seed ) >/dev/null 2>&1
   echo "$d/work"
 }
-hooks_run() { ( cd "$1"; AMUX_RS_BUILD_PROVENANCE="$TMP/no-such-provenance.json" \
+# $2 = AMUX_SESSION, $3 = observed-edits log. BOTH default to empty on purpose:
+# without that, these cases read the developer's real session name and real
+# ~/.amux edit log, and a cell would pass or fail depending on what the host had
+# been editing that afternoon. The suite already made this argument for build
+# provenance; the AF-375 cross-reference needs it for the same reason.
+hooks_run() { ( cd "$1"; AMUX_SESSION="${2-}" AMUX_OBSERVED_EDITS_LOG="${3-}" \
+                        AMUX_RS_BUILD_PROVENANCE="$TMP/no-such-provenance.json" \
                         bash .claude/session-freshness.sh 2>&1 ); }
 
 # (i) CONTROL — installed hooks identical to the checkout: say NOTHING.
@@ -389,6 +408,99 @@ w=$(hooks_repo hk_missing)
 rm -f "$w/.git/hooks/pre-push"
 out=$(hooks_run "$w")
 says "MISSING" "$out"
+
+# ── AF-409: the PreToolUse guard, which no installer covered ─────────────────
+#
+# ~/.claude/settings.json invokes ~/.amux/hooks/git-shared-guard.py, outside any
+# checkout, so the loop above — keyed on `git rev-parse --git-path hooks` — is
+# structurally blind to it. It ran 148 lines and three days behind a
+# command-substitution BYPASS fix, and `echo "$(git add -A)"` was ALLOWED by the
+# copy that was live.
+#
+# The THIRD state is the one worth cells: an ABSENT destination means "not an amux
+# host", which is not drift. Reporting it as drift would make this line fire on
+# every machine that is not this one, and a warning that always fires is one people
+# stop reading — the same argument the silence cells above make.
+PGMARK="the PreToolUse shared-checkout guard differs from this checkout"
+
+# (p1) DRIFT: the two copies differ, so say so.
+w=$(hooks_repo pg_drift)
+mkdir -p "$w/scripts/git-hooks" "$TMP/pg_drift/dest"
+printf 'repo version\n'    > "$w/scripts/git-hooks/git-shared-guard.py"
+printf 'running version\n' > "$TMP/pg_drift/dest/git-shared-guard.py"
+out=$(cd "$w"; AMUX_SESSION="" AMUX_OBSERVED_EDITS_LOG="" \
+      AMUX_SHARED_GUARD_DEST="$TMP/pg_drift/dest/git-shared-guard.py" \
+      AMUX_RS_BUILD_PROVENANCE="$TMP/no-such-provenance.json" \
+      bash .claude/session-freshness.sh 2>&1)
+says "$PGMARK" "$out"
+says "install-hooks.sh" "$out"
+
+# (p2) IDENTICAL: silent. Without this, a version that warned unconditionally
+#      would pass (p1) while being pure noise on every correctly-installed host.
+w=$(hooks_repo pg_same)
+mkdir -p "$w/scripts/git-hooks" "$TMP/pg_same/dest"
+printf 'same bytes\n' > "$w/scripts/git-hooks/git-shared-guard.py"
+printf 'same bytes\n' > "$TMP/pg_same/dest/git-shared-guard.py"
+out=$(cd "$w"; AMUX_SESSION="" AMUX_OBSERVED_EDITS_LOG="" \
+      AMUX_SHARED_GUARD_DEST="$TMP/pg_same/dest/git-shared-guard.py" \
+      AMUX_RS_BUILD_PROVENANCE="$TMP/no-such-provenance.json" \
+      bash .claude/session-freshness.sh 2>&1)
+lacks "$PGMARK" "$out"
+
+# (p3) DESTINATION ABSENT: not an amux host, not drift. This is the arm that keeps
+#      the check from firing everywhere it does not apply.
+w=$(hooks_repo pg_nodest)
+mkdir -p "$w/scripts/git-hooks"
+printf 'repo version\n' > "$w/scripts/git-hooks/git-shared-guard.py"
+out=$(cd "$w"; AMUX_SESSION="" AMUX_OBSERVED_EDITS_LOG="" \
+      AMUX_SHARED_GUARD_DEST="$TMP/pg_nodest/definitely/not/here.py" \
+      AMUX_RS_BUILD_PROVENANCE="$TMP/no-such-provenance.json" \
+      bash .claude/session-freshness.sh 2>&1)
+lacks "$PGMARK" "$out"
+
+# ── AF-375: is one of the drifting hooks a file THIS session edited? ─────────
+#
+# The block above was already correct, already specific, and already printed at
+# the top of the session that shipped two INERT edits to amux-staged-guard. It
+# was read as boilerplate about files the reader had not touched. Nothing on the
+# line said otherwise, because nothing on the line was about the reader.
+#
+# So these three cells pin the cross-reference and, more importantly, its two
+# negative directions: a record belonging to somebody ELSE must not become your
+# name, and a missing record must not read as "none of these is yours".
+MINEMARK="YOU EDITED THIS SESSION"
+
+# (l1) drift AND this session has an edit record for that exact hook.
+w=$(hooks_repo hk_mine)
+printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/amux-staged-guard"
+printf '%s lane1 n=1 sent paths=scripts/git-hooks/amux-staged-guard\n' "$(date +%s)" > "$TMP/oe-mine.log"
+out=$(hooks_run "$w" lane1 "$TMP/oe-mine.log")
+says "$MINEMARK" "$out"
+says "amux-staged-guard" "$out"
+# The remedy must name the FALSIFIABLE check. AF-365 closed on evidence that was
+# true of the repo copy, so "grep the installed copy" is the sentence that would
+# have caught it, and a reinstall command alone would not have.
+says "check the INSTALLED copy" "$out"
+
+# (l2) drift, and a record exists, but it is ANOTHER lane's. Naming their write
+#      as yours is the AMUX-3662 error rewritten in a friendlier place, and this
+#      record cannot support it: it has no content hash (AMUX-3954), so all it
+#      can ever say is which session wrote to a path.
+w=$(hooks_repo hk_theirs)
+printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/amux-staged-guard"
+printf '%s lane2 n=1 sent paths=scripts/git-hooks/amux-staged-guard\n' "$(date +%s)" > "$TMP/oe-theirs.log"
+out=$(hooks_run "$w" lane1 "$TMP/oe-theirs.log")
+says "$HOOKMARK" "$out"
+lacks "$MINEMARK" "$out"
+
+# (l3) drift, and NO edit record readable. An absent probe and a probe that ran
+#      and found nothing are different answers, and the silent version of this
+#      is the exact failure the file exists to record (ethos rule 4).
+w=$(hooks_repo hk_norec)
+printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/amux-staged-guard"
+out=$(hooks_run "$w" lane1 "$TMP/no-such-edit-record.log")
+lacks "$MINEMARK" "$out"
+says "was NOT checked" "$out"
 
 # (l) a file in scripts/git-hooks that install-hooks.sh does NOT install must be
 #     IGNORED. Without this the axis nags forever about something whose printed
@@ -538,6 +650,71 @@ fi
 #     "all clear" and "this copy has nothing to say about that".
 out=$(self_run self_foot modify)
 says "$FOOTMARK" "$out"
+
+# ── Axis 1e: can the reconcile this hook prescribes actually RUN? (AF-385) ────
+#
+# Every case above asserts that the hook SAYS `git merge origin/main`. None of
+# them asks whether that command works. On 2026-09-01 it exited 2 in the real
+# checkout without starting, because a dirty file was also changed upstream, and
+# git's own advice in that state (commit them, or stash them) is forbidden on a
+# tree ~125 lanes share. The hook named a state, named the one command for it,
+# and left no honest way through (ethos rule 3).
+#
+# The property under test is the ASYMMETRY, not the warning. A file whose bytes
+# already match upstream earns a printed discard command, because it is
+# recoverable from the remote. A file that differs earns none, because it is
+# somebody's live work and this hook cannot tell whose. A cell that only checked
+# "does it warn" would pass a version that told a lane to delete a peer's
+# mid-edit file, which is the exact failure mode the arm exists to prevent.
+BLOCKMARK="THAT MERGE CANNOT RUN YET"
+
+# (w) BOTH kinds at once — the shape the real incident had. seed.txt is restored
+#     from origin so its bytes are byte-identical upstream; seed2.txt is edited
+#     to something in no commit at all.
+LOG_W="$TMP/blocked-w.jsonl"
+out=$(AMUX_RECONCILE_BLOCKED_LOG="$LOG_W" mk blocked_both 1 1 \
+  'git show origin/main:seed.txt > seed.txt; printf "MINE\n" > seed2.txt' \
+  'printf "UP\n" > seed.txt; printf "UP\n" > seed2.txt')
+setup_ok blocked_both "$out" && {
+  says "$BLOCKMARK: 2 dirty file(s)" "$out"
+  # Placement, not mere presence: the two verdicts must partition the files.
+  up_half=$(printf '%s\n' "$out" | awk '/ALREADY UPSTREAM/{f=1;next} /GENUINELY DIVERGENT/{f=0} f')
+  dv_half=$(printf '%s\n' "$out" | awk '/GENUINELY DIVERGENT/{f=1;next} f')
+  says "seed.txt"  "$up_half"
+  says "seed2.txt" "$dv_half"
+  # THE CELL THAT STOPS THE DANGEROUS VERSION. Exactly one discard command, and
+  # it must not appear after the divergent heading. Hoisting it out of the
+  # recoverable branch turns this hook into advice to delete a peer's work.
+  n=$(printf '%s\n' "$out" | grep -c "git checkout HEAD --")
+  if [ "$n" -eq 1 ]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL: expected exactly 1 discard command, got $n"; fi
+  lacks "git checkout HEAD --" "$dv_half"
+  # (x) The log signal, so the next occurrence reaches a sweep rather than
+  #     waiting for a lane to hit it. A MISSING file means the probe never ran;
+  #     an existing file with no matching line means it ran and found nothing.
+  if [ -s "$LOG_W" ] && grep -q '"already_upstream":"seed.txt"' "$LOG_W" \
+                     && grep -q '"divergent":"seed2.txt"' "$LOG_W"; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL: jsonl must partition the two sets; got: $(cat "$LOG_W" 2>&1)"; fi
+}
+
+# (y) SILENT when the merge would actually run. Behind and diverged, but nothing
+#     dirty — the case that stops this becoming another line to scroll past.
+out=$(mk blocked_clean 1 1)
+setup_ok blocked_clean "$out" && { lacks "$BLOCKMARK" "$out"; says "$MARK" "$out"; }
+
+# (z) A dirty file upstream did NOT touch does not block a merge and must not be
+#     reported as if it did. The false-positive direction: without this, a naive
+#     "is anything dirty" check passes (w) and shouts on every working session.
+out=$(mk blocked_unrelated 1 1 'printf "EDIT\n" > seed2.txt')
+setup_ok blocked_unrelated "$out" && lacks "$BLOCKMARK" "$out"
+
+# (aa) The claim is about GIT, not about this hook's opinion. Run the real merge
+#      in (w)'s fixture and confirm it refuses, so the warning is not a false
+#      alarm about something that would have worked. Ethos rule 4: name what
+#      should appear beside the answer if the probe really ran, and check THAT.
+if ( cd "$TMP/blocked_both/work" && git merge origin/main >/dev/null 2>&1 ); then
+  FAIL=$((FAIL+1)); echo "FAIL: the merge succeeded, so (w)'s warning is a false alarm"
+else PASS=$((PASS+1)); fi
 
 echo
 echo "test-session-freshness: $PASS passed, $FAIL failed"

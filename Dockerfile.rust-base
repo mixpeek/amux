@@ -1,0 +1,45 @@
+# One-time (or occasional) setup for a remote build host: installs the Rust
+# toolchain and pre-warms the cargo registry + dependency build cache, so
+# every-commit builds (Dockerfile.rust-build, FROM this image) are fast
+# instead of re-fetching rustup + every crate on each of the auto-builder's
+# 60s ticks — exactly the class of flakiness/slowness that makes an
+# always-remote builder impractical if skipped.
+#
+# Build ONCE per remote host, and re-build whenever Cargo.lock changes
+# enough that the cached deps are meaningfully stale:
+#   docker --context <host> build -t amux-rust-base -f Dockerfile.rust-base .
+#
+# Deliberately a REAL build of the actual current source, not a
+# dependency-only dummy-crate trick — simpler, always correct, and this
+# only runs occasionally, not on the hot path. Docker's own layer/filesystem
+# caching means a later `FROM amux-rust-base` + fresh `COPY . .` + `cargo
+# build` (Dockerfile.rust-build) still finds /build/target already
+# populated and compiles incrementally, the same mechanism verified working
+# manually this session (a `cargo check` against an already-baked base
+# image completed in 48s).
+#
+# No hostnames, no secrets in this file — those live in AMUX_REMOTE_BUILD_HOST
+# (~/.amux/server.env, private/gitignored), this file is in a public repo.
+#
+# python3 is a real runtime test dependency, not a build tool -- 4 tests in
+# api::session_verbs (cr_only_tui_redraws_reach_the_log_without_any_linefeed
+# and siblings) shell out to `python3 -c ...` as a PTY-writer test fixture.
+# Every human dev box already has python3, so this gap was invisible until
+# the first real `cargo test` inside a genuinely minimal container (the
+# Woodpecker pipeline, confirmed live 2026-09-01: 4 failures, all
+# "sh: 1: python3: not found" / BrokenPipe from the same missing writer).
+FROM debian:trixie
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl build-essential pkg-config libssl-dev ca-certificates git python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    bash -s -- -y --default-toolchain stable --profile minimal
+
+WORKDIR /build
+COPY . .
+RUN rm -f .cargo/config.toml
+ENV CARGO_TARGET_DIR=/build/target
+RUN source /root/.cargo/env && cargo build --release -p amux-server

@@ -671,6 +671,7 @@ pub fn routes() -> Router<AppState> {
         // request log — no model call anywhere in either handler.
         .route("/analyze", get(analyze))
         .route("/stats", get(stats))
+        .route("/writers", get(writers))
 }
 
 /// GET /api/logs — Python's LIVE handler shape (amux-server.py:67673):
@@ -683,7 +684,7 @@ pub fn routes() -> Router<AppState> {
 /// Additive params (not sent by the SPA today, needed by the daily sweep —
 /// docs/rust-migration/log-sweep.md): `worker` (the per-worker subset),
 /// `since` + `until` (unix ts, a HALF-OPEN window `since < ts <= until`),
-/// `family`, `min_status`, `answered_by`. Additive response field:
+/// `family`, `min_status`, `max_status`, `answered_by`. Additive response field:
 /// `total_matched` — the pre-LIMIT count, so volume questions are
 /// answerable without paging (the page-vs-corpus trap).
 ///
@@ -772,6 +773,24 @@ async fn get_logs(State(state): State<AppState>, Query(q): Query<HashMap<String,
         clauses.push("status >= ?".into());
         params.push(ms.into());
     }
+    // `max_status`, the other half of a status BAND (AF-402).
+    //
+    // The sweep contract's step 4 says "keep status 401/403", and a reader who
+    // expresses that as `min_status=403&max_status=403` got a SUPERSET with no
+    // signal: on 2026-09-02 that returned 1448 rows, identical to `min_status=401`
+    // alone, and `max_status=403` by itself returned 82,639 of 82,640. An ignored
+    // filter is worse than an absent one, because the response looks like an
+    // answer. It cost this sweep a session breakdown of "403 rows" that was
+    // actually every error in the window, caught only because the count happened
+    // to equal a number seen a step earlier.
+    //
+    // Unknown params are silently dropped by design here, which is right for
+    // forward compatibility and is exactly what made this invisible. The fix is to
+    // make the param real rather than to start rejecting unknown ones.
+    if let Some(ms) = q.get("max_status").and_then(|v| v.parse::<i64>().ok()) {
+        clauses.push("status <= ?".into());
+        params.push(ms.into());
+    }
     if let Some(a) = q.get("answered_by").filter(|s| !s.is_empty()) {
         clauses.push("answered_by = ?".into());
         params.push(a.clone().into());
@@ -825,7 +844,11 @@ async fn get_logs(State(state): State<AppState>, Query(q): Query<HashMap<String,
         }
         _ => 0.0,
     };
-    Json(json!({
+    // AF-320: `count: 0` is ambiguous on its own — no matching events, or a
+    // window nobody read. n_considered is the matched population, which is the
+    // number that disambiguates it.
+    Json(crate::api::measured::measured(
+        json!({
         "events": events,
         "count": events.len(),
         "total_matched": total,
@@ -840,7 +863,9 @@ async fn get_logs(State(state): State<AppState>, Query(q): Query<HashMap<String,
              Page backward with `until=<the oldest ts in this page>`, or read \
              `total_matched` for volume. Do not describe this page as the window."
         } else { "" },
-    }))
+        }),
+        total.max(0) as usize,
+    ))
     .into_response()
 }
 
@@ -924,8 +949,25 @@ async fn get_logs_raw(
         .clamp(1, 5000);
     let log_path = super::settings::amux_home().join("logs").join("server-rs.log");
     match raw_payload(&log_path, lines_n, &state) {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => internal(e),
+        Ok(v) => {
+            // n_considered is the whole tailable population (log file lines +
+            // request-log rows), not the page returned — `lines: []` with a
+            // large population is a filter result, with a zero it is an empty
+            // log, and the page length cannot tell them apart (AF-320).
+            let n = v.get("total").and_then(Value::as_i64).unwrap_or(0).max(0) as usize;
+            Json(crate::api::measured::measured(v, n)).into_response()
+        }
+        // A 500 here used to answer with no `lines` key at all, which any
+        // tolerant reader renders as "no log lines". Keep the status, and say
+        // in the body that nothing was read.
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(crate::api::measured::unmeasured(
+                json!({ "lines": [], "total": 0, "error": e.to_string() }),
+                "the log tail could not be built, so no line was read",
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -1058,6 +1100,7 @@ const ANY: &[&str] = &["*"];
 pub const ROUTE_TABLE: &[RouteEntry] = &[
     // -- public (outside require_bearer)
     RouteEntry { path: "/health", methods: &["GET"] },
+    RouteEntry { path: "/api/health", methods: &["GET"] },
     RouteEntry { path: "/manifest.json", methods: &["GET"] },
     RouteEntry { path: "/api/calendar.ics", methods: &["GET"] },
     RouteEntry { path: "/api/debug/tmux", methods: &["GET"] },
@@ -1071,6 +1114,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/debug/routes", methods: &["GET"] },
     RouteEntry { path: "/api/debug/duplicate-deliveries", methods: &["GET"] },
     RouteEntry { path: "/api/system-jobs", methods: &["GET"] },
+    RouteEntry { path: "/api/system-jobs/{id}/run", methods: &["POST"] },
     RouteEntry { path: "/api/health/invariants", methods: &["GET"] },
     RouteEntry { path: "/api/debug/invariants", methods: &["GET"] },
     RouteEntry { path: "/api/gmail/callback", methods: &["GET"] },
@@ -1079,12 +1123,22 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/events", methods: &["GET"] },
     // -- board
     RouteEntry { path: "/api/board", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/board/export", methods: &["GET"] },
     RouteEntry { path: "/api/board/statuses", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/board/statuses/reorder", methods: &["PUT"] },
     RouteEntry { path: "/api/board/statuses/{sid}", methods: &["PATCH", "DELETE"] },
     RouteEntry { path: "/api/board/session-gates", methods: &["GET", "PATCH"] },
+    RouteEntry { path: "/api/board/nudges", methods: &["GET", "PATCH"] },
     RouteEntry { path: "/api/board/clear-done", methods: &["POST"] },
     RouteEntry { path: "/api/board/{id}", methods: &["GET", "PATCH", "DELETE"] },
+    // The workflow-engine landing (board.rs:80-83) mounted these four and did
+    // not add them here, which is what reddened `rust`. Methods read off the
+    // router, not guessed: capsule/verifications are GET, artifacts is
+    // GET+POST, artifacts/{aid} is PATCH+DELETE.
+    RouteEntry { path: "/api/board/{id}/capsule", methods: &["GET"] },
+    RouteEntry { path: "/api/board/{id}/verifications", methods: &["GET"] },
+    RouteEntry { path: "/api/board/{id}/artifacts", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/board/{id}/artifacts/{aid}", methods: &["PATCH", "DELETE"] },
     RouteEntry { path: "/api/board/{id}/archive", methods: &["POST"] },
     RouteEntry { path: "/api/board/{id}/restore", methods: &["POST"] },
     // -- workers (+dead-letters merge)
@@ -1094,6 +1148,35 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/workers/{id}/stop", methods: &["POST"] },
     RouteEntry { path: "/api/workers/{id}/peek", methods: &["GET"] },
     RouteEntry { path: "/api/workers/{id}/send", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/duplicate", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/wake", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/reset", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/clear", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/resize", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/keys", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/report", methods: &["POST"] },
+    // `*`, not GET/POST/DELETE: the route is mounted with `any`, so the router
+    // advertises no Allow set and the table must say what the ROUTER accepts,
+    // not what the verb happens to implement. Mounting the three explicitly
+    // would 405 a PATCH the catch-all currently passes through to steer_mutate,
+    // which forks the promoted spelling's behaviour from the legacy one.
+    RouteEntry { path: "/api/workers/{id}/steer", methods: &["*"] },
+    RouteEntry { path: "/api/workers/{id}/config", methods: &["PATCH"] },
+    RouteEntry { path: "/api/workers/{id}/share", methods: &["*"] },
+    RouteEntry { path: "/api/workers/{id}/instructions", methods: &["*"] },
+    RouteEntry { path: "/api/workers/{id}/memory", methods: &["*"] },
+    // The checkout sub-resource (AF-291). Listed per sub-verb on purpose: a
+    // wildcard would make the table unable to say which parts exist, which is
+    // the defect AF-204 retires the catch-all for.
+    RouteEntry { path: "/api/workers/{id}/git", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/git/commits", methods: &["GET"] },
+    RouteEntry { path: "/api/workers/{id}/git/commit-detail", methods: &["GET"] },
+    RouteEntry { path: "/api/workers/{id}/git/diff", methods: &["GET"] },
+    RouteEntry { path: "/api/workers/{id}/git/dirty", methods: &["GET"] },
+    RouteEntry { path: "/api/workers/{id}/git/push", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/git/commit-report", methods: &["POST"] },
+    RouteEntry { path: "/api/workers/{id}/git/tracked-files", methods: &["*"] },
+    RouteEntry { path: "/api/workers/{id}/git/commit-guard", methods: &["*"] },
     RouteEntry { path: "/api/workers/{id}/dead-letters", methods: &["GET"] },
     // -- memories / messages / schedules / verify / prefs / criteria
     RouteEntry { path: "/api/memories", methods: &["GET", "POST"] },
@@ -1136,11 +1219,26 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/email/send", methods: &["POST"] },
     RouteEntry { path: "/api/email/reply", methods: &["POST"] },
     RouteEntry { path: "/api/email/inbox", methods: &["GET"] },
+    RouteEntry { path: "/api/email/message/{id}", methods: &["GET"] },
+    RouteEntry {
+        path: "/api/email/message/{id}/attachments/{attachment_id}",
+        methods: &["GET"],
+    },
     RouteEntry { path: "/api/email/search", methods: &["GET"] },
     RouteEntry { path: "/api/email/log", methods: &["GET"] },
     RouteEntry { path: "/api/email/approve/{id}", methods: &["POST"] },
     RouteEntry { path: "/api/email/reject/{id}", methods: &["POST"] },
     RouteEntry { path: "/api/email/approvals", methods: &["GET"] },
+    // AMUX-3998: email_intel's routes, merged into email::routes() so they
+    // share its EmailCtx -- AMUX-93 found these were mounted and working
+    // (a direct POST to /themes/refresh reached the real handler, HTTP 502
+    // from a downstream model-call failure, not a 404) but never added
+    // here, so route.callers_have_routes filed a false "no route matches"
+    // against this static table rather than the live router.
+    RouteEntry { path: "/api/email/themes", methods: &["GET"] },
+    RouteEntry { path: "/api/email/themes/refresh", methods: &["POST"] },
+    RouteEntry { path: "/api/email/ranked", methods: &["GET"] },
+    RouteEntry { path: "/api/email/annotate", methods: &["POST"] },
     RouteEntry { path: "/api/cal-events", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/cal-events/{id}", methods: &["PATCH", "DELETE"] },
     // -- sessions (legacy list + native per-name verbs) / identity / scope
@@ -1162,6 +1260,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/browser/start", methods: &["POST"] },
     RouteEntry { path: "/api/browser/status", methods: &["GET"] },
     RouteEntry { path: "/api/browser/stop", methods: &["POST"] },
+    RouteEntry { path: "/api/browser/identify", methods: &["POST"] },
     RouteEntry { path: "/api/browser/profiles", methods: &["GET"] },
     RouteEntry { path: "/api/browser/profile/create", methods: &["POST"] },
     RouteEntry { path: "/api/browser/profile/{name}", methods: &["DELETE"] },
@@ -1242,6 +1341,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // completeness test learned to follow .nest() (AMUX-2917); it previously
     // scanned only api/mod.rs's own .route() calls.
     RouteEntry { path: "/api/board/contract", methods: &["GET"] },
+    RouteEntry { path: "/api/board/ready", methods: &["GET"] },
+    RouteEntry { path: "/api/board/bulk-migrate", methods: &["POST"] },
+    RouteEntry { path: "/api/board/{id}/decompose", methods: &["POST"] },
+    RouteEntry { path: "/api/board/needsyou", methods: &["GET"] },
     RouteEntry { path: "/api/schedules/{id}/skip", methods: &["POST"] },
     RouteEntry { path: "/api/search", methods: &["GET"] },
     RouteEntry { path: "/api/search/status", methods: &["GET"] },
@@ -1263,18 +1366,37 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // Connectors (integrations): registry + status, credential paste, OAuth
     // begin/callback, live Test, and the DWD token mint (AMUX-3362). `list` is
     // GET; credentials/auth/test/token are POST; callback is the GET landing.
-    RouteEntry { path: "/api/connectors", methods: &["GET"] },
+    // POST declares a connector at runtime, DELETE forgets one (AMUX-3993).
+    // Owner-approved ad-hoc permission grants (AMUX-3997).
+    RouteEntry { path: "/api/config/cross-group", methods: &["GET", "PUT"] },
+    RouteEntry { path: "/api/config/board-drain", methods: &["GET", "PUT"] },
+    RouteEntry { path: "/api/grants", methods: &["GET"] },
+    RouteEntry { path: "/api/grants/{id}/approve", methods: &["POST"] },
+    RouteEntry { path: "/api/grants/{id}/reject", methods: &["POST"] },
+    RouteEntry { path: "/api/connectors", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/connectors/{id}", methods: &["DELETE"] },
     RouteEntry { path: "/api/connectors/accounts", methods: &["GET"] },
     RouteEntry { path: "/api/connectors/{id}/credentials", methods: &["POST"] },
     RouteEntry { path: "/api/connectors/{id}/auth", methods: &["POST"] },
     RouteEntry { path: "/api/connectors/{id}/test", methods: &["POST"] },
     RouteEntry { path: "/api/connectors/{id}/token", methods: &["POST"] },
     RouteEntry { path: "/api/connectors/{family}/callback", methods: &["GET"] },
+    RouteEntry { path: "/api/telegram/status", methods: &["GET"] },
+    RouteEntry { path: "/api/telegram/mappings", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/telegram/mappings/{chat_id}", methods: &["DELETE"] },
+    RouteEntry { path: "/api/telegram/send", methods: &["POST"] },
     RouteEntry { path: "/api/pull", methods: &["POST"] },
     RouteEntry { path: "/api/proxies", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/proxies/{id}", methods: &["PATCH", "DELETE"] },
     RouteEntry { path: "/api/proxies/{id}/start", methods: &["POST"] },
     RouteEntry { path: "/api/proxies/{id}/stop", methods: &["POST"] },
+    // AMUX-2888: mounted ahead of the tunnel client port so the SPA panel and
+    // `amux tunnel` stop getting a 404 (status) and a 405 (the POSTs, from the
+    // GET-only SPA catch-all) — neither of which a caller can tell from "amux
+    // is broken".
+    RouteEntry { path: "/api/tunnel/status", methods: &["GET"] },
+    RouteEntry { path: "/api/tunnel/start", methods: &["POST"] },
+    RouteEntry { path: "/api/tunnel/stop", methods: &["POST"] },
     // The D1-exit pair. Reached by the bash CLI's own curl, which the caller
     // census does not enumerate — so these 405'd for the whole cutover while
     // every layer that mentions them kept routing sessions at them.
@@ -1351,6 +1473,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/logs/raw", methods: &["GET"] },
     RouteEntry { path: "/api/logs/analyze", methods: &["GET"] },
     RouteEntry { path: "/api/logs/stats", methods: &["GET"] },
+    RouteEntry { path: "/api/logs/writers", methods: &["GET"] },
     // -- settings / push / dictation
     RouteEntry { path: "/api/settings/default-model", methods: &["GET", "PATCH"] },
     RouteEntry { path: "/api/settings/commit-guard", methods: &["GET", "PATCH"] },
@@ -1397,7 +1520,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/debug/board-drive", methods: &["GET"] },
     RouteEntry { path: "/api/debug/autofix", methods: &["GET"] },
     RouteEntry { path: "/api/debug/storage", methods: &["GET"] },
-    RouteEntry { path: "/api/workers/{name}/{*verb}", methods: &["*"] },
+
 ];
 
 /// Match `path` against an axum-style pattern, returning a specificity score
@@ -1446,16 +1569,64 @@ pub fn normalize_target(path: &str) -> String {
     if let Some(e) = best_route(path) {
         return e.path.to_string();
     }
-    let id_ish = |seg: &str| {
-        seg.contains('%')
-            || seg.len() >= 24
-            || seg.chars().any(|c| c.is_ascii_digit())
-    };
     path.split('/')
         .enumerate()
         .map(|(i, seg)| if i >= 3 && !seg.is_empty() && id_ish(seg) { "{id}" } else { seg })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Is this path segment an identifier rather than a route word?
+///
+/// Lifted out of `normalize_target`'s closure so `normalize_target_verb` below
+/// applies the SAME rule. Two spellings of "is this an id" would drift, and the
+/// one that drifts is the one that decides whether a target fragments per id.
+fn id_ish(seg: &str) -> bool {
+    seg.contains('%') || seg.len() >= 24 || seg.chars().any(|c| c.is_ascii_digit())
+}
+
+/// `normalize_target`, with a WILDCARD route's first tail segment restored.
+///
+/// # Why a second normalizer instead of changing the first (AMUX-3869)
+///
+/// `normalize_target` returns the route-table pattern, which is right for
+/// request-log grouping: a thousand ids fold into one row. But a `{*wildcard}`
+/// route folds *verbs* too, and verbs are not interchangeable the way ids are.
+/// Measured over 7 days, `/api/sessions/{name}/{*verb}` is ONE target holding
+/// `peek` (424,888 rows), `report` (82,313 at a 21ms mean), `send` (625 at a
+/// 1216ms mean, long by design) and `wake` (3 at 5302ms). A latency floor
+/// judged against that group is judged against `peek`, so `send`'s ordinary
+/// p99 tail files cards while a genuinely sick `report` would need ~475x its
+/// own mean to trip.
+///
+/// Only the FIRST tail segment is taken, and only when it is not id-shaped.
+/// Both guards exist to bound cardinality: the SPA shell is `GET /{*path}`, and
+/// restoring its whole tail would mint a target per URL. One non-id segment
+/// keeps this at the number of VERBS a route has, which is what the caller
+/// wants a baseline per.
+///
+/// This is deliberately NOT what `normalize_target` does, because the request
+/// log's own rollups want the coarse shape. Only latency outlier detection
+/// needs the finer axis.
+pub fn normalize_target_verb(path: &str) -> String {
+    let target = normalize_target(path);
+    let tsegs: Vec<&str> = target.split('/').collect();
+    let Some(wi) = tsegs.iter().position(|s| s.starts_with("{*")) else {
+        return target;
+    };
+    // Strip a query string before reading the segment: `?` is not a path
+    // separator, so it would otherwise ride along into the target.
+    let clean = path.split(['?', '#']).next().unwrap_or(path);
+    let psegs: Vec<&str> = clean.split('/').collect();
+    let Some(verb) = psegs.get(wi) else {
+        return target;
+    };
+    if verb.is_empty() || id_ish(verb) {
+        return target;
+    }
+    let mut out: Vec<&str> = tsegs[..wi].to_vec();
+    out.push(verb);
+    out.join("/")
 }
 
 /// The literal values sitting where the matched route declares a `{param}`.
@@ -1878,7 +2049,11 @@ async fn analyze(
         })
         .collect();
 
-    Json(json!({
+    // AF-320. `total_errors: 0` is the reading this endpoint most often serves
+    // and the one it can least afford to serve ambiguously: no errors in the
+    // window, or a window that was never scanned. n_considered is rows scanned.
+    Json(crate::api::measured::measured(
+        json!({
         "since_h": since_h,
         "window_start": cutoff, "window_start_local": local_when(cutoff),
         "generated_at": unix_now(),
@@ -1892,7 +2067,9 @@ async fn analyze(
         "groups_total": groups_total,
         "verdicts": verdicts,
         "route_table_size": ROUTE_TABLE.len(),
-    }))
+        }),
+        scanned as usize,
+    ))
     .into_response()
 }
 
@@ -2223,7 +2400,11 @@ async fn stats(
 
     let now = unix_now();
     let actual_window_h = oldest_ts.map(|ots| (now - ots) / 3600.0);
-    Json(json!({
+    // AF-320. `window_rows` is the true pre-sample population, which is exactly
+    // the n_considered this contract asks for: a families list that comes back
+    // empty over 0 rows and over 40,000 rows are different answers.
+    Json(crate::api::measured::measured(
+        json!({
         "since_h": since_h,
         "actual_window_h": actual_window_h.map(round2),
         "oldest_row_ts": oldest_ts,
@@ -2266,7 +2447,191 @@ async fn stats(
             "restart_spanning_excluded": spanned,
         },
         "slow_outliers": outliers.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
-    }))
+        }),
+        window_rows as usize,
+    ))
+    .into_response()
+}
+
+/// The methods that COUNT AS WORK for step 5 of the daily sweep. Defined here,
+/// once, because the contract's first false positive was a lane flagged on 105
+/// requests of which 103 were GETs (AF-34): reading the board and peeking at
+/// lanes is not silent work, and under the old wording every idle observer
+/// looked guilty. A caller who re-types this list can drop a verb and get a
+/// quieter answer that looks the same.
+const MUTATING_METHODS: &[&str] = &["POST", "PATCH", "PUT", "DELETE"];
+
+/// The most sessions `/api/logs/writers` will return. Not a scan cap — the
+/// aggregate below reads the whole window — but the list still has to end
+/// somewhere, and `scan_truncated` is computed FROM this rather than written as
+/// a constant `false`. A hardcoded completeness field cannot disagree with the
+/// run, which is the shape ethos rule 4 is about.
+const WRITERS_CAP: usize = 500;
+
+/// GET /api/logs/writers?since_h=24 — which sessions performed MUTATING writes
+/// in the window, over the WHOLE window.
+///
+/// Step 5 of the daily sweep ("worker traffic with no board trace",
+/// docs/rust-migration/log-sweep.md) used to answer this by pulling
+/// `GET /api/logs?since=$SINCE&limit=2000` and grouping the page by hand. That
+/// query is correct and has stopped being sufficient: measured 2026-09-04, one
+/// 2000-row page covered **0.85 hours of the 24 it was characterising** —
+/// 0.5% of 417,852 matched rows. The set of sessions it yielded was the set
+/// that happened to be writing in the last fifty minutes, and the step's output
+/// is an accusation the contract itself calls "the expensive kind".
+///
+/// A `method=` filter on the page was the obvious cheaper fix and it does not
+/// work. It rests on mutating rows being a small share of traffic; they are
+/// 41.6% (8,314 of 20,000 sampled across 7.19h — 37.2% POST, 4.4% PATCH, no
+/// PUT or DELETE at all). Filtering buys ~2.4x on a step that needs ~33x, so
+/// one page would reach 1.7h of 24 while the card closed as fixed. That is the
+/// same defect one volume-doubling later, with a closed card telling the next
+/// sweep not to re-check.
+///
+/// So the grouping moves to SQL, where there is no page to be a slice of. The
+/// three rules step 5 accumulated from its own false positives become
+/// properties of this handler instead of instructions a reader re-applies each
+/// morning:
+///
+/// - **Mutating methods only** ([`MUTATING_METHODS`], AF-34).
+/// - **Attribute on `amux_session`, NEVER fall back to `worker`.** `worker` is
+///   PATH-derived (`/api/sessions/{name}/*`), so an unattributed report *about*
+///   lane X is tagged `worker=X` and reads as a mutation *by* X. That fallback
+///   flagged `mixpeek-security` for 5 requests it never made. This query does
+///   not select `worker` at all, so the mistake is not available here.
+/// - **Unattributed rows are their own number, not somebody's.** They are
+///   `unattributed_mutations`, published beside the list. With ~7,708
+///   unattributed reports a day (AF-67) a reader who cannot see that total
+///   cannot tell "nobody wrote this" from "nobody was listed".
+///
+/// What it deliberately does NOT do: the board cross-check. Whether a lane's
+/// mutating work has a card is a judgement with three more documented traps of
+/// its own (uncapped `done_limit`, no-cards-here means UNKNOWN, and
+/// `max(created, updated)`), and it belongs to the reader making the
+/// accusation. This endpoint answers the half that was measured wrongly.
+async fn writers(State(state): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let since_h = since_h_of(&q);
+    let cutoff = unix_now() - since_h * 3600.0;
+
+    let conn = match state.store.read() {
+        Ok(c) => c,
+        Err(e) => return internal(e),
+    };
+
+    // The window's TRUE population, all methods. This is `n_considered`: a
+    // writers list that comes back empty over 0 rows and over 400,000 rows are
+    // different answers, and the list alone cannot tell them apart.
+    let (window_rows, oldest_ts): (i64, Option<f64>) = match conn.query_row(
+        "SELECT COUNT(*), MIN(ts) FROM _amux_request_log WHERE ts > ?1",
+        rusqlite::params![cutoff],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ) {
+        Ok(v) => v,
+        Err(e) => return internal(e),
+    };
+
+    let holes = MUTATING_METHODS.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT COALESCE(NULLIF(amux_session,''),''), method, COUNT(*), MIN(ts), MAX(ts) \
+         FROM _amux_request_log \
+         WHERE ts > ?1 AND method IN ({holes}) \
+         GROUP BY 1, 2"
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![cutoff.into()];
+    for m in MUTATING_METHODS {
+        params.push(rusqlite::types::Value::Text((*m).to_string()));
+    }
+
+    // session -> (total, per-method, first_ts, last_ts)
+    type Agg = (u64, serde_json::Map<String, Value>, f64, f64);
+    let mut by_session: HashMap<String, Agg> = HashMap::new();
+    let mut unattributed: u64 = 0;
+    let mut mutating_rows: u64 = 0;
+    if let Err(e) = (|| -> rusqlite::Result<()> {
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+        while let Some(r) = rows.next()? {
+            let sess: String = r.get(0)?;
+            let method: String = r.get(1)?;
+            let n: i64 = r.get(2)?;
+            let first: f64 = r.get(3)?;
+            let last: f64 = r.get(4)?;
+            let n = n.max(0) as u64;
+            mutating_rows += n;
+            if sess.is_empty() {
+                unattributed += n;
+                continue;
+            }
+            let e = by_session.entry(sess).or_insert_with(|| {
+                (0, serde_json::Map::new(), f64::MAX, f64::MIN)
+            });
+            e.0 += n;
+            e.1.insert(method, json!(n));
+            e.2 = e.2.min(first);
+            e.3 = e.3.max(last);
+        }
+        Ok(())
+    })() {
+        return internal(anyhow::Error::from(e));
+    }
+
+    let distinct_writers = by_session.len();
+    let mut list: Vec<Value> = by_session
+        .into_iter()
+        .map(|(sess, (total, methods, first, last))| {
+            json!({
+                "amux_session": sess,
+                "mutations": total,
+                "methods": methods,
+                "first_ts": first,
+                "first_local": local_when(first),
+                "last_ts": last,
+                "last_local": local_when(last),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| {
+        let (ca, cb) = (a["mutations"].as_u64().unwrap_or(0), b["mutations"].as_u64().unwrap_or(0));
+        cb.cmp(&ca).then_with(|| {
+            a["amux_session"].as_str().unwrap_or("").cmp(b["amux_session"].as_str().unwrap_or(""))
+        })
+    });
+    let truncated = list.len() > WRITERS_CAP;
+    list.truncate(WRITERS_CAP);
+
+    let now = unix_now();
+    Json(crate::api::measured::measured(
+        json!({
+            "since_h": since_h,
+            // The window the rows ACTUALLY cover. `scan_truncated: false` over
+            // six hours of a store that only holds six hours is a complete
+            // answer to a smaller question, and only this field says which.
+            "actual_window_h": oldest_ts.map(|o| round2((now - o) / 3600.0)),
+            "oldest_row_ts": oldest_ts,
+            "oldest_row_local": oldest_ts.map(local_when),
+            "window_start": cutoff,
+            "window_start_local": local_when(cutoff),
+            "generated_at": now,
+            // Computed from the list, not asserted. The aggregate reads the
+            // whole window, so the only way this answer can be partial is more
+            // than WRITERS_CAP distinct sessions.
+            "scan_truncated": truncated,
+            // The population `writers` is drawn from, distinct from
+            // `n_considered` (all methods). Both are needed: an empty list over
+            // 0 mutating rows in a busy window means the fleet only read.
+            "mutating_rows": mutating_rows,
+            "mutating_methods": MUTATING_METHODS,
+            "distinct_writers": distinct_writers,
+            // NOT assigned to anyone. See the doc comment: borrowing `worker`
+            // for these is the specific mistake that produced a false
+            // accusation, so the number is published unowned instead.
+            "unattributed_mutations": unattributed,
+            "attribution": "amux_session only; `worker` is path-derived and is never \
+                            used here (a report ABOUT a lane is not a write BY it)",
+            "writers": list,
+        }),
+        window_rows.max(0) as usize,
+    ))
     .into_response()
 }
 
@@ -2333,7 +2698,11 @@ pub async fn debug_routes() -> axum::Json<Value> {
             path == f.family || (path.starts_with(f.family) && path[f.family.len()..].starts_with('/'))
         })
     };
-    axum::Json(json!({
+    // AF-320: the population here is the route table itself, so a truncated or
+    // empty listing is readable as such rather than as "the server mounts
+    // nothing".
+    axum::Json(crate::api::measured::measured(
+        json!({
         "count": ROUTE_TABLE.len(),
         "routes": ROUTE_TABLE.iter().map(|e| json!({
             "family": family_of(e.path),
@@ -2353,7 +2722,9 @@ pub async fn debug_routes() -> axum::Json<Value> {
                        honest both directions by tests/route_table.rs against the real \
                        router composition",
         },
-    }))
+        }),
+        ROUTE_TABLE.len(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2402,6 +2773,56 @@ mod tests {
                 "a {{*wildcard}} segment must not be reported as a param literal ({p} -> {l:?})"
             );
         }
+    }
+
+    /// `normalize_target_verb` splits a wildcard by verb WITHOUT fragmenting
+    /// per id (AMUX-3869).
+    ///
+    /// The two failure modes pull in opposite directions and both are here.
+    /// Refine too little and `send` keeps sharing a latency baseline with
+    /// `peek`, which is the bug. Refine too much and `GET /{*path}` (the SPA
+    /// shell) mints one target per URL, so the request log grows a target per
+    /// visitor and the rollups stop meaning anything.
+    #[test]
+    fn normalize_target_verb_splits_by_verb_but_never_by_id() {
+        use super::{normalize_target, normalize_target_verb as nv};
+
+        // THE POINT: one wildcard route, distinct targets per verb.
+        assert_eq!(nv("/api/sessions/amux/send"), "/api/sessions/{name}/send");
+        assert_eq!(nv("/api/sessions/gtm-ticker/send"), "/api/sessions/{name}/send");
+        assert_eq!(nv("/api/sessions/amux/peek"), "/api/sessions/{name}/peek");
+        assert_ne!(nv("/api/sessions/amux/send"), nv("/api/sessions/amux/peek"));
+
+        // The lane name still folds. Splitting by VERB must not reintroduce a
+        // target per session, which is what `normalize_target` exists to stop.
+        assert_eq!(nv("/api/sessions/a/send"), nv("/api/sessions/b/send"));
+
+        // A query string is not a path segment and must not ride along.
+        assert_eq!(nv("/api/sessions/amux/peek?lines=200"), "/api/sessions/{name}/peek");
+
+        // NON-WILDCARD ROUTES ARE UNTOUCHED: this is a strictly additive axis,
+        // so everything else must agree with `normalize_target` exactly.
+        for p in ["/api/board/AMUX-9999", "/api/health", "/api/sessions"] {
+            assert_eq!(nv(p), normalize_target(p), "non-wildcard target changed for {p}");
+        }
+
+        // THE CARDINALITY GUARD. An id-shaped tail refuses to refine, so a
+        // wildcard route carrying ids collapses instead of exploding into one
+        // target per id.
+        //
+        // Specimen chosen so it actually reaches the wildcard branch: an
+        // earlier version used `/api/fs/12345`, which never gets there because
+        // `best_route` does not match it and `normalize_target`'s fallback
+        // collapse returns `/api/fs/{id}`. The guard held; the assertion about
+        // HOW was testing a path the code had not taken.
+        let a = nv("/api/sessions/amux/12345");
+        let b = nv("/api/sessions/amux/67890");
+        assert_eq!(a, b, "id-shaped wildcard tails must not each become their own target");
+        assert_eq!(
+            a,
+            normalize_target("/api/sessions/amux/12345"),
+            "an id-shaped tail must leave the target exactly as normalize_target had it: {a}"
+        );
 
         // CONTROL: a fully-static routed path has no literals, so the detector
         // is silent on the majority of traffic instead of flagging all of it.
@@ -2543,6 +2964,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -2968,6 +3390,56 @@ mod tests {
         .await;
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["events"], json!([]), "no memory traffic seeded, so no rows");
+
+        // STATUS BAND: max_status must BOUND, not be silently dropped (AF-402).
+        //
+        // The sweep contract's step 4 says "keep status 401/403". A reader who
+        // wrote that as `min_status=403&max_status=403` used to get every error
+        // in the window back, because unknown params are dropped by design and
+        // an ignored filter returns a superset that LOOKS like an answer. On
+        // 2026-09-02 it returned 1448 rows, identical to `min_status=401` alone.
+        //
+        // The two seeded rows are both 200s, so the discrimination is asserted
+        // on the direction that can be seeded here: an upper bound that EXCLUDES
+        // must return nothing, and one that INCLUDES must return the rows. A
+        // dropped param passes the second and fails the first, which is why both
+        // are here rather than only the happy one.
+        let (_, body) = hit(
+            &api,
+            HttpRequest::builder().uri("/api/logs?max_status=199").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v["events"],
+            json!([]),
+            "max_status=199 must EXCLUDE the seeded 200s; an ignored param returns them: {v}"
+        );
+        assert_eq!(v["total_matched"], 0, "total_matched must respect the bound too: {v}");
+
+        let (_, body) = hit(
+            &api,
+            HttpRequest::builder().uri("/api/logs?max_status=299").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            !v["events"].as_array().unwrap().is_empty(),
+            "max_status=299 must INCLUDE the seeded 200s, or the bound is inverted: {v}"
+        );
+
+        // And the band closes from both ends at once, which is the shape the
+        // contract actually asks for.
+        let (_, body) = hit(
+            &api,
+            HttpRequest::builder()
+                .uri("/api/logs?min_status=300&max_status=399")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["events"], json!([]), "a 3xx band must not match seeded 200s: {v}");
     }
 
     #[tokio::test]
@@ -3319,6 +3791,7 @@ mod tests {
             ("/api/logs?limit=2000", "truncated"),
             ("/api/logs/analyze?since_h=24", "scan_truncated"),
             ("/api/logs/stats?since_h=24", "scan_truncated"),
+            ("/api/logs/writers?since_h=24", "scan_truncated"),
         ];
         for (uri, completeness) in sweep_endpoints {
             let (st, body) =
@@ -3946,6 +4419,222 @@ mod tests {
         // module.
         assert!(routes.iter().all(|r| r["owner"] == "native"), "{v}");
         assert_eq!(find("/api/scope")["methods"], json!(["*"]));
+    }
+
+    /// Seed one row with an explicit `worker`, which [`seed`] always leaves NULL.
+    ///
+    /// Needed because the property under test is that `worker` is NOT consulted,
+    /// and a fixture that cannot set it would pass against a handler that reads it.
+    async fn seed_with_worker(
+        store: &crate::db::Store,
+        ts: f64,
+        method: &str,
+        path: &str,
+        session: &str,
+        worker: &str,
+    ) {
+        let (method, path, session, worker) =
+            (method.to_string(), path.to_string(), session.to_string(), worker.to_string());
+        store
+            .write_async(move |conn| {
+                conn.execute(
+                    "INSERT INTO _amux_request_log \
+                     (ts, method, path, family, status, latency_ms, client_ip, \
+                      amux_session, worker, answered_by) \
+                     VALUES (?1,?2,?3,?4,200,1.0,'127.0.0.1',?5,?6,'native')",
+                    rusqlite::params![ts, method, path, family_of(&path), session, worker],
+                )?;
+                Ok(WriteOutcome { applied: false, events: vec![] })
+            })
+            .await
+            .unwrap();
+    }
+
+    /// AF-475 — step 5 grouped a 2000-row PAGE and called it the day.
+    ///
+    /// Measured 2026-09-04: `GET /api/logs?since=<24h>&limit=2000` returned
+    /// `page_span_h: 0.85` against `total_matched: 417852`. The step decides
+    /// whether a lane is working off-ledger, and it was reaching that verdict
+    /// from 0.5% of its window, taken from one end.
+    ///
+    /// Two assertions, and the first is the one that matters. `mutating_rows`
+    /// must equal the rows seeded across the FULL span — a handler that grouped
+    /// the newest page would return the tail and still look well-formed, because
+    /// nothing about a partial answer is malformed. The window is 20 hours here
+    /// rather than a few minutes so that `actual_window_h` can disagree with a
+    /// handler that quietly narrowed it.
+    ///
+    /// The GET rows are the AF-34 control. `amux-homepage` was flagged on 105
+    /// requests of which 103 were GETs: polling and messaging, not work. If the
+    /// method filter is dropped, `reader` appears in the writers list and the
+    /// counts inflate, so this fixture fails in two independent places rather
+    /// than one.
+    #[tokio::test]
+    async fn writers_counts_mutating_rows_across_the_whole_window_not_the_newest_page() {
+        let (store, _dir) = store();
+        let now = unix_now();
+        // Six writers spread across 20 hours, oldest first. A page-shaped
+        // handler sees only the last of these.
+        for (i, sess) in ["oldest", "early", "mid", "late", "later", "newest"].iter().enumerate() {
+            let ts = now - (20.0 - i as f64 * 4.0) * 3600.0;
+            seed(&store, ts, "POST", "/api/board", 200, 1.0, sess, "native", None).await;
+            seed(&store, ts + 1.0, "PATCH", "/api/board/X", 200, 1.0, sess, "native", None).await;
+        }
+        // A busy reader across the same span. Reading is not silent work.
+        for i in 0..10u32 {
+            seed(&store, now - 19.0 * 3600.0 + f64::from(i) * 60.0, "GET", "/api/board", 200, 1.0,
+                 "reader", "native", None).await;
+        }
+
+        let api = logs_api(store.clone());
+        let (st, body) = hit(
+            &api,
+            HttpRequest::builder().uri("/api/logs/writers?since_h=24").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            v["mutating_rows"], 12,
+            "all 12 mutating rows across the 20h span must be counted; a page-shaped \
+             answer returns the newest few and looks identical: {v}"
+        );
+        assert_eq!(v["distinct_writers"], 6, "every writer in the window, not the recent ones: {v}");
+        let names: Vec<&str> =
+            v["writers"].as_array().unwrap().iter().map(|w| w["amux_session"].as_str().unwrap()).collect();
+        assert!(names.contains(&"oldest"), "the 20h-old writer must appear: {names:?}");
+        assert!(
+            !names.contains(&"reader"),
+            "GET traffic is not mutating work (AF-34: 103 of 105 flagged requests were GETs): {names:?}"
+        );
+
+        // n_considered is the whole window INCLUDING reads; mutating_rows is the
+        // population the list is drawn from. An empty list over 0 mutating rows
+        // in a busy window means the fleet only read, and only these two
+        // together can say that.
+        assert_eq!(v["n_considered"], 22, "n_considered is every row in the window: {v}");
+        assert_eq!(v["measured"], true, "{v}");
+
+        let aw = v["actual_window_h"].as_f64().expect("actual_window_h");
+        assert!(aw >= 19.9, "actual_window_h must cover the seeded span, got {aw}: {v}");
+        assert_eq!(v["scan_truncated"], false, "6 writers is under the cap: {v}");
+
+        // Per-method breakdown, so "mutations: 2" can be read as what it was.
+        let oldest = v["writers"].as_array().unwrap().iter()
+            .find(|w| w["amux_session"] == "oldest").unwrap();
+        assert_eq!(oldest["methods"]["POST"], 1, "{oldest}");
+        assert_eq!(oldest["methods"]["PATCH"], 1, "{oldest}");
+        assert_eq!(oldest["mutations"], 2, "{oldest}");
+    }
+
+    /// AF-475, the attribution half — `worker` must not be reachable from here.
+    ///
+    /// The sweep contract forbids the `worker` fallback by name, having watched
+    /// it flag `mixpeek-security` for 5 requests the store showed it never made:
+    /// `worker` is PATH-derived, so an UNATTRIBUTED report *about* lane X is
+    /// tagged `worker=X` and reads as a mutation *by* X. With ~7,708
+    /// unattributed reports a day (AF-67) that fallback manufactures a silent
+    /// worker for every busy lane on the board.
+    ///
+    /// The fixture is that exact row: an unattributed POST to
+    /// `/api/sessions/mixpeek-security/report`. The strongest assertion here is
+    /// the last one — the name must not appear ANYWHERE in the response — because
+    /// a handler could keep `writers` clean and still leak the borrowed name into
+    /// a summary field, which is how it would reach a reader.
+    ///
+    /// And the count must be PUBLISHED, not dropped. Silently discarding
+    /// unattributed rows would also pass a "no false accusation" check while
+    /// making a fleet that writes 7,708 anonymous rows a day look quiet.
+    #[tokio::test]
+    async fn an_unattributed_write_is_its_own_number_never_the_path_derived_worker() {
+        let (store, _dir) = store();
+        let now = unix_now();
+        for i in 0..3u32 {
+            seed_with_worker(&store, now - f64::from(i) * 60.0, "POST",
+                             "/api/sessions/mixpeek-security/report", "", "mixpeek-security").await;
+        }
+        // One genuinely attributed write, so an empty list is not the reason.
+        seed_with_worker(&store, now - 10.0, "POST", "/api/board", "mvs-infra", "").await;
+
+        let api = logs_api(store.clone());
+        let (st, body) = hit(
+            &api,
+            HttpRequest::builder().uri("/api/logs/writers?since_h=24").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            v["unattributed_mutations"], 3,
+            "unattributed writes must be published as their own number, not dropped: {v}"
+        );
+        assert_eq!(v["mutating_rows"], 4, "the unattributed rows are still mutating rows: {v}");
+        let names: Vec<&str> =
+            v["writers"].as_array().unwrap().iter().map(|w| w["amux_session"].as_str().unwrap()).collect();
+        assert_eq!(
+            names, vec!["mvs-infra"],
+            "only the row that named its caller may be listed: {v}"
+        );
+        assert_eq!(v["distinct_writers"], 1, "{v}");
+        assert!(
+            !serde_json::to_string(&v).unwrap().contains("mixpeek-security"),
+            "the path-derived worker must not reach the reader by ANY field, not just \
+             `writers` — a name in a summary line accuses just as well: {v}"
+        );
+    }
+
+    /// AF-475 — `scan_truncated` has to be able to be true.
+    ///
+    /// The aggregate reads the whole window, so the tempting thing to write is
+    /// `"scan_truncated": false`. A constant cannot disagree with the run and
+    /// still reads as measured (ethos rule 4), so the field is computed from the
+    /// one truncation that does exist: the returned list ends at
+    /// [`WRITERS_CAP`]. This test is what makes that claim checkable, and the
+    /// control below is what stops it from being true-by-default.
+    ///
+    /// `distinct_writers` stays the FULL count while `writers` is capped, so a
+    /// truncated answer still says how much it left out.
+    #[tokio::test]
+    async fn the_writers_list_says_when_it_stopped_listing() {
+        let (store, _dir) = store();
+        let now = unix_now();
+        let n = WRITERS_CAP + 1;
+        store
+            .write_async(move |conn| {
+                for i in 0..n {
+                    conn.execute(
+                        "INSERT INTO _amux_request_log \
+                         (ts, method, path, family, status, latency_ms, client_ip, \
+                          amux_session, worker, answered_by) \
+                         VALUES (?1,'POST','/api/board','/api/board',200,1.0,'127.0.0.1',?2,NULL,'native')",
+                        rusqlite::params![now - i as f64, format!("lane-{i:04}")],
+                    )?;
+                }
+                Ok(WriteOutcome { applied: false, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        let api = logs_api(store.clone());
+        let (_, body) = hit(
+            &api,
+            HttpRequest::builder().uri("/api/logs/writers?since_h=24").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v["scan_truncated"], true,
+            "{n} writers is over the cap, so the list is a slice and must say so: {v}"
+        );
+        assert_eq!(v["writers"].as_array().unwrap().len(), WRITERS_CAP, "{v}");
+        assert_eq!(
+            v["distinct_writers"], n as u64,
+            "the FULL count survives the cap, or a truncated answer cannot say how much \
+             it dropped: {v}"
+        );
+        assert_eq!(v["mutating_rows"], n as u64, "every write is still counted: {v}");
     }
 }
 

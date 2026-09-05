@@ -246,7 +246,73 @@ lazy_re!(RE_READING_FILES, r"^Reading \d+ file"); // py 18512
 // blocked and it disappears when the agents land, whereas an agent COUNT can
 // linger and would pin a finished lane to Active forever — the opposite error,
 // and the worse one, since a lane stuck Active never gets picked up.
-lazy_re!(RE_BG_AGENTS_WAIT, r"(?i)waiting for \d+ background agents?");
+lazy_re!(
+    RE_BG_AGENTS_WAIT,
+    r"(?i)^waiting for [1-9]\d* background agents? to finish$"
+);
+
+/// Is this Claude Code's provider-owned "waiting on background agents" row?
+///
+/// The leading spinner glyph is the chrome anchor: accepting the sentence
+/// anywhere in pane prose makes a worker discussing this detector report
+/// active forever. Both the adapter and the legacy session-status path call
+/// this function so the two views cannot disagree about the same frame again.
+pub(crate) fn claude_background_agents_waiting(line: &str) -> bool {
+    // Provider rows start at column zero. Submitted/pasted continuation lines
+    // are indented by the TUI; trimming first would turn quoted frame text into
+    // provider chrome.
+    let line = line.trim_end();
+    let Some(first) = line.chars().next() else { return false };
+    // Claude's known spinner cycle. The old whole-dingbat range included `❯`,
+    // the input-prompt glyph, so a user typing the exact sentence was itself
+    // classified as a live agent.
+    let provider_chrome = matches!(
+        first,
+        '*' | '\u{b7}' | '\u{2722}' | '\u{2733}' | '\u{2736}' | '\u{273b}' | '\u{273d}'
+    );
+    if !provider_chrome {
+        return false;
+    }
+    RE_BG_AGENTS_WAIT.is_match(line[first.len_utf8()..].trim())
+}
+
+/// Does the newest provider-owned Claude turn marker still say the parent is
+/// waiting on background agents?
+///
+/// A tmux capture is scrollback, not a state packet. The waiting row remains
+/// visible after the agent finishes, followed by Claude's completed-turn row
+/// and the final prompt. A presence-only scan therefore pins a finished lane
+/// active until the old row scrolls out. Read the provider rows newest-first:
+/// a later completed-turn marker is the terminal edge for every older wait,
+/// while a newer wait still wins over a completion from the preceding turn.
+/// Raw lines are retained so pasted/indented replicas cannot become chrome.
+fn claude_background_wait_verdict(raw: &str) -> (bool, bool) {
+    let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
+    for line in lines[lines.len().saturating_sub(12)..].iter().rev() {
+        let line = line.trim_end();
+        if claude_background_agents_waiting(line) {
+            return (true, false);
+        }
+        let Some(first) = line.chars().next() else { continue };
+        let provider_chrome = matches!(
+            first,
+            '*' | '\u{b7}' | '\u{2722}' | '\u{2733}' | '\u{2736}' | '\u{273b}' | '\u{273d}'
+        );
+        if provider_chrome && RE_COMPLETED_TURN.is_match(&line[first.len_utf8()..]) {
+            let older_wait_seen = lines.iter().any(|candidate| claude_background_agents_waiting(candidate));
+            return (false, older_wait_seen);
+        }
+    }
+    (false, false)
+}
+
+pub(crate) fn claude_background_agents_working(raw: &str) -> bool {
+    claude_background_wait_verdict(raw).0
+}
+
+pub(crate) fn claude_background_wait_superseded(raw: &str) -> bool {
+    claude_background_wait_verdict(raw).1
+}
 
 // Bash/zsh prompt at line end — the CLI process is gone (py 8315).
 lazy_re!(RE_SHELL_PROMPT_END, r"[$%]\s*$"); // py 8315
@@ -312,6 +378,18 @@ impl TerminalAdapter {
         let clean = strip_ansi(captured);
         if clean.trim().is_empty() {
             return Vec::new();
+        }
+        // Authentication failure outranks a provider's idle prompt. Codex
+        // renders both at once; allowing the provider-specific scan to fall
+        // through made an unusable isolated worker read IDLE for 49 minutes.
+        // A person must sign in, so this is intentionally non-retryable.
+        if matches!(self.provider.as_str(), "codex" | "ollama") {
+            if let Some(marker) = auth_failure_state(&clean) {
+                return vec![WorkerEvent::Failed(Failure {
+                    reason: format!("provider authentication required: {marker}"),
+                    retryable: false,
+                })];
+            }
         }
         match self.provider.as_str() {
             "claude" | "claude-code" => scan_claude(&clean, &self.provider),
@@ -404,6 +482,32 @@ fn is_prompt_line(s: &str) -> bool {
 
 fn is_dingbat_lead(s: &str) -> bool {
     matches!(s.chars().next(), Some(c) if ('\u{2700}'..='\u{27bf}').contains(&c) || c == '\u{b7}')
+}
+
+/// A provider authentication failure that leaves the CLI drawn at an input
+/// prompt but unable to accept work. The leading solid square is Codex's own
+/// error marker and is load-bearing: matching the sentence alone would flag a
+/// worker that is merely discussing an old auth incident in its transcript.
+///
+/// Live specimen (amux-codex, 2026-09-03):
+/// `■ Your access token could not be refreshed because you have since logged
+/// out or signed in to another account. Please sign in again.`
+fn auth_failure_state(clean: &str) -> Option<String> {
+    nonempty_trimmed(clean).iter().rev().take(12).find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('■') {
+            return None;
+        }
+        let low = trimmed.to_ascii_lowercase();
+        let refresh_failed = low.contains("access token could not be refreshed")
+            || low.contains("authentication token could not be refreshed")
+            || low.contains("failed to refresh authentication token");
+        let login_required = low.contains("please sign in again")
+            || low.contains("please log in again")
+            || low.contains("signed out")
+            || low.contains("logged out");
+        (refresh_failed && login_required).then(|| trimmed.to_string())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -571,10 +675,8 @@ fn claude_tui_state(clean: &str) -> TuiState {
     // being early — those return states this must not override, so the window is
     // the recent tail rather than the whole pane, and it looks for a positive
     // "still waiting" statement rather than the mere presence of agents.
-    for s in ne.iter().rev().take(8) {
-        if RE_BG_AGENTS_WAIT.is_match(s) {
-            return TuiState::Active;
-        }
+    if claude_background_agents_working(clean) {
+        return TuiState::Active;
     }
 
     // Step 0: active spinner — highest precedence, wide window
@@ -926,12 +1028,123 @@ fn scan_gemini(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
 /// single source of truth for the pattern, shared by `scan_codex` (to
 /// short-circuit idle/trust) and [`TerminalAdapter::generating`] (which the
 /// clock-holding caller uses to mint the turn that makes the worker Active).
+fn codex_model_bar(line: &str) -> bool {
+    let Some((identity, location)) = line.rsplit_once('\u{b7}') else {
+        return false;
+    };
+    let location = location.trim();
+    let identity_parts = identity.split_whitespace().count();
+    identity_parts >= 2
+        && (location == "~" || location.starts_with("~/") || location.starts_with('/'))
+}
+
+fn codex_active_status_line(line: &str) -> bool {
+    let low = line.trim().to_ascii_lowercase();
+    low.starts_with("• working (")
+        || low.starts_with("• running (")
+        || low.starts_with("• waiting for background terminal (")
+        || low.starts_with("• waiting for background command (")
+}
+
+fn codex_generation_state_clean(clean: &str) -> Option<bool> {
+    // Provider-known Codex scanning also receives short/partial captures from
+    // native adapters where the footer is outside the window. It may use the
+    // active row alone because the caller has already established provider
+    // identity; the provider-agnostic compatibility path below may not.
+    let lines = nonempty_trimmed(clean);
+    let start = lines.len().saturating_sub(12);
+    let tail = &lines[start..];
+    if let Some(prompt_i) = tail.iter().rposition(|s| is_prompt_line(s)) {
+        let active_before_prompt = prompt_i > 0 && codex_active_status_line(tail[prompt_i - 1]);
+        let active_after_prompt = tail[prompt_i + 1..]
+            .iter()
+            .any(|s| codex_active_status_line(s));
+        return Some(active_before_prompt || active_after_prompt);
+    }
+    for s in tail.iter().rev() {
+        if codex_active_status_line(s) {
+            return Some(true);
+        }
+        if codex_model_bar(s) {
+            return Some(false);
+        }
+    }
+    None
+}
+
+/// Parse the current Codex footer and return its structurally attached active
+/// row. `Some(None)` is an identifiable idle Codex frame; `None` is not a
+/// current Codex frame at all. Keeping that distinction lets consumers ask a
+/// narrower question than generic generation without reimplementing the frame
+/// anchors.
+fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
+    // The Codex prompt shell and model bar remain painted while a turn is
+    // running. The decisive shape is therefore the line immediately ABOVE the
+    // prompt: `• Working (…)` / `• Waiting for background terminal (…)` means
+    // the prompt is disabled and the turn is live; completed turns replace it
+    // with `Worked for …` or ordinary output. ATE-36 incorrectly made the mere
+    // presence of the prompt shell an idle boundary, which hid live ATE-37.
+    let lines = nonempty_trimmed(clean);
+    let start = lines.len().saturating_sub(12);
+    let tail = &lines[start..];
+    // Provider identity must be the CURRENT footer, not a Codex-looking frame
+    // pasted into another provider's prompt. The model/path bar is Codex's
+    // final non-empty row and its prompt glyph is `›` (not Claude's `❯`).
+    let model_i = tail.len().checked_sub(1).filter(|i| codex_model_bar(tail[*i]))?;
+    let prompt_i = tail[..model_i].iter().rposition(|s| s.starts_with('›'))?;
+    // Current Codex paints the active row immediately before its disabled
+    // prompt. Older builds painted it immediately after the submitted prompt,
+    // directly before the model bar. No arbitrary line between these anchors
+    // may vote active: that was the pasted-frame false positive.
+    if prompt_i > 0 && codex_active_status_line(tail[prompt_i - 1]) {
+        return Some(Some(tail[prompt_i - 1]));
+    }
+    if prompt_i + 1 == model_i.saturating_sub(1)
+        && codex_active_status_line(tail[prompt_i + 1])
+    {
+        return Some(Some(tail[prompt_i + 1]));
+    }
+    Some(None)
+}
+
+fn codex_structured_generation_state_clean(clean: &str) -> Option<bool> {
+    codex_structured_active_line_clean(clean).map(|line| line.is_some())
+}
+
+fn codex_background_status_line(line: &str) -> bool {
+    let low = line.trim().to_ascii_lowercase();
+    low.starts_with("• waiting for background terminal (")
+        || low.contains(" background terminal running")
+        || low.contains(" background terminals running")
+}
+
 fn codex_generating(clean: &str) -> bool {
-    nonempty_trimmed(clean).iter().rev().take(12).any(|s| {
-        let sl = s.to_lowercase();
-        s.starts_with('•')
-            && (sl.contains("esc to interrupt") || sl.contains("working") || sl.contains("running"))
-    })
+    codex_generation_state_clean(clean).unwrap_or(false)
+}
+
+/// The newest generation boundary when the capture is structurally
+/// identifiable as a Codex-family TUI, or `None` when another provider (or an
+/// unknown terminal) should keep using its own signals.
+///
+/// The sessions compatibility projection does not carry provider metadata,
+/// but it does have the raw pane. Returning an option lets it share Codex's
+/// ordered boundary logic without pretending every bullet containing
+/// "working" belongs to Codex. The prompt glyph and model/path bar are stable
+/// TUI structure; model and effort names stay intentionally open-ended.
+pub(crate) fn codex_pane_generation_state(captured: &str) -> Option<bool> {
+    let clean = strip_ansi(captured);
+    codex_structured_generation_state_clean(&clean)
+}
+
+/// Is the structurally current Codex status row specifically waiting on live
+/// background work? Generic foreground generation remains subject to the
+/// normal steering max-age policy; only this provider-owned state is a hard
+/// hold until its terminal row clears.
+pub(crate) fn codex_pane_background_working(captured: &str) -> bool {
+    let clean = strip_ansi(captured);
+    codex_structured_active_line_clean(&clean)
+        .flatten()
+        .is_some_and(codex_background_status_line)
 }
 
 fn scan_codex(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
@@ -973,26 +1186,14 @@ fn scan_codex(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
     }
 
     // Idle: › prompt or the model status line "gpt-5.5 xhigh · ~/path".
-    // The model bar format for ALL providers is "<model> <effort> · <path>".
-    // Original check only matched OpenAI model names; ollama workers show
-    // "qwen3.8:27b low · ~" which has the same structure but different prefix.
-    // Detect by presence of an effort word alongside the · separator so any
-    // model name (including future local ones) works. (py 18600-18606)
+    // The model bar format for ALL providers is "<model> <effort> · <path>";
+    // `codex_model_bar` deliberately does not enumerate model or effort names,
+    // so a stronger future model does not fall outside the harness.
     let ne = nonempty_trimmed(clean);
     for s in ne.iter().rev().take(5) {
         let sl = s.to_lowercase();
-        let has_effort = sl.contains(" low ")
-            || sl.contains(" medium ")
-            || sl.contains(" high ")
-            || sl.contains(" xhigh ")
-            || sl.contains(" default ");
-        let model_bar = s.contains('·')
-            && (has_effort
-                || sl.contains("gpt-")
-                || sl.contains("o3")
-                || sl.contains("o4"));
         let prompt = s.starts_with('›') && (sl.contains("implement") || *s == "›");
-        if model_bar || prompt {
+        if codex_model_bar(s) || prompt {
             events.push(WorkerEvent::Waiting(WaitReason {
                 reason: "idle_prompt".to_string(),
                 detail: Some(s.to_string()),
@@ -1206,6 +1407,13 @@ gemini-2.5-pro";
 ■ You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 4 days 2 hours.";
     const FX_CODEX_IDLE: &str = "\
 › implement {feature}
+  gpt-5.5 xhigh · ~/Dev/amux";
+    const FX_CODEX_AUTH: &str = "\
+› [09:04 AM] Reply only with isolated-ok.
+
+■ Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.
+
+› Ask Codex to do anything
   gpt-5.5 xhigh · ~/Dev/amux";
 
     const FX_OLLAMA_NO_DAEMON: &str = "Error: could not connect to ollama app, is it running?";
@@ -1449,8 +1657,10 @@ gemini-2.5-pro";
 
     #[test]
     fn unknown_provider_scans_empty_even_on_matching_text() {
-        let ev = adapter("a-provider-from-2031").scan(FX_WEEKLY);
-        assert!(ev.is_empty(), "{ev:?}");
+        for frame in [FX_WEEKLY, FX_CODEX_AUTH] {
+            let ev = adapter("a-provider-from-2031").scan(frame);
+            assert!(ev.is_empty(), "unknown providers need explicit pattern knowledge: {ev:?}");
+        }
     }
 
     // -- Gemini --------------------------------------------------------------
@@ -1489,6 +1699,27 @@ gemini-2.5-pro";
     fn codex_idle_prompt() {
         let ev = adapter("codex").scan(FX_CODEX_IDLE);
         assert_eq!(waiting_reasons(&ev), vec!["idle_prompt"], "{ev:?}");
+    }
+
+    #[test]
+    fn codex_auth_failure_is_failed_not_idle() {
+        let ev = adapter("codex").scan(FX_CODEX_AUTH);
+        let fs = failures(&ev);
+        assert_eq!(fs.len(), 1, "the live auth wall must produce one failure: {ev:?}");
+        assert!(!fs[0].retryable, "sign-in requires a person; retrying cannot repair it");
+        assert!(fs[0].reason.contains("Please sign in again"));
+        assert!(
+            waiting_reasons(&ev).is_empty(),
+            "the model bar below the auth wall must not overwrite failure with idle: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_codex_auth_text_is_not_a_failure() {
+        let frame = "› Explain the sentence: Your access token could not be refreshed. Please sign in again.\n\n  gpt-5.5 xhigh · ~/Dev/amux";
+        let ev = adapter("codex").scan(frame);
+        assert!(failures(&ev).is_empty(), "a user prompt quoting the error is not UI chrome: {ev:?}");
+        assert_eq!(waiting_reasons(&ev), vec!["idle_prompt"]);
     }
 
     // -- Status detection regressions ----------------------------------------
@@ -1541,6 +1772,34 @@ Running 1 shell command · 5s…
                      \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 2 agents \u{b7} \u{2193} to manage";
         let st = claude_tui_state(frame);
         assert!(matches!(st, TuiState::Idle), "expected Idle, got {st:?}");
+    }
+
+    #[test]
+    fn a_completed_turn_after_a_background_wait_is_idle() {
+        // ATE-45, Primis at 15:40. tmux keeps the provider-owned waiting row
+        // in scrollback after the child and parent have both completed. The
+        // later completed-turn row is the ordered terminal edge; counting the
+        // older row by presence pinned this exact frame WORKING for minutes.
+        let frame = "\
+\u{2736} Waiting for 1 background agent to finish
+\u{23fa} Agent \"Post-fix status verification\" finished \u{b7} 16s
+\u{23fa} The background Explore agent finished and returned CLAUDE-POSTFIX-DONE.
+CLAUDE-POSTFIX-COMPLETE
+\u{273b} Churned for 23s \u{b7} done 3:40 PM
+\u{276f}\u{a0}
+\u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 2 agents";
+        assert!(!claude_background_agents_working(frame));
+        assert!(claude_background_wait_superseded(frame));
+        let st = claude_tui_state(frame);
+        assert!(matches!(st, TuiState::Idle), "later completion must own the frame, got {st:?}");
+
+        let next_turn = format!(
+            "{frame}\n\u{2733} Waiting for 2 background agents to finish\n\u{276f}\n\u{23f5}\u{23f5} bypass permissions on"
+        );
+        assert!(
+            claude_background_agents_working(&next_turn),
+            "a newer wait still wins over the previous turn's completion"
+        );
     }
 
     #[test]
@@ -1635,6 +1894,34 @@ Running 1 shell command · 5s…
 
 • Working (12s • esc to interrupt)";
 
+    // `amux-testing-e2e`, live 2026-09-04 while Codex was running ATE-37.
+    // Codex keeps the prompt shell/model bar painted during generation; the
+    // active row immediately above it is the current-state boundary.
+    const FX_CODEX_WORKING_WITH_PROMPT_SHELL: &str = "\
+• Waiting for background terminal (16m 29s • esc to interrupt)
+› Ask Codex to do anything
+  gpt-5.6-sol xhigh · ~/Dev/amux";
+
+    const FX_CODEX_COMPLETED: &str = "\
+• Worked for 4m 46s
+› Ask Codex to do anything
+  gpt-5.6-sol xhigh · ~/Dev/amux";
+
+    // `amux-testing-e2e`, live 2026-09-04 after an interrupted ATE-45 turn.
+    // The interruption is a provider-owned terminal row and the prompt below
+    // it is ready input, not a quoted copy of either marker.
+    const FX_CODEX_INTERRUPTED_AT_PROMPT: &str = "\
+• Confirmed: b228d3dc is on origin/main, and live /health reports descendant commit b228d3dc1f03173fbccd07d7a36e0fbcdf10c5ef.
+
+• Ran amux board discard ATE-52 --outcome-stdin
+  └ ATE-52 → discarded
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol xhigh · ~/Dev/amux · Main [default]";
+
     #[test]
     fn codex_working_pane_is_generating() {
         assert!(
@@ -1643,6 +1930,32 @@ Running 1 shell command · 5s…
         );
         // ollama runs codex --oss, same pane format.
         assert!(adapter("ollama").generating(FX_CODEX_WORKING));
+    }
+
+    #[test]
+    fn codex_working_row_above_the_prompt_shell_is_generating() {
+        assert!(
+            adapter("codex").generating(FX_CODEX_WORKING_WITH_PROMPT_SHELL),
+            "Codex paints its prompt shell during a live turn; the adjacent working row wins"
+        );
+        assert!(adapter("ollama").generating(FX_CODEX_WORKING_WITH_PROMPT_SHELL));
+    }
+
+    #[test]
+    fn codex_completed_row_above_the_prompt_shell_is_idle() {
+        assert!(!adapter("codex").generating(FX_CODEX_COMPLETED));
+        assert_eq!(
+            waiting_reasons(&adapter("codex").scan(FX_CODEX_COMPLETED)),
+            vec!["idle_prompt"]
+        );
+        assert!(!adapter("ollama").generating(FX_CODEX_COMPLETED));
+    }
+
+    #[test]
+    fn codex_interrupted_turn_above_the_prompt_shell_is_idle() {
+        assert!(!adapter("codex").generating(FX_CODEX_INTERRUPTED_AT_PROMPT));
+        // Ollama uses the same Codex TUI and must preserve the same edge.
+        assert!(!adapter("ollama").generating(FX_CODEX_INTERRUPTED_AT_PROMPT));
     }
 
     #[test]

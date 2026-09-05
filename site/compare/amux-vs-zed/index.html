@@ -45,7 +45,7 @@
     "description": "Zed is a fast, collaborative code editor with built-in AI assistance. amux is an open-source control plane for running a fleet of background AI coding agents simultaneously. They serve different needs — here is how they compare.",
     "url": "https://amux.io/compare/amux-vs-zed/",
     "datePublished": "2026-07-09",
-    "dateModified": "2026-07-09",
+    "dateModified": "2026-08-29",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -104,6 +104,14 @@
           "@type": "Answer",
           "text": "Yes, and this is the recommended pattern for many engineers. Use Zed for writing, reading, and reviewing code interactively — its editor is fast, its AI assistant handles inline questions, and its collaborative mode lets you pair with teammates. Use amux to run background agents in parallel on other tasks: overnight coding sprints, test generation, refactoring, documentation, and anything that doesn't need you actively present. The two tools have no overlap in functionality."
         }
+      },
+      {
+        "@type": "Question",
+        "name": "Can amux manage agents on a remote server while I use Zed locally?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux-remote (shipped August 2026) lets your local amux CLI connect to a remote amux server running on a cloud VM or devbox over Tailscale or SSH. You can launch agents, monitor sessions, and read output from your local terminal even though the agents are running on a remote machine. This pairs naturally with Zed: code locally in Zed, run background agents on a powerful remote server managed by amux."
+        }
       }
     ]
   }
@@ -126,7 +134,21 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Zed</span></div>
 
     <h1>amux vs Zed</h1>
-    <p class="subtitle">Zed is a beautiful, fast code editor with real-time collaborative AI — the tool you interact with while you write. amux is an open-source control plane for running dozens of background AI agents in parallel — the tool that works while you sleep. They are not competitors. Many engineers use both. <em>Updated July 2026.</em></p>
+    <p class="subtitle">Zed is a beautiful, fast code editor with real-time collaborative AI — the tool you interact with while you write. amux is an open-source control plane for running dozens of background AI agents in parallel — the tool that works while you sleep. They are not competitors. Many engineers use both. <em>Updated August 2026.</em></p>
+
+    <!-- EXP-068: zed compare top-of-page green CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-068">
+      <div>
+        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Run your entire AI engineering team overnight — while Zed handles your active coding</div>
+        <div style="color:#a7f3d0;font-size:0.875rem">amux orchestrates dozens of Claude Code, Codex &amp; Gemini CLI agents in parallel — session cloning, phone monitoring, self-healing — open source, MIT licensed, 374+ stars.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp068_zed_compare_topofpage_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
+        View amux on GitHub ★
+      </a>
+    </div>
 
     <p><strong>Zed</strong> (zed.dev) is a high-performance, open-source code editor written in Rust. It is designed for speed and collaboration: instant startup, GPU-accelerated rendering, and a built-in AI "Assistant" panel that connects to Claude, GPT-4, and other models. Zed also supports real-time pair programming — multiple engineers can share a live editing session, with each person's cursor visible to the others. Zed is an editor you open, interact with, and actively use to write code.</p>
 
@@ -208,6 +230,21 @@
             <td style="padding:10px 16px;text-align:center;">Yes (MIT + Commons Clause)</td>
             <td style="padding:10px 16px;text-align:center;">Yes (GPL / AGPL)</td>
           </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Session cloning</td>
+            <td style="padding:10px 16px;text-align:center;">Clone any live agent session via dashboard or API</td>
+            <td style="padding:10px 16px;text-align:center;">No</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Isolated workers</td>
+            <td style="padding:10px 16px;text-align:center;">ISOLATED option strips all harness tools at create time</td>
+            <td style="padding:10px 16px;text-align:center;">N/A</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Remote management</td>
+            <td style="padding:10px 16px;text-align:center;">amux-remote: manage a remote server over Tailscale or SSH</td>
+            <td style="padding:10px 16px;text-align:center;">No remote agent management</td>
+          </tr>
           <tr>
             <td style="padding:10px 16px;">Price</td>
             <td style="padding:10px 16px;text-align:center;">Free (pay for AI tokens)</td>
@@ -256,6 +293,14 @@
     <p>The phrase "Zed AI agents" appears in search queries but reflects a common confusion. Zed's AI Assistant is an interactive assistant — it responds when you ask it something, inside the editor, while you are present. It is not an agent in the autonomous-background-execution sense. An "AI agent" in the orchestration context means a process that runs headlessly, makes decisions, uses tools, and produces output without requiring a human at the keyboard. Zed does not run agents in this sense. amux does.</p>
     <p>This is not a criticism of Zed — interactive AI assistance and autonomous background agents solve different problems. Understanding the distinction helps you choose the right tool for the right job.</p>
 
+    <h2>What's New in amux — August 2026</h2>
+    <ul>
+      <li><strong>Session cloning</strong> — duplicate any live agent session via the dashboard or <code>POST /api/sessions/&lt;name&gt;/clone</code>. Spin up a variant with a different prompt in seconds.</li>
+      <li><strong>ISOLATED workers</strong> — a new option at session create time strips all amux harness tools from the worker, giving you a clean agent environment with no injected context or hooks.</li>
+      <li><strong>amux-remote</strong> — connect your local amux CLI to a remote amux server over Tailscale or SSH. Manage a cloud devbox or team server from your laptop without SSH port forwarding.</li>
+      <li><strong>amux-worker</strong> — a cross-CLI API client that lets any terminal make fleet calls against a remote amux server without a local amux install.</li>
+    </ul>
+
     <h2>Frequently Asked Questions</h2>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -286,6 +331,11 @@
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Does amux work with Zed's collaborative sessions?</summary>
       <p style="margin:0.8rem 0 0;">amux agents run as CLI processes (Claude Code, Codex CLI, Gemini CLI) inside tmux sessions on your machine. They write directly to your filesystem and open pull requests on GitHub — they are not connected to Zed's collaborative editing protocol. You can review their commits and PRs in Zed just as you would review any other code.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can amux manage agents on a remote server while I use Zed locally?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. amux-remote (shipped August 2026) connects your local amux CLI to a remote amux server over Tailscale or SSH. Launch agents, monitor sessions, and read output from your local terminal while the agents run on a cloud VM or devbox. Pairs naturally with Zed: code locally in Zed, run background agents on a more powerful remote server managed by amux.</p>
     </details>
 
     <div class="cta-box">

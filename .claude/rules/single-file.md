@@ -16,9 +16,14 @@ removed 2026-08-09; git history has it):
 Always verify after edits:
 
 ```bash
-cargo check --workspace          # syntax/type gate (use CARGO_TARGET_DIR=/tmp/... in parallel sessions)
+scripts/safe-cargo.sh check --workspace   # syntax/type gate, isolated from this pane's scope (AMUX-70)
 node --check crates/amux-dashboard/static/app.js   # after client JS edits
 ```
+
+Prefer remote offload over any local `cargo` invocation at all (see CLAUDE.md). When local really
+is necessary, always go through `scripts/safe-cargo.sh` rather than bare `cargo` — an OOM-killed
+cargo process sharing this pane's systemd scope takes the whole interactive session down with it,
+not just the build (confirmed via journalctl, AMUX-70).
 
 Before pushing: `cargo clippy --workspace --all-targets -- -D warnings` and
 `cargo test -p amux-server` — CI (`.github/workflows/rust.yml`) denies warnings.

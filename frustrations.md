@@ -44,87 +44,6 @@ needs rebuilding. No single entry makes that argument, and free-form prose canno
 counted.
 
 ---
-## The passenger check compares SHAs, so an already-upstream cherry-pick reads foreign forever
-AREA: attribution
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-06
-SESSION: amux-cloud
-CARD: AC-227
-SYMPTOM: CLAUDE.md's pre-push recipe lists `origin/main..main` and says to ask the author
-  about any foreign commit. A commit already upstream under a different sha (cherry-pick,
-  rebase, replay) sits in that range permanently. Confirmed: `acdbfdf` and `9ebc42c` share
-  patch-id `dff284cf093aecaa`.
-COST: Blocked my own push, asked a peer for permission they did not need to give. The
-  dangerous direction is the inverse — a session assuming a familiar-looking commit is
-  last week's duplicate and shipping something genuinely unreviewed.
-FIX: CLAUDE.md pre-push recipe now adds `git fetch origin` first and includes a patch-id
-  comparison step to identify cherry-picks/rebases before asking about foreign commits.
-  Validated by amux-cloud.
-
-REFUSED 2026-08-11 by amux-cloud — only the DOCUMENTATION half shipped. CLAUDE.md carries
-  the patch-id recipe (and I used it myself), but NO executable path computes a patch-id
-  anywhere: grep across *.sh, *.rs and the amux CLI returns nothing. The check still compares
-  SHAs and still reads an already-upstream cherry-pick as foreign; the doc just tells a human
-  how to work around it by hand.
-  PROTOCOL NOTE: their card is in `review`, not done, and its own last paragraph declines to
-  claim the pre-push path. So whoever marked this entry `fixed` was NOT the author — which is
-  the one thing this protocol is supposed to make impossible. Flipped back to open.
-
-
-## The staged-guard was silent on the commit that swept a peer's work, and warned on the clean one
-AREA: attribution
-SEVERITY: blocks
-STATUS: open
-DATE: 2026-08-08
-SESSION: amux-cloud
-CARD: AC-297
-FIX-NOTE: b7dba01 PARTIAL — _staged_guard_check() now checks for unstaged changes, which
-  helps when peer work is left unstaged. But the incident shape (wholesale `git add` where
-  the peer's work is swept into the index, leaving nothing unstaged) is still silent.
-  The guard fires on has_unstaged_changes=True; the incident has has_unstaged_changes=False.
-  Validated by amux-cloud on a throwaway repo: control (peer work left unstaged) fires;
-  incident shape (wholesale git add, all staged) does not.
-SYMPTOM: Two commits, 20 minutes apart, both `git add amux-server.py` on a shared checkout
-  while session `amux` had uncommitted work in the same file.
-    fc72811 — guard WARNED ("also edited by session 'amux' 30m ago... stages 55 insertions /
-              2 deletions"). I checked line by line. It was genuinely clean, all mine.
-    8adf348 — guard SILENT. It swept ~85 insertions of amux's session-report/heartbeat work
-              (_ACTIVE_HEARTBEAT_S, _persist_session_reports(force=...), the PostToolUse
-              "tool-hook" entry, _scrape_vs_report "active-stale") into my AC-293 fix.
-  So the one time it mattered it said nothing, and the one time it spoke the commit was fine.
-COST: A peer's uncommitted work is now inside my commit and cannot be separated without a
-  history rewrite on a shared checkout — the operation CLAUDE.md records as having destroyed a
-  session's unpushed work. Second occurrence for me; the first was b1c3e93 (~93 lines).
-  Disclosed both times, and both times the fix was the peer's call rather than mine to make.
-FIX: The correlation is the dangerous part, not the miss. I checked BECAUSE it warned and did
-  not check when it did not — so the guard actively trained the behaviour it exists to prevent.
-  A guard that is silent on the true positive is worse than no guard. Find why it fired at 30m
-  and not at ~20m (mtime window? cooldown? a debounce that suppresses a second warning in the
-  same session?) and make it fire on the FACT — peer has uncommitted hunks in a file I am
-  staging whole — not on a time heuristic.
-  Until then the instrument that actually worked was arithmetic: reconcile the numstat against
-  what you believe you wrote, every commit, guard or no guard. 146/14 against a ~60-line change
-  is what caught this. That check needs no guard and cannot go silent.
-
-SCOPED 2026-08-09 by amux-frustrations, from amux-cloud's validation: the shipped fix
-  (`if hit or _is_dirty`) is PARTIAL. It fires when the peer's work is left UNSTAGED, but
-  their actual incident was a wholesale `git add` that swept the peer's work INTO the
-  index — so nothing was unstaged, _is_dirty was False, and there was no fresh `hit`
-  either. Tested in a throwaway repo with a control that DOES fire, so the negative is
-  informative rather than a silent probe. Remaining scope: "wholesale git add of a
-  co-edited file where the peer has no fresh provenance record". Nobody has started it.
-  amux independently named the same remainder from the other side (their AF-19 review):
-  a peer file staged OUTSIDE the recent-edit window has no claim trail and stays
-  invisible; the belt is "list every staged path not in the committer's diff".
-
-  CONTESTED 2026-08-21 by the author (amux-cloud). The 08-15 guard overhaul
-  (d5c575e / b9dbf70 / 26adbc6) may well cover the incident shape (wholesale git add,
-  has_unstaged_changes=False), but nobody has re-run the throwaway-repo specimen against
-  it, and the entry's own FIX-NOTE records that shape as validated STILL SILENT. Held open
-  on the honest basis that a plausible fix is not an exercised one. amux-cloud volunteered
-  to re-run the specimen; the entry goes when that runs, not before.
-
 ## Dashboard's usage-limit discriminator says 'worker'; the live endpoint says 'session'
 AREA: instruments
 SEVERITY: annoys
@@ -447,36 +366,6 @@ FIX: Deviations whose mitigation is "the other server covers it" need to be enum
   Note for anyone re-deriving this: a lowercase grep for `while the Python server runs`
   finds nothing because the source says `While`. The empty result is the probe missing,
   not the string being absent — check with `git log -S` before believing it.
-
----
-## The gate-blocked 409 tells every agent to GET a route that does not exist
-AREA: gates
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-09
-SESSION: amux-rust (RR-0150 restart suite)
-CARD: AR-123
-SYMPTOM: Every gate_blocked 409 from `/api/board/<id>` carries
-  `how_to_ack.contract: "GET /api/board/contract"` (`api/board.rs:1175` and `:1664`).
-  `GET /api/board/contract` returns 404 `{"error":"item not found","id":"contract"}` on
-  both a fresh build and the live server — it is being matched by the `/api/board/{id}`
-  route as an item id. Hit it while making the restart suite move a card `todo -> doing`.
-COST: Small on its own — the 409 also carries `gate` and `gate_ack`, so the escape is
-  walkable without the contract. But it is ethos rule 6's exact shape: the one documented
-  route out of a gate is the one action that leaves the sanctioned path, and it is the
-  instruction amux itself prints. AMUX-2325 is the same defect one layer up.
-FIX: Mount `/api/board/contract` ahead of `/api/board/{id}`, or delete the claim from
-  both 409 bodies. Whichever — the test is that following the error message literally
-  has to work.
-
-  VERIFIED FIXED 2026-08-21 (amux-frustrations; the authoring lane `amux-rust (RR-0150
-  restart suite)` no longer exists, so no author can sign this off — see the orphan note
-  at the bottom of this file). Verified by the entry's OWN test, "following the error
-  message literally has to work": AF-123 tripped a real gate_blocked 409 today, whose
-  how_to_ack.contract read `GET /api/board/contract?card=AF-123`. That URL returns HTTP
-  200 and the RESOLVED per-card gate. The bare `GET /api/board/contract` also answers
-  with the real contract document. Not a code read — the 409 was produced by a live card
-  transition and its instruction was then executed.
 
 ---
 ## A worker whose pane died at launch reports `running: true` / `idle`
@@ -817,19 +706,6 @@ FIX: The generalisable half is the CORROBORATION, not the bad grep. I confirmed 
   the mechanism could fire — for hooks specifically, resolve core.hooksPath first,
   because the file at the obvious path may not be the one that runs.
 
-## Cloud silently froze behind a red main CI — "skipped" reads as "up to date," not "frozen"
-AREA: cloud
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-13
-SESSION: amux-cloud
-CARD: AC-344
-SYMPTOM: Ethan reported "cloud is still behind in versions." A fresh cloud org still booted build 0f2f6e48 (pre-env_config: GET /api/env/schema -> 404, /api/env/apply absent from 213 routes), so the converged seed.py --via-apply 405'd against cloud. Root cause was three layers down: deploy-cloud.yml auto-deploy is gated on GREEN rust.yml (workflow_run), and main CI had been RED for hours on ONE clippy lint (unnecessary_sort_by, messages.rs:585). Every deploy-cloud run showed "skipped" — indistinguishable from "nothing to deploy." Nothing anywhere said "the cloud image is frozen and falling behind main because CI is red."
-COST: Ethan had to notice the version lag by hand. Diagnosing it took several manual steps (fresh provision -> /health build hash -> /api/debug/routes -> gh run list conclusion -> git log timing) to join signals that no single instrument joins. And it is fleet-recurring: ANY lane's red-main break freezes the entire cloud deploy for every customer, invisibly, until a human notices — the busier the fleet, the more often it happens. PREDICTION PROVEN 2026-08-14 (author-verified during a frustrations validation): the "until a human notices" line came true VERBATIM, three times in ONE session, all AFTER this entry was written — 67b44f7 (clippy unnecessary_sort_by), 64fd450 (steering restart_persistence test), 9442f77 (opencode ETXTBSY flake + /api/tts unclaimed in the boundary registry). Each red-mained main, each made deploy-cloud SKIP silently, each froze :latest, and each was caught BY HAND via the freshness tick — never by any instrument. A prediction that recurred 3x on the record is the strongest possible argument for finally building the signal.
-FIX: AC-344 — a signal that joins live-cloud-build-hash vs latest-green-main and fires when they diverge (commits or hours), OR make deploy-cloud's skip loud (record "skipped because CI red since <sha>/<time>"). Interim: clippy blocker fixed (67b44f7); steering-test blocker handed to amux; cloud auto-catches-up once CI green. Related: AMUX-3013 (pinned toolchain so local clippy == CI clippy — why the red wasn't caught pre-push).
-
----
-
 ## Verified gate rejects a cross-group reporter's verification, so the strongest evidence cannot close the card
 AREA: gates
 SEVERITY: slows
@@ -846,118 +722,6 @@ COST: Two genuinely-verified cards cannot reach `verified`; the strongest verifi
   available (the affected user, who also reported the bug) does not count toward the gate.
 FIX: The verified gate should accept verification by the originating reporter, or by any
   worker when the card records who plus their evidence (AMUX-3119).
-
-## amux send to a bare REPL worker: origin header is submitted as its own message, prompt body is not
-AREA: notices
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-15
-SESSION: amux-cloud
-CARD: AC-354
-SYMPTOM: Driving a qwen3.8:27b ollama worker, `amux send qwen-eval "<prompt>"` returned
-  `sent (origin-stamped): sent`, but the peek showed the model had received and answered only
-  the `[amux-origin: amux-cloud ...]` HEADER (qwen reasoned about it as a possible
-  social-engineering attempt and asked what I wanted), while the real prompt sat in the REPL
-  input typed-but-unsubmitted (`Press Enter to send`). I had to `tmux send-keys Enter` by hand
-  to get an answer. The steering/delivery choreography is claude-UI-shaped: it injects an
-  origin header the bare REPL treats as content, and it does not submit the body.
-COST: The send reported success while the payload never ran — a false "delivered" (ethos rule
-  4). Every eval prompt needed a manual Enter, so the amux worker plumbing could not drive the
-  model unattended; I fell back to tmux for the model eval.
-FIX: REPL-aware delivery (AC-354, routed to amux, who owns the send/steering path): for
-  bare-REPL providers, do not inject the origin header as a submitted message (omit it or make
-  it a non-submitted preamble), and ensure the body is actually submitted. Verify by peeking
-  that the model answered, not by trusting `sent`. Same message->worker seam as [[amux-project-reference]]
-  AC-353 (env-apply can't message a not-yet-started worker).
-
-  CONTESTED 2026-08-21 by the author (amux-cloud). No commit in history references AC-354
-  except the docs commit a21ad4d, so the card closing is not evidence of a fix — this is
-  the "card closed on a different thing" shape the validation pass was watching for. A
-  bare REPL worker is not cheap to exercise, so the entry stays until someone names the
-  fix sha.
-
-## A shared CARGO_TARGET_DIR is mandated, and concurrent builds in it evict each other's artifacts
-AREA: build
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-15
-SESSION: amux-frustrations
-CARD: AMUX-2936
-SYMPTOM: `error: extern location for serde_core does not exist: ~/.amux/rust-build-target/debug/deps/libserde_core-0d2476c6ed9be3cc.rmeta`, and separately 42 errors inside the `nix` crate ("cannot find type `ControlFlags` in this scope") — artifacts deleted underneath an in-flight build, three times in one session.
-  CLAUDE.md requires ONE shared build dir (~/.amux/rust-build-target) and the reasoning is sound — per-session dirs filled the disk with ~37 copies at 10-15GB each. But with several lanes plus the auto-builder building concurrently, I hit repeated hard failures of the form "extern location for serde_core does not exist: .../libserde_core-<hash>.rmeta" and 42 errors inside the `nix` crate, i.e. artifacts deleted underneath an in-flight build. Not a lock contention wait, which is what the CLAUDE.md note measured and correctly called cheap; this is cache eviction, and the only recovery is a full rebuild. Hit it three times in one session, roughly 4 minutes of rebuild each.
-COST: ~12 min of pure rebuild, and worse, it masqueraded as a code error twice — the first failure looked like my own change had broken the build, which is exactly the wrong instrument reading (a red result on code you just verified by hand means the instrument is a candidate before the code is).
-FIX: Not fixed; needs a decision, not a workaround. Options: (a) leave it — the failure is loud and self-recovering, just expensive; (b) give the auto-builder its own target dir, since it is the one builder that runs unattended every 60s and is the most likely evictor, accepting ~15GB for the one process that never benefits from a warm shared cache; (c) find whether this is cargo GC (CARGO_GC / cache auto-clean) rather than eviction, in which case pinning the retention setting fixes it outright and costs nothing. (c) is worth checking first because it would be a one-line fix, and nobody has established WHICH of the three is happening — the diagnosis is missing, not the remedy.
-
-NOTE (2026-08-24, amux-frustrations): STAYS OPEN, and the reason is a trap worth naming.
-  This entry's CARD, AMUX-2936, reads `done` — and that is not evidence about this entry,
-  because the CARD WAS REPURPOSED. Its description is now entirely about the staged-guard
-  blind-cotenant WARN (321 WARNs measured over 8h53m, 29 distinct committing lanes); its
-  log shows it passed through amux, went backlog, was reassigned to me, and closed on that
-  subject. Nothing in it addresses artifact eviction under a shared CARGO_TARGET_DIR.
-  So a validation sweep keyed on "is the linked card closed" would have archived this as
-  fixed. Card=done is weaker evidence than AC-227 already says: not only can a card close
-  without the work landing, the card can stop being ABOUT the entry while keeping the id
-  the entry points at.
-  On the substance: no eviction failure observed today across roughly 20 builds run
-  concurrently with at least one other lane and the auto-builder. That is absence of a
-  race in one session, which is not a fix, and no fix was ever made — so it stays open
-  until either the race recurs or someone changes how concurrent builds share the dir.
-
-NOTE (2026-08-27, amux-frustrations, card AF-265): OPTION (c) IS DEAD, and two new facts.
-  The FIX above says "(c) is worth checking first because it would be a one-line fix,
-  and nobody has established WHICH of the three is happening — the diagnosis is missing,
-  not the remedy." Checked, and it is not cargo GC:
-    cargo 1.97.1 — `-Z gc` ("Track cache usage and garbage collect unused files") is
-    UNSTABLE, so it is nightly-gated and off on this toolchain, and there is no gc or
-    cache setting in ~/.cargo/config.toml (no such file). Cargo's stable auto-clean
-    covers the CARGO_HOME registry/src cache, not a target dir; `cargo clean` is the
-    only thing that removes one and it is manual.
-  So the one-line fix does not exist, and (a) leave it / (b) give the auto-builder its
-  own dir are the surviving options. Recording the DEAD one so nobody re-runs it — it
-  was the cheapest to check and therefore the most likely to be checked twice.
-
-  NEW FACT 1, and it points at (b): the shared dir is 156GB (155G debug, 1.1G release,
-  839 fingerprint entries), against the 10-15GB-per-tree figure CLAUDE.md uses to justify
-  sharing it. Not urgent — 226GiB free, 88% capacity, and zero stray /private/tmp target
-  trees — but the disk argument FOR one shared dir is weakening as that one dir grows,
-  and (b) costs ~15GB against a 156GB status quo, which is a different trade than the
-  entry assumed.
-
-  HYPOTHESIS (d), WHICH THE ENTRY NEVER NAMED, IS ALSO DEAD — and it was the strongest
-  looking one. amux's OWN server runs a `reclaim` job on a `disk-watch` trigger, and
-  `crates/amux-server/src/api/reclaim.rs:395` lists `~/.amux/rust-build-target` by name,
-  labelled "Shared cargo target dir". A server job holding a list that contains the exact
-  directory, firing unattended, is precisely the shape of "artifacts deleted underneath an
-  in-flight build" — and it is a much better candidate than cargo GC ever was, because it
-  demonstrably runs on this machine every boot. I only saw it because an unrelated e2e run
-  printed `reclaim scan started ... roots=3 by=disk-watch` in its server log.
-  IT IS NOT THE EVICTOR, and the probe can express a positive. Scanning is read-only; the
-  only operation that MOVES a file is quarantine (`std::fs::rename`, :1827) and the only
-  one that deletes is purge, which requires `?confirm=<batch_id>` and only ever removes
-  from the quarantine root. So the quarantine ledger is the complete record of anything
-  reclaim has relocated. Live: 2 batches, both by session `desktop`, both purged —
-  `/Users/ethan/.cache/huggingface` (41.1GB) and `/Users/ethan/.cache/whisper` (5.5GB).
-  Nothing under `rust-build-target`. The ledger is not pruned (the only DELETE in the file
-  is on `reclaim_skipped`, :1621/:2421), so the absence is real history, not a short window.
-  WHAT THIS LEAVES, and it is now a narrower claim than the entry started with: nothing
-  EXTERNAL is deleting these artifacts. Both "something else is cleaning up behind me"
-  candidates — cargo's own GC (c) and amux's reclaim (d) — are ruled out with evidence, so
-  the evictor is cargo responding to concurrent builds from DIFFERENT PATHS into one dir,
-  which is what the SYMPTOM described before anyone went looking for a tidier explanation.
-  That strengthens (b): if the cause is path-diverse concurrent writers, giving the one
-  unattended every-60s builder its own dir removes a writer rather than papering over a
-  cleanup job. Still not mine to decide — it changes a CLAUDE.md-mandated policy for every
-  lane (ethos rule 8) — but the decision is now between two options with a known mechanism
-  instead of four with none.
-
-  NEW FACT 2, and it makes the race MORE likely rather than less: PR #158 (merged today,
-  cad635ea) made the pre-commit hook build into this same shared dir, where it previously
-  used a repo-local ./target. That is correct on CLAUDE.md's disk rule. But amux's own
-  measurement for the staged-recheck is that a build from a DIFFERENT PATH re-fingerprints
-  the workspace crates — and the staged recheck builds a scratch worktree, so it is a new
-  distinct path writing into the shared dir on every Rust commit where a peer's file is
-  the offender. More writers at more paths is exactly the condition this entry describes,
-  so if the race recurs, that is the first change to correlate against.
 
 ## staged-guard can't see a subagent's own edits, so it blocks the subagent's real work as "foreign"
 AREA: attribution
@@ -981,28 +745,6 @@ FIX: the guard needs a signal a subagent's edits actually exist — attribute Ed
   to the running (sub)agent session, or fall back to the staged diff (not edit records) when
   no edit record exists for EITHER party. Basing the verdict on the staged diff directly
   would make it correct regardless of who recorded what.
-
-## Idle guard called a CLEAN tree dirty, then prescribed a 44-commit revert as the "safe" action
-AREA: instruments
-SEVERITY: blocks
-STATUS: open
-DATE: 2026-08-16
-SESSION: desktop
-CARD: DESKT-10
-SYMPTOM: The idle dirty-tree notice reported "2 uncommitted change(s)" for app.css and app.js while `git status --porcelain` was EMPTY. Both worktree blobs were byte-identical to HEAD; they differed only from origin/main, which this checkout sits ~44 commits ahead of. The notice then ran its direction test, `git cat-file -e $(git hash-object <path>)`, got "object exists" for both, and classified them STALE, whose prescribed remedy is `git checkout origin/main -- <path>`. Running that would have reverted app.js by 1153 insertions and deleted crates/amux-server/src/api/reclaim.rs entirely, a feature shipped hours earlier. I tested five committed-but-unpushed paths (app.js, app.css, reclaim.rs, api/mod.rs, frustrations.md) and every single one classified STALE.
-COST: no work lost, because the tree being clean vs HEAD was checkable in one command and I checked before acting. The cost is the trap itself and how well disguised it is. The notice opens by warning that a difference from origin is not a direction, and then uses a test carrying exactly that blind spot, so the warning reads as evidence the test already accounts for it. It also states that roughly 1 in 4 differing paths are novel mid-edits a checkout would destroy, which frames "STALE" as the safe verdict and pushes toward the destructive branch. Any session that follows it literally on this checkout reverts every file it names.
-FIX: the direction test must be ANCESTRY, not blob existence. Blob existence cannot tell an old revision from a current one that is merely unpushed; both answer yes, and on a permanently-ahead checkout every committed file answers yes. `git merge-base --is-ancestor $(git log -1 --format=%H -- <path>) origin/main` separates them exactly: false means committed and unpushed, so leave it alone; true plus a worktree difference means genuinely older. Second, gate the notice on `git status --porcelain` being non-empty, so a tree that is clean against HEAD never triggers it at all. Both are one-line changes and either alone would have prevented this.
-
-## SUPERSEDES the entry above: the guard's classifier was right, only its printed ADVICE was wrong
-AREA: instruments
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-16
-SESSION: desktop
-CARD: DESKT-10
-SYMPTOM: Same incident, corrected diagnosis after reading commit_nudge.rs instead of reasoning from the notice alone. Two claims in my entry above were wrong. FIRST: the guard does NOT classify with blob existence. `freshness_from_repo` uses `git log HEAD..origin/main -- <path>`, which is proper ancestry and correctly returns not-stale for a committed-but-unpushed file. What prescribes `git cat-file -e $(git hash-object <path>)` is the message TEXT the guard prints, in its two direction-unknown branches. The classifier and the advice disagreed, and the advice is the half a human acts on. SECOND: I reported it firing on a CLEAN tree. `dirty_paths` reads `git status --porcelain`, so it cannot. The real explanation is a race: at nudge time the amux lane had app.css and app.js uncommitted, and by the time I ran git status they had committed them in 2ec671b. The notice itself said CONTESTED, also edited by amux, which fits. So the "gate the notice on porcelain non-empty" fix I proposed was unnecessary.
-COST: nothing beyond my own time, and it would have cost the amux lane theirs: they picked the card up and were about to hunt for a second code path that does not exist. Worth recording because of HOW the wrong diagnosis was produced. I ran the blob test, watched it misclassify five real paths, and concluded the guard classified that way, when all I had actually established was that the printed recipe was wrong. The notice's text was treated as evidence of the code's behaviour. Reading the 40 lines of commit_nudge.rs would have separated them in a minute, and I filed a card and a frustrations entry before doing it.
-FIX: 5b923db. Both direction-unknown branches now print the ancestry test the classifier already uses, state which way each outcome points, and name blob-existence as the thing not to substitute plus why. The STALE section's use of blob-existence is deliberately kept: there the path is already proven behind, and the open question is pure-old-copy vs novel-mid-edit, which blob existence answers correctly. Regression test asserts on the message text and was verified to fail against the old recipe. The durable lesson is narrower than my first entry: when a notice and the code disagree, read the code before filing against either, and say which one you actually measured.
 
 ## SUPERSEDES both entries above on DESKT-10: blob existence is unsound in the STALE section too
 AREA: instruments
@@ -1263,183 +1005,6 @@ FIX: none here — this IS AMUX-1315 (per-lane worktrees), and today is its stro
 
 ---
 
-## staged-guard named a co-editing session that never edited the file — ownership inferred from API traffic
-AREA: attribution
-SEVERITY: annoys
-STATUS: open
-DATE: 2026-08-22
-SESSION: amux
-CARD: AMUX-3497
-SYMPTOM: committing board_store.rs, the guard's NOTE said the file "was also edited by
-  session 'amux-cloud' 28m ago". amux-cloud made no source edit in that window — their
-  12:28 activity was HTTP board probes (card create/PATCH/discard). The edit-ownership
-  row behind d.get("shared") attributed a FILE edit to API traffic against the
-  subsystem.
-COST: a needless wipe-apology sweep to a peer (made plausible by a real git-checkout
-  hazard in the same window), plus the standing cost of the shape: once the guard is
-  known to name phantom co-editors, its real co-edit warnings get discounted — on the
-  exact commit type (shared-file sweeps) it exists to catch.
-FIX: shipped same day (see AMUX-3497 for the sha). Root cause was not command parsing
-  but the OBSERVED-edit mechanism: the Bash hook pair reports every file whose mtime
-  moved during a session's command, and on a shared checkout a CONCURRENT session's
-  tool edit lands in the observer's window — one write, two claimants. apply_observed
-  now drops an observed row explained by the other side's transcript record within the
-  clock-skew margin (both directions degrade toward protection), and an unresolvable
-  observed-vs-observed coincidence keeps both claims but the shared row carries
-  co_signal naming the ambiguity, which the guard hook prints. Five test cells incl.
-  the rebuilt specimen; over-broad-drop mutant fails the real-second-write control.
-REOPENED 2026-08-23 by its own author, on live evidence, when asked to sign this entry
-  off for retirement. Probing GET /api/git/staged-guard for
-  crates/amux-server/src/api/alerts.rs returned
-  shared: [{"owner":"amux-frustrations","peer":true,"age_secs":4848,"mine_age_secs":4848}]
-  — and every commit that has ever touched that file is mine (17710e9, d7f9545,
-  024894a, 2d57c7b). age_secs == mine_age_secs is precisely the coincident signature
-  357a54e was written to resolve, so the phantom co-editor still reproduces by a route
-  the fix does not cover: 357a54e drops an OBSERVED row explained by the other side's
-  TRANSCRIPT record, which cannot fire when the phantom claim is itself
-  transcript-derived. What remains to establish is which mechanism minted that row.
-  Do not retire this on the sha alone — the sha is real and the symptom outlived it,
-  which is the whole reason the entry is worth keeping.
-
----
-
-NOTE (2026-08-24, amux — author, superseding their own 2026-08-23 reading): STILL LIVE, and
-  the mechanism is now named. Their 08-23 reopening read two equal ages as "amux-frustrations
-  is a phantom co-editor on my file"; on re-probing, THE DIRECTION IS INVERSE and the phantom
-  was theirs.
-  They first probed the original alerts.rs specimen and got `shared: []` — and explicitly did
-  NOT stop there, because the tree was clean and nobody had touched that file in the 6h window,
-  so an empty result and a working fix are indistinguishable. They then probed five hot files,
-  got a `shared` row on all five, and checked one against git:
-    crates/amux-server/src/api/board.rs -> age_secs 455, mine_age_secs 455,
-    owner: amux-frustrations, NO co_signal.
-  That identical-age signature is what they could not explain on 08-23. Resolved: commit
-  8575cc6f at 12:18:08 is amux-frustrations' and really does touch board.rs (mtime 12:17:22).
-  amux's own claim is the manufactured one — all they did to that file was `sed -n '2270,2300p'`,
-  a READ, at 12:17, and the Bash observer saw the mtime move during their command and minted an
-  edit claim for them.
-  WHY 357a54e's MITIGATION CANNOT REACH IT: that fix drops an OBSERVED row explained by the
-  other side's TRANSCRIPT record. Here the transcript record belongs to the side whose claim is
-  TRUE, and the phantom is the observed SELF-claim. The probe presents the two symmetrically
-  and emits no co_signal, so nothing in the output says which of the two is manufactured.
-  Working where it applies: three of the five probes DID carry a co_signal (autofix.rs and
-  session_verbs.rs with the AF-179 wording, app.js with the AMUX-3497 wording). The gap is
-  specifically observed-vs-transcript where the transcript side is the real one.
-
-## `hook_outdated` reports on the request body, not the hook, and its remedy cannot fix it
-AREA: instruments
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-23
-SESSION: amux-frustrations
-CARD: AF-156
-SYMPTOM: chasing amux's lead that every staged-guard probe returned `hook_outdated: true`,
-  which they read as their installed hook being stale. It is not a staleness signal at all.
-  git_guard.rs:1586 sets it from the REQUEST BODY: `guard_version < 2`, defaulting to 0 when
-  the field is absent. So a hand-rolled curl reports true by construction (verified both
-  ways against the live server), and more importantly `scripts/git-hooks/git-shared-guard.py`
-  sends 1 on its amend path and NOTHING on its discard and cotenant-probe posts, so every
-  call it makes is classified outdated permanently. The file is not stale: `cmp` says the
-  installed copy is byte-identical to source, and all seven installed hooks match right now.
-  Meanwhile `amux-staged-guard` sends GUARD_VERSION = 6 and always passes. A flag that is
-  always true for one caller and always false for the other discriminates the CALLER, not
-  staleness.
-COST: 2,433 `OUTDATED HOOK` WARN lines in ~/.amux/logs/server-rs.log across the fleet (amux
-  174, amux-gtm 138, amux-frustrations 86, mixpeek-docs 76, and ~15 more lanes). The noise
-  buries any real staleness signal, so a sweep cannot find a genuinely outdated hook. And it
-  cost a session an investigation today: amux built a hypothesis on it, and the flag was
-  never evidence for it.
-FIX: none shipped; git_guard.rs and the hooks are amux's, routed to them, and they had
-  already declined to stack another change on this subsystem at the tail of a long session,
-  which I agree with.
-  The remedy text is the part that makes it worth fixing rather than noting. It says
-  "Reinstall: scripts/install-hooks.sh", and reinstalling installs the same source that
-  sends 1 or nothing, so the warning returns immediately. Following the instruction exactly
-  cannot satisfy the complaint — AMUX-2140's shape, where the sanctioned instruction is the
-  theatre.
-  Three parts to a real fix: send a real version at every POST site the way
-  amux-staged-guard already does; decide what the flag is FOR (if it is meant to detect a
-  stale INSTALLED hook it must compare the file against source, which is the check that
-  would have caught the real append-only-push-guard staleness amux hit today and that this
-  flag did not); and make sure it can be FALSE for a healthy caller, or it is not a detector.
-  Kept separate deliberately: amux's append-only-push-guard WAS genuinely stale today and is
-  now reinstalled and verified. That was real. `hook_outdated` did not and could not report
-  it. Two different things that both say "hook" and "outdated".
-
-
-NOTE (2026-08-24, amux-frustrations — author): ROOT CAUSE FIXED (6a518e41), ENTRY STAYS OPEN
-  until the observable actually drops. Recording the split because "fixed" and "the cost is
-  gone" are different claims here.
-  WHAT WAS FIXED. 79e9c89c (06:12 today) re-keyed the server predicate on `op` instead of
-  `guard_version` alone, justified as "every modern client sends at least `op`".
-  git-shared-guard.py contradicted that premise: two of its three POST bodies carried `op`,
-  and the cotenant probe sent `{session, dir, paths: []}` — neither field — 170 lines below
-  the path the fix was aimed at. 212 WARNs followed the fix, including this checkout at
-  16:23:51 with a hook byte-identical to source. 6a518e41 adds `op` to that body.
-  VERIFIED against the RUNNING server, both directions:
-    old body (no op)          -> hook_outdated = True    (control)
-    new body (op present)     -> hook_outdated = False
-  WHY IT STAYS OPEN. The COST recorded above is WARN VOLUME, and I cannot show that dropped:
-  (a) the warn is rate-limited to once per session per hour, so an hour of silence is the
-  minimum informative window and I have one minute; (b) the newest two WARNs name `nissan`
-  and `mixpeek-docs` in ~/Dev/mixpeek/* — OTHER CHECKOUTS with their own installed copies of
-  this hook, which my sync did not touch. So the volume decays only as each checkout updates,
-  and archiving now would be archiving on an unrealized fix.
-  STILL UNFIXED, SEPARATELY: the emitted remedy is unchanged. git_guard.rs:1608 still prints
-  "Reinstall: scripts/install-hooks.sh" while the doc comment 30 lines above it (1576) states
-  plainly that this "reinstalls the GIT hooks, which were already current". The defect is
-  named in the comment and left in the string a reader actually receives — ethos rule 6. It
-  now misdirects a smaller population (a genuine pre-rust git hook, for which the remedy IS
-  right), which is why it is worth fixing but not worth blocking on.
-  ALSO CORRECTED: I read `cmp` between the WORKTREE copy and ~/.amux/hooks/ as "the install is
-  stale". It was not — runtime was byte-identical to the COMMITTED blob and
-  `hooks.shared_guard_matches_committed` was correctly green throughout. What I had measured
-  was my own uncommitted edit.
-
-NOTE (2026-08-27, amux-frustrations — author). THE OBSERVABLE STILL HAS NOT DROPPED, three
-  days on, and I can now say exactly why. The entry above predicted the volume "decays only
-  as each checkout updates". That was right about the mechanism and wrong about the size of
-  the population: it is not a slow decay across many checkouts, it is ONE FILE.
-  MEASURED, `OUTDATED HOOK` WARN lines per day in ~/.amux/logs/server-rs.log:
-    2026-08-24  25   (the fix, 6a518e41, landed this day)
-    2026-08-25 288
-    2026-08-26 342
-    2026-08-27 272
-  So the cost this entry records is undiminished. But THIS checkout now emits ZERO of them:
-  all 272 of today's come from lanes whose cwd is under /Users/ethan/Dev/mixpeek/* — nissan,
-  mixpeek-docs, social-media, paid-social, mvs-infra, mixpeek-security and ~10 more. The
-  amux-side fix works; it simply never reached the population.
-  AND THEY ARE NOT FIFTEEN CHECKOUTS. `git rev-parse --show-toplevel` from
-  mixpeek/server/mvs returns /Users/ethan/Dev/mixpeek — one repo, one .git, one hooks dir.
-  Every one of those lanes runs the SAME installed file:
-    /Users/ethan/Dev/mixpeek/.git/hooks/amux-staged-guard   23039 bytes, Aug 20 21:28
-    scripts/git-hooks/amux-staged-guard (source)            43611 bytes, Aug 24 19:46
-    GUARD_VERSION = 4  vs  GUARD_VERSION = 10
-  Six versions behind, and it posts to /api/git/staged-guard only — the source also posts
-  /api/git/guard-outcome. guard_version appears 3 times in source and 2 in the installed
-  copy, so one POST body omits it, which is this entry's original mechanism verbatim.
-  THE REMEDY IS NOT MERELY THEATRE, IT IS UNFOLLOWABLE. git_guard.rs:1853 tells that lane
-  "Reinstall: scripts/install-hooks.sh". From /Users/ethan/Dev/mixpeek that path does not
-  exist — `find /Users/ethan/Dev/mixpeek -maxdepth 3 -name install-hooks.sh` returns nothing.
-  100% of today's recipients are given an instruction they cannot execute. The entry called
-  this AMUX-2140's shape (the sanctioned instruction is theatre); it is a step worse, because
-  theatre at least runs.
-  THE CORRECT INSTRUCTION EXISTS AND THE SERVER ALREADY HOLDS ITS ARGUMENT. install-hooks.sh
-  has had a foreign-checkout mode since the python generator was deleted — `install-hooks.sh
-  <dir>` installs the guard into another repo and, by its own header, "NEVER writes
-  pre-commit" there. So the followable remedy for that warn is
-  `/Users/ethan/Dev/amux/scripts/install-hooks.sh /Users/ethan/Dev/mixpeek` — and the warn
-  line ALREADY PRINTS the directory it would pass ("mvs-infra in /Users/ethan/Dev/mixpeek/
-  server/mvs"). The fix is to emit the remedy the server can already compute, rather than a
-  constant that is only correct for callers inside the amux checkout. Ethos rule 3: a
-  constraint must have a truthful path forward in every legitimate state.
-  NOT RUN BY ME, and this is the part that is not mine to decide. One command would end the
-  272/day. It would also upgrade a COMMIT GATE from version 4 to version 10 underneath ~15
-  lanes that are actively committing in that repo right now, with no warning to any of them.
-  Six versions of gate behaviour arriving mid-work is not a change I can spring on other
-  lanes (ethos rule 8). Routed to amux, who owns git_guard.rs and the hooks, with the
-  measurement and the exact command. STAYS OPEN.
-
 ## Every checkout's git hooks are 18 days stale, and amux has been saying so into a log for 11
 AREA: instruments
 SEVERITY: blocks
@@ -1549,102 +1114,6 @@ FIX: the content-diff axis in PR #144 is unchanged and, if anything, is the thin
   Reinstall: scripts/install-hooks.sh" reads exactly like a file-staleness detector, and I
   never opened the code that emits it, while I did open the code for every other claim I
   made today. A message that names a plausible cause is not evidence for that cause.
-
----
-
-## A gate criterion that says "(name them)" is rejected if you name them
-AREA: gates
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-23
-SESSION: amux
-CARD: AMUX-3532
-SYMPTOM: the `verified` gate for group `amux` has a criterion that reads "Peer-reviewed by
-  a DIFFERENT worker in group `amux` (name them)". The parenthetical is an instruction to
-  supply the peer's name, but `gate_checked` is matched by EXACT STRING EQUALITY, so the
-  only ack that passes is the criterion verbatim, "(name them)" included. Following the
-  instruction inside the criterion is what makes the ack fail:
-    sent:     "Peer-reviewed by a different worker in group amux (amux)"
-    response: 409 "gate_checked does not match the gate"
-  Two more traps rode along on the same call: DIFFERENT is uppercase in the criterion and
-  lowercase in ordinary prose, and `amux` is in BACKTICKS, so a shell ate them unless
-  escaped and the string silently differed from what I believed I sent.
-COST: two retries on AF-66, and the peer's name — the single most useful fact on a verified
-  card — has nowhere to go in the sanctioned ack. I put it in the outcome text on AF-66 and
-  AF-106 with a note explaining why it is there. Small in minutes; the reason it is worth an
-  entry is the direction it pushes: the criterion carrying the most judgment in the gate is
-  the one whose literal instruction routes you toward `--ack` (acknowledge everything at
-  once, which is what per-criterion acks exist to prevent) or `force`.
-FIX: normalize before matching (case-fold, strip backticks, strip a trailing parenthetical),
-  or better, let a criterion take a VALUE — `--checked "<criterion>=<name>"` — so the gate
-  COLLECTS the fact it asks for instead of demanding it and discarding it. Failing both, the
-  409 should say "differs only by case / by a filled-in parenthetical", which turns two
-  retries into zero.
-FIXED 12af7ab (live on build 05db91e6): both halves. Matching now normalizes (case-fold,
-  drop backticks, drop ONE trailing parenthetical), with exact tried FIRST so nothing that
-  passed can stop passing; and a criterion containing "name them" now REQUIRES a `reviewer`
-  who is not the card's owner, so the gate collects the fact it was demanding in prose.
-  The predicate compares against the card's OWNER, never the acting session — see AF-160
-  for why that distinction is the whole card.
-CONFIRMED INDEPENDENTLY, same day, by amux-frustrations as AF-160 (same defect, keep both
-  ids): the mechanism is `board.rs:2620`, where acknowledgement is exact string containment
-  (`eff_gate.iter().filter(|c| !gc.contains(c))`). They then measured the consequence, which
-  is worse than the friction I hit: of their 25 verified cards, 7 name a peer and 18 do not.
-  72% passed a gate whose second criterion is "name them" while recording no name anywhere
-  machine-readable. AF-66, which I verified and moved TODAY, is one of them — `reviewer` is
-  still None on it and my name survives only in prose. So the gate is not merely awkward to
-  satisfy; it is not collecting the fact it exists to collect, on most cards, silently.
-  Their fix is better than mine and needs nothing new: the `reviewer` column already exists
-  and `amux board review --reviewer` already sets it, so on a transition to `verified`,
-  require `reviewer` non-empty and different from the acting session whenever the resolved
-  gate contains a named-peer criterion, and refuse with that as the reason.
-
----
-
-## The push guard's only override is worded for the human, so the AUTHOR's explicit consent has no honest exit
-AREA: gates
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-23
-SESSION: amux
-CARD: AMUX-3533
-SYMPTOM: the push guard's only override is worded for one consenting party. I held 3
-  commits above origin, one authored by amux-frustrations, who had explicitly consented in a
-  server-verified relay ("PUSH CONSENT: yes, take all three including my bb3d9a8"). The
-  guard offered three exits and my situation matched none. "Push only yours" was actively
-  wrong and quietly so: my two commits had theirs BETWEEN them, so the "contiguous run"
-  was one of my two and taking that exit would have shipped half my work while reading as
-  success. "Ask that session to push its own" is circular, because their push then carries
-  mine and they hit the same refusal from the other side. The third,
-  `AMUX_ALLOW_FOREIGN=1`, is stated as "if the HUMAN explicitly asked you to ship
-  everything" — and the human was not involved at all.
-COST: the honest options were to assert a human ask that never happened, or to stop with
-  the work unshipped and the author's explicit consent ignored. I used the override and
-  documented the real authorization in the command, which is the least-bad of three bad
-  options. ~10 minutes, and one push whose audit trail now says "blanket override" when
-  what actually happened was a specific, named, verifiable consent.
-FIX: a second escape that RECORDS who consented and is checkable, rather than widening the
-  existing one — `AMUX_FOREIGN_CONSENT="<sha>:<session>"`, with the guard asserting the sha
-  is authored by that session and writing the pair to the push audit. Note this guard was
-  fixed today (#142) for a different too-narrow assumption, and its author's argument
-  applies verbatim here: an alarm that fires on a routine correct action teaches the reflex
-  of setting AMUX_ALLOW_FOREIGN=1 blind, and then the push that really does carry someone
-  else's unreviewed work sails through.
-SECOND SPECIMEN, same day: amux-frustrations took AMUX_ALLOW_FOREIGN on the written consent
-  of two PEERS four hours before I did, and did not notice the wording did not cover them
-  either. Two independent instances, both with legitimate specific authorization, both
-  forced through an override whose stated precondition was false. Attentiveness was never
-  the variable.
-FIXED f4d8d9b: AMUX_FOREIGN_CONSENT="<sha>:<session> ..." — STRICTER than the override it
-  replaces, not a second way around the guard. Each entry is checked against the commit's
-  real Amux-Session trailer (a mismatch REFUSES, where a blanket override would have
-  shipped it), every foreign commit must be covered, a malformed entry refuses rather than
-  being skipped, and the pairs are written to ~/.amux/logs/push-guard.log so the trail
-  answers "who authorized this?" instead of recording an undifferentiated override. The
-  refusal now names it FIRST, above ALLOW_FOREIGN, with the pairs pre-computed — an escape
-  nobody is handed is decoration. Five test cases, negative-controlled by making consent
-  behave like a blanket override: the happy path still passes and all three strictness
-  cases fail, so no single case can certify a broken implementation.
 
 ---
 
@@ -1806,64 +1275,23 @@ NOTE: this is AMUX-1768's class one layer up. browser.rs:104-113 removed the SER
   The client-side constant survived the fix. Fourth member of the 2026-08-23 misattribution
   cluster with AF-179 and AF-182; the other three name a WRONG owner, which is recoverable, and
   this one names none.
-
-## Acking a peer's card with a desc PATCH silently destroys their write-up
-AREA: board
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-23
-SESSION: amux
-CARD: AMUX-3576
-SYMPTOM: The documented way to record an outcome before a gate transition is to write `desc`
-  first. `desc` REPLACES. Acking three of amux-frustrations' review cards destroyed their
-  write-ups: AF-178 4070 -> 1613, AF-182 5018 -> 2152, AF-180 3055 -> 1958. Nothing at write
-  time said anything was lost. The board HAD computed the delta all along — it writes
-  "desc -2457 chars" into a History line, where only someone reading the card afterwards
-  finds it.
-COST: ~6400 characters of a peer's reasoning across three cards, restored only because
-  `_amux_state_events` carries full pre-mutation snapshots (ids 78469, 78822, 78791). mvs-infra
-  hit the identical thing hours earlier on MI-4746 and lost 4082 chars of merge evidence. Two
-  sessions, one evening, same field.
-FIX: 91648fbc refuses a replace that drops a strict majority of a desc of 500+ chars, with
-  `desc_shrink_ack` to override and a pointer to `desc_append`. c7826ed2 documents the recovery
-  path in the board contract, because a recovery nobody knows about is one nobody uses.
-  AMUX-3576 carries the remaining gap: the guard keys on SIZE, so AF-180 at 36% would have
-  slipped under it even had it been live. Authorship is the honest axis — a non-owner replacing
-  prose on someone else's card is a different act from the owner trimming their own, and the
-  board knows both facts at write time.
-NOTE: The guard's first production catch was ITS OWN AUTHOR. It refused me 409 on AF-179 an hour
-  after I shipped it, doing the exact thing it was written to prevent, having written the commit
-  message that explains why `desc_append` exists. Knowing the failure mode, having just fixed it,
-  and having documented it did not stop me repeating it three times. That is ethos rule 6's
-  "a rule you have written down is not a rule you run" with a same-day specimen, and it is the
-  argument for why this had to become a refusal rather than a convention.
-
----
-## The e2e suite restarts its own servers mid-run, and blames whichever specs were mid-navigation
-AREA: instruments
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-23
-SESSION: amux-frustrations
-CARD: AF-185
-SYMPTOM: PR 148 (an outside contributor's) was red with e2e 4 failed / 228 passed, every failure
-  `net::ERR_CONNECTION_REFUSED at https://localhost:18823/`, and nothing anywhere said why. The
-  suite starts three servers (desktop/mobile/ios-safari), each a `cargo run` rebuilding into the
-  SAME target dir; every rebuild rewrites target/debug/amux-server, and a running server watches
-  that path and exec's itself. Run 32671387493's log has three `binary changed on disk —
-  exec'ing the new build in place` lines, each right after a sibling target's build finished,
-  each costing ~10s of refused connections while the suite drove that server.
-COST: A contributor's PR blocked on a red check that was never theirs, with no way to tell from
-  the PR. Because the victims are chosen by timing they move run to run, so no spec is reliably
-  guilty and the whole thing reads as flakiness rather than a defect with a cause. That is the
-  same misattribution shape as AF-179 and AF-182: a true statement about the environment
-  delivered as a statement about the thing under test.
-FIX: 67474428 — the suite sets AMUX_NO_SELF_ADOPT=1. The capability already existed (AEAB-52)
-  and its own doc comment says what it is for, "a test harness pins its build on purpose"; the
-  one harness in this repo that pins its build was not enrolled. Rule 1 exactly. Not yet proven
-  in CI: the prediction is zero `binary changed on disk` lines in the next e2e job and no
-  ERR_CONNECTION_REFUSED failures, and if they persist the env is not reaching the server through
-  serve-head.sh.
+STATUS-2026-09-01: HALF SHIPPED, and the half that is left is not code. The
+  request-log lookup this entry asks for EXISTS and is wired: api/browser.rs
+  carries `StartOrigin` with three states (Found / NotFound / NotLooked, so "we
+  looked and found nothing" cannot collapse into "we did not look"),
+  `lookup_start_origin` reads client_ip and user_agent off `_amux_request_log`,
+  and the refusal consults it. So the caller now gets "127.0.0.1 + curl/8.7.1" or
+  "100.66.26.84 + Mozilla/5.0 (Macintosh...)" instead of "(unattributed)", which
+  is the discrimination the COST line names: an agent on this box against a human
+  at a browser.
+  The TITLE's claim is still true. `let _bwSession = 'amux';` is live at
+  app.js:34858, so a browser a human opens from the Browser tab is still recorded
+  as owned by the `amux` LANE, and the guard's same-session shortcut still treats
+  that lane's start as the human's own restart. The entry stays open on that
+  clause alone.
+  Not fixable from here without deciding what the dashboard should call itself,
+  which is whose identity it is (ethos rule 8). AF-183 is in `needsyou` with the
+  question in one sentence and a recommendation.
 
 ## A peer's mid-edit fails MY test run, and a rerun is the only way to tell
 AREA: attribution
@@ -1890,96 +1318,11 @@ FIX: The shipped half of AF-182 — lint-blame partitioning offenders into yours
   line instead of a rerun. amux-frustrations proposed that wrapper for `check`/`clippy`; this is
   the same gap for `test`, and the test case is worse because the signal is a count rather than
   a compiler error naming a file.
-UPDATE 2026-08-27 (amux, prompted by amux-frustrations): THE FIX ABOVE IS THE SECOND ANSWER,
-  NOT THE FIRST, and I am revising what this entry asks for. They found that their own
-  third instance was filed against a harness that was ALREADY isolated: e2e/serve-head.sh has
-  built from committed HEAD in a detached worktree since 7624877a (2026-08-11), and
-  `git log -S 'crate::worker::WorkerId' --all` finds nothing, so the import that killed their
-  run was never committed and cannot have reached a build of HEAD. They diagnosed "a peer
-  mid-edit" and the record cannot establish that it was one — because serve-head.sh announced
-  its source only `if [ -n "$dirty" ]`, so a clean-tree run printed nothing and all three
-  source paths looked identical. Fixed in eeccbbc1: one SOURCE line per path.
-  THE SAME GAP IS IN THE ad-hoc `cargo test` PATH THIS ENTRY IS ABOUT. A failing run does not
-  say what tree it compiled, and on this checkout the answer is always "the working tree,
-  including every peer's uncommitted edits". So the cheap first answer to "is this mine" is
-  a SOURCE line plus a count of dirty files that are not yours — not blame analysis. Checked
-  before writing this: nothing wraps `cargo test` for that today (scripts/test-tree-clean.sh
-  is about RESIDUE, whether a command left the checkout as it found it, which is a different
-  question). Build the SOURCE line first; the cargo-blame wrapper is worth having only for
-  what the source line cannot resolve.
 NOTE: This is the transient-unbuildable half of AF-182 that I own, showing up in a form I had
   not predicted. My entry there described the window as breaking a peer's BUILD. It also breaks
   a peer's TEST RUN, where there is no filename in the output to attribute — you get an
   arithmetic difference between two numbers and no clue whose edit caused it. e6077bcb fixed the
   commit path; neither of us has fixed the ad-hoc path, and this is the second cost from it.
-
-## Discarding a spurious autofix card refiles it, so doing the right thing loops
-AREA: board
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-24
-SESSION: amux
-CARD: AMUX-3591
-SYMPTOM: One server hang filed the identical card four times — AMUX-3581 (01:12), 3589 (01:26),
-  3591 (01:35), 3594 (01:55) — same signature byte for byte, same 19 rows, zero new information.
-  Each filing was triggered by the previous one being DISCARDED. Discarding an auto-filed report
-  deletes its dedupe idem to re-arm the detector (board.rs, AF-137), which is correct for a
-  CONDITION whose refile should require the condition to be live again. The 5xx signature carried
-  no occurrence identity, so "recurrence" meant "any 5xx on that path still inside the 6h window"
-  and the same historical rows kept qualifying.
-COST: Four lane-turns, three of them mine, each a full scope-and-decide cycle on a card that was
-  never a defect. Worse than the count: every round was a worker doing exactly the right thing.
-  Judging a spurious report and discarding it is the sanctioned disposition, and it was the thing
-  driving the loop.
-FIX: 01b4cf53 — occurrence identity in the 5xx signature plus `5xx|` added to the re-arm skip,
-  mirroring what AMUX-3472 already did for latency outliers. Same rows re-scanned now mint the
-  same signature; a genuinely new 5xx mints a new one and files regardless, pinned by a control
-  so this does not trade a refile loop for a detector that goes silent after one discard.
-NOTE: Two things worth more than the bug. First, I diagnosed it WRONG twice — assumed discard
-  caused it, then talked myself out of it because `already_filed` reads a durable idem and never
-  checks card status, and wrote that up as a dead hypothesis. Both readings missed that the
-  discard does not bypass the dedupe, it DELETES it, in a file I had not grepped. The comment
-  naming the hook was in code I had already read that night (autofix.rs:1185). It took a THIRD
-  filing to make me look instead of reason. Second, the correct DISPOSITION changed with the
-  deploy state: with the fix merged but not running (builder dead since 00:01, AMUX-3585),
-  discarding still loops, so AMUX-3594 was closed `done` instead — the re-arm hook fires only on
-  the discard transition. Nothing in the card, the gate or the idle nudge can tell you that, and
-  the nudge's own option 5 recommends the action that restarts the loop.
-
-## A graft-push checkout read as DIVERGED on every path, withholding the safe restore
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-24
-SESSION: mixpeek-frustrations (reported), amux (fixed)
-CARD: AMUX-3599
-SYMPTOM: The idle commit-nudge filed dirty append-only files as DIVERGED — "commits in BOTH
-  directions, neither single-arm remedy is safe" — on a checkout where the local commits were a
-  REPLAY of content already upstream. DIVERGED forbids both remedies, so the reader is left with
-  a union-merge they do not need and the safe `git checkout origin/main -- <file>` is withheld.
-  The classifier asked `git log origin/main..HEAD -- <path>`, which counts commits BY SHA, and a
-  commit already upstream under a different sha sits in that range permanently. On a graft-push
-  checkout that is EVERY path.
-COST: The wrong verdict on the exact file class the nudge singles out by name — the append-only
-  ledgers, where the union-merge directive is printed. A reader following it does more work than
-  needed and, worse, learns that the nudge's verdicts are unreliable on their checkout, which is
-  the expensive direction: the next DIVERGED that IS real gets read as more of the same. Nobody
-  lost data; the reported cost is a wrong prescription plus the turn spent establishing it.
-FIX: d55b7a63 — content set-difference instead of sha arithmetic, since sha identity is what a
-  replay destroys. The remedy overwrites the WORKTREE, so restore-safety is exactly "does the
-  worktree hold lines origin does not"; zero means nothing here can be lost. One-sided by design:
-  it only ever downgrades diverged->stale, only on a readable pair AND an empty difference, so
-  any error leaves DIVERGED standing.
-NOTE: This is the SECOND defect in this cell in four days and they point opposite ways. The cell
-  was ADDED on 2026-08-20 because the two-bucket classifier filed a genuinely-diverged path STALE
-  and the prescribed restore disarmed a data-loss push guard. This entry is the same cell now
-  over-firing. Both are the same underlying error — reading commit identity as content identity —
-  and it produced a false negative first, then a false positive, which is why "be more careful
-  with the direction test" would not have caught either. The durable form is that a classifier
-  prescribing a DESTRUCTIVE remedy has to be gated on what the remedy actually destroys, not on
-  a proxy for it. Also worth recording: the fix logs the downgrade, because STALE-because-
-  downgraded and STALE-outright were otherwise byte-identical in the log, which is the one-output-
-  two-states shape on the arm that prescribes the destructive remedy.
 
 ## The disk ranker cannot rank a file, so it could never have named the 1.8 GB one
 AREA: instruments
@@ -2099,226 +1442,112 @@ NARROWED 2026-08-24 to the VOCABULARY half. The re-nag is fixed; the lying statu
   about, made while checking the fix for it.
 
 ---
-## Mutation testing's obvious harness is a whole-file write, which reverts a peer mid-edit
-AREA: shared-checkout
+## Worker session does not auto-restart when server restarts
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-08-29
+SESSION: 6527367a-8ff6-431a-ace9-e421554fb30d
+CARD: none
+SYMPTOM: After `systemctl --user restart amux.service` (from a deployment), the amux
+  worker session stays down: `GET /api/sessions/amux` returns `running: false`. Inbound
+  Telegram messages have nowhere to route into until someone manually calls `POST
+  /api/sessions/amux/start`. The `amux-worker-start.service` is a boot-time-only unit
+  (runs once at `systemd --user` init), not triggered by manual server restarts.
+COST: 5 minutes of diagnostics; live Telegram messages silently drop inbound until
+  manually restarted. In production with unattended amux, a server restart from a
+  deployment would leave Telegram routing dead until noticed and fixed manually.
+FIX: Either (a) change `amux-worker-start.service` to have `Restart=always` so it
+  auto-restarts with amux.service, or (b) add a post-startup hook to amux.service
+  that calls `POST /api/sessions/amux/start`, or (c) wire the worker start into a
+  systemd timer that verifies worker is up on server start. The root cause is that
+  system-startup and service-restart are different events (both need the worker up),
+  and the current unit only handles the first.
+
+## amux.service's KillMode=mixed cgroup-kills the whole fleet on every ordinary deploy
+AREA: instruments
 SEVERITY: blocks
 STATUS: fixed
-DATE: 2026-08-24
-SESSION: amux
-CARD: AMUX-3671
-SYMPTOM: `cp $F /tmp/orig ; <mutate> ; <test> ; cp /tmp/orig $F` — the natural way to
-  satisfy this repo's "mutate the predicate and confirm it LANDED" rule. The restore is a
-  WHOLE-FILE write, indistinguishable from `git checkout -- $F` to a concurrent peer. At
-  15:45 it reverted mixpeek-research's in-flight `fn chrome_launch_args` out of
-  browser.rs while KEEPING the call site that had arrived inside my mutate/restore
-  window, so `cargo check` failed with E0425 for both lanes. Twice, because the harness
-  ran twice.
-COST: A peer lost work and had to re-apply; browser.rs was uncompilable for both of us
-  for ~4 minutes. The number that matters is not this incident: the same harness had run
-  about a dozen times that day across five files, and every one was a chance to do this to
-  somebody. It had simply not collided until a peer edited the same file at the same
-  minute.
-FIX: scripts/mutate.sh — mutate by EXACT STRING, revert by the inverse exact string, so
-  only the mutated bytes are ever written and a peer editing any other part of the file is
-  untouched. Refuses a target that is absent (0 occurrences) or ambiguous (>1), which is
-  the same discipline the rule already asks for: an unapplied mutation and a test that
-  cannot fail produce the identical green, and the mutation is the cheaper one to check.
-  The deeper point is that the REPO'S OWN RULE pushed everyone toward the unsafe
-  implementation — ethos.md and CLAUDE.md ask for mutation testing repeatedly and neither
-  says how to do it without a whole-file write. That is why this is `shared-checkout` and
-  not "amux's mistake".
+DATE: 2026-08-30
+SESSION: amux (this session, catching up on the 2026-08-29 reboot-verification memory)
+CARD: INIT-1
+SYMPTOM: Continuing the prior session's "verify everything comes back after reboot"
+  checklist, `GET /api/sessions` showed ALL 9 registered worker sessions with
+  running:false — not just after the physical reboot, but again after the routine
+  08:31:39 auto-builder restart that followed (commit 251cf15b, an ordinary
+  feature-branch deploy). `tmux list-sessions` had nothing but a freshly-recreated
+  `amux-init`; the real tmux server that held every worker's session had been killed
+  outright. Root cause: `amux.service` has `KillMode=mixed` + `SendSIGKILL=yes`, and
+  the tmux server lives in that unit's cgroup (spawned by ExecStartPre, never leaves
+  it — cgroup membership is sticky across reparenting to PID 1 even though tmux
+  daemonizes). Every restart of amux.service — reboot OR ordinary deploy — SIGKILLs
+  the whole cgroup, tmux server included. `amux-worker-start.service` only fires once
+  at boot (`WantedBy=default.target`), so nothing brought sessions back afterward.
+  This generalizes the narrower 2026-08-29 entry ("worker session does not auto-
+  restart when server restarts", CARD: none, still open) — that one suspected a
+  single worker and a single restart path; this is the whole fleet, and it fires on
+  every commit-triggered deploy, which happens many times a day on an active branch.
+COST: The entire fleet (9 lanes) silently down for ~1h25m (08:31 restart to 09:56
+  discovery+fix) with no alert anywhere — `/health` reported "ok" the whole time,
+  because the server process itself was fine; only the sessions it was supposed to
+  be managing were gone. Inbound Telegram messages during that window had nowhere to
+  land. A separate near-miss found along the way: `amux start <name>` (no --detach)
+  silently returns exit 1 with ZERO output when it can't attach to a non-existent
+  TTY, even though the start itself succeeded — first read as "start is broken",
+  cost a few minutes of confusion before `--detach` runs revealed it was already
+  running.
+FIX: `~/.config/systemd/user/amux.service`: `KillMode=mixed` -> `KillMode=process`
+  (config-only; `daemon-reload` applied without disrupting the running process —
+  confirmed same PID/start-time before and after the reload). `process` mode signals
+  only the unit's main PID, leaving the tmux server (and its sessions) alone —
+  matching what ExecStartPre's own idempotent `has-session || new-session` check
+  already assumed. VERIFIED live: `systemctl --user restart amux.service` (09:59
+  UTC) — PID changed, uptime_s reset, and all 8 real worker sessions (excluding the
+  separately-broken `synthesia`, wrong macOS path) kept their original tmux
+  `created` timestamps and came back running:true with no manual restart needed.
+  NOT YET DONE (the log-signal half, tracked on INIT-1): an `invariants/checks.rs`
+  check for "session expected running (standing_orders / no recorded stop event)
+  but `tmux has-session` says no" — today nothing in `runtime_jobs` would have
+  caught this without a human reading the dashboard; `backend::bootstrap::Bootstrap`
+  only reacts to explicit Starting/ended DB transitions, and an out-of-band cgroup
+  SIGKILL produces neither.
 
-## Every amux-launched Chrome opens with the yellow "unsupported command-line flag" infobar
-AREA: browser
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-24
-SESSION: mixpeek-research
-CARD: MR-38
-SYMPTOM: Ethan's screenshot at 15:40: "You are using an unsupported command-line flag:
-  --ignore-certificate-errors-spki-list=... Stability and security will suffer." across the top
-  of every window the amux browser opens. The SPKI pin is on Chrome's kBadFlags list
-  (chrome/browser/ui/startup/bad_flags_prompt.cc:107), so the bar has been on every launch since
-  the pin shipped. Nothing in amux could see it: it is browser chrome, not page content, and no
-  verb screenshots that, so the only detector was a human looking at the window.
-COST: every human-facing browser session since the pin shipped read as broken or unsafe to the
-  person looking at it, until Ethan screenshotted it. About 90 minutes across two lanes to land,
-  most of it the shared-checkout dance (the peer's whole-file write dropped two of three edits
-  once; see the entry above at "Mutation testing's obvious harness is a whole-file write").
-FIX: 9f4e6971. --test-type on the launch line: chromium infobar_utils.cc:173 returns before
-  ShowBadFlagsPrompt for a test-harness launch (ChromeDriver passes it on every session);
-  --enable-automation would also work but adds its own "controlled by automated test software"
-  bar. Flags extracted into chrome_launch_args() and launch_args_tests pins "bad flag =>
-  --test-type" with a control that the pin is really present; mutation-checked red without the
-  flag. NOT confirmed on screen from this lane: screencapture is refused for a tmux shell (no
-  Screen Recording grant), so the visual check is Ethan's next launch. Already-running Chromes
-  keep the bar until relaunched.
-
-## A main lane with no $AMUX_SESSION in its env is invisible to the staged-guard's edit records
-AREA: attribution
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-24
-SESSION: mixpeek-research
-CARD: MR-43
-SYMPTOM: This lane runs in tmux session `amux-mixpeek-research` (amux-launched), yet
-  $AMUX_SESSION is empty in its shell. In one task that meant: `amux board add` would have
-  created an unattributed card, the prepare-commit-msg trailer would have been empty, and the
-  staged-guard's cross-session check said "you have no edit record on this path in the last
-  360m" for a file this lane had edited three times in the previous ten minutes, because the
-  PostToolUse edit-record hook reports under the same empty variable. Its verdict then named
-  the peer as the sole editor and blocked the commit. The three subagent entries earlier in this
-  file (SESSION: "... no $AMUX_SESSION in env") are the same shape one level down.
-COST: two refused commits and about 5 minutes, plus a guard verdict that was wrong about who
-  edited the file; every CLI call needed AMUX_SESSION exported by hand from the tmux name.
-FIX: derive the session from the tmux session name (`tmux display-message -p '#S'`, strip the
-  `amux-` prefix) in the edit-record hook and the CLI when the variable is empty, and say in
-  the guard verdict when that fallback was used. Plus a WARN in the lane-launch path when a lane
-  starts without the variable, so /api/logs/analyze can count these instead of a human noticing.
-
-## The drift-detector protecting mixpeek's git guard is itself blind to staleness
-AREA: attribution
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-24
-SESSION: mixpeek-research
-CARD: MR-44
-SYMPTOM: Landing MR-43 (tmux-derived $AMUX_SESSION fallback) required running
-  `install-hooks.sh --all` to propagate the fix. It reported mixpeek's
-  `.githooks/amux-staged-guard` as "diverges from canonical but carries every
-  canonical feature — left untouched", the correct, safe verdict for a
-  deliberate local merge. It is not one: mixpeek's copy is GUARD_VERSION = 4
-  against a canonical of 9, missing ~215 lines including AF-127 outcome
-  reporting and the AF-195 index/worktree divergence check. The staleness
-  check greps the canonical's single `guard-features` token (AMUX-2946) as a
-  bare substring anywhere in the target file; mixpeek's v4 copy happens to
-  contain that literal string at line 75 in an unrelated comment about retired
-  ports, so the check reads "feature present" when the actual AMUX-2946
-  feature never landed there. This is the exact MG-1485 dark-guard shape the
-  mechanism exists to catch, undetected by the mechanism itself, in the one
-  checkout that matters most for daily commits.
-COST: not measured directly — the cost is whatever the missing ~5 versions of
-  protection would have caught and did not (AF-195's index/worktree check in
-  particular: mixpeek is a shared checkout where that class of bug already
-  happened once, per its own header).
-FIX: two separate fixes. (1) Upgrade mixpeek/.githooks/amux-staged-guard and
-  prepare-commit-msg from v4 to v9 — a real merge, commit in that repo. (2)
-  Make the drift-token check itself resistant to this: require the token
-  match to come from a comment-anchored form, or compare GUARD_VERSION
-  numerically in addition to/instead of grepping tokens. Otherwise the next
-  stale copy hides the same way. Neither started; MR-44.
-
-## session-freshness reported a stale shadowing CLI and prescribed the `cp` that rebuilds it
-AREA: instrumentation
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-24
-SESSION: amux
-CARD: AMUX-3687
-SYMPTOM: The freshness hook's Axis-2 shadow detector fired correctly on
-  /usr/local/bin/amux and then offered `cp "$REPO/amux" "$cand"` as the remedy. A copy
-  silences the warning and leaves a copy, which is stale again the next time anyone edits
-  ./amux — so the prescribed fix reconstructs the exact condition being reported. It is
-  also how the specimen got there: ~/.local/bin/amux has been a SYMLINK since install.sh
-  created it, and /usr/local/bin/amux was the copy, so the one file that could drift was
-  the one the remedy would recreate. What was actually sitting there was an Aug-6
-  227-line stub knowing two verbs (send, board) and defaulting AMUX_URL to
-  https://localhost:8822, the retired port (AMUX-3046). A lane resolving it gets
-  connection-refused on every call, and help-and-exit-0 on `url` or `alert`.
-COST: 18 days undetected, and the detection that finally landed pointed at a remedy that
-  would have reset the clock. Not measurable in minutes for me (the hook named the file
-  and I checked it), but any lane whose PATH ordered /usr/local/bin first was talking to
-  a dead port for those 18 days with no error a session would recognise as a stale CLI.
-FIX: `ln -sfn`, in both branches of the axis, with the reason stated inline so it does not
-  get "simplified" back to a cp. b0a0c6b7. Live shadow reconciled the same way; both PATH
-  entries now resolve to the checkout and the axis is silent.
-  The generalisable half: a detector that names a remedy owes the same scrutiny to the
-  REMEDY as to the check. This one could fail, fired correctly, and still closed the loop
-  back onto itself.
-
-## "CDP never answered within 30s" printed with `DevTools listening on <that port>` in its own message
-AREA: browser
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-24
-SESSION: amux
-CARD: AMUX-3689
-SYMPTOM: Six `POST /api/browser/start` 502s from `primer`, ~30.3s each: "Chrome (pid
-  63351) is running but CDP on port 60005 never answered within 30s". The chrome stderr
-  pasted into the SAME error body reads `DevTools listening on
-  ws://127.0.0.1:60005/devtools/browser/e9edcb66-...`, stamped about three seconds into a
-  thirty second wait. So CDP came up, on the exact port named, and amux polled it for
-  another 27 seconds while reporting silence. The wait loop discarded every poll outcome,
-  so connection-refused, a 1s timeout, a 403 and a 500 all produced that one sentence.
-COST: The cause is still unknown and is now unknowable for these six, because the second
-  half compounds it: the stderr path is opened with `File::create`, which truncates, and a
-  failing caller always retries — so five of the six stderr files were destroyed by the
-  retries before anyone looked, leaving a 600-char tail as the entire record of the
-  incident. Roughly 40 minutes to establish only that the message was false. An
-  investigator who trusted it would have spent that time on Chrome's startup, which is the
-  half that was working.
-FIX: 6d179755. `describe_cdp_probe` names which of {refused, poll timeout, HTTP status}
-  the last poll got, the bail reports it with the attempt count, a WARN carries the same
-  fields so a sweep sees the class, and a failed launch's stderr is copied to
-  `amux-chrome-launch.failed-<ms>.stderr` (newest 5 kept) where the retry cannot reach it.
-  The generalisable half, and it is not "log more": the artifact you need MOST when a
-  failure repeats was being deleted BY the fact that it repeated. A truncating diagnostic
-  file is fine for a one-shot failure and actively hostile for a retried one, and nothing
-  about `File::create` reads as a data-loss decision at the call site.
-
-## The archive tool took evidence as an argv positional, so my shell executed the code I quoted
+## `amux start`/`start-all` silently die under `set -e` on a tmux target-syntax bug
 AREA: cli
-SEVERITY: slows
+SEVERITY: blocks
 STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux-frustrations
-CARD: AF-223
-SYMPTOM: Archiving AF-130 with evidence that quoted code, via
-  `scripts/frustrations-archive.py <line> <who> "<evidence...>"`. Bash printed
-  `line 1: now: command not found` and the archive line landed corrupted in TWO places:
-  "asserts it comes back as , with the comment" (backtick-now evaluated to empty) and
-  "so 0 returned 0 across the whole window" — where `grep -c 'WORK ITSELF is at risk'`
-  was EXECUTED by my shell and replaced by its own output. The archive succeeded; only
-  the one visible bash error hinted anything was wrong, and it named the wrong half.
-COST: a mangled quotation written into the file that exists to be the DURABLE RECORD of
-  what was verified, and the least recoverable place for it: the entry it describes had
-  just been deleted from frustrations.md in the same operation. Caught only because the
-  stray `now: command not found` was on screen. A quieter substitution — `$(date)`, or a
-  grep that returns nothing — would have left a plausible sentence and no error at all.
-FIX: shipped in the same breath. `--evidence-stdin` / `--evidence-file` on the tool, with
-  the usage text saying to prefer them whenever the evidence quotes code. Verified the
-  file path preserves backticks and $(...) byte-for-byte.
-NOTE: this is AMUX-1888's shape, and the rule already exists — `amux send` and
-  `amux board add` both grew --stdin/--file for exactly this, and CLAUDE.md states it as a
-  fleet convention I have cited repeatedly this week. My own tool was written in the old
-  shape and I used it the old way. The lesson is not "remember the rule": it is that a
-  tool taking free text as an argv positional MAKES the trap, and every such tool in this
-  repo has now had to learn the same lesson separately.
-
-## The nudge that tells you to discard a card names no command that does it
-AREA: notices
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux
-CARD: AMUX-3707
-SYMPTOM: The capture-shell nudge ("X is a captured prompt, not a unit of work")
-  is ~250 words and fires ~42x/day fleet-wide, once per capture card ever. It
-  tells the lane to "discard it" and to "set each child's `epic`". Neither was
-  reachable from `amux board`: `discard` dispatches but is absent from help, and
-  `epic` had no verb at all, though `epic` is a real PATCH field (board.rs:2142)
-  added by AMUX-2992. Ethan flagged the token cost after seeing one fire on a
-  question he had already answered inline.
-COST: 540 nudges ever, 296 in the last 7 days. 70.6% of the cards ended
-  `discarded`, i.e. the woken turn produced a one-line retirement. The prose is
-  ~330 tokens; the turn each one wakes is tens of thousands. Every lane that
-  followed the nudge to its epic exit had to hand-roll a curl, which drops
-  X-Amux-Session, so the nudge was generating the unattributed board writes the
-  ledger depends on not having.
-FIX: c1c238b1. Text cut to ~85 words with a command on every exit; `amux board
-  epic` added; `discard`/`show`/`reviewer`/`archive`/`unarchive` added to help;
-  tests/nudge_commands_exist.rs sweeps every `amux board <verb>` the server
-  emits against the CLI's case arms on every build.
+DATE: 2026-08-30
+SESSION: amux (recovering from the KillMode incident above)
+CARD: INIT-2
+SYMPTOM: While recovering the fleet from the KillMode=mixed incident (previous entry),
+  `amux start-all` created exactly ONE tmux session then exited 1 with NO output at
+  all. `amux start <name>` on any not-yet-running session behaved the same: silent
+  exit 1, session left running-but-unlocked in tmux, nothing printed. Root cause:
+  `cmd_start`'s window-name lock, `tmux set-option -t "=$tname" allow-rename off
+  2>/dev/null`, targets a WINDOW-scoped option with a bare session-exact-match
+  target — tmux looks for a window literally named "=amux-<name>", finds none,
+  exits 1 — and `set -euo pipefail` (line 19) kills the function right there, with
+  the only evidence routed to `2>/dev/null` on that exact line. A second, separate
+  bug compounded it: `cmd_start_all` called `cmd_start "$name"` with no `--detach`,
+  so even after fixing the first bug, the first session started still hit
+  `cmd_start`'s own terminal-attach step, correctly failed "open terminal failed:
+  not a terminal" in this non-interactive context, and `set -e` aborted the rest of
+  the loop — every session after the first silently stayed down.
+COST: `amux start-all` — the obvious, documented recovery command for "the whole
+  fleet is down" (INIT-1) — was silently non-functional for that exact use case.
+  Cost ~15 minutes of manual per-session `amux start <name> --detach` calls to
+  actually recover the fleet before this was root-caused, and would cost the same
+  to the next session (or the next reboot) that reaches for `start-all` expecting
+  it to work.
+FIX: `amux` (ships on save, already live): `-t "=$tname"` ->
+  `-t "=$tname:"` on both the `set-option`/`set-window-option` lines (explicit
+  window target); `cmd_start_all`'s `cmd_start "$name"` -> `cmd_start "$name"
+  --detach`. Verified live: a fresh non-TTY `amux start <name>` now starts the
+  session and prints the honest attach-failure message instead of silent exit 1;
+  `amux start-all` against 8 fully-stopped sessions now starts all 8 in one pass
+  (the 9th, `synthesia`, fails for a pre-existing unrelated reason — a macOS path
+  baked into its config on this Linux box — and now says so clearly instead of the
+  whole batch dying silently after the first session).
 
 ## An AF-66-style guard existed for this and had been green the whole time
 AREA: instruments
@@ -2343,277 +1572,128 @@ FIX: c1c238b1 widens it from one fixture to a source sweep of the whole server
   it. A single-call-site guard is worth naming its scope in its own doc comment.
 
 ---
-## The ledger cannot express that an entry is unvalidatable, so 20% of the open set can never drain
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux-frustrations
-CARD: AF-229
-SYMPTOM: `frustrations_audit.py` resolves every CARD: against the live board and printed one
-  advisory when it missed: "not on this board (other instance, or deleted)". Byte-identical
-  for AC-227 (amux-cloud, a LIVE lane here) and AEAB-18 (amux-errors-and-bugs, absent from
-  all 120 sessions, working out of a `~/Developer/amux` that does not exist on this machine).
-  12 of 59 open entries are AEAB-*; direct GET returns 404 for each, and 0 of 9,296 cards
-  carry that prefix while DESKT-*, also a non-fleet lane, carries 25.
-COST: The deletion protocol keys removal to the ORIGINATING session's sign-off, so those 12
-  have no party who can ever sign them off — they accumulate in the open set forever while
-  reading as ordinary work. This file's entire argument is a COUNT ("three entries sharing an
-  AREA is an argument"), so a fifth of the open set being permanently unactionable distorts
-  every AREA tally computed from it, including the ones used to decide what to rebuild next.
-  Not hypothetical: it is why the drive-to-zero sweep stalled at 59 rather than finishing.
-FIX: 04721906. The advisory stays advisory — a cross-instance id is not an error — but it now
-  discriminates, and the discriminator is the PREFIX NAMESPACE rather than author liveness.
-  That distinction is load-bearing: amux-rust is not live either, yet AR-114 answers HTTP 200,
-  so judging on liveness alone called six drainable AR-* entries permanently stranded on the
-  first run. Same commit fixes a defect it exposed rather than caused: `board.get()` was called
-  on the whole CARD string, so multi-id fields ("AR-114, AR-115, AR-116") had ALWAYS reported
-  unresolved, invisibly, until the branch started saying something specific and said it wrongly.
-  Two of three predicate mutations survived the first draft of the test suite, which is why the
-  roll-up and the empty-session-list controls exist as their own cells.
-  STILL OPEN, and it is Ethan's call, not mine: what actually happens to those 12 entries.
-  Reaching amux-errors-and-bugs, or retiring them with a rationale, is a decision about another
-  party's contributions (ethos rule 8). The audit now names them; it does not presume to sweep them.
-
-## A detector's query failure was swallowed, so the whole detector had no coverage
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux
-CARD: AMUX-3696
-SYMPTOM: `detect_silent`'s steering block was `if let Ok(mut stmt) =
-  conn.prepare(...)` with no else. A schema error skipped the entire block and
-  left nothing behind, which reads exactly like "no lane has a stalled queue".
-  It is not hypothetical: `steering_queue.sender` is added by
-  `ensure_fleet_tables`' runtime ALTER and by NO migration, so any database
-  built from `migrations/` alone lacks the column and the query does not
-  prepare. That is the state every test fixture is in.
-COST: The steering-stall detector had ZERO test coverage and nobody could have
-  known — every test that appeared to exercise it was exercising nothing,
-  silently. Found only because I wrote a new test, seeded a row, and the INSERT
-  failed on the missing column. Had I written the test without a write, it
-  would have passed vacuously and I would have shipped it as coverage.
-FIX: 79080270 records a Suppressed naming the prepare error, where the autofix
-  report already surfaces suppressions. The test now asserts the query PREPARED
-  before asserting anything about its output.
-
-## An autofix card's fields contradicted each other, and only reading it caught that
-AREA: instruments
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux
-CARD: AMUX-3696
-SYMPTOM: After splitting the steering deadline in two, the emitted card said
-  `threshold_min: 90` on a finding that fired at 360, and its `senders` blurb
-  read "that lane may be unable to receive anything, which is what this card
-  reports" directly beneath `lane_reachable: yes`. Every individual field had
-  been correct before the change and two of them silently stopped being so.
-COST: No wrong conclusion shipped, but only because I happened to read the full
-  payload printed by a FAILING mutation run. No assertion covered either field,
-  and nothing about the change site suggested they needed revisiting. A card
-  whose fields contradict each other is worse than one missing a field, because
-  each is read as a fact.
-FIX: 79080270, both corrected and both pinned. The general lesson: when a
-  verdict gains a second branch, every field computed alongside it inherits the
-  branch whether or not it was touched — grep the payload, not the diff.
-
-## `node --check` is blind to a duplicate function name, and that shipped a dead dashboard
-AREA: instruments
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux
-CARD: AMUX-3715
-SYMPTOM: I added `function _renderArchivedSection(container)` for the board's
-  archived section. The sessions view already had a `_renderArchivedSection`
-  ~11,000 lines earlier. Declarations hoist and the last wins, so mine silently
-  replaced theirs; every sessions call site passes no arguments, so it hit
-  `container.appendChild(wrap)` on `undefined` and threw before the loading
-  overlay was hidden. The main dashboard view was dead.
-COST: A live regression on the primary view, shipped and deployed. Found by
-  gtm-research, not by me and not by any check. The PostToolUse hook runs
-  `node --check`, which passed — a duplicate `function` is legal JavaScript. I
-  had also written in that commit that every function the new code CALLS was
-  verified to exist, which is the one-directional half of the check and the half
-  that was already fine.
-FIX: 7607ee46 (gtm-research renamed mine) + a guard in
-  tests/dashboard_assets.rs enumerating duplicate top-level declarations,
-  verified by restoring the collision: `node --check` still passes, the guard
-  fails. The general lesson is in ethos.md rule 7 — when a tool covers a class,
-  ask which members the LANGUAGE makes legal, because those are the ones it
-  silently does not cover. A duplicate `let` is a SyntaxError; a duplicate
-  `function` is not.
-
-## The nudge that tells you to union-merge cannot tell you how to do it safely
-AREA: notices
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: mixpeek-frustrations (hit it), amux (fixed it)
-CARD: AMUX-3718
-SYMPTOM: A DIVERGED FRUSTRATIONS.md nudge said `MERGE the two versions (for
-  append-only files, union-merge per .claude/rules/frustrations.md)` and stopped
-  there. Two things were wrong at once. The cited path exists in ~/Dev/amux and
-  NOT in ~/Dev/mixpeek, where the reader was, because commit_nudge is server
-  code that fires into every lane's OWN checkout. And the safe procedure it was
-  pointing at could never have arrived anyway: `build()` defines commit_worthy
-  as the dirty paths that are NOT stale/diverged/revived, and the archive-check
-  note was emitted from inside `commit_worthy_body`, which receives exactly that
-  set. So a DIVERGED append-only file was structurally excluded from the only
-  code that emits the archive check. The one state that prescribes a union-merge
-  was the one state that could not be told how to perform it.
-COST: A near-miss on real data. The lane followed the destructive half verbatim,
-  which would have resurrected an entry closed on a 692/692 prod measurement and
-  double-inserted a content twin already on origin under a different subject. It
-  also cost a second lane a wrongly-filed card, since from ~/Dev/mixpeek the
-  only visible symptom is "this file does not exist" and the citation looks like
-  the whole bug. Both readings were reasonable and both were incomplete.
-FIX: 972b44a4. Hoisted the note to `build()` over the full dirty set so it
-  travels with every arm, deleted the citation because the procedure is already
-  inline, and rewrote the note's unit test to go through `build()` — it had been
-  calling `commit_worthy_body` directly and was green for the entire time the
-  note was unreachable (ethos rule 7 / AF-161: a check pinning the wrong layer
-  is exactly as green as one pinning the right layer). Second fix per the
-  two-fixes rule: `missing_archive_check()` now WARNs on the ACTUAL delivered
-  bytes before `steer_enqueue`, so the next regression announces itself in
-  server-rs.log instead of arriving as another near-miss.
-  The general shape worth remembering: a citation is only as good as the reader's
-  checkout, and the dangerous half of an instruction must never be the half that
-  travels while the safety half is behind a link.
-
-## SUPERSEDES the entry above: browser state's cap was silent, and my diagnosis of it was wrong
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-25
-SESSION: amux
-CARD: AMUX-3721
-SYMPTOM: The entry immediately above blames the state extractor's SELECTOR for
-  missing div-with-onclick rows and asks for CSS-selector clicking. Both claims
-  are false and I am correcting them rather than leaving them to be greped as
-  evidence. The selector has always contained `[onclick]`, and
-  `selector_click_js()` already existed in the same file.
-  The real defect: `state_js` collects every visible match into `seen`, renders
-  the first STATE_EL_LIMIT (120) into `els`, and disclosed nothing about the
-  gap. Measured live: 3625 matched the selector, 158 were visible, 120 were
-  returned, and the two elements I could not find sat at indices 155 and 156 —
-  addressable the whole time, because click-by-index resolves against `seen`
-  rather than `els`. Clicking 156 worked the moment I looked past the response.
-COST: A wrong cause filed on a card and written into this file, plus the ~20
-  minutes already recorded. The compounding cost is what makes it worth an
-  entry: a wrong entry here is read as evidence by whoever greps `AREA:
-  instruments` later, and three entries sharing an AREA are supposed to be an
-  argument for rebuilding something. An argument built on a wrong diagnosis
-  points the rebuild at the wrong subsystem.
-FIX: 1cddf81a — disclosure, not a bigger cap: `elements_total`,
-  `elements_shown`, `elements_truncated`, and a note naming the addressable
-  index RANGE and the two ways through. Verified live after adoption:
-  total 162, shown 120, truncated true. The cap is fine; being unable to tell
-  that it applied was the defect.
-  THE TELL I WALKED PAST, which is the transferable part: the response held
-  EXACTLY 120 elements, which is exactly the cap. A count landing precisely on
-  a limit is a truncation, not a census. Both theories predicted the same
-  observation ("my element is not in the list"), and only one was checkable in
-  one command: `document.querySelectorAll(SEL).length`. When two explanations
-  predict the same failure, reach for the one you can separate cheaply.
-
----
-## The log sweep's own instrument could only show it 1.6% of the window it was judging
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux-frustrations
-CARD: AF-230
-SYMPTOM: `GET /api/logs?since=<24h ago>&limit=2000` answered `total_matched: 123645`,
-  `count: 2000`, and the rows it returned spanned 0.48 HOURS. `since` ("ts > ?") was the
-  only time bound, and the query is `ORDER BY ts DESC LIMIT <=2000`, so every call returns
-  the same newest rows and there is no way to page backward. Nothing in the response said
-  the page was a slice — `total_matched` disagreed with the window being described, but the
-  mismatch had to be noticed rather than read.
-COST: Sweep step 5 decides whether a lane is doing mutating work with no board trace — the
-  contract's own words are that this is "the accusation you cannot un-say", and it lists
-  seven qualifications, each added after a false positive. That step has been reaching its
-  verdict from one capped page for as long as it has existed. Today's answer was clean, so
-  the cost was not a wrong accusation; it was that a clean 29 minutes was on its way to
-  being reported as a clean day. The contract already carried a workaround telling the
-  reader to state the blind spot "or read the store directly for the full window" — routing
-  a caller off the sanctioned instrument onto raw SQL, which is the rule 6 shape.
-FIX: fcff219e. `until` ("ts <= ?") makes the window walkable (`since < ts <= until`), and
-  the response now admits when it is a slice: `truncated`, `page_span_h`, and a note naming
-  the paging move. `analyze` and `stats` already publish `scan_truncated`/`actual_window_h`
-  for exactly this reason; this is the same admission on the endpoint that lacked it, so the
-  next capped read announces itself in the payload the caller already opens. The contract's
-  step 5 now carries the paging loop instead of the workaround.
-
 ## `amux` died at load with a bash syntax error — every subcommand, every session, at once
 AREA: cli
 SEVERITY: blocks
 STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux (hit and reported by gtm-media-assets)
-CARD: AMUX-3722
-SYMPTOM: `amux send <peer> --stdin` -> `/Users/ethan/.local/bin/amux: line 1906: syntax error near unexpected token `;;'`. Identical on --file and on every `amux board` subcommand: a parse error at LOAD, so nothing input-dependent. Reporter also observed that ~/.local/bin/amux stats as 26 bytes with a Feb 18 mtime, which cannot be a script with a line 1906 — that is the SYMLINK's own stat, and the target is what changed.
-COST: The whole fleet lost the CLI until a peer noticed and reported it over the HTTP API. Unquantifiable session-minutes across ~50 lanes, and the reporter spent time chasing an mtime that could never have explained it. Worse than the outage: a CLI that cannot parse cannot print its own help, so the tool could not tell anyone how to work around the tool — a session that had only ever used `amux send` had no path left to discover POST /api/sessions/<n>/send exists, and would read it as "amux is down" rather than "the CLI is down".
-FIX: 5ecec79c. Two gates at the two boundaries. `.claude/check-and-commit.sh` runs `bash -n` on any edit to `amux` — that is the one that fires in TIME, because ~/.local/bin/amux is a symlink into the working tree and for the bash CLI the deploy boundary is the SAVE, not the commit: no install, no builder cycle, no CI in between. `tests/cli_syntax_guard.rs` is the backstop for an edit made without the hook. Both mutation-verified against the real specimen. The repo already ran `node --check` on dashboard JS on every save; the CLI, which ships faster and breaks wider, had nothing.
+DATE: 2026-08-30
+SESSION: amux (recovering from the KillMode incident above)
+CARD: INIT-2
+SYMPTOM: While recovering the fleet from the KillMode=mixed incident (previous entry),
+  `amux start-all` created exactly ONE tmux session then exited 1 with NO output at
+  all. `amux start <name>` on any not-yet-running session behaved the same: silent
+  exit 1, session left running-but-unlocked in tmux, nothing printed. Root cause:
+  `cmd_start`'s window-name lock, `tmux set-option -t "=$tname" allow-rename off
+  2>/dev/null`, targets a WINDOW-scoped option with a bare session-exact-match
+  target — tmux looks for a window literally named "=amux-<name>", finds none,
+  exits 1 — and `set -euo pipefail` (line 19) kills the function right there, with
+  the only evidence routed to `2>/dev/null` on that exact line. A second, separate
+  bug compounded it: `cmd_start_all` called `cmd_start "$name"` with no `--detach`,
+  so even after fixing the first bug, the first session started still hit
+  `cmd_start`'s own terminal-attach step, correctly failed "open terminal failed:
+  not a terminal" in this non-interactive context, and `set -e` aborted the rest of
+  the loop — every session after the first silently stayed down.
+COST: `amux start-all` — the obvious, documented recovery command for "the whole
+  fleet is down" (INIT-1) — was silently non-functional for that exact use case.
+  Cost ~15 minutes of manual per-session `amux start <name> --detach` calls to
+  actually recover the fleet before this was root-caused, and would cost the same
+  to the next session (or the next reboot) that reaches for `start-all` expecting
+  it to work.
+FIX: `/home/syseng/src/amux/amux` (ships on save, already live): `-t "=$tname"` ->
+  `-t "=$tname:"` on both the `set-option`/`set-window-option` lines (explicit
+  window target); `cmd_start_all`'s `cmd_start "$name"` -> `cmd_start "$name"
+  --detach`. Verified live: a fresh non-TTY `amux start <name>` now starts the
+  session and prints the honest attach-failure message instead of silent exit 1;
+  `amux start-all` against 8 fully-stopped sessions now starts all 8 in one pass
+  (the 9th, `synthesia`, fails for a pre-existing unrelated reason — a macOS path
+  baked into its config on this Linux box — and now says so clearly instead of the
+  whole batch dying silently after the first session).
 
-## `force` claimed to log the judgment and logged an empty string, 41 times out of 41
-AREA: attribution
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
+## A fix that brings the fleet back up can itself make local cargo unsafe again
+AREA: build
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-08-31
 SESSION: amux
-CARD: AMUX-3723
-SYMPTOM: Every force audit line on this board reads `force by <who>: a->b reason=` with nothing after the `=`. 41 lines, 41 blank — never once populated. The board contract advertises force as "bypass (judgment stays with you; logged)", and ts-gke's 2026-08-03 fix made attribution mandatory precisely so the ledger would name the party holding the judgment. It named them and recorded no judgment.
-COST: Found while auditing how the autofix backlog was actually closed, and it made that audit undecidable for 25 cards: bulk-discarded in one minute, attributed, with nothing recorded about why. Reconstructing intent meant reading desc diffs card by card. The one escape hatch from the entire gate system was the one action whose trace could not answer the only question anyone asks of it.
-FIX: f013ba5b. Neither obvious suspect was guilty, which is why it survived: `amux board --force` has always REFUSED to run without a reason, and the server has always written a supplied reason to the log (an existing test asserts it, and passed throughout). The CLI validated the reason and then sent it as `desc_append` instead of `reason` — 9 of the 41 cards carry a good "[FORCED] <why>" in their desc beside a ledger line that says nothing. A test on either side of the seam and none ON it. Now: the CLI sends both, the server refuses a blank reason from any caller with a 400 that names the sanctioned command, and a `force_without_reason` tracing marker makes the next off-path caller visible (a bare 400 here groups with every other board-PATCH 400 in /api/logs/analyze).
+CARD: AMUX-48
+SYMPTOM: Shortly after fixing AMUX-49 (every registered lane, not just `amux`,
+  now comes back up after a reboot — 6 more Claude sessions went from stopped to
+  running as a direct result), a plain `cargo check -p amux-server` — the ONE
+  cargo invocation the existing offload-builds guidance called safe to run
+  locally, single-crate, `.cargo/config.toml`'s `jobs=1`/`incremental=false`
+  throttle already active — got OOM-killed (exit 137) anyway. `free -h`
+  immediately after: 5.5GiB available out of 13GiB, zero swap. `.cargo/
+  config.toml`'s own header (written 2026-08-28, FRONT-2) already names the
+  mechanism: its throttle was tuned and verified against THAT day's baseline
+  memory occupancy, and it explicitly warns a kill under pressure is not
+  necessarily the build's own process — the OOM killer can reap an unrelated
+  Claude Code session as collateral instead. AMUX-49 raised this box's
+  baseline occupancy (8 running Claude processes instead of 2, ~200-400MB RSS
+  each) without anyone re-measuring whether the existing throttle still holds
+  against the new baseline.
+COST: A gate that could not be honestly satisfied: AMUX-48's new invariants
+  check (session.registered_lane_is_running) is written and follows an
+  established, already-working pattern closely, but could not be verified to
+  even COMPILE locally without risking re-crashing the same session AMUX-49
+  had just recovered — the exact irony of one fix undermining the safety
+  margin a sibling fix depended on. Remote build hosts were ALSO unreachable
+  at the same time (a separate, unrelated baar-site netbird outage), so there
+  was no fallback verification path at all for a period.
+FIX: none yet — this is a structural gap, not a one-line bug. The honest
+  interim mitigation (applied 2026-08-31): `offload-builds` memory widened to
+  say `cargo check -p <single-crate>` is no longer a blanket-safe default —
+  check `free -h` for real headroom before ANY local cargo invocation, treat
+  the margin as a property of current fleet occupancy, not of the command's
+  scope. A real fix would be either a durable local swap file (this box
+  currently has NONE — `free -h` shows `Swap: 0B`, so there is zero graceful
+  degradation under pressure and the OOM killer fires immediately) or a
+  standing, always-available remote build target instead of relying on
+  the specific remote hosts named in CLAUDE.local.md (private, this repo
+  is public) being up when needed.
+
+## Same root cause as above, escalated: the auto-builder itself now fails repeatedly, not just a manual check
+AREA: build
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-08-31
+SESSION: amux
+CARD: AMUX-48
+SYMPTOM: Supersedes/extends "A fix that brings the fleet back up can itself
+  make local cargo unsafe again" (same date, above) — that entry covered a
+  manual `cargo check` getting OOM-killed once. Verifying AMUX-48's `done`
+  card an hour later surfaced something worse: `amux-builder.timer`
+  (enabled, polling every 60s) has been trying to build commit d7af60f5
+  since it landed and failed SIX consecutive times over ~15 minutes, every
+  attempt dying with a bare `Terminated` right after "Preparing worktree"
+  finishes, before any `Compiling` line ever appears in the log. Host load
+  climbed the whole time this was observed: 43.59 -> 58.08 (1-min, 4
+  cores) — not a one-off spike, a sustained, worsening trend. The
+  builder's own lock (mkdir-based, `scripts/rust-auto-build.sh`) IS working
+  correctly — attempts are serialized, not overlapping — so this is not the
+  builder compounding its own problem, it's the AMBIENT load (this
+  session's 8 concurrent Claude processes + a desktop stack (Xvfb/x11vnc/
+  openbox/chromium) that restarted mid-observation for unrelated reasons
+  (see FRONT-4) + everything else on this box) leaving no room for even a
+  single serialized release build to complete.
+COST: `/health`'s `commit` field has been stuck at `5e5f4b24da71` through
+  three real fix commits (e6d48d53, d428277a, d7af60f5) landing on top of
+  it — the fleet has been running increasingly-stale code for the whole
+  window, and AMUX-48's own invariants check (meant to catch OTHER
+  processes dying silently) cannot itself be confirmed live because the
+  binary that would contain it never finishes building. The exact
+  "outcome confirmed to still hold" a `verified` gate asks for could not be
+  honestly claimed for the live-deploy half of that question — recorded
+  as a caveat on the card rather than papered over.
+FIX: none yet. Same interim mitigation as the prior entry (offload,
+  headroom-check before local cargo) doesn't cover THIS case — the builder
+  is a system service, not something a session chooses to run or skip.
+  A real fix needs either genuinely lowering this box's baseline occupancy
+  (durable question: does this box need to run 8 concurrent Claude
+  sessions plus a full desktop stack plus periodic release builds, or does
+  one of those need to move), or giving the builder itself a remote-offload
+  path the way this session now does manually for ad hoc verification.
 
 ---
-## amux lanes answer from an 8th-generation summary; a raw terminal answers from primary sources
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3742
-SYMPTOM: An amux lane and a raw `claude` terminal, same model and same prompt, give noticeably different quality, and nothing in amux could say why. Model, effort and first-turn token baseline are identical on both sides (measured: both dominated by claude-opus-5 at xhigh, 59,016 vs 56,663 first-turn input tokens). What differs is compaction generations: amux lanes median 8 / max 215, raw terminal median 0 / max 32. Every start resumes (all 8 `start_session` call sites pass `skip_conv_id=false`), so a lane's conversation is immortal. The remedy existed and reached nobody: `app.js` rendered "New conversation" only when `!s.running`, and `config_patch` answered 409 while running, so on all 50 live lanes the one control that fixes this was hidden AND refused.
-COST: Unquantifiable degradation fleet-wide for as long as lanes have been long-lived, and it took an owner noticing by feel. The diagnosis then cost four hypotheses measured and killed (model, effort, system-prompt tax, harness share) because no instrument reported the one that mattered.
-FIX: 92e1383f, c246b7b9 — `amux fresh <name>`, the dashboard item on a running worker, `GET /api/debug/context-health`, and an hourly `context_health` job that logs the census every pass and WARNs `context_degraded`.
-
-## The generation meter shipped truncating its own scan, and a truncated count looks like a healthy one
-AREA: instruments
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3742
-SYMPTOM: `count_compact_boundaries` did a single `take(64MB).read_to_end()` and stopped, so on a 324MB transcript it scanned the first 64MB and returned the partial count as the answer: 30 against a hand count of 75, and 105 against 215 for `mixpeek-cicd`. Shipped inside the very feature whose purpose is to stop reporting numbers that cannot be told from healthy ones.
-COST: Caught within minutes, but only because the new endpoint disagreed with the census that motivated it. A reader with one number would have believed it. Also exposed that the obvious test is vacuous: every fixture small enough to write fits inside one 64MB read, so an EOF-scan test passes against the bug unless the read size is exposed as a seam.
-FIX: c246b7b9 — chunked to EOF; `count_compact_boundaries_with_chunk` so the test drives a 4KB chunk over a multi-chunk fixture. Mutation-verified: restoring the single-read `break` goes red at left Some(1), right Some(3).
-
-## A renamed lane silently orphans every card that named it reviewer
-AREA: attribution
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3751
-SYMPTOM: The rename cascade migrates `issues.session` and leaves `issues.reviewer` and `issues.shepherd` pointing at the dead name. The card still reads `review`, which looks healthy, while the reviewer nudge is addressed to a session that no longer exists. A nudge going nowhere is indistinguishable from a reviewer who is merely slow.
-COST: 7 open cards parked in `review` on a reviewer that resolves to no registered worker, found only because Ethan asked an unrelated question about reviewer routing. Two name `amux-rust`, renamed to `amux` long ago.
-FIX: 944f06b5 — the cascade migrates reviewer and shepherd; `session_is_registered()` is the one predicate for "can amux address this name"; the reviewer edge returns reason `reviewer-unreachable` with a WARN instead of nudging into the void.
-
-## The badge and the drive loop judged the same self-report differently, and a lane could deadlock for 61 hours
-AREA: instruments
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3756
-SYMPTOM: `derive_status` applies a real trust model to a stored self-report — previous life, `stale_active`, trust window — and publishes `applied:false` for one it refuses. `steer_lane_at_boundary`, the gate on auto-pickup, board nudges and steering delivery, read the SAME row and asked only `state == "idle"`. So a lane whose Stop hook never fired kept a stuck `active` report, its dashboard badge correctly read IDLE (`decided_by: activity_fallback`), and the drive loop skipped it as `mid-turn` forever. The two halves of amux disagreed about the same fact, and the correct half was the one nobody acted on.
-COST: 4 of 52 running lanes held out of the work loop, every one with `auto_pickup: true` and eligible cards waiting: creative-dna 61.4h, ai-video-editor 59.5h, mixpeek-autopilot 6.4h, primer 1.0h. Self-perpetuating, because only a turn writes a new report and only a human starts a turn on a lane the loop refuses to touch — so the sole exit was Ethan typing at it, which is exactly what he reported ("why do i need to push @tubescience to continue"), and doing so destroyed the evidence. The `mid-turn` skip reason read identically for a lane genuinely generating and one deadlocked for two and a half days.
-FIX: 7e4682f0 — `report_applies()` is the one predicate, called by the badge and the gate; `lane_report()` is the one read, replacing two unjudged copies. A refused report WARNs `stuck_self_report` once per lane per report ts, and the board-drive trace's `mid-turn` detail now names the report's state, age and verdict.
 
 ## Typing at a lane disabled that lane's auto-pickup
 AREA: board
@@ -2626,94 +1706,6 @@ SYMPTOM: Every prompt is auto-captured as a `doing` card whose desc is still lit
 COST: The specimen is TUBES-2225, titled "Why are you stopping": Ethan's complaint about tubescience stopping was itself the card holding the WIP slot that kept it stopped. A frustrated re-prompt is the likeliest prompt to arrive at a stalled lane, so the loop closed on exactly the lanes already in trouble. This lane's own board held 11 capture shells in `doing` at once, all of them his prompts.
 FIX: 7e4682f0 — a capture shell joins the WIP exemption, using the same `substr(desc,1,11)` form as the fold query in board.rs so the two cannot disagree about what a capture shell is. Reshaping the desc, which is the exit the decompose nudge already asks for, makes it count again.
 
-## A gate that reads the real filesystem from inside a pure board function turns three unrelated tests red on every host
-AREA: tests
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3751
-SYMPTOM: AMUX-3751's reviewer-unreachable gate called `session_is_registered()`, which stats `~/.amux/sessions/<name>.env`, from inside `select_advance`. Board fixtures name reviewers like `peer` that exist on no machine, so three routing tests started failing — here, and in CI, for a reason that has nothing to do with what they assert. The gate itself shipped with no test of its own; breaking other people's tests was its only coverage.
-COST: Found by running the full suite rather than the filtered one, which is the only reason it did not reach a push. A green filtered run and a red full run is the shape that gets pushed at the end of a session.
-FIX: 7e4682f0 — `select_advance_with()` takes an injected lookup, which is what `config::resolve_home`'s own doc asks new tests to prefer over `set_home`; the tests shadow `select_advance` with a permissive registry, and `the_gate_refuses_a_reviewer_no_nudge_can_reach` exercises both cells of the gate directly.
-
-## The pickup prompt threw away the card it was holding, and made the model buy it back at 308k tokens a call
-AREA: tokens
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3759
-SYMPTOM: `pickup_prompt` built the card's `desc + log` and then wrote `.chars().take(500)`. The lane received an ID and a 500-character stub, and spent tool calls reading back text the function had in hand one line earlier. Measured over 11,117 turns across 67 lane transcripts: an auto-pickup turn takes a MEDIAN OF 22 TOOL STEPS where a human-prompted turn takes 3, at a median resident context of 308,059 tokens per model call (p90 738k, max 966k). The cap saves ~1k tokens of steering text and costs ~308k per avoidable fetch — the wrong resource by three orders of magnitude. Silent, too: a truncated excerpt was indistinguishable from a short card.
-COST: On the live queue it truncated 86% of todo cards (median definition 1,933 chars, p90 6,658) and discarded 108,820 characters of card definition. 43.8% of fleet turns and 49.7% of input tokens are amux-initiated, so this rides the largest single class of spend. Ethan noticed by feel — "theres also way too much tokens used for some reason in between tasks" — because no instrument reported steps-per-turn by what started the turn.
-FIX: ade006c2 — `AMUX_PICKUP_EXCERPT_CHARS`, default 4000, config rather than a constant because this is D4 in the ethos ledger. A cut excerpt now says it was cut and names the read.
-
-## "Is this badge accurate" is unanswerable by the time the screenshot arrives
-AREA: instruments
-SEVERITY: slows
-STATUS: open
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3761
-SYMPTOM: `derive_status_explain` is computed fresh per request and never persisted, and `session_events` records no lane status rows at all (verified against the live DB: zero for gtm-research across the whole window in question). So `status-explain` answers "which rule decided this lane is WORKING right now", while the question anyone actually asks is "why WAS it WORKING when I looked" — and a screenshot always arrives minutes later, by which time the lane has taken another turn and the evidence is gone.
-COST: Ethan sent a screenshot of gtm-research reading WORKING + AGENTS over a pane whose visible text was the agent saying it had no task queued, and asked whether that was accurate. It reads `idle` now, correctly and for a good reason, and which rule fired 31 minutes earlier cannot be recovered. AMUX-3434 built status-explain specifically so a wrong badge would not cost a screenshot investigation; it still does, one layer up.
-FIX: none yet. Record a `session.status_decided` event on CHANGE of status or `decided_by`, and return recent history from status-explain. The natural home is the ScanLoop, and a write-on-change into a 2.2GB SQLite from a 15s loop over 52 lanes needs its row rate measured before it ships.
-
-## Fixing a mechanism made its own nudge text false, and the false nudge went to the lane that wrote the fix
-AREA: instruments
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3762
-SYMPTOM: The capture-shell decompose nudge opens "is a capture shell holding your WIP slot". AMUX-3757 exempted capture shells from the WIP cap ninety minutes earlier, so the clause became false the moment that commit adopted. Nothing tied the nudge's claim to the query it describes, so the mechanism moved and its narration stayed put — the same view-disagrees-with-mechanism shape AMUX-3756 had just fixed one layer down, minted by the author of that fix.
-COST: Small in tokens, sharp in kind. A nudge's whole persuasive force is "this is blocking you"; asserting a blockage that no longer exists makes a lane act on fictional urgency and buries the honest reason (no status is a true statement about a captured prompt, so no gate can pass it). It was caught only because the first delivery of the false nudge happened to land on the lane that had written the exemption. That is luck, and the next one will land somewhere nobody can tell.
-FIX: b766472c — the clause is gone, the honest reason is stated, and `the_decompose_nudge_does_not_claim_a_blockage_the_wip_query_exempts` derives BOTH the pickup verdict and the nudge text from the same card so changing either alone fails. It also asserts the honest reason survives, because deleting a false claim and leaving an unmotivated chore is the other way to get this wrong.
-
-## An unknown message type defaulted to "Human", so 355 amux nudges wore a person's badge
-AREA: attribution
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3737
-SYMPTOM: `msg_kind` was a denylist (`session`/`schedule`/`system` matched, everything else fell through to `human`). `pickup` was added later and nobody taught the classifier, so every board-drive auto-pickup nudge rendered with a blue `Human` badge in the Messages view. The row already carried `origin: board-drive`, so the discriminator was present and the classifier did not read it. The same denylist was restated in the SQL kind filter, so the badge and the filter corroborated each other; `_msgKind` in app.js was a third copy with the same default; and `_MSG_KIND[kind] || _MSG_KIND.human` was a fourth, which meant a server-only fix would have changed nothing on screen.
-COST: 359 rows, 4.0% of 8,993 messages, misattributed to a person. Ethan caught it from a screenshot rather than from any instrument, and the misreading is the expensive direction: a fleet that is being auto-driven looks like it is being hand-driven. Also two docs defending the bug — the module header recorded the fallback as a deliberate Python-parity decision, and a test asserted `msg_kind("legacy-weirdness") == "human"` — so the first two things a reader consults both said it was intended.
-FIX: 4239ee08 — an allowlist with an explicit `unknown` kind (selectable as a filter, because a kind nobody can select is a kind nobody goes looking for), the SQL filter built from the same constants, and both client copies aligned. Verified live: MSG-33250 now reads `kind=amux`, and 200 sampled `kind=human` rows carry zero machine origins.
-
-## AMUX-2670's fix has never executed
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3737
-SYMPTOM: `_msgKind` in app.js has returned `'unstamped'` for a `raw-tmux-fallback` row since AMUX-2670, with a comment stating that an unstamped injection must not render identically to an audited send. That branch is unreachable: `_msgKind` returns the server's `kind` when the row carries one, every API row does, and the server classified the type as `human`. And there was no `_MSG_KIND.unstamped` entry, so even reaching the branch fell back to the Human badge. Two independent reasons the card's intent could never reach a screen, in code that reads as though it works.
-COST: A security-adjacent distinction — audited send versus unverified keystroke injection — silently absent for however long, while the code and its comment both assert it is present. Only 2 rows exist today, so the cost is latent rather than realised, and that is the point: nobody would have noticed until it mattered. Found incidentally, one line away from an unrelated fix.
-FIX: 4239ee08 — `unstamped` is a real kind on both sides. The general lesson is the one worth keeping: a client-side classifier that defers to a server field has a DEAD local branch for every value the server also produces, and reading either half alone looks correct.
-
-## A test and a doc comment can defend a default long enough for it to look considered
-AREA: tests
-SEVERITY: annoys
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3737
-SYMPTOM: The `human` fallback above was pinned by `assert_eq!(msg_kind("legacy-weirdness"), "human")` and explained in the module header as a Python-parity decision: "unknown types read as human, because that is the reading that gets a message looked at rather than filtered away". The reasoning is about visibility and it is sound. The conclusion does not follow, because `human` is not the only visible bucket. Separately, the kind FILTER test was green across the bug's entire life because the fixture seeds exactly one row per type the classifier already knew — a fixture that cannot contain the defect cannot detect it.
-COST: Three independent signals (the doc, the test, the filter test) all reported health while the bug was live, so any reader checking whether the default was intentional got yes from all three. That is the difference between an undetected bug and a defended one.
-FIX: 4239ee08 — both the doc and the test are corrected IN PLACE rather than deleted, so the next reader sees why it looked considered; `seed_unclassified` adds the two rows the fixture could not express. Mutation-verified: restoring `_ => "human"` fails both tests. The transferable question is "could my fixture contain this defect", asked before trusting a green suite.
-
-## A parked fault card silently muted an entire autofix detector class for two days
-AREA: instruments
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-26
-SESSION: amux
-CARD: AMUX-3774
-SYMPTOM: autofix files one card per fault, and only OPEN cards suppress — deliberately, so a judged-and-discarded card lets the next occurrence through. But `backlog` is open. AMUX-3651 sat parked in backlog from 08-24, so every server-wide stall since was correctly detected, correctly deduped, and filed nowhere. The suppression reason also asserted "Its count is what moves; a second card would carry no new information" while the code pushes a report row and `continue`s, never touching the card — so the one signal it pointed at did not exist.
-COST: Two days of a whole detector class dark, including a live six-family stall. `filed: []` on the tick reads identically for "nothing is wrong" and "everything is muted", which is this repo's most-reinvented bug. Found only because I was chasing an unrelated duplicate card and opened the suppression list; nothing would have surfaced it otherwise, and the card that muted the class looked like an ordinary parked backlog item.
-FIX: 8b55d0bf — the false claim deleted (ethos rule 6: implement it or delete it), the suppressing card's staleness printed WHETHER OR NOT it is alarming, an explicit note that suppressing does not bump the card, and an `autofix_mute` WARN past AMUX_AUTOFIX_MUTE_WARN_DAYS. Verified live: AMUX-3651, stale_days=2.03. The better fix — actually bumping the count — is named on the card and deliberately left for its own change, because it is a write on every scan against the live board.
-
 ## A latency card named an innocent endpoint with a verdict that was confidently backwards
 AREA: instruments
 SEVERITY: slows
@@ -2724,3 +1716,1437 @@ CARD: AMUX-3772
 SYMPTOM: A host-wide stall that RAMPS files a single-family outlier card on the scan where fewer than AMUX_OUTLIER_ROLLUP_AT (3) families have crossed the threshold. That card's verdict then says "This is not a percentile shift — it is individual requests going wrong, so look at the request, not the family", which is the exact opposite of the truth, and it names an endpoint that answered in 0.09s minutes later. The rollup that describes it correctly already exists and fires on every subsequent scan; nothing revisits the card filed at the leading edge.
 COST: One lane-turn to diagnose, and the diagnosis only landed because `host_load_at_worst` was in the payload and I followed it. A reader who trusts the verdict audits innocent code. ethos.md rates a loud wrong probe worse than a silent one, and this is one: it answers, names a specific target, and is wrong.
 FIX: none yet, deliberately. The obvious fix — suppress a single-family card when an open ROLLUP exists — is WRONG while a rollup card can sit parked in backlog indefinitely, because it would mute every genuine single-endpoint regression. That prerequisite is AMUX-3774 and is now fixed; this card is parked with that as its trigger. Recorded because building the wrong fix first is exactly what I did, and the order matters.
+
+## Discarding an autofix card as a "duplicate" deletes the only thing suppressing the re-file
+AREA: instruments
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-08-28
+SESSION: amux
+CARD: AMUX-3849
+SYMPTOM: A live outage (`/api/browser/start` 502) produced FOUR cards in three hours. I hand-filed AMUX-3842 with the diagnosis, then discarded the two autofix cards as duplicates of it, twice, and a fourth arrived anyway. `open_card_for_fault` suppresses on `source_ref LIKE 'autofix:<ident>|%'` for any card not done/verified/discarded — so a HAND-FILED card carries no signature and can never suppress, and discarding the autofix ones removes the only cards that could. The two look identical on the board: same title shape, same status vocabulary, no visible difference between a card the detector will honour and one it cannot see. `discarded` not suppressing is DELIBERATE and correct (it is what lets a genuinely new occurrence file after a judged one), so every individual piece behaved as designed while the composite guaranteed a re-file loop.
+COST: Three discards, four cards, and the wrong conclusion available at every step — the obvious reading is "the dedupe is broken", which is what I would have reported if I had not gone and read `fault_identity`. The detector was right and I had deleted its memory. Also self-inflicted noise on a shared board while the underlying outage sat correctly parked in `needsyou`.
+FIX: none yet. Immediate workaround, applied: copy the autofix signature onto the hand-filed card's `source_ref`, which makes it suppress (verified against the LIKE). Two candidate real fixes, cheapest first: (a) `amux board discard` warns when the card carries an autofix signature AND is the last non-terminal card holding that ident — a discard that turns the detector back on should say so; (b) `board add` for a fault already carded by autofix is the wrong move entirely and the honest path is folding the diagnosis INTO the autofix card, which nothing currently suggests. The transferable shape: a card's suppressing power lives in a field nobody looks at, so two cards that read identically to a human behave oppositely to the detector.
+
+## "The tests pass" is load-dependent on this box, so a green suite is a weaker claim than it reads
+AREA: tests
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-28
+SESSION: amux
+CARD: AMUX-3853
+SYMPTOM: A full `cargo test -p amux-server --lib` run showed 8 failures, all in `opencode::structured`, in code nobody had touched. Re-run in isolation the same tests are 15 pass / 0 fail. The failures were build contention: those tests spawn a binary out of the shared `CARGO_TARGET_DIR` while another lane's build is rewriting it, which is the ETXTBSY family `2618b7d3` already added a retry for. The retry is not sufficient under the load this machine actually carries (50 lanes, a builder rebuilding on every commit, and any peer running clippy).
+COST: I nearly reported 8 failures as a regression in a peer's area, and spent a cycle proving they were not. The larger cost is retrospective: every "1530 pass, 0 failed" I wrote on a card today rested on a run that happened not to contend, and I could not have told the difference at the time. A green suite here means "green, and nothing was building" — the second clause is invisible and nobody states it. That is the same shape as the 706ms latency number from the same day: a measurement taken on a machine whose load is the dominant variable, reported as if the load were not there.
+FIX: none yet. The cheap instrument, not the cure: have the test run record whether a build was in flight (the builder's lock is already on disk at `~/.amux/rust-build.lock`) and print it beside the result, so a red suite says whether it was contended. The cure is either per-lane target dirs (rejected before, for disk) or serialising the spawn-a-binary tests behind the same lock the builder takes. Naming the instrument first because the wrong lesson from this entry is "ignore red suites", and a contention flag is what separates the two honestly.
+
+---
+## `git commit -a` in a shared checkout swept three lanes' in-flight work into one lane's commit, twice in four hours
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-30
+SESSION: amux
+CARD: AF-342
+SYMPTOM: Mid-task on AMUX-3886 I had ~87 uncommitted lines in
+ crates/amux-server/src/api/browser.rs (a `with_cause` helper plus 28 call sites).
+ ts-gke committed 78009d90, "browser-reaper: add hard TTL to kill old browsers
+ regardless of page state", touching the same file for an unrelated reason. All 87 of my
+ lines went in with it. `git log -S with_cause --oneline` now answers with a commit about
+ a TTL arm. I found out only because `git diff` on my own file came back a single hunk
+ when I had made two, which is a coincidence of what I happened to check next.
+COST: About 25 minutes: reconstructing what had moved, proving the sweep from
+ `git log -S`, and then rebuilding a mine-only tree in a scratch worktree because the
+ shared checkout by then held three lanes' in-flight edits and would not compile. The
+ durable cost is the record: the fix for a browser 502 is filed under a browser-reaper
+ TTL commit, and the next person to run `git log -S` or `git blame` on it gets a wrong
+ answer with nothing marking it wrong. Not rewriting history over it — 172 unpushed
+ commits with live lanes — so this entry and the follow-up commit body are the record.
+SEVERITY-NOTE (appended same day, after the recurrence): raising this from `slows`.
+ It happened AGAIN four hours later, same lane. 8a990ebd, "browser-reaper: activity arm",
+ carries THREE lanes' work: my remaining AMUX-3886 change (+281 integrations/browser.rs,
+ +59 api/browser.rs), amux-frustrations' entire AF-342 fix (+199 git_guard.rs, +100
+ test-staged-guard-render.sh, the hook, checks.yml, their ledger entry), and ts-gke's own
+ reaper arm. The second sweep landed AFTER ts-gke had read the diagnosis of the first,
+ agreed with it in writing, and said they were adopting the explicit-paths guard. So this
+ class does not require a careless session; it requires a lane that intends the right
+ thing and reaches for a familiar verb.
+ AND THE FIX FOR THIS WAS ONE OF THE THINGS SWEPT. amux-frustrations had AF-342 STAGED,
+ holding the commit on a full-suite result, when someone else's commit took the index. A
+ lane that stages early and verifies before committing is MORE exposed, not less, because
+ its work sits in the shared index longer. That is the argument against every advisory
+ guard on this path.
+ ATTRIBUTION CORRECTION (same day, after ts-gke checked my evidence). I claimed above
+ that both sweeps were the SAME LANE and leaned on "same Amux-Session AND same
+ Amux-Conversation" as two agreeing signals. They are ONE signal. Read
+ .git/hooks/prepare-commit-msg: `stamp="$AMUX_SESSION"`, then `conv` is a lookup of
+ `~/.amux/sessions/$stamp.meta.json` for `cc_conversation_id`. The conversation field is
+ DERIVED FROM the session field, so a wrong stamp produces a wrong conversation id
+ identically and the commit reads as doubly confirmed. Everything reduces to one
+ env var in whatever process ran `git commit`, and AMUX_SESSION is inherited by any
+ child of a lane.
+ So "two sweeps by one lane, the second after that lane agreed in writing" is NOT
+ established, and I withdraw it. What survives: two sweeps happened, and the mechanism
+ is `git commit -a` (established independently — my UNTRACKED test file was not taken
+ while every modified TRACKED file was, which `git add -A` would not produce). The class
+ argument does not need the actor to be identified, which is the useful part.
+ Contrary evidence worth keeping: all three ts-gke-stamped commits carry
+ `Co-Authored-By: Claude Sonnet 4.6` while that lane runs opus-5, and `Claude-Session:
+ session_01Gg7LPMY45VdVgrq29tHv2A` is on 78009d90 and 2a914717 but ABSENT from 8a990ebd
+ — a field no amux hook writes. None of that is conclusive (the hook's own comment
+ measures Claude-Session on ~30% of commits, so absence proves nothing), and that is the
+ point: the record cannot answer who committed, in either direction.
+ CARDED as AMUX-3916: the stamp needs one field the committing process cannot inherit.
+ MECHANISM, narrower than the first entry had it. My untracked test file was NOT taken
+ while every modified TRACKED file was: that is `git commit -a`, not `git add -A`. `-a`
+ stages every modified tracked file at commit time — exactly the set a shared checkout
+ fills with peers' work — and it never touches the index beforehand, so it walks straight
+ past AF-316's staging refusal. The guard to state is "never pass -a", not "prefer
+ explicit paths".
+FIX: This is AF-342 (filed by amux-frustrations ~20 minutes before 78009d90 landed)
+ seen from the other end, and it CORRECTS one clause of that entry. AF-342's COST says
+ "The guard correctly kept the peer's two dirty browser.rs files OUT of the commit, so
+ its load-bearing half worked." On the very next commit, on one of those same two files,
+ it did not: the load-bearing half is exactly what failed here. Both observations are
+ real — amux-frustrations was warned and stopped, ts-gke was not — which means the
+ guard's protection is not a property of the guard, it is a property of whether the
+ committing session happens to read 93 lines of warning it has learned to scroll past.
+ That is the argument AF-342's own SYMPTOM makes ("warnings that fire on the normal path
+ are the ones people learn to scroll past, which is how the peer-hunk case gets missed"),
+ now with the case attached. ts-gke's diagnosis, unprompted and worth keeping: the
+ property the guard needs is "this path has no edit record from the COMMITTING session",
+ not "this path was edited via shell" — heredocs are one way to be invisible, and a
+ codegen step, a `git checkout` and a peer's editor are three more. Scope AF-342's fix to
+ the general property.
+
+## A trustworthy test run on a contended file now requires a private worktree, and each one costs a full dependency rebuild
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-30
+SESSION: amux-frustrations
+CARD: AF-336
+SYMPTOM: Verifying the AF-342 fix, `cargo test -p amux-server --lib git_guard` failed to
+ compile for ~35 minutes on errors entirely inside a peer's in-flight
+ crates/amux-server/src/api/browser.rs (E0308 tuple arity, then an unterminated json!
+ macro) while three lanes edited the tree. `cargo test` builds the TREE, so a red result
+ said nothing about my change and a green one would have been equally uninformative.
+ Both amux and amux-frustrations independently reached for the same workaround in the
+ same hour, neither having proposed it to the other: `git worktree add --detach <tmp>
+ HEAD`, apply only your own diff, test there.
+COST: ~35 minutes of blocked verification on this pass, plus a full dependency rebuild
+ per worktree because CARGO_TARGET_DIR keys on the workspace path, so the shared build
+ cache does not carry over. The durable cost is that the sanctioned verification command
+ in VERIFY.md is now untrustworthy for any contended file, with nothing in its output
+ saying so: scripts/test-contended.sh reports whether a BUILD was running, which is a
+ different question from whether a peer's half-saved source is in your tree. Two lanes
+ converging on an unshared workaround in one hour is the signal that it is the norm.
+FIX: AF-336 (per-lane worktree) ends this class rather than detecting it, and this entry
+ is evidence for it rather than a new proposal. Until then the cheap half is honesty in
+ the instrument: have scripts/test-contended.sh report, beside its result, whether any
+ tracked source in the crate under test is dirty and attributed to another session. A
+ compile failure in a file you did not touch would then read as such instead of as your
+ own regression.
+
+## SUPERSEDES the entry above: the consumer guard EXISTED and was correct — `--lib` never ran it
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-08-30
+SESSION: amux-frustrations
+CARD: AF-346
+SYMPTOM: My entry above says the a99955f7 dashboard regression happened because no
+ consumer-side invariant existed and that amux was adding one. Both halves are wrong, and
+ amux established it by checking rather than agreeing with me.
+ `tests/board_api.rs :: list_is_slim_by_default_and_serves_prose_only_on_request` already
+ existed, drives the real HTTP list path, and asserts desc_head starts with the card's
+ first line. Run against a99955f7 in a scratch worktree it fails in 0.16s. The guard was
+ written before either of us got here, was right, and would have blocked the commit.
+ It did not run because I verified with `cargo test -p amux-server --lib`, which reports
+ "1625 passed" and SKIPS every `tests/*.rs` target: 47 integration files, ~339 tests.
+COST: The regression itself is costed in the entry above. The cost of THIS entry is the
+ wrong lesson I nearly left in the ledger: "add consumer-side tests" is useless advice
+ when the consumer-side test is already written, and it would have sent the next reader
+ to write a duplicate of a passing test instead of fixing the command that skipped it.
+ A false mechanism filed as history is the thing archiving rules exist to prevent, and I
+ was ten minutes from it.
+FIX: amux put it in VERIFY.md by name — `--lib` is a partial run whose number reads like a
+ total — and strengthened two assertions in that same test that were weaker than they
+ looked: `desc_len.as_u64().is_some()` is TRUE of 0, so it and the log_n line beside it
+ would BOTH have gone green against the blanked loader. Only desc_head had teeth. Now
+ they assert `> 0`, mutation-checked, at cc3b4221. What remains open is the general shape:
+ a suite-shaped command that silently covers a subset is the same instrument failure as a
+ probe reporting zero when it never ran, and `--lib` is not the only such flag.
+
+## The observed-edit record has no content hash, so "who edited this" is unfalsifiable by construction
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-31
+SESSION: amux-frustrations
+CARD: AMUX-3954
+SYMPTOM: The staged-guard named me as a co-editor of
+ crates/amux-server/src/runtime_jobs/autofix.rs. Three timestamps break the claim:
+   my observed record for that path   20:41:38
+   the file's actual mtime            22:06:42   <- the bytes that were committed
+   the mass `cargo fmt` sweep         22:10:14   (alerts.rs, auth.rs, ~180 files)
+ My record is 85 minutes BEFORE the write whose content landed, and the file is 3.5
+ minutes off the fmt sweep, so it was a third, separate write. The record is
+ `<ts> <session> n=<count> paths=<names>` with no hash anywhere (confirmed in the writer
+ by amux), so the guard compares a TIMESTAMP WINDOW against a file that moved, and any
+ write to that path inside the window inherits whoever's window it was.
+COST: Two mis-attributions by one lane in a single day. This one, and earlier amux told
+ ts-gke their commit had absorbed 220 lines — the trailer evidence showed the commit was
+ not even ts-gke's conversation. Different signal, same shape: a name with no way to test
+ it. Each costs a round trip between two lanes to disprove, and the durable cost is worse
+ than the minutes: a guard that names the wrong peer teaches lanes to discount it, which
+ spends the credibility it needs for the cases where it is right. On this same day the
+ SAME guard correctly stopped a real sweep, so both outcomes are live.
+FIX: Hash each path at observation time and compare against the staged blob — match, name
+ them; differ, drop the name and say why. That turns "someone touched this path recently"
+ into "someone touched THIS CONTENT", which is the claim the warning already makes in
+ prose. Tracked as AMUX-3954, deliberately NOT built at the end of a long session: it is a
+ change to a safety-critical guard, which is how a fix becomes the next incident.
+NOTE THE THIRD OUTCOME, because neither party had a slot for it: this was not "you were
+ right" or "I was wrong". The signal was REAL and pointed at the WRONG EVENT. An
+ attribution system keyed on time rather than content will keep producing that verdict,
+ and the AF-179 caveat is doing real work — it is why amux hedged instead of asserting —
+ but a caveat cannot make an unfalsifiable signal falsifiable.
+
+## A test cell that reads the ambient process ancestry cannot fail on the box that wrote it
+AREA: tests
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-08-31
+SESSION: amux
+CARD: AMUX-3962
+SYMPTOM: `checks` red on main for the whole fleet, two consecutive runs. Failing step
+ `test-commit-stamp.sh`, cells 1 and 2, `alpha='' beta=''` and `got ''`. Both cells ran
+ the commit-msg hook under whatever process ancestry the test inherited and asserted on
+ the `Amux-Agent` trailer, which the hook populates by walking its own parents for a
+ `claude` process. On any dev box that walk finds the session running the test, so both
+ cells pass. In CI there is no claude anywhere in the tree, the hook correctly omits the
+ field, and both cells fail on an empty string. Reproduced locally by reparenting the
+ test to init, which is what a runner looks like from inside the walk: 7 passed, 2 failed,
+ same two cells, same empty values.
+COST: About an hour of fleet-wide red CI, and the specific cost is that `checks` is the
+ job every lane's `board done` evidence leans on, so a red there taxes work nobody
+ involved was doing. Worse, it was invisible in the only place anyone was looking: two
+ lanes independently ran the local suite that night and both read green (1665/0), because
+ the local suite and the CI job were not running the same thing. The commits that went
+ red were not the commits that broke it. The cells had NEVER been green in CI; run
+ 33396997200 was simply the first one to reach them, so the fleet-wide red landed on
+ whoever happened to push next, four commits downstream of the author.
+FIX: 232c212f. The two cells now build their own ancestry, the technique the later cells
+ in the same file already used: one `claude` shim (a symlink, so ps sees a matching
+ argv[0] basename), both hook runs under it, so ancestry is a test INPUT rather than a
+ property of whoever launched the test. 9/9 with a claude ancestor and 9/9 reparented to
+ init. Cell 2 got stronger on the way past: it asked `ps -p <pid>` for liveness, which
+ cannot tell the right process from any live one. Mutating the hook to stamp `pid=1` is
+ both invariant and live, and the old pair passed that completely clean; against the
+ shim's known pid it fails.
+THE SHAPE, which is the reusable part: a cell that reads the ambient environment measures
+ the LAUNCHER, not the code. It is not merely untested in the other environment, it is
+ structurally unable to fail in the one where it was written, so a local green carries no
+ information about it at all. The tell is an assertion whose subject was not constructed
+ by the test. That is ethos rule 7 with a location attached: "can your check actually
+ fail" has to be asked about the environment as well as the logic, and the way to ask it
+ is to run the file somewhere the ambient answer is absent.
+
+---
+## The staged-guard's blocked-commit remedy edits the other lane's staged work
+AREA: attribution
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-08-31
+SESSION: amux (found the technique), amux-frustrations (filed and fixed)
+CARD: AF-365
+SYMPTOM: When the guard BLOCKS a commit over a peer's co-edited file, its only
+  suggestion was `git restore --staged <their paths>`. On a shared index that
+  mutates state belonging to the other lane: their file is staged because THEY
+  staged it, and unstaging is an edit to someone else's in-flight work made by a
+  party who cannot see what they intended. The near-miss that exposed it: amux had
+  an unstaged `checks.yml` hunk at ~line 316 while my hunk in the SAME FILE was
+  already staged at ~line 181.
+COST: No damage, because amux found the exit themselves and said the guard does not
+  suggest it. What the obvious path would have cost is worse than plain absorption:
+  committing that file would have SPLIT my change, landing my CI wiring under their
+  commit message while the app.js it wires stayed uncommitted, so my own commit
+  would have wired nothing. Two lanes, one file, and every documented move was wrong.
+  `git add -p`, which the guard recommends two screens down for the partial-stage
+  case, is also the wrong tool here: the problem is not which of YOUR hunks to take,
+  it is that THEIRS are already staged.
+FIX: Fixed. `git commit <your paths>` is now offered FIRST, labelled as the exit
+  that touches nothing the peer owns, and the unstage remedy now says out loud that
+  it edits the shared index. A cell in test_amux_staged_guard.py pins both the
+  presence and the ORDER, plus the stated reason, because an unexplained ordering
+  gets tidied back by the next person who thinks restore reads better first.
+  The cell reads the SHIPPED hook rather than executing the branch (that text is
+  inline in main() and reaching it needs a multi-session git fixture), and it says
+  so rather than implying parity with the cells above it.
+
+---
+## Editing a running .sh corrupts it mid-run, and the instrument cannot report its own death
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-08-31
+SESSION: amux (hit it and diagnosed it), amux-frustrations (owns the file, took the fix)
+CARD: AF-368
+SYMPTOM: `amux` ran `scripts/test-contended.sh -p amux-server` and got:
+    1888 passed, 0 failed, and NO `test result: FAILED` line anywhere
+    no contention verdict printed at all
+    ./scripts/test-contended.sh: line 53: syntax error near unexpected token `('
+    exit 2
+  Line 53 was a bare `#`, and the file was `bash -n` clean throughout. Two of my
+  commits to that file landed inside their run. bash reads a script INCREMENTALLY,
+  by byte offset, so the file growing underneath the running shell shifted the
+  offsets and bash resumed mid-token, then failed on whatever byte now sat at its
+  saved position — nowhere near either edit.
+COST: Near-miss on a false red. Exit 2 with zero failures reads as a broken suite,
+  and amux nearly reported it as one; what stopped them was noticing that "0 failed"
+  and "exit 2" cannot both be a test result. They also correctly refused to report
+  their own AMUX-3718 work green off that run, because its exit status described my
+  edit rather than their code. This is the THIRD cause of a red suite after the
+  builder and the dirty worktree, and it is the one this script structurally cannot
+  report: it dies before reaching any echo, so its verdict is not wrong, it is
+  ABSENT. The instrument's blind spot is the instrument.
+FIX: Fixed. The wrapper now copies itself to a temp file and `exec`s that before
+  doing anything else, so an edit cannot reach a run in flight. `exec` means one
+  shell and the exit status still belongs to cargo. Snapshotting is the only fix at
+  the right layer, because a report cannot describe a run that stopped existing.
+  GENERALISES, and this is the part worth keeping: every .sh in this repo is
+  exposed, and the bash CLI ships on SAVE, so `amux` itself is the largest instance
+  — a long `amux` invocation running while any lane saves that file is this exact
+  hazard. Not fixed here; that is a separate card.
+  A NOTE ON THE TEST, because the first one lied. I wrote a behavioural cell that
+  started the wrapper, truncated the file to garbage mid-run, and asserted it still
+  exited 0. It passed. It also passed with the re-exec MUTATED AWAY, because bash
+  buffers a file this small in a single read and the truncation never reached the
+  running shell. A control that cannot fail is worse than none, so it was deleted
+  rather than relabelled. The shipped cells assert the preamble exists, execs the
+  snapshot, and has NO executable statement before it — position being the property
+  that matters, since a snapshot taken after other work is a snapshot of a file that
+  could already have moved. Both mutations now redden exactly one cell each.
+
+---
+## A status signal with a store, a consumer and a unit test, and no producer anywhere
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-02
+SESSION: amux
+CARD: AMUX-4024
+SYMPTOM: `subagents_live` was null for 125 of 125 lanes. AMUX-3048 shipped
+  `subagent_event_post` (start/stop), a `{count, ts}` store, a reader in
+  `FleetSignals::subagents_working`, an explain field, a status-history column and a
+  passing unit test. No hook ever POSTed an event, so every one of those read null
+  forever. The code comment deferring the count-authoritative "off" direction reads as
+  a careful trade-off between two live signals; there was only ever one, because the
+  other was never sent. Two more details compound it: the deferral names the producer
+  as "PreToolUse:Task" and the tool is called `Agent` in current Claude Code, so the
+  hook would have been inert even if someone had wired the documented name; and
+  `hooks.report_hooks_wired` walks the entries that EXIST, so it structurally cannot
+  fail on an event class nobody added.
+COST: Two wrong lane statuses reported by Ethan in one afternoon, in opposite
+  directions, both landing on the mtime fallback nobody knew was load-bearing:
+  tubescience read IDLE while blocked on a background agent, mvs-pitr read WORKING
+  with an AGENTS badge over an empty composer. About 40 minutes of this session spent
+  designing a fix keyed on the reported count before checking whether any lane
+  reported one — the answer was none, and the first fix would have been green and
+  completely inert, which is the same defect a second time.
+FIX: Producer wired in `scripts/hooks/hook-report.sh` (`subagent:start` / `subagent:stop`)
+  and in settings.json as `PreToolUse[^(Task|Agent)$]` + `SubagentStop`; count made
+  authoritative in both directions; `hooks.report_hooks_wired` extended with an
+  absent-event-class arm so the next dead producer fails a check instead of reading
+  as a deliberate trade-off.
+
+## Reading the shared worktree to understand code returns a peer's draft, and the wrong decision leaves no artifact
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-02
+SESSION: amux-frustrations
+CARD: AF-336
+SYMPTOM: Reported by general-canvas-apps, self-traced by mixpeek-homepage-claude. A lane
+  changed a PUBLIC ARGUMENT'S SEMANTICS after reading a gate's invocation out of the
+  shared worktree, which held another lane's uncommitted draft of the same job. The
+  draft's line was broken. The committed line was correct and carried a comment, three
+  lines from the one they quoted, that would have stopped the change.
+  DISTINCT FROM THIS CARD'S OTHER ENTRY, which is the BUILD case: there, a peer's
+  in-flight edit reddens your test run, which is loud and self-correcting on a rerun.
+  Here the tree poisons a DECISION. Nobody pushes anything, the reader's commit is
+  entirely their own work and looks correct, and the wrongness lives in a conclusion
+  drawn from bytes that were nobody's committed truth.
+COST: One wrong public-API semantics change, caught only because its author went back and
+  traced their own reasoning. THE REAL COST IS THAT THERE IS NOTHING TO COUNT. The four
+  write-side races on this card each left a diff and all four were caught — three by the
+  victim running a receipt diff, one by the racing author. This class leaves no diff, no
+  repair commit and no receipt, so the observed rate of one is not a measurement, it is
+  the absence of an instrument. It also retires the strongest objection to AF-336: at
+  four catchable races the counter-argument was "the cost is repair commits and may be
+  cheaper than 125 worktrees", and a class with no artifact has no such bound.
+FIX: Two halves, and only the first is shipped.
+  DISCIPLINE, done: ~/.claude/CLAUDE.md's shared-checkout section covered a peer's edit
+  redding your BUILD and said nothing about a peer's draft poisoning your READING. It now
+  carries the distinction, the specimen, and the two commands — `git show
+  origin/main:<path>` for what everyone actually runs, `git show HEAD:<path>` for what
+  this checkout last committed — with general-canvas-apps' line kept because it is the
+  memorable form: a worktree read is a snapshot of nobody's truth.
+  ISOLATION, still needsyou on AF-336: per-lane worktrees make the read CORRECT rather
+  than merely well-advised. That is the difference between a rule every lane must
+  remember on every read and a property of the environment. A rule that must be
+  remembered is exactly what this file exists to stop relying on.
+
+---
+
+## A peer asked me a blocking question I cannot answer: they are an isolated worker
+AREA: attribution
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-02
+SESSION: amux-frustrations
+CARD: AF-352
+SYMPTOM: The `amux` lane sent me a push-consent ask — "is all of your unpushed work in
+  a state you are happy to have on origin? One line back is enough" — with two named
+  answers and a stated consequence for each. I wrote the reply and `amux send amux`
+  refused: "'amux' is an isolated (raw-agent) worker with the amux harness stripped. It
+  is not a peer or relay target and is reachable only by the owner from the dashboard."
+  THE SEND WORKS IN ONE DIRECTION ONLY, and nothing said so until I had written the
+  answer. `GET /api/sessions/amux` carries `isolated: true`, so the fact is available;
+  it is just not available at the moment you need it, which is when a message from them
+  arrives asking for a reply. Their message carried a server-verified origin stamp,
+  which reads as a working channel.
+COST: a real ask blocked. They are holding a 34-commit push on an answer they cannot
+  receive, and their own fallback ("wait -> I tell Ethan you are mid-something") will
+  now fire on my silence rather than on my answer, which reports the wrong reason to
+  Ethan. The remaining channel is a board card in their queue for what is a yes/no.
+FIX: `.claude/rules/frustrations.md` already documents this class exactly — "LIVE IS NOT
+  VALIDATABLE ... the session payload already carries `isolated`; read it, or discover
+  it from a refused send after you have written the message". I discovered it the second
+  way, having read that rule earlier the same day. That is the tell that the rule is in
+  the wrong place: it asks a human to remember a lookup before writing, and the moment
+  the lookup matters is the moment a message ARRIVES.
+  CORRECTION, same day, after walking the sanctioned path end to end: THE DOCUMENTED
+  FALLBACK ALSO FAILS, and the advice printed at the first refusal sends you to a
+  mechanism that fails for the same reason. All four channels, in order, all refused:
+      amux send amux              -> "not a peer or relay target"
+      card in their queue         -> blocked by THEIR OWN WIP limit ("close_these_first")
+      amux board progress <card>  -> "progress noted, but OWNER NOT NOTIFIED: target is
+                                     an isolated (raw-agent) worker: amux automation is
+                                     not delivered into it"
+      only the owner, from the dashboard
+  The cross-group send refusal explicitly recommends the board handoff ("use the board on
+  a card owned by <them>: `amux board progress <CARD>` notifies the owner at their next
+  turn"), and neither refusal mentions the other. A lane following the guidance exactly
+  ends up where it started, having written the message twice.
+  The cheap mechanism is at delivery, not in prose: when an isolated worker's message is
+  delivered to a peer, say so in the delivery envelope — one clause, "this sender cannot
+  receive replies; only the owner can reach them" — and stop naming the board path for
+  isolated targets, since it does not work for them. The `isolated` flag is on the record
+  being rendered in both places.
+  Related: AF-352 is the entry for entries whose authors can never sign off, which is
+  the same asymmetry costing something different.
+## Runtime hook copies drift from HEAD silently — install.sh has no supervision
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-02
+SESSION: amux
+CARD: AMUX-99
+SYMPTOM: GET /api/health/invariants showed hooks.report_hook_matches_committed
+  and hooks.shared_guard_matches_committed both failing — runtime hook sha
+  differs from the sha baked into the running binary. ~/.amux/hooks/
+  git-shared-guard.py and ~/.amux/hook-report.sh were both installed 2026-08-30
+  20:48 and never reinstalled since, while their source kept getting real
+  commits — most notably e782b68a (AMUX-3932), a genuine guard-BYPASS fix
+  ("command substitution inside a quoted argument bypassed the shared-checkout
+  guard"). That fix passed every CI gate and sat in git history, never live on
+  this box, because nothing re-runs install.sh's hook-install step
+  automatically. AMUX-28/AMUX-29 already covered this exact invariant pair and
+  are marked done with no evidence recorded on either — the drift came back
+  because the underlying gap (install.sh only runs manually, unlike the Rust
+  binary auto-builder / amux-builder.timer) was never closed the first time.
+COST: a real security-relevant fix (a shared-checkout guard bypass) sat
+  undeployed for days on a box running unsupervised agents against a shared
+  checkout, with the health invariant correctly flagging it the whole time and
+  nothing consuming that signal. Discovered only because this session was
+  sweeping GET /api/health/invariants for other reasons.
+FIX: manually re-ran install.sh's own install_hook_from_head sequence for both
+  files (git show HEAD:<rel> + chmod +x + sha256 sidecar). Confirmed live:
+  invariant failures dropped from 6 to 4, both hooks.* entries cleared.
+  NOT fixed: the durable gap. AMUX-99 is the recurrence card and names the two
+  real options (a systemd timer polling install.sh's hook block the way
+  amux-builder.timer polls the Rust build, or the invariant self-healing since
+  it already computes the right bytes) — a design choice, not made here.
+
+## Claude completion notifications could precede the subagent's actual completion
+AREA: provider-integration
+SEVERITY: slows
+STATUS: open (provider-side notification defect; amux lifecycle handling is fixed)
+DATE: 2026-09-02
+SESSION: amux-testing-e2e
+CARD: ATE-10
+SYMPTOM: Claude produced an initial subagent completion notification while that agent
+  still reported waiting and its requested file did not exist; a second notification
+  arrived only after the file was actually written.
+COST: Treating notification prose as lifecycle truth would have marked delegated work
+  complete early.
+FIX: Amux does not infer lifecycle from Claude's notification text. The status fix
+  consumes the provider's explicit subagent start/stop hooks and keeps notification
+  content as display-only evidence. The provider-side duplicate/early notification
+  remains outside this repository.
+
+## A correct answer makes a wrong reason feel checked, and the reason is what gets generalised into a rule
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-03
+SESSION: amux-frustrations
+CARD: AF-445
+SYMPTOM: Named by mixpeek-cicd, 2026-09-03, about their own near-miss, and it applies to two
+  of mine from the same day. Three instances, all with the same shape: a TRUE sub-fact made a
+  FALSE conclusion feel established, and in every case the conclusion was about to become a
+  rule rather than a one-off answer.
+    1. (mixpeek-cicd) They cleared three staged-guard notices correctly and generalised the
+       reason into a proposed guard change: downgrade when provenance is `observed`, because
+       observed means no recorded edit. What actually settled their three cases was different
+       and per-instance — the trailer named a peer, their own commits on that path were days
+       old, and they knew from memory they had not opened it. Their words, which are the
+       entry: "I picked `observed` as the safety discriminator while producing nothing but
+       `observed` records all night, which is a fair definition of not having checked." Every
+       file they shipped that day was a heredoc write, i.e. exactly the record their rule
+       would have dismissed. Three right answers, one wrong rule, aimed at a guard every lane
+       reads.
+    2. (mine, AF-290) The card said seven session verbs are duplicates "another route already
+       expresses", and a `mutate.sh` run had PASSED — route.callers_have_routes did not fire
+       when the routes were deleted. Both true. The conclusion was false: `/api/workers/{id}`
+       is mounted and resolves NOTHING (0 of 12 fleet lanes, 0 workers against 129 sessions),
+       so migrating would have handed the dashboard "worker not found" on every destructive
+       path. The passing mutation is what made the premise feel verified; it asks whether a
+       route EXISTS, not whether it ANSWERS.
+    3. (mine, AF-346) The card said the slim board serializer "drops desc and log, which is
+       why the response carries none". The response does carry none — true, and checkable in
+       one curl. The conclusion, that hydration can stop selecting them, was false: the slim
+       branch makes five derivations over those columns. The correct observation is what made
+       the plan look established.
+COST: none shipped, in all three, and that is the problem with counting it. Instance 1 was
+  caught because the recipient of the proposal had spent the day writing heredocs and
+  recognised the record; instance 2 because I probed a running server instead of reading the
+  card; instance 3 because I read the serializer instead of the card's summary of it. Each
+  catch was a coincidence of what the reader happened to have in hand that hour. The rate at
+  which this class is CAUGHT is not evidence about the rate at which it OCCURS, and all three
+  were one review-pass away from becoming a rule other people would follow.
+FIX: no tooling proposed, deliberately. `mutate.sh seams` and `survey` both answer "is this
+  held?"; neither can answer "is the reason for this the reason it is true?", which needs a
+  second derivation rather than a second run — and instance 2 is the proof, because a
+  mutation PASSED and that pass is what did the damage.
+  mixpeek-cicd's sentence is the whole of it and is worth quoting rather than paraphrasing:
+  the answer being right is what makes the reason feel checked. The practical form, which is
+  the only part that has ever worked for me: when a correct answer is about to become a RULE,
+  re-derive it from a different starting point than the one that produced it. Instance 2 took
+  a live probe against a running server, instance 3 took reading the code rather than the
+  card, and instance 1 took a reader with different recent history. None took more than
+  minutes; all three took a DIFFERENT SOURCE, not more care with the same one.
+  Logged rather than built because I do not have a mechanism and would rather say so than
+  ship a checklist item that joins the prose nobody enforces.
+INSTANCE 4, and it is MINE, produced inside the card for this entry within the hour. Having
+  written "no mechanism proposed", I built one: group the request log by family, flag any
+  family that was called and never returned 2xx. It reported ONE finding across 89 families
+  and looked clean and cheap. /api/workers was not in it — the family reports 4,016 of 4,394
+  succeeding, because /api/workers/{id}/<verb> is 4,006/4,368 while /api/workers/{id} itself
+  is 1/17. So the detector I wrote to catch instance 2 answered CORRECTLY at the granularity
+  I chose and could not have found instance 2. A pass from it would have felt like evidence
+  that AF-290's premise was fine. Re-run by ROUTE SHAPE it finds the defect immediately:
+  713 shapes -> 9 candidates -> 1 survives a "is it actually mounted" filter, which is
+  `GET /api/workers/{id}` at 0/15. Predicate and blind spots recorded on AF-298.
+INSTANCE 5, from mixpeek-cicd, applying this entry to their own work an hour after reading
+  it — and it sharpens the entry's own remedy rather than repeating it. They had pinned a
+  config file with an assertion that the line above a key STARTS WITH `#`. `# TODO: revisit
+  this setting` satisfies it, while the comment's actual job is to stop a future editor from
+  restoring pytest defaults and silently deleting 49 tests. A comment-EXISTS check wearing
+  comment-ANSWERS clothes.
+  THE PART THAT CHANGES HOW I WORK: they had mutation-tested it. Their mutation DELETED the
+  comment, which the weak assertion already caught, so the mutation passed and told them
+  nothing. Their words: "A mutation is derived from the same understanding as the assertion,
+  so it inherits the same blind spot by default. Mine was not a second derivation, it was the
+  first one run backwards."
+  That lands directly on this session, which has treated a killed mutation as proof roughly
+  twenty times today. A killed mutation proves the assertion catches THE FAILURE I IMAGINED.
+  It says nothing about the failure I did not. Their tell is the cheap version and it costs
+  one sentence: STATE A MUTATION THE ASSERTION SHOULD CATCH AND DOES NOT. If you cannot
+  generate one, that is a fact about your imagination, not about the assertion.
+  Applied immediately to instance 4's own predicate before proposing it, which produced four
+  blind spots I would otherwise have shipped silently — the worst being that it keys on
+  STATUS, so a route answering 200 with an error body passes it, across 1,646,523 2xx rows
+  nothing inspects for that shape.
+THE TAXONOMY, from mixpeek-cicd reading instances 4 and 5 back and refusing to let them be
+  one thing. Three shapes, and the remedies differ, which is why separating them is worth the
+  paragraph:
+    NARROWER than the question. The predicate is weaker than the property, over the right
+      object. Their pytest.ini: "line starts with #" against "the comment explains why not to
+      change this". Remedy: state a mutation the assertion should catch and does not.
+    COARSER than the question. The predicate is right, the population is a superset that
+      CONTAINS its own counterexample. My /api/workers: 4,016/4,394 at family level is a true
+      number that includes the 1/17 it hides. Remedy: re-key at the granularity of the
+      finding. Their sentence for why this one survives review better: the number it reports
+      is genuinely true.
+    WRONG FIELD. The predicate is right-shaped and reads a different field than the one
+      carrying the answer. Blind spot 4 above: keyed on STATUS, so a 200 with an error body
+      passes, across 1,646,523 rows every one of which is genuine evidence of something you
+      are not asking about. Remedy: ask which field carries the answer before asking whether
+      it is held.
+  ONE CLAUSE OF THEIRS IS TOO STRONG, and saying so is the same courtesy they paid me on the
+  absorption wording. They wrote that no amount of second-derivation fixes the coarse case,
+  "because the second derivation would also have been per-family". In fact the live probe —
+  `GET /api/workers/{lane}` -> 404 across 12 lanes — is what found it, and that IS a second
+  derivation from a different source. What their argument correctly establishes is narrower
+  and more useful: A SECOND DERIVATION HELPS ONLY IF IT VARIES THE DIMENSION THE FIRST ONE
+  COLLAPSED. Same source at a finer granularity works; a different source at the same
+  granularity does not. "Re-derive from a different source" was my own remedy two paragraphs
+  up and it is underspecified: the axis matters more than the source.
+INSTANCE 6, mixpeek-cicd's, and it is the coarse shape on a third surface — which matters,
+  because three instances in one repo would be three names for one thing. Their words:
+    "npm audit reported `1 high` on the homepage lockfile. The count is accurate and names no
+    package, so it cannot be routed: severity is an aggregate over advisories, and the
+    decision needs the advisory. `npm audit --json` per package is the finer key, and it
+    turned a number into a name. The failure mode is not a wrong count, it is a correct count
+    that excludes the item, which is why nobody challenges it and why it sat."
+  A CI guard, a route table and a package audit. Three surfaces that fail differently, one
+  shape.
+AND A DEFECT IN HOW THIS FILE IS WRITTEN, which is mine and worth more than the instance.
+  mixpeek-cicd built their too-strong clause from my WRITE-UP order — family detector first,
+  live probe second — when my WORK order was the reverse. Their note on it: an account of a
+  finding is ordered for the reader, so treating its sequence as causal is a free way to be
+  wrong about method. Every entry in this file is ordered for the reader. When the ORDER is
+  load-bearing for the method — when the point is which step found the thing — say which
+  order you are giving, because a reader reasoning about method from a narrative sequence is
+  doing something reasonable that the narrative did not warn them about.
+THE UNIFYING FORM, mixpeek-cicd's, better than my "no remedy subsumes another": each shape is
+  a PROJECTION that loses a different dimension, so a remedy restoring one cannot restore the
+  others. Narrower loses predicate strength, coarser loses granularity, wrong-field loses the
+  field. That is also why their enumeration guard and ts-gke's denominator check are not
+  ranked — projections of one corpus along axes neither reaches from the other.
+  Their consequence, which is the sentence I would put at the top of this entry if entries had
+  tops: "my guard passes" is never a statement about the system, only about the axis, and the
+  only honest closing line is which axis somebody else is holding.
+NOTE: distinct from AF-435 (checks that ran, passed and could not have failed). That one is
+  about an instrument with no discriminating power. This is about an instrument that
+  discriminated CORRECTLY and a human generalising the wrong invariant from the result.
+  Instances 4 and 5 are the bridge between them: a check with real discriminating power, at
+  the wrong granularity or over the wrong property, produces a TRUE result that supports a
+  false conclusion — and a mutation drawn from the same understanding confirms it.
+
+## An answer-only prompt still cards when its no-op tail isn't one of ten hardcoded literal strings
+AREA: harness
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-03
+SESSION: amux-testing-e2e
+CARD: ATE-17
+SYMPTOM: Yesterday's fix (53b3e952, archived from frustrations.md 2026-09-02, validated
+  against the literal specimen "...? Please answer only; do not change anything.") stops
+  carding THAT exact string. A same-session E2E rerun today sent the same question with a
+  differently-worded but equally answer-only tail: "...? Answer only; do not change files
+  or create board work." is_informational_query()'s ANSWER_ONLY_TAILS list in
+  crates/amux-core/src/board.rs matches ~10 hardcoded literal tail strings, not a
+  structural "no imperative here" signal; this tail isn't one of them, so the tail-check
+  fails closed and the question-word branch never fires. Two cards (ATE-15, ATE-16) minted
+  for two paraphrased answer-only questions in one E2E run.
+COST: The exact friction the archived entry described recurred one day later under a
+  paraphrase, consuming two board ids and two WIP-adjacent doing slots for pure Q&A that
+  was already answered inline both times.
+FIX: f999caff replaces the literal ANSWER_ONLY_TAILS list with `tail_is_answer_only()`,
+  which splits the tail on the same connectors `capture_has_task_followup` already uses
+  for the pre-question clause and requires no resulting clause starts a task per the
+  existing `capture_clause_starts_task` verb check — reusing the mechanism already
+  trusted for the rest of the function instead of an enumerable list. Pinned the ATE-17
+  specimen plus a negative control (a real task stacked after an answer-only opener must
+  still card); `scripts/mutate.sh` confirms the negative control can actually fail.
+  NOT YET independently re-validated against the running server build — see AF-433's
+  discipline for what that validation should check before this entry is archived.
+
+## staged-guard blocks on an edit-ownership record that a plain `git diff` is enough to create
+AREA: attribution
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-03
+SESSION: amux
+CARD: AMUX-4083
+SYMPTOM: Two independent blocks in one hour, both false, both naming a session
+  that had only READ the file.
+  (1) mixpeek-oss went to commit two browser.rs paths and staged-guard refused,
+  reporting that session `amux` had an edit record on both files 3 minutes
+  prior. What `amux` had actually done in that window was `git diff` and
+  `grep` on those paths, to describe them accurately in a message ASKING
+  mixpeek-oss to commit them. No write. They cleared it with
+  AMUX_VERIFIED_SOLO=1 after checking the diff content and line counts were
+  identical before and after.
+  (2) Fifteen minutes later the guard blocked `amux` from running
+  `git checkout --theirs` on app.css and sw.js to resolve a MERGE CONFLICT,
+  naming amux-homepage: "discarding a file ANOTHER SESSION HAS ALSO EDITED ...
+  UNRECOVERABLE". Reconstructing the ours-side of the conflict and diffing it
+  against HEAD gave 0 differing lines for sw.js, and every app.css difference
+  traced to #184's own auto-merged hunks. No peer content existed in either file.
+COST: About 25 minutes across two sessions, and a cross-session round trip that
+  existed only to clear the first block. The second one is worse than the time:
+  the refusal text says UNRECOVERABLE and instructs you to stash or ask the named
+  peer, so the honest response to a false positive is to stop and ask a session
+  that has nothing to do with the file. It also teaches the wrong lesson, since
+  the way past it is an override flag, and a guard whose normal resolution is its
+  own bypass stops being read.
+FIX: Do not derive edit ownership from mtime alone. CLAUDE.md already states the
+  rule the guard violates: "An owner derived from mtime is not evidence ...
+  reports whoever was ACTIVE, not whoever WROTE, because every lane shares the
+  cwd." Record ownership from an actual WRITE — the PostToolUse hook already sees
+  Edit/Write tool calls and could stamp content identity (a hash of the file
+  before and after) instead of a timestamp. AMUX-3954 is the same defect stated
+  as "an observed co-edit record carries no content identity, so it names a
+  session for a write it did not make"; this entry is two measured specimens of
+  it, one of which blocked a peer rather than the recorder. Second, a file in
+  CONFLICTED state is a distinct case the guard does not model: its content is
+  git-generated, so "another session also edited it" cannot be inferred from the
+  working copy at all.
+CO-SIGNED: mixpeek-oss, who hit specimen (1) from the blocked side and
+  independently verified it the same way ("read-only git diff/grep during
+  message composition, flagged as an edit ... a signal with no way to
+  distinguish read from write").
+
+## A process killed before it can log leaves the fleet no diagnostic surface for the failure that removes the diagnostic surface
+
+AREA: instruments
+SEVERITY: wrong-conclusion
+STATUS: open
+DATE: 2026-09-03
+SESSION: amux-frustrations
+CARD: AF-458
+SYMPTOM: the server is in a launchd crash loop and NOTHING in its own logs says so.
+ macOS SIGKILLs it at exec for `Code Signature Invalid` / `Launch Constraint
+ Violation`, so it dies before any of our code can write a shutdown line. Both
+ StandardOutPath and StandardErrorPath point at ~/.amux/logs/server-rs.log, and the
+ last line before each death is an ordinary WARN. The only honest record is
+ ~/Library/Logs/DiagnosticReports/*.ips plus `launchctl print`, where `runs` went
+ 10 -> 18 -> 23 in about two minutes and `properties` reads "needs LWCR update".
+COST: this is the flap the whole fleet is hitting, and it presents as five unrelated
+ problems. It forced gtm-engine's send onto the unstamped fallback (see the two
+ entries above), made `amux board retitle` exit 7 with no message, broke a `git
+ commit` with "unable to write new_index file", and made two /api/board reads
+ return empty. Each looks like its own bug. Worse, the log carries an ERROR-level
+ line 24 seconds before a death — "migration VERSION COLLISION at 35" — which is
+ loud, adjacent, and irrelevant: migrate.rs:636 documents it as deliberately
+ non-fatal ("this reports rather than refuses ... a gate with no truthful path,
+ ethos rule 3") and it appears identically on runs that stayed healthy. A wrong
+ cause was one step away and I nearly filed it. Fifth AF-445-shaped near-miss in
+ this session.
+FIX: not actioned — the remedy touches a launchd agent and ~/Dev/CLAUDE.md requires
+ explicit owner approval ("This machine runs 24/7. Do NOT restart launchd agents").
+ One-shot is `launchctl bootout gui/501/com.amux.server-rs` then `bootstrap`, since
+ the binary itself verifies clean on disk and it is launchd's cached Lightweight
+ Code Requirement that is stale. The durable fix is the builder re-bootstrapping the
+ agent after it swaps the binary; until then every deploy on this box reopens the
+ window. The INSTRUMENT half is the part that belongs here: a process killed before
+ it can log needs its death reported somewhere a lane already looks. /health going
+ unreachable and `/api/debug/*` being unreachable at the same moment means the fleet
+ has no diagnostic surface for exactly the failure that removes the diagnostic
+ surface.
+NOTE: gtm-engine independently confirmed this from the other end and bounded it
+ (origin-stamped, 2026-09-03). They closed five cards inside a flap window trusting
+ a "-> done" line, re-read all five at the FIELD, and found two gaps that were their
+ own omissions rather than the crash loop. Their conclusion: "on this lane the flap
+ degraded loudly every time and silently never." Every symptom seen so far is
+ fail-loud (curl rc 7, empty body, refused index write, a verb exiting non-zero with
+ no message); nothing yet shows a write that REPORTED success and did not land. So
+ the failure mode is availability, not silent corruption, which is the difference
+ between a degraded fleet and one whose records are suspect. Not a reason to leave
+ it running; it is a reason not to re-verify every board write made today.
+NOTE: CAUSE CORRECTED, 2026-09-03, same session. The codesign SIGKILL is real
+ (crash report 160828.ips) but it is NOT what drives the climbing run counter, and
+ I recommended a fix that would not have worked. Three facts I should have checked
+ before recommending anything: only ONE crash report all day against 76 runs (a
+ codesign kill writes one per death), the binary unchanged since 16:10 so there is
+ no swap-kill-swap cycle, and `codesign --verify` clean right now. What is actually
+ happening is a port race: an agent session started `AMUX_RS_PORT=8824
+ amux-server-rs` by hand in a gemini-shell background job (pid 20191, parent a
+ /bin/bash -c with `trap 'jobs -p > "$_bgpids_file"' EXIT`), it holds 8824, and
+ launchd's managed copy cannot bind, exits cleanly with 78, and KeepAlive respawns
+ it forever. Clean exit, hence no .ips. So `bootout`/`bootstrap` would have resumed
+ losing the same race. The entry's INSTRUMENT argument survives intact and is if
+ anything stronger: a process that exits before binding logs nothing either, both
+ halves of `runs`-climbing-with-a-silent-log look identical, and I distinguished
+ them only by counting crash reports, which is not a thing any lane would think to
+ do. The deeper problem this exposed: the fleet's live server is an UNSUPERVISED
+ background job that dies with its parent shell, while the supervisor that should
+ own it is locked out of the port.
+
+## An archived card is listed as actionable and refuses every closing action
+
+AREA: board
+SEVERITY: wrong-conclusion
+STATUS: open
+DATE: 2026-09-03
+SESSION: gtm-engine
+CARD: AF-460
+SYMPTOM: a card can hold `archived: 1`, `status: backlog` and `closed_at: None` at
+ once. It appears in the DEFAULT `/api/board` list, which is what the idle nudge
+ reads, so it is offered as a drainable backlog card with "you have to pull from
+ it". Every closing verb then refuses with `archived_task_immutable` / "task is
+ archived; restore it first". The nudge says drain it; the board says you cannot.
+ The asymmetry is what makes it permanent: `--trigger` DOES work on an archived
+ card, so such a card is silenceable forever and closeable never.
+COST: 26 days on GE-564, whose trigger sat 617h stale while it re-listed. A triage
+ on 2026-08-20 chose ARCHIVE, the archive neither closed nor hid it, and nobody
+ could close it afterwards. SECOND INSTANCE, and mine is the worse one: I hit the
+ identical refusal on AF-224 the same day and read it as "already archived, no
+ action needed" rather than as a defect. A lane that shrugs at the refusal never
+ reports it, which is why one card absorbed 26 days before anyone said so.
+FIX: not chosen — three candidates land in different places and it is a data-model
+ call: (1) archiving sets a terminal status, (2) the default list excludes
+ archived, (3) the nudge filters them. Recommending (1), because (2) and (3) leave
+ a card that is simultaneously backlog and archived and merely stop showing it to
+ one reader. Workaround that works today and is documented nowhere: PATCH
+ archived:0, then done. Companion entry: the refusal message is correct and only
+ reaches you when you ACT, never where the card is listed (AF-461).
+
+## 19 NUL bytes made grep call a 67 MB log binary, and every `grep -o` sweep silently lost half its matches
+AREA: instruments
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-frustrations
+CARD: AF-481
+SYMPTOM: same file, same pattern, three answers. `grep -c 'verdict=READ'` -> 17
+ lines. `grep -o 'verdict=READ' | wc -l` -> 8. `grep -ao ...` -> 17. grep declares a
+ file binary if it contains a single NUL byte and then SUPPRESSES match output while
+ `-c` keeps counting lines, and it says nothing at all when its output goes to a
+ pipe. The source was one warn: the create-path acyclicity check passes a placeholder
+ self id of `"\u{0}new-card"`, chosen because no real card id can contain a NUL,
+ which is correct and also true of a space. `depends_on_cycle` logs it as
+ `self_id = %self_id`, so 19 NULs landed in server-rs.log from one stuck cycle
+ (GE-473 -> MHC-256) retried across three days.
+COST: 53% of the matches, in the reassuring direction, on the instrument this repo's
+ own log-sweep doc prescribes. I nearly filed AMUX-2841's specimen count as 8 when it
+ is 17, which would have understated a watch's evidence by half. Nineteen bytes in 67
+ MB is enough, so no amount of the file being "mostly text" protects you. The wider
+ shape is that a probe can be correct, run cleanly, exit 0 and answer about a
+ different population than the one you asked about, with nothing beside the number
+ saying so.
+FIX: db3ff38a and accbba96. The sentinel is now `"(new card)"`; non-collision is
+ unchanged, since card ids are `[A-Z]+-<digits>` and a space and parentheses are as
+ impossible as a NUL was, and it survives a log. The guard asserts the PROPERTY, not
+ the string: no control characters, at least one character no card id can contain,
+ and non-empty so neither can pass vacuously. Two mutations fire (back to the NUL
+ sentinel; a valid-id-shaped "NEW-0"). The repo CLAUDE.md now tells lanes to grep
+ that file with `-a`, because AF-481 removed this source and any logged payload can
+ reintroduce one.
+ SELF-CORRECTION, recorded because it is the same class: I first reported 216,873
+ NULs from `grep -c $'\0'`. bash cannot put a NUL in a string, so `$'\0'` is the
+ EMPTY string and that command is `grep -c ''`, a line count wearing a NUL count's
+ label. The real figure is 19, read from the bytes in python. Both halves of this
+ entry are a probe whose argument silently became something else.
+
+## `GET /api/board` returns a WORKING SET, and the cap is disclosed only in headers the prescribed recipe cannot see
+AREA: instruments
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-frustrations
+CARD: AF-480
+SYMPTOM: `GET /api/board` returns 2,053 rows; `GET /api/board?all=1` returns 12,745.
+ The default caps terminal rows (done/verified/discarded) to the most recently
+ updated FLEET-WIDE, which across ~50 lanes can be none of yours. The cap is right
+ and the server is honest about it, in RESPONSE HEADERS: `x-amux-truncated: 1`,
+ `x-amux-total: 2052`, `x-amux-terminal-total: 10793`. The body is a bare JSON array
+ with no envelope, and the recipe in ~/.claude/CLAUDE.md is
+ `curl -sk $AMUX_URL/api/board | python3 -c "..."`, which cannot see a header.
+COST: reconciling all 84 frustrations.md entries against the default listing reported
+ 63 cards as MISSING FROM THE BOARD. All 63 existed. That is a whole reconciliation
+ pass, and the report it produced was wrong in the direction that invents work: it
+ would have had me file 63 duplicate cards for entries that already had one. The
+ `amux` CLI ALREADY reads those headers and prints the cap, and its own comment says
+ why ("nobody reads response headers from a pipe, which is ethos rule 4's second
+ layer: a tag in a store the reader never opens") — so the capability existed, was
+ correct, and did not reach the path CLAUDE.md tells every lane to run. Ethos rule 1:
+ a feature nobody can name is a feature nobody has.
+FIX: ~/.claude/CLAUDE.md now shows both forms with their row counts, says the cap is
+ header-only and that a raw curl cannot see it, and points at `amux board ls` which
+ can. The "read the whole board" recipe in the task-ledger section takes `?all=1`,
+ since that one is asked to be exhaustive by its own sentence. Not fixed and
+ deliberately not attempted: putting the disclosure in the BODY would need an
+ envelope, and every consumer of that endpoint parses a bare array.
+
+## "commit by pathspec" protects other files, and does nothing for a file you BOTH edited
+AREA: attribution
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-frustrations
+CARD: AF-485
+SYMPTOM: ~/.claude/CLAUDE.md prescribes, for a shared checkout, "commit by pathspec.
+ `git commit <your paths>` ignores the index for everything it does not name and
+ leaves their staged entries untouched." Every clause is true and the paragraph reads
+ as a general guarantee against sweeping a peer. It is not one. `git commit <path>`
+ takes the WORKING TREE state of that path, all of it, not your hunks — so a peer's
+ UNSTAGED edits to a file you name land in your commit, under your message and your
+ Amux-Session trailer, while the pathspec does exactly what it promises. The same
+ paragraph pre-emptively dismisses `git add -p` ("theirs are already staged"), which
+ is correct for the state it describes and wrong for this one, so the reader is
+ steered away from the one tool that would have helped.
+COST: self-traced, 2026-09-04. I committed 66818693 by pathspec on
+ crates/amux-server/src/api/session_verbs.rs and swept amux-testing-e2e's
+ uncommitted Codex composer-footer fix, its LIVE_CODEX_IDLE fixture and its
+ regression test: four of six hunks, 59 of 171 added lines. I pushed it before they
+ could tell me, so the remedy CLAUDE.md prescribes for an absorbed change (do not
+ rewrite shared history; record the reasoning in a follow-up) is now the only one
+ available. The code survived correct and tested; the REASONING did not, because my
+ commit message is entirely about a diagnostic window parameter and says nothing
+ about Codex footer chrome. They found it, not me, and they asked whether they could
+ push a commit that was already on origin.
+ The guard was honest and I misread it: the commit printed "no transcript for RUNNING
+ cotenant(s) amux-codex — their edits are INVISIBLE to this verdict". It never named
+ amux-testing-e2e. A guard saying it cannot see is telling you to look.
+ Filed the same day I measured that 21 of 75 live entries in this file are the one
+ shared-index class (AF-336). This is the twenty-second, produced by following the
+ guidance written to prevent it.
+FIX: the pathspec paragraph in ~/.claude/CLAUDE.md now states what pathspec does NOT
+ cover, carries the measurement above, and gives the three commands to run before a
+ pathspec commit on a co-edited file: `git diff -- <path>`, `git diff --cached --
+ <path>`, and `git add -p -- <path>` followed by a commit with no pathspec. It also
+ says why `add -p` is right here despite the dismissal three lines above it: that
+ dismissal is about a peer's already-STAGED work, a different state.
+ NOT FIXED and deliberately not attempted: making the staged-guard see a cotenant it
+ has no transcript for. It already reports that blind spot by name, which is the
+ honest behaviour; the defect was in the guidance, not the guard.
+
+## An idle Codex prompt was labelled `UNSUBMITTED TEXT` using its model/path footer as the draft
+AREA: instruments
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-36
+SYMPTOM: the worker's stop hook said idle, Codex's structured rollout said idle,
+ zero subagents were live, and the pane visibly ended at the dim `Ask Codex to do
+ anything` placeholder. `/api/sessions/amux-testing-e2e` nevertheless returned
+ `status: waiting`, `composer_stuck_since > 0`, and
+ `composer_preview: gpt-5.6-solxhigh~/Dev/amux`; the dashboard rendered that
+ override as `UNSUBMITTED TEXT`. The composer reader stopped on Claude's border
+ and status-bar glyphs but Codex puts its model/effort/path footer directly below
+ the prompt with no border, so the footer was concatenated into the input.
+COST: the worker presented a false human-action state for roughly three hours and
+ contradicted both of its structured state sources. A human could have pressed
+ Enter to submit what the UI claimed was pending, although there was no command
+ in the composer.
+FIX: 66818693. `composer_state` now treats Codex's ANSI-styled middle-dot
+ model/path footer as a structural boundary without naming any model or version.
+ It deliberately requires the raw styling and therefore fails toward visible
+ `Typed` if Codex changes its chrome, never toward a false successful send. The
+ live-frame regression first reproduced `Typed("gpt-5.6-solxhigh~/Dev/amux")`,
+ then passed as `Placeholder`; its control keeps real typed text pending. Live
+ build `668186939734` cleared `composer_stuck_since` and `composer_preview`, and
+ the browser changed from the false badge to the worker's actual idle/working
+ state in real time.
+
+## One blocked To Do hid an independent backlog from automatic draining
+AREA: coordination
+SEVERITY: stuck
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-37
+SYMPTOM: `mvs-research` could finish its active card and then remain idle with
+ MR-14 in To Do and 18 cards in backlog. MR-14 depends on MR-27, which the lane
+ cannot complete, while MR-150 and other backlog work have no dependency. The
+ pickup selector only tried backlog when its To Do SQL query returned zero rows;
+ one blocked row therefore hid every independent backlog card even though this
+ worker had the default auto-drain configuration enabled.
+COST: the board advertised queued work and the worker advertised idle, but the
+ driver repeatedly returned `all-candidates-refused`. Progress then depended on
+ a person noticing the mismatch and moving a backlog card by hand. A tempting
+ workaround would be to ignore dependencies or claim backlog directly, both of
+ which would weaken the board's gates.
+FIX: ATE-37 makes automatic draining a fallback after every To Do candidate has
+ been evaluated and honestly refused. It still gives runnable To Do priority and
+ still promotes exactly one backlog card through backlog -> todo -> doing. The
+ drainable backlog query now excludes cards with open dependencies, so it cannot
+ merely move the same blockage sideways. The regression reproduces an older
+ blocked backlog card, a blocked To Do, and a newer runnable backlog card and
+ requires the runnable card alone to be selected. All 106 board-driver tests
+ pass, including WIP, needs:you, freshness, capture-shell, irreversible-action,
+ dependency-promotion, and explicit auto-drain opt-out controls.
+
+## Codex kept a live turn above its prompt shell and the dashboard called it idle
+AREA: instruments
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-38
+SYMPTOM: while `amux-testing-e2e` visibly showed `Waiting for background
+ terminal (... esc to interrupt)` directly above `Ask Codex to do anything`,
+ `/api/status-explain` set `pane.says_working=false` and the Workers UI labelled
+ the session idle. The status parser treated the persistent Codex prompt/model
+ shell as a newer idle boundary even though Codex paints that shell throughout
+ an active turn.
+COST: the worker's current board card lost its working highlight during a real
+ generation. That makes the board contradict the terminal and can also let the
+ driver reason from a false idle state.
+FIX: ATE-38 recognizes the exact adjacent live shapes on both supported Codex
+ layouts: older builds paint `Working` after the submitted prompt, while current
+ builds paint `Working`, `Running`, or `Waiting for background terminal/command`
+ immediately before the disabled prompt shell. A separated historical row still
+ cannot override the newest prompt, and a completed `Worked for` row is an idle
+ control. Adapter and end-to-end status-truth tests cover active, completed,
+ stale-row, queued-message, and prompt-churn cases without matching arbitrary
+ transcript prose.
+
+## A commit naming ATE-38 attached its outputs to the newer ATE-39 card
+AREA: attribution
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-39
+SYMPTOM: commit `be87f031` named `(ATE-38)` in its subject, but the post-commit
+ `commit-report` appended the commit activity and derived links for
+ `sessions_legacy.rs` and `be87f031` to the currently-Doing ATE-39. ATE-38 had
+ no durable artifact rows when the report landed. The endpoint ignored the
+ explicit task id and selected the worker's most recently updated in-flight card.
+COST: the board put another task's source and commit on this card and left the
+ producing task without its outputs. The user had to inspect both cards, identify
+ the wrong newest-card guess, and provide a corrective live specimen before the
+ task record could be trusted.
+FIX: ATE-39 (this commit). `commit-report` reads the full subject and changed-file
+ list from the git object, attaches by an explicit body/subject task id, and
+ refuses ambiguity instead of guessing newest. It stores the full SHA and every
+ changed file as durable rows on that exact task and emits
+ `commit_report_task_exact` / `commit_report_task_ambiguous` log markers.
+
+## Evidence hid a real .env file and rendered the 1.93M row count as a file
+AREA: board
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-39
+SYMPTOM: TUBES-2426 evidence named `customers/tubescience/.env` but Board details
+ returned no asset link. TUBES-2428 named the same file yet returned only `1.93M`,
+ a decimal measurement, as a clickable missing-file asset. The parser required a
+ non-empty stem before the final dot and accepted alphabetic measurement suffixes.
+COST: the actual customer configuration artifact disappeared from two task records,
+ while one record sent a reviewer toward a manufactured file. The user had to
+ compare the two live payloads to show that the positive and negative parser arms
+ were both backwards.
+FIX: ATE-39 (this commit). Hidden leaf files and hidden path components are
+ accepted, decimal measurement tokens are rejected, and bare/relative dotfiles
+ resolve against the producing worker directory. File rows now render as semantic
+ buttons; local availability and external reachability-not-measured verdicts make
+ missing and unreachable assets explicit.
+
+## Worker progress was recorded while its exact Board card stayed unclaimed
+AREA: board
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-41
+SYMPTOM: general-canvas-apps posted four status updates describing active work on
+ GCA-153, but the card remained in To Do and `task_board_id` stayed empty. The
+ status-update endpoint appended the text and artifacts without participating in
+ the Board claim transition.
+COST: the Board showed an actively executing worker without its current card and
+ left the same card eligible for another pickup. The user had to correlate the
+ worker transcript, card log, and session payload to identify the disagreement.
+FIX: ATE-41 (this commit). An owned, actionable To Do/backlog card is now claimed
+ in the same serialized transaction that appends the progress line and artifacts.
+ Cross-worker, blocked, dependency-held, fresh-trigger, WIP-conflicting, waiting,
+ and later-state updates remain informational and return a named refusal verdict;
+ claimed and refused paths emit distinct sweep-visible log markers.
+
+## An idle Codex worker borrowed a sibling's active rollout and showed WORKING
+AREA: status
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-42
+SYMPTOM: `amux` sat at the empty `Ask Codex to do anything` prompt and its own
+ stop hook reported idle, but the dashboard showed WORKING on stale AMUX-4079.
+ `status-explain` named `codex_rollout`; the chosen rollout actually belonged to
+ active sibling `amux-testing-e2e`, which shares `/Users/ethan/Dev/amux`.
+COST: the worker header and Board highlight asserted current execution where
+ none existed, while two workers' transcripts and lifecycle signals were
+ cross-linked solely because they used the same checkout.
+FIX: ATE-42. An explicit Codex session id still wins. Before one exists, rollout
+ fallback now canonicalizes the cwd and selects only the rollout born within a
+ bounded window around that worker's own `last_started`; outside that window it
+ refuses to guess and lets the exact terminal/provider signals decide.
+
+## WIP-capped ready work was labelled STALLED while its holding task progressed
+AREA: dashboard
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-43
+SYMPTOM: TubeScience was idle at its main prompt while detached work continued
+ on TUBES-2418 and TUBES-2419 correctly waited behind WIP-1. The worker header
+ rendered the red `STALLED · 1 READY` chip even though `/api/board/ready` named
+ TUBES-2418 as the current WIP holder.
+COST: a healthy, intentionally serialized queue looked like a broken autonomy
+ loop. The label hid both card identities, so the user could neither see what
+ was waiting nor open the task that explained the wait.
+FIX: ATE-43 (this commit). The ready frontier retains card identities and renders
+ TUBES-2419 as queued behind a clickable TUBES-2418 control. Only ready work with
+ zero claimable cards and no holding work keeps the stalled verdict. A one-shot
+ `idle-ready-work` client beacon records which classification rendered.
+
+## Peek and worker-card action menus drifted into different products
+AREA: dashboard
+SEVERITY: wrong-action
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-44
+SYMPTOM: the worker card exposed 25 worker actions and configurations, while the
+ peek overflow exposed only File browser and Focus mode. Worse, the peek File
+ browser opened a desktop-only split pane while clicking the displayed directory
+ entered the canonical full Files route for the same worker and path.
+COST: the place where the user was already operating a worker hid almost every
+ control, and two labels for the same file-browsing intent produced different
+ session, navigation, and visible-state outcomes. A duplicated `peek-more-btn`
+ id also made automation and DOM lookup choose whichever button came first.
+FIX: ATE-44 (this commit). Both surfaces render one shared worker-action
+ inventory; peek retains its two additional controls. All three peek file entry
+ controls call one canonical full-route helper, the two overflow buttons have
+ unique semantic IDs, and mismatch/file-entry verdicts reach client-debug logs.
+
+## Claude's background-agent wait row had two conflicting status parsers
+AREA: status
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: Primis visibly showed the provider-owned `Waiting for 1 background
+ agent to finish` row and an active Explore agent, while the dashboard header
+ said IDLE. `backend/adapter.rs` classified the row active, but the legacy
+ session projection called a second parser that omitted it.
+COST: the user had to reconcile the terminal, agent panel, session payload and
+ status-explain output to establish that real work was still running.
+FIX: ATE-45 shares one chrome-anchored singular/plural predicate between the
+ adapter and session status path. The exact provider row overrides an idle
+ parent-prompt report; quoted prose remains a negative control.
+
+## Subagent lifecycle truth disappeared whenever the server rebuilt
+AREA: hooks
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: Primis SubagentStart and SubagentStop hooks both recorded `http=000`
+ during a server rebuild. The callbacks were one-shot, so the server retained
+ neither the active agent identity nor its final stop after coming back.
+COST: the authoritative live-agent count read zero during real work and could
+ also remain positive after a lost stop; recovery depended on a later process
+ reset rather than replaying the facts that had already happened.
+FIX: ATE-45 gives each lifecycle edge a session/agent/event identity, persists
+ it in a bounded fsynced FIFO, replays oldest-first across outages and response
+ loss, and deduplicates durably in the server. Permanent 4xx poison events
+ dead-letter with full identity; 000/5xx retry; any later hook wakes the queue.
+
+## Board-drive interrupted Codex while its background terminal was running
+AREA: board
+SEVERITY: wrong-action
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: this ATE-45 turn visibly showed Codex's `1 background terminal
+ running` provider row, but board-drive sent an Idle nudge and Codex reported
+ `Conversation interrupted`. The status adapter already understood the row;
+ the steering boundary trusted a fresh idle parent report without reading it.
+COST: the harness interrupted its own green test run, forced the model to
+ reconstruct its place, and demonstrated that dashboard truth and delivery
+ safety still disagreed on the same frame.
+FIX: ATE-45 makes the shared structured Codex pane state override an idle
+ parent report for status, board-drive and steering. The hold clears on the
+ completed `Worked for` frame, and quoted copies of the text do not match.
+
+## Durable lifecycle replay posted valid events to the server root
+AREA: hooks
+SEVERITY: wrong-action
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: commit 483ff0aa queued the base `AMUX_URL`, so its drain POSTed every
+ SubagentStart/Stop to `/` instead of `/api/sessions/<worker>/report`. The live
+ server returned 405 and the new permanent-4xx rule immediately dead-lettered
+ the valid lifecycle facts.
+COST: ATE-45 was committed, deployed and moved to review with a green chaos
+ suite while its central production path delivered zero lifecycle events. A
+ second read-only review and live failure-log inspection were needed to catch it.
+FIX: ATE-45 now constructs one canonical per-session report URL used by queued
+ and immediate delivery. The fake server returns 405 for every other path, every
+ captured request asserts its exact worker route, and the failure log retains
+ URL, HTTP verdict and event identity.
+
+## Submitted and pasted provider frames impersonated live background work
+AREA: status
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: Claude's broad dingbat range included its own `❯` input glyph, so a
+ prompt containing the exact waiting sentence read active. The provider-agnostic
+ Codex fallback likewise accepted a pasted Codex frame inside Claude output.
+COST: user-authored text could pin a truly idle worker WORKING and suppress its
+ ready queue indefinitely; the original negative tests covered only unprefixed
+ prose and same-line Codex quotation.
+FIX: ATE-45 accepts only measured Claude spinner glyphs at column zero, excluding
+ the prompt and indented pasted rows. Provider-known Codex scans keep partial-
+ frame support, while provider-agnostic status requires the current exact Codex
+ prompt/model-footer structure. Prompt, indented and cross-provider pastes are
+ explicit negative controls and unknown variants remain sweep-visible.
+
+## An older start could resurrect an agent whose stop arrived first
+AREA: status
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: server lifecycle state remembered only live IDs plus 128 recent event
+ IDs. A stop delivered before its older start was discarded as an orphan; once
+ a start ID aged out, replaying it after the final stop made the agent live again.
+COST: response reordering or a sufficiently delayed retry could leave a worker
+ permanently WORKING after every child had completed, defeating both accurate
+ status and automatic Board pickup.
+FIX: ATE-45 stores monotonic per-agent live/terminal edges. Stop-before-start is
+ a durable tombstone; older/equal resurrecting starts are rejected with named
+ verdicts. Terminal entries compact to a bounded set plus a timestamp floor, so
+ evicted tombstones still reject ancient replay and resets preserve generations.
+
+## Steering's deadline overrode its live-background safety hold
+AREA: messages
+SEVERITY: wrong-action
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: ATE-45 mapped exact provider/background evidence to `active`, then fed
+ it to the ordinary max-age rule, which deliberately turns old active messages
+ into mid-turn delivery. A long agent or background terminal was still
+ interruptible after `AMUX_STEER_MAX_AGE_S`.
+COST: the safety fix postponed the same conversation interruption instead of
+ preventing it, contradicting its own regression name and acceptance contract.
+FIX: ATE-45 carries background work as a separate hard-hold fact into the
+ delivery decision. No message age can bypass it; only the reported final stop
+ or provider terminal frame clears the hold, while ordinary foreground turns
+ retain the existing starvation deadline.
+
+## The lifecycle drain could strand its bounded tail or lose the final wakeup
+AREA: hooks
+SEVERITY: stuck
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: one drain performed only 90 total loop iterations although the queue
+ admitted 128 rows. At the empty boundary, a producer could enqueue and launch
+ a replacement before the old drain released its nonblocking lock, so both
+ exited with the final row still queued.
+COST: up to 38 healthy events could remain behind an entirely healthy server,
+ and the last SubagentStop could sleep until an unrelated future hook happened.
+FIX: ATE-45 spends the 90-attempt budget only on retryable failures, so successes
+ drain the complete bounded FIFO. The empty read releases drain ownership while
+ holding the queue lock, replacements wait through the bounded handoff, and
+ tests prove one process drains 128 rows plus the lock-race specimen.
+
+## A corrupt lifecycle queue was silently replaced with an empty one
+AREA: hooks
+SEVERITY: data-loss
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: JSON read errors and wrong-schema JSON both became `rows=[]`; the next
+ enqueue atomically overwrote the only bytes that could explain which lifecycle
+ facts were lost. Malformed provider payloads also shared an empty dedupe key.
+COST: a damaged queue erased its own evidence and multiple malformed but real
+ callbacks collapsed into one, making the status error impossible to reconstruct.
+FIX: ATE-45 atomically preserves corrupt bytes/schemas under a timestamped path
+ and logs the queue, preserved path, error and verdict before recovery. Every
+ malformed invocation gets a unique persisted identity; tests cover both corrupt
+ forms and duplicate malformed callbacks.
+
+## A green shared-target build embedded another worktree's dashboard
+AREA: build
+SEVERITY: wrong-conclusion
+STATUS: open
+DATE: 2026-09-04
+SESSION: amux
+CARD: AMUX-4142
+SYMPTOM: A post-commit `scripts/safe-cargo.sh build -p amux-server` in the
+ Basecoat integration worktree exited 0 and `/health` reported that worktree's
+ `11c1b789` commit, but the same process served `APP_VER=0.9.804` and no
+ `ui-system.js` from another worktree instead of its own `0.9.807` Basecoat
+ assets. Both worktrees use the required shared `CARGO_TARGET_DIR`; Cargo
+ treated the other checkout's `amux-dashboard` RustEmbed artifact as current.
+COST: Seven minutes, an extra 2m32s server build, and a browser run that would
+ have falsely certified the old UI if it had checked appearance without joining
+ `/health.commit` to the actually served asset version.
+FIX: Open as AMUX-4142. Make embedded-asset provenance part of the build
+ fingerprint or have the build/deploy gate compare served APP_VER/CACHE with
+ the source tree and emit a sweep-visible mismatch verdict.
+
+## A lost Stop report left a finished Primis turn WORKING for 139 seconds
+AREA: hooks
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: Root's live browser saw both Primis subagents finish and Claude return
+ to its prompt at 15:22, but the worker card and input still said WORKING. The
+ status explanation chose a fresh `prompt-hook` active report with zero live
+ subagents; the hook log showed the missing edge exactly: `15:22:22 primis
+ source=stop-hook http=000` during a server rebuild.
+COST: the production UI contradicted the provider for 139 seconds and Board
+ pickup remained suppressed after all work was terminal. It self-cleared only
+ when the active-report trust window expired, not because the final fact landed.
+FIX: ATE-45 makes main-turn state a durable singleton latest-wins queue using
+ the same bounded detached drain as lifecycle events. A newer report atomically
+ replaces an older pending state, so recovery cannot replay idle over a later
+ active turn; successful recovery logs the state, identity, attempt and
+ `replayed_state` verdict. The exact lost-Stop outage replays idle without any
+ later hook and is a shipped regression cell.
+
+## Claude's stale background-wait scrollback overruled a later completed turn
+AREA: status
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: Primis visibly returned to its final prompt after
+ `CLAUDE-POSTFIX-COMPLETE`, with zero live subagents and an idle stop report,
+ but status-explain still set `provider_background_working=true` because an
+ older provider-owned "Waiting for 1 background agent to finish" row remained
+ in tmux scrollback.
+COST: Workers stayed WORKING and turn-boundary-safe Board drive remained
+ suppressed for minutes after the real work finished.
+FIX: ATE-45 reads Claude's provider rows as ordered lifecycle edges: a newer
+ completed-turn marker terminates every older wait, while a newer wait still
+ wins. The status path logs `superseded_by_completed_turn`, and exact-frame
+ adapter, detector and status-explain regressions cover the live Primis pane.
+
+## One capture shell's cooldown hid the next non-work shell forever
+AREA: board
+SEVERITY: stuck
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: PRIMI-204 was explicitly classified by its prompt as "do not create or
+ retain a board task", but a recent nudge for PRIMI-203 activated the lane-wide
+ advance cooldown before PRIMI-204 received its own cleanup prompt. It remained
+ in `doing` after the turn ended with no `decompose:PRIMI-204` event.
+COST: a non-task occupied the Board indefinitely while the drive report called
+ the lane healthy and no model was asked to make the keep/discard decision.
+FIX: ATE-45 lets a newly captured shell rejected by the shared pickup classifier
+ bypass an unrelated lane cooldown exactly once, prioritizes that exact card,
+ and relies on the durable per-card `decompose:<id>` idem to close the exception.
+ The bypass emits `capture_cleanup_bypassed_lane_cooldown`; a focused regression
+ proves both the first nudge and duplicate suppression.
+
+## Codex `turn_aborted` left an interrupted turn structurally active
+AREA: status
+SEVERITY: wrong-conclusion
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-45
+SYMPTOM: After Codex displayed `Conversation interrupted` and returned to its
+ empty prompt, both Workers surfaces stayed WORKING. Status-explain chose a
+ fresh `codex_rollout` active vote even though the stop report was idle,
+ `subagents_live=0`, and `provider_background_working=false`. The rollout held
+ the exact missing edge: an `event_msg` whose payload type was `turn_aborted`.
+COST: An already terminal turn suppressed safe Board drive and contradicted the
+ provider UI until a later recognized lifecycle event replaced the stale vote.
+FIX: ATE-45 treats both top-level and nested Codex abort events as durable idle
+ boundaries, surfaces the chosen boundary in status-explain, and emits the
+ `interrupted_turn_is_terminal` status-truth verdict. Exact rollout and pane
+ regressions pin the interrupted-turn prompt frame for Codex and Ollama.
+
+## No board state means "blocked on ANOTHER LANE's decision"
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-04
+SESSION: backend
+CARD: AF-506
+SYMPTOM: Autonomous backlog triage picked up MI-4155, a card owned by a different
+ lane. Every state is a lie or a loop: `backlog` re-feeds the same lane's
+ auto-pickup (it came back twice), `todo` re-queues after cooldown, `needsyou`
+ reads as blocked on Ethan rather than on a peer, and `review` — which the
+ DISPATCHER's own card text recommends ("if blocked on an owner decision, move to
+ review") — gates on acking "Implemented and self-tested" / "Diff / PR is up",
+ which a card you are ROUTING AWAY cannot truthfully claim.
+COST: A lane cycled a card through two dead ends before finding that PATCHing the
+ card's `session` to the owning lane is the answer. Nothing in the blocked
+ response's how_to_ack hints at it, so every lane running backlog triage
+ rediscovers it or picks a dead end. Ethos rule 3: no truthful path for a
+ legitimate state.
+FIX: AF-506. (b) first — surface "reassign session to the owning lane" in the
+ blocked response, the same way it already surfaces the gate-ack CLI. (a) a real
+ blocked-on-peer state that does not re-dispatch and is not gated on a
+ self-implementation attestation; that is a board-state change and is Ethan's to
+ approve. Also fix the dispatcher's "move to review" line, which routes people
+ into the refusal.
+
+## Shared-checkout guard blocks `git reset` but not the bare `git commit`
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-04
+SESSION: backend
+CARD: AF-507
+SYMPTOM: `git add <file>` hit a peer's index.lock and failed, so the file was
+ never staged. The follow-up bare `git commit -m` then committed the whole
+ index-vs-frozen-HEAD drift — 1120 files, +67067/-6296 — under their message, not
+ containing their change. `git reset --soft HEAD~1` to undo it was then BLOCKED by
+ git-shared-guard.py, correctly. The guard blocks the FIX and not the CAUSE.
+COST: A near-miss, contained only because the mega-commit was local-only and
+ diverged non-ff from origin; the real change landed via the zero-write graft
+ recipe instead. `git reset` is guarded because it moves HEAD, while a bare `git
+ commit` on this checkout is both more common and less recoverable, and is
+ unguarded.
+FIX: AF-507. Refuse a no-pathspec `git commit` whose staged set exceeds a
+ file-count threshold against ORIGIN/MAIN (not HEAD — graft-push freezes HEAD
+ ~1846 behind, which is what makes the drift large), with a named audited env
+ escape. backend confirms both primitives already exist in that guard: the
+ origin/main-diff is in the co-edit leg and the escape shape is the --allow-*/env
+ pins. Related: AF-503 (the index.lock contention that started the sequence).
+
+## An unsigned fake browser PID shut down every Linux CI runner process
+AREA: tests
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-04
+SESSION: amux-testing-e2e
+CARD: ATE-44
+SYMPTOM: Ten consecutive Rust check jobs ended around seven minutes with "runner
+ received a shutdown signal" after commit 92044fc8 added a browser-reaper test
+ seeded with PID 4294967295. The test called the real browser stop path, which
+ passed that decimal string to Linux procps `kill -TERM`; procps returned success
+ and treated the unsigned value as the signed process-group sentinel -1.
+COST: Every descendant main run lost the workspace-test process and GitHub runner,
+ blocking ATE-44 and ATE-45 verification while the 25-minute workflow timeout and
+ passing test output falsely suggested external cancellation.
+FIX: ATE-44 validates every browser PID at the signed OS boundary, refuses
+ reserved/group values before constructing arguments or launching external
+ `kill`, and emits `invalid_process_id_refused`. The original
+ 4294967295 fixture remains as an end-to-end regression, with boundary controls
+ for PID 0, PID 1, ordinary positive PIDs, and the signed maximum.

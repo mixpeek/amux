@@ -153,6 +153,7 @@ async fn native_output_matches_recorded_python_fixtures() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     // Placeholder mapping applied to BOTH sides.

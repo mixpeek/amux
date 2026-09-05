@@ -1,0 +1,26 @@
+-- AF-367: `issues.creator` means two different things and nothing on the row
+-- separates them.
+--
+-- `mint_capture_card` stamps `creator: "amux"` for every auto-captured human
+-- prompt, and the amux LANE stamps the same string for cards it really authors.
+-- Measured 2026-08-31: 90 cards carried creator='amux' in 24 hours and only 41
+-- belonged to that lane. The other 49 are captured prompts owned by byo-ray,
+-- tubescience, autodesk and others. A human tracing a stray card lands on the
+-- amux lane's door for work the daemon did.
+--
+-- `owner_type` does not help: it reads 'agent' for BOTH populations, all 90.
+--
+-- WHY A NEW COLUMN RATHER THAN A NEW `creator` VALUE. Stamping captures
+-- 'amux-capture' is the obvious fix and it has a trap: `mint_capture_card`'s own
+-- dedup keys on `creator = 'amux'`, so changing the value would silently stop
+-- deduping and mint a card per prompt. That is this card's own failure mode
+-- reappearing inside its fix. Additive is also the only shape that cannot break
+-- another lane's existing query.
+--
+-- NOT BACKFILLED, deliberately. Every pre-existing row keeps NULL, which reads as
+-- "this predates the discriminator" rather than as a claim about which population
+-- it belonged to. Guessing retroactively would manufacture exactly the confident
+-- wrong attribution the column exists to end (ethos rule 8, and AF-179's lesson
+-- about inferred owners). A reader seeing NULL knows to fall back to creator; a
+-- reader seeing a value can trust it.
+-- ADDCOL: issues source TEXT

@@ -56,6 +56,54 @@ test('the tab customizer opens and its rows are visible on screen', async ({ pag
   await page.screenshot({ path: `../test-results/tabcust-${info.project.name}.png` });
 });
 
+// THE BUTTON HAS TO BE ON SCREEN BEFORE ANY OF THE ABOVE MATTERS (AF-45,
+// 2026-09-04). Every assertion in this file, including the geometry ones written
+// specifically to catch "correctly positioned off-screen", runs AFTER
+// `btn.click()` — and Playwright scrolls an element into view before clicking
+// it. So the whole file tested a path a user cannot take, and passed on three
+// targets for three weeks while the button sat 590px past the right edge of a
+// scroller with no visible scrollbar.
+//
+// Measured on the shipped build before the fix: strip scrollWidth 1025 against a
+// 393px iPhone 15 viewport, ⊞ at left=983; Chromium 375 gave left=943 out of 985.
+// Nine of sixteen tabs were off-screen with it.
+//
+// THE ASSERTION IS "NO SCROLLING HAPPENED", not "the box is on screen". Reading
+// the rect after a click would pass on the broken build, since the click is what
+// puts it there. It is read before anything touches the page, and the strip's
+// scrollLeft is asserted to still be 0 so the cell cannot be satisfied by a
+// scroll some earlier line performed.
+test('the customizer button is reachable without scrolling the tab strip', async ({ page }) => {
+  await openPeek(page);
+  const vp = page.viewportSize()!;
+
+  const strip = page.locator('.peek-tabs');
+  expect(await strip.evaluate((e: Element) => (e as HTMLElement).scrollLeft),
+         'the strip was already scrolled; this cell measures the resting state').toBe(0);
+
+  const box = await page.locator('#peek-tab-customize').boundingBox();
+  expect(box, 'the ⊞ button has no layout box').not.toBeNull();
+  expect(box!.x, `⊞ starts past the right edge (x=${box!.x}, vw=${vp.width}) — a user has `
+       + `to discover that a scrollbar-less strip pans horizontally and drag it there`)
+    .toBeLessThan(vp.width);
+  expect(box!.x + box!.width, `⊞ ends off-screen left (x=${box!.x})`).toBeGreaterThan(0);
+
+  // The 44px floor this repo already requires, asserted on the RESTING rect
+  // rather than the scrolled-into-view one the click above would produce.
+  expect(box!.width, `⊞ is ${box!.width}px wide, under the 44px mobile floor`)
+    .toBeGreaterThanOrEqual(vp.width <= 600 ? 44 : 16);
+
+  // CONTROL: the strip really does overflow here, so the cell above is not
+  // passing because there was nothing to scroll. Without this, a future change
+  // that removed nine tabs would make the assertion vacuous and still green.
+  const overflow = await strip.evaluate((e: Element) =>
+    (e as HTMLElement).scrollWidth - (e as HTMLElement).clientWidth);
+  if (vp.width <= 600) {
+    expect(overflow, 'the strip no longer overflows on mobile, so this cell proves nothing')
+      .toBeGreaterThan(100);
+  }
+});
+
 // THE GLOBAL customizer, which the test above does NOT cover. There are three
 // menus sharing the .tab-customizer-menu class (index.html:499, :1948, :2199)
 // and the peek one is only the second. Ethan's words — "a drop-down list of ALL

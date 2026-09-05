@@ -559,6 +559,21 @@ pub trait HttpTransport: Send + Sync {
     ) -> Result<(u16, String), String> {
         Err("post_raw not implemented by this transport".into())
     }
+    /// POST JSON, returning ONE named response HEADER alongside status/body —
+    /// Mattermost's login endpoint (`api/connectors.rs::mattermost_login`)
+    /// returns the session token in a `Token` header, not the body, which
+    /// none of the (status, body)-shaped methods above can carry. Defaulted
+    /// to an error, not a stub success, matching `post_raw`'s own precedent:
+    /// a transport that never implemented it fails the caller loudly rather
+    /// than pretending the header was absent from a real response.
+    async fn post_json_with_header(
+        &self,
+        _url: &str,
+        _body: &Value,
+        _header_name: &str,
+    ) -> Result<(u16, Value, Option<String>), String> {
+        Err("post_json_with_header not implemented by this transport".into())
+    }
 }
 
 /// Production transport (reqwest, 30s timeout — the Python side bounds each
@@ -635,6 +650,18 @@ impl HttpTransport for ReqwestTransport {
         let status = res.status().as_u16();
         let text = res.text().await.map_err(|e| e.to_string())?;
         Ok((status, text))
+    }
+    async fn post_json_with_header(
+        &self,
+        url: &str,
+        body: &Value,
+        header_name: &str,
+    ) -> Result<(u16, Value, Option<String>), String> {
+        let res = self.client.post(url).json(body).send().await.map_err(|e| e.to_string())?;
+        let status = res.status().as_u16();
+        let header = res.headers().get(header_name).and_then(|h| h.to_str().ok()).map(str::to_string);
+        let value: Value = res.json().await.unwrap_or(Value::Null);
+        Ok((status, value, header))
     }
 }
 

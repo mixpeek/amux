@@ -1,0 +1,14 @@
+-- Phase 2 workflow fields on issues: acceptance criteria and decision structure.
+--
+-- acceptance_criteria: JSON array of measurable conditions. The done gate can
+-- evaluate these rather than relying on free-text description parsing. NULL means
+-- not specified (most cards predate this), not "no criteria exist".
+--
+-- decision_question/decision_rationale/decision_supersedes: structured fields for
+-- type=decision cards, so decisions are queryable and linkable rather than being
+-- regular cards with unstructured descriptions. decision_supersedes is the semantic
+-- id of the card this decision replaces, enabling a decision chain.
+-- ADDCOL: issues acceptance_criteria TEXT
+-- ADDCOL: issues decision_question TEXT
+-- ADDCOL: issues decision_rationale TEXT
+-- ADDCOL: issues decision_supersedes TEXT

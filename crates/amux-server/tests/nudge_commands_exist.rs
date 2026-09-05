@@ -152,13 +152,16 @@ fn every_board_command_the_server_tells_a_lane_to_run_actually_dispatches() {
          broken, not the code"
     );
 
-    // And a POSITIVE control: the specimen this test was written for must be in
-    // the extraction. If `epic` stops being found, the extractor regressed.
+    // And a POSITIVE control: the current atomic multi-task exit must be in the
+    // extraction. If `decompose` stops being found, the extractor regressed.
     assert!(
-        named.iter().any(|(v, _)| v == "epic"),
-        "the AMUX-3707 specimen (`amux board epic`) is not in the extraction — extractor \
+        named.iter().any(|(v, _)| v == "decompose"),
+        "the capture-shell exit (`amux board decompose`) is not in the extraction — extractor \
          regressed.\nfound: {:?}",
-        named.iter().map(|(v, _)| v.as_str()).collect::<BTreeSet<_>>()
+        named
+            .iter()
+            .map(|(v, _)| v.as_str())
+            .collect::<BTreeSet<_>>()
     );
 
     // ...and the NEGATIVE control, which is the half that proves the test-module

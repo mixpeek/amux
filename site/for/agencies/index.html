@@ -45,7 +45,7 @@
     "description": "Software agencies use amux to run parallel AI coding agents across multiple client projects simultaneously — with per-project cost tracking, built-in CRM, Gmail integration, and iOS monitoring between client calls.",
     "url": "https://amux.io/for/agencies/",
     "datePublished": "2026-07-15",
-    "dateModified": "2026-07-15",
+    "dateModified": "2026-09-03",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png",
@@ -111,7 +111,14 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>Agencies</span></div>
 
     <h1>amux for Software Agencies</h1>
-    <p class="subtitle">Run an AI engineering team across all your client projects. Monitor progress between client calls. Manage client contacts, emails, and notes in one tool. Ship overnight while your team sleeps. <em>Updated July 2026.</em></p>
+    <p class="subtitle">Run an AI engineering team across all your client projects. Monitor progress between client calls. Manage client contacts, emails, and notes in one tool. Ship overnight while your team sleeps. <em>Updated September 2026.</em></p>
+
+    <div class="cta-top" style="background:var(--green,#22c55e10);border:1px solid var(--green,#22c55e);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+      <span style="font-size:14px;color:var(--fg);">Run client projects with an AI engineering team, managed from one dashboard.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="typeof posthog!=='undefined'&&posthog.capture('exp074_agencies_topofpage_cta_click')"
+         style="background:var(--green,#22c55e);color:#000;padding:0.45rem 1.1rem;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free</a>
+    </div>
 
     <p>Software agencies building with AI agents face a coordination problem that solo developers don't: each client project needs its own agent fleet, approval workflow, and progress visibility — while you're on calls, at client sites, or managing multiple teams simultaneously. amux is an open-source control plane designed for exactly this workload. It runs parallel Claude Code, Codex CLI, or Gemini CLI sessions across multiple client projects simultaneously, with per-project cost tracking, a shared kanban board, built-in CRM for client contacts, and a native iOS app for monitoring and approving actions from anywhere. Agencies using amux report running 3-5× more parallel work than single-session approaches, with overnight agent runs completing client deliverables while the team sleeps.</p>
 
@@ -250,6 +257,8 @@ amux board add "Fix checkout redirect on mobile Safari" --session client-b</code
 
     <p>For overnight runs, write task cards before you close the laptop, enable YOLO mode per session, and use the <a href="/guides/scheduling-ai-agents/">scheduler</a> to post daily progress summaries to the board every morning. See the <a href="/guides/running-10-plus-agents/">guide to running 10+ agents</a> for fleet configuration at scale.</p>
 
+    <p>If you want the team set up for you, <a href="/concierge/">amux Concierge</a> is a managed onboarding service where the amux team configures your first client project, wires up your agent fleet, and runs your first overnight automation alongside you.</p>
+
     <p>Install the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> so you can check in and approve actions without opening a laptop. The amux cloud tunnel gives you a stable public HTTPS URL for your dashboard — useful at client sites where you may not be on your home network.</p>
 
     <h2>Frequently asked questions</h2>
@@ -282,7 +291,8 @@ amux serve  # → https://localhost:8824</code></pre>
       <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a> ·
       <a href="/guides/scheduling-ai-agents/">Scheduling AI Agents</a> ·
       <a href="/for/freelancers/">amux for Freelancers</a> ·
-      <a href="/guides/getting-started/">Overnight Agent Runs</a>
+      <a href="/blog/running-ai-agents-24-7/">Running Agents 24/7 Overnight</a> ·
+      <a href="/concierge/">Managed Onboarding (Concierge)</a>
     </p>
   </main>
   <footer class="sub-footer">

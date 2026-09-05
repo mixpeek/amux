@@ -1,0 +1,47 @@
+[Unit]
+Description=amux virtual desktop for headed browser automation + human VNC viewing (Xvfb :0 + x11vnc + openbox + a dashboard viewer window)
+Documentation=https://amux.dev/docs
+
+[Service]
+Type=forking
+Environment="DISPLAY=:0"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Migrated from a hand-installed, undocumented SYSTEM-level unit
+# (/etc/systemd/system/xvfb-vnc.service — found 2026-08-31, FRONT-4/AMUX-49:
+# it had been silently supervising this box's desktop the whole time,
+# restart counter already at 49+ when found, but `systemctl --user` never
+# showed it because it lived one level up from every other amux unit).
+# Converted to --user for the same reason every other amux service already
+# is one: no sudo needed to install/manage/inspect it, and it's the ONE
+# convention this box's units all otherwise follow. Behavior preserved
+# exactly (same commands, same Type=forking shape) rather than "improved"
+# during the migration — a working 49-restart track record is worth more
+# than a cleaner-looking unit file right now.
+#
+# Exactly ONE thing may ever own display :0's Xvfb process. A second,
+# independent unit trying to spawn its own Xvfb races this one for the
+# same lock file and makes things WORSE, not better (confirmed live
+# 2026-08-31 — an earlier, since-reverted attempt at a minimal
+# Xvbf-only unit did exactly this). Anything else that needs the display
+# (playwright-mcp's automated Chromium instances) should depend on THIS
+# unit being up (Wants=/After=), never spawn its own Xvfb.
+ExecStart=/bin/bash -c 'Xvfb :0 -screen 0 1920x1080x24 -nolisten tcp &'
+ExecStartPost=/bin/bash -c 'sleep 2; x11vnc -display :0 -forever -shared -bg -nopw'
+ExecStartPost=/bin/bash -c 'DISPLAY=:0 openbox &'
+ExecStartPost=/bin/bash -c 'sleep 1; DISPLAY=:0 chromium --no-first-run --disable-gpu --disable-dev-shm-usage --new-window http://localhost:8824 &'
+
+# RestartSec=10, not a faster value: the confirmed root cause of this
+# unit's crashes is the kernel OOM killer (`sudo dmesg` showed chromium
+# and rustc both killed under sustained memory pressure, zero swap
+# configured) — a faster restart doesn't help an OOM-caused crash, it
+# just re-enters the same memory pressure sooner. Kept at the
+# already-proven value rather than tuned down.
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amux-xvfb
+
+[Install]
+WantedBy=default.target

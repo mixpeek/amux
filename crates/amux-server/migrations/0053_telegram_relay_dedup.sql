@@ -1,0 +1,23 @@
+-- Fix the auto-relay sending the SAME reply to Telegram repeatedly.
+--
+-- Bug (found live 2026-08-30, reported directly by the user: "I get answers
+-- multiple times"): 0036_telegram_relay.sql added `last_relayed_line` with
+-- the stated intent "so we don't send the same text twice" -- but it was
+-- write-only. `mark_relayed()` stores it; nothing ever read it back.
+-- `check_and_relay` (telegram_relay.rs) has no dedup gate at all: every 30s
+-- tick re-extracts whatever currently follows the LAST `[from Telegram @...]`
+-- marker and re-sends it, for as long as that stays the newest thing in the
+-- pane -- which for an idle session after a reply is "forever" (or until a
+-- new inbound message moves the marker, or the pane's 300-line capture
+-- window scrolls the old reply out of view).
+--
+-- `last_relayed_line` itself is unsuitable as the read-side check even once
+-- wired up: `tmux capture-pane -S -300` is a SLIDING window relative to the
+-- pane's CURRENT bottom, so on any session with more than 300 lines of
+-- scrollback (common for a working Claude Code pane), the captured line
+-- count is permanently pinned at 300 -- a `current <= stored` comparison
+-- would then never fire again after the first relay, trading one dedup bug
+-- for a worse one (relay silently stops working). A content hash of the
+-- extracted reply text has no such instability: it changes if and only if
+-- the actual text to send changed.
+ALTER TABLE telegram_mappings ADD COLUMN last_relayed_hash TEXT;

@@ -4,13 +4,15 @@ amux cloud E2E smoke test — runs daily via amux scheduler.
 
 Creates a test user via Clerk Backend API, authenticates through the gateway,
 exercises sessions with each provider (Claude, Codex, Gemini), tests BYO API
-key flow, verifies logout/re-login, then cleans up.
+key flow, verifies a deterministic model reply, verifies logout/re-login, then
+cleans up.
 
 Env vars required (set in ~/.amux/server.env or shell):
   CLERK_SECRET_KEY   — Clerk backend key (sk_live_...)
   COOKIE_SECRET      — gateway HMAC secret for amux_session cookies
   ANTHROPIC_API_KEY  — for BYO key test (Claude)
   OPENAI_API_KEY     — for BYO key test (Codex)
+  GEMINI_API_KEY     — for BYO key test (Gemini; optional alias)
   GOOGLE_API_KEY     — for BYO key test (Gemini)
 
 Usage:
@@ -279,6 +281,7 @@ def test_api_keys(cookie):
     step("BYO API key flow — save and verify")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
     google_key = os.environ.get("GOOGLE_API_KEY", "")
 
     keys_to_set = {}
@@ -286,6 +289,8 @@ def test_api_keys(cookie):
         keys_to_set["ANTHROPIC_API_KEY"] = anthropic_key
     if openai_key:
         keys_to_set["OPENAI_API_KEY"] = openai_key
+    if gemini_key:
+        keys_to_set["GEMINI_API_KEY"] = gemini_key
     if google_key:
         keys_to_set["GOOGLE_API_KEY"] = google_key
 
@@ -308,7 +313,7 @@ def test_api_keys(cookie):
         for key_name in keys_to_set:
             masked = data.get(key_name, "")
             if masked and len(masked) > 4:
-                ok(f"{key_name} verified (masked: ...{masked[-4:]})")
+                ok(f"{key_name} verified (masked)")
             else:
                 fail(f"{key_name} not found or empty after save")
     else:
@@ -316,14 +321,20 @@ def test_api_keys(cookie):
 
 
 def test_sessions(cookie):
-    step("Create and interact with sessions — one per provider")
+    step("Create sessions and verify a real model reply — one per provider")
     providers = [
-        ("e2e-claude", "claude"),
-        ("e2e-codex", "codex"),
-        ("e2e-gemini", "gemini"),
+        ("e2e-claude", "claude", bool(os.environ.get("ANTHROPIC_API_KEY"))),
+        ("e2e-codex", "codex", bool(os.environ.get("OPENAI_API_KEY"))),
+        (
+            "e2e-gemini",
+            "gemini",
+            bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+        ),
     ]
     created = []
-    for name, provider in providers:
+    provider_by_name = {}
+    has_credentials = {}
+    for name, provider, credential_available in providers:
         code, body, _ = gw_request("POST", "/api/sessions", cookie=cookie, body={
             "name": name,
             "provider": provider,
@@ -332,12 +343,16 @@ def test_sessions(cookie):
         if code == 200 or code == 201:
             ok(f"Session '{name}' ({provider}) created")
             created.append(name)
+            provider_by_name[name] = provider
+            has_credentials[name] = credential_available
         else:
             # Session might already exist — try to start it
             code2, _, _ = gw_request("POST", f"/api/sessions/{name}/start", cookie=cookie)
-            if code2 == 200:
+            if code2 in (200, 202):
                 ok(f"Session '{name}' ({provider}) already exists, started")
                 created.append(name)
+                provider_by_name[name] = provider
+                has_credentials[name] = credential_available
             else:
                 fail(f"Session '{name}' ({provider}) create failed: {code} {body[:100]}")
 
@@ -345,21 +360,103 @@ def test_sessions(cookie):
     log("Waiting 15s for CLI initialization...")
     time.sleep(15)
 
-    # Peek at each session to verify it has output (CLI loaded)
+    def peek(name, lines=400):
+        code, body, _ = gw_request(
+            "GET", f"/api/sessions/{name}/peek?lines={lines}", cookie=cookie, timeout=60
+        )
+        if code != 200:
+            return code, ""
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return code, ""
+        return code, (data.get("history") or "") + "\n" + (data.get("output") or "")
+
+    def failure_hint(provider, output):
+        low = output.lower()
+        if f"{provider}: command not found" in low or "command not found" in low:
+            return f"{provider} CLI is missing from the workspace image"
+        if provider == "codex" and "welcome to codex" in low and "sign in" in low:
+            return "Codex stopped at its authentication onboarding screen"
+        if provider == "claude" and ("not logged in" in low or "choose a theme" in low):
+            return "Claude stopped at its authentication/onboarding screen"
+        if provider == "gemini" and ("login" in low or "api key" in low):
+            return "Gemini stopped at its authentication/onboarding screen"
+        return "no verified assistant response appeared"
+
+    # A shell prompt, welcome screen, or eleven characters of terminal output
+    # is not an agent. Fail missing binaries immediately, then make each
+    # credentialed provider answer a challenge whose expected digest never
+    # appears in the prompt.
+    pending = {}
     for name in created:
-        code, body, _ = gw_request("GET", f"/api/sessions/{name}/peek?lines=20", cookie=cookie)
-        if code == 200:
-            try:
-                data = json.loads(body)
-                output = data.get("output", "")
-                if output.strip():
-                    ok(f"Session '{name}' running ({len(output)} chars output)")
-                else:
-                    warn(f"Session '{name}' has no output yet")
-            except json.JSONDecodeError:
-                warn(f"Session '{name}' peek returned non-JSON")
-        else:
-            warn(f"Session '{name}' peek returned {code}")
+        provider = provider_by_name[name]
+        code, output = peek(name, lines=80)
+        if code != 200:
+            fail(f"Session '{name}' ({provider}) peek returned {code}")
+            continue
+        if "command not found" in output.lower():
+            fail(f"Session '{name}' ({provider}): {failure_hint(provider, output)}")
+            continue
+        if not has_credentials[name]:
+            warn(f"Session '{name}' ({provider}) CLI present; active reply skipped (no test key)")
+            continue
+
+        challenge = f"amux-e2e-{provider}-{time.time_ns()}"
+        expected = hashlib.sha256(challenge.encode()).hexdigest()
+        prompt = (
+            "Compute the SHA-256 hex digest of the exact ASCII string "
+            f"{challenge!r}. Reply with the 64-character lowercase digest only."
+        )
+        code, body, _ = gw_request(
+            "POST",
+            f"/api/sessions/{name}/send",
+            body={
+                "text": prompt,
+                "record_history": True,
+                "deliver_now": True,
+                "no_board": True,
+            },
+            cookie=cookie,
+            timeout=60,
+        )
+        try:
+            sent = json.loads(body)
+        except json.JSONDecodeError:
+            sent = {}
+        if code != 200 or not sent.get("ok"):
+            fail(f"Session '{name}' ({provider}) send failed: HTTP {code}")
+            continue
+        if sent.get("submitted") is not True:
+            fail(
+                f"Session '{name}' ({provider}) did not confirm submission: "
+                f"{sent.get('submission') or sent.get('message') or 'unknown'}"
+            )
+            continue
+        pending[name] = {"provider": provider, "expected": expected, "last_output": output}
+
+    reply_timeout = max(30, int(os.environ.get("E2E_REPLY_TIMEOUT", "180")))
+    deadline = time.time() + reply_timeout
+    while pending and time.time() < deadline:
+        time.sleep(6)
+        for name in list(pending):
+            state = pending[name]
+            code, output = peek(name)
+            if code != 200:
+                state["last_code"] = code
+                continue
+            state["last_output"] = output
+            if state["expected"] in output.lower():
+                ok(f"Session '{name}' ({state['provider']}) returned the verified digest")
+                del pending[name]
+            elif "command not found" in output.lower():
+                fail(f"Session '{name}' ({state['provider']}): {failure_hint(state['provider'], output)}")
+                del pending[name]
+
+    for name, state in pending.items():
+        provider = state["provider"]
+        hint = failure_hint(provider, state.get("last_output", ""))
+        fail(f"Session '{name}' ({provider}) reply timed out after {reply_timeout}s: {hint}")
 
     # Stop sessions to save resources (don't delete — test deletion later)
     for name in created:
@@ -410,7 +507,7 @@ def test_cleanup_sessions(cookie, session_names):
     step("Cleanup — stop test sessions")
     for name in session_names:
         code, _, _ = gw_request("POST", f"/api/sessions/{name}/stop", cookie=cookie)
-        if code == 200:
+        if code in (200, 202):
             ok(f"Session '{name}' stopped")
         else:
             warn(f"Session '{name}' stop returned {code}")

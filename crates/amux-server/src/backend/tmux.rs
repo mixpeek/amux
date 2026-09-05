@@ -338,15 +338,22 @@ impl SessionBackend for TmuxBackend {
             .filter(|n| n.starts_with("amux-"))
             .map(str::to_string)
             .collect();
-        let mut sessions = Vec::with_capacity(names.len());
-        for name in names {
-            let status = self.status_by_ref(&name).await?;
-            sessions.push(BackendSession {
-                backend_ref: name,
-                status,
-            });
-        }
-        Ok(sessions)
+        // Probe all sessions concurrently (was sequential — 2 tmux calls per
+        // session × 50 sessions = 88s startup blackout, AMUX-3969b). Bounded
+        // to 10 at a time so we do not fork-bomb the tmux server.
+        use futures::stream::{self, StreamExt};
+        let sessions: Vec<Result<BackendSession>> = stream::iter(names)
+            .map(|name| async move {
+                let status = self.status_by_ref(&name).await?;
+                Ok(BackendSession {
+                    backend_ref: name,
+                    status,
+                })
+            })
+            .buffer_unordered(10)
+            .collect()
+            .await;
+        sessions.into_iter().collect()
     }
 
     async fn capture(&self, proc: &ProcessRef, lines: u32) -> Result<String> {

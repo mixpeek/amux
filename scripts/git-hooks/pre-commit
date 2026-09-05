@@ -1,4 +1,18 @@
 #!/bin/bash
+# Ensure cargo/rustup's PATH is present even when the invoking shell (a git
+# GUI, a fresh non-interactive commit, or apparently even an ordinary
+# interactive `git commit` in some environments) didn't export it — same
+# "setdefault, don't override" discipline CARGO_TARGET_DIR below already
+# uses. Found 2026-08-31: a Rust-touching commit hit "clippy not installed
+# - falling back to cargo check" immediately followed by "cargo: command
+# not found", i.e. BOTH the clippy branch and its own cargo-check fallback
+# were unresolvable in the hook's environment even though the same shell
+# resolved `cargo` fine when run directly — silently downgrading the Rust
+# gate from "lints enforced" all the way to "commit refused", never to
+# "actually ran". `[ -f ... ]` guard so a box without rustup's installer
+# (a from-scratch cargo install, a system package) is unaffected.
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+
 # amux-staged-guard  (see the block below for why this call is HERE now)
 g="$(dirname -- "$0")/amux-staged-guard"
 # SELF-HEAL RATHER THAN WARN (AMUX-2663). The guard BLOCKS a commit that touches
@@ -23,6 +37,90 @@ set -e
 
 ROOT="$(git rev-parse --show-toplevel)"
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+
+# ── MASS DELETION OF FILES THAT STILL EXIST ON ORIGIN (AMUX-3921) ────────────
+#
+# Handed over from MHC-531. `git ls-files -d` on the shared ~/Dev/mixpeek
+# returned 233 tracked files absent from disk, all 233 still on origin/main,
+# zero legitimate deletions — 200 under packages/, 7 server tests, 6 MVS files,
+# 2 security baselines. Nothing was staged, so nothing was armed. ONE
+# `git add -A` or `git commit -a` by any lane would have staged all 233 and
+# pushed them.
+#
+# WHY THIS LIVES HERE AND NOT IN git-shared-guard.py. That guard already refuses
+# `git add -A`, `git add .` and `git commit -a` UNCONDITIONALLY (AF-316), which
+# is stronger than the conditional leg the handoff asked for. But it is wired as
+# a Claude Code PreToolUse Bash hook in ~/.claude/settings.json, so it only sees
+# commands a harness session runs. Anything else — a script, a lane whose hook
+# config did not load, a session that wandered into this checkout — walks past
+# it. That is not hypothetical: on 2026-08-30 two `git commit -a` invocations
+# swept three lanes' in-flight work into unrelated commits and the guard did not
+# fire, and MHC-531's own postscript records a third that ran while the guard
+# logged NOT ENFORCED.
+#
+# A pre-commit hook runs for EVERY invoker. So the gate belongs on the OUTCOME
+# (deletions are staged) rather than on the SYNTAX (`-a` was typed), which is
+# also the more honest test: `-a` is one way to produce this and not the only
+# one.
+#
+# WHY origin-presence AND A THRESHOLD, rather than either alone. An intentional
+# `git rm` also deletes paths that exist on origin, so presence cannot separate
+# them; and a lane legitimately removing one dead module must not be gated. What
+# does separate them is SCALE — a deliberate removal names a handful of files, a
+# sweep takes everything the worktree happens to be missing. The threshold is
+# the override-free path for ordinary work.
+# THE THRESHOLD IS DERIVED FROM THIS REPO, not inherited (mixpeek-homepage-claude
+# made this point by measuring their own and I had not measured mine). Over the
+# last 400 commits on amux, FIVE deleted anything at all: 61, 17, 7, 6 and 4
+# files. So 15 gates two of four hundred — 792ce1f4 "the Python server was
+# deleted" and 88f797c5 "Remove Playwright entirely" — and both are exactly the
+# deliberate mass removal where an explicit confirmation is the right answer,
+# not a false positive. 0.5% is well short of the rate that would teach the
+# override by reflex.
+DEL_LIMIT="${AMUX_MAX_STAGED_DELETIONS:-15}"
+if [ -z "${AMUX_ALLOW_MASS_DELETE:-}" ]; then
+  # ORIGIN MUST BE RESOLVABLE, AND SAY SO WHEN IT IS NOT. Without this the
+  # `git cat-file -e origin/main:<path>` below returns non-zero for every path,
+  # ON_ORIGIN stays 0, and the gate passes — so a fetch-less or freshly-cloned
+  # checkout has NO gate and nothing says so. Silent-correct and silent-broken
+  # look identical, which is the class this whole file keeps running into.
+  if ! git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+    echo "amux: NOTE — origin/main is not resolvable here, so the mass-deletion gate" >&2
+    echo "      cannot compare against it and is NOT protecting this commit." >&2
+    echo "      (git fetch origin, or ignore if this checkout has no remote.)" >&2
+  fi
+  STAGED_DEL=$(git diff --cached --name-only --diff-filter=D 2>/dev/null || true)
+  N_DEL=$(printf '%s' "$STAGED_DEL" | grep -c . || true)
+  if [ "${N_DEL:-0}" -gt "$DEL_LIMIT" ]; then
+    # Only count deletions of paths ORIGIN STILL HAS. Removing files that were
+    # never pushed is a local cleanup and is nobody else's loss.
+    ON_ORIGIN=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if git cat-file -e "origin/main:$f" 2>/dev/null; then
+        ON_ORIGIN=$((ON_ORIGIN + 1))
+      fi
+    done <<EOF
+$STAGED_DEL
+EOF
+    if [ "$ON_ORIGIN" -gt "$DEL_LIMIT" ]; then
+      echo "amux: REFUSING — this commit deletes $ON_ORIGIN file(s) that still exist on origin/main" >&2
+      echo "      (limit $DEL_LIMIT, AMUX_MAX_STAGED_DELETIONS). On a shared checkout this is the" >&2
+      echo "      shape of a sweep, not a removal: tracked files go missing from disk and one" >&2
+      echo "      \`git add -A\` or \`git commit -a\` stages every one of them." >&2
+      echo "" >&2
+      echo "      What to check first:" >&2
+      echo "        git diff --cached --name-only --diff-filter=D | head" >&2
+      echo "        git ls-files -d | wc -l      # tracked files missing from disk RIGHT NOW" >&2
+      echo "      Restore rather than commit the loss:" >&2
+      echo "        git checkout origin/main -- <path>" >&2
+      echo "" >&2
+      echo "      If the removal is deliberate, say so: AMUX_ALLOW_MASS_DELETE=1 git commit ..." >&2
+      echo "      (logged like every other override; prefer naming the paths explicitly)" >&2
+      exit 1
+    fi
+  fi
+fi
 
 # THE staged-guard CALL IS AT THE TOP OF THIS FILE AGAIN (2026-08-09), and the
 # history below is why that is not a re-run of a mistake.
@@ -212,7 +310,7 @@ fi
 # $1 = raw build output (for blame), $2 = the build command to re-run on the index.
 # Returns 0 ONLY when a clean build of the INDEX proves the staged content sound.
 _amux_staged_recheck() {
-  local _out="$1" _cmd="$2" _blame_rc=0 _sw _staged_rc=0 _bpid _wpid
+  local _out="$1" _cmd="$2" _blame_rc=0 _sw _staged_rc=0 _bpid _wpid _idx
   CLIPPY_OUT="$_out" STAGED="$STAGED" \
     python3 "$ROOT/scripts/git-hooks/lint-blame.py" >&2 || _blame_rc=$?
   # ASK THE QUESTION THE TREE CANNOT (AF-182's structural half).
@@ -244,11 +342,32 @@ _amux_staged_recheck() {
   echo "amux: none of the offenders are staged — building the INDEX to check what you" >&2
   echo "      are ACTUALLY committing (~22s; set AMUX_STAGED_RECHECK=0 to skip)..." >&2
   _sw=$(mktemp -d "${TMPDIR:-/tmp}/amux-staged-XXXXXX" 2>/dev/null) || return 1
+  # NEVER LET THESE GIT CALLS TOUCH THE PENDING COMMIT'S INDEX (AMUX-3872).
+  #
+  # For `git commit -- <pathspec>` git builds a TEMPORARY index and points the
+  # hook at it: the hook really does see
+  # GIT_INDEX_FILE=.git/next-index-<pid>.lock, and that file is what git turns
+  # into the commit when the hook returns 0. `worktree add` and `checkout-index`
+  # inherit it and WRITE to it, so the pathspec's staged content was wiped and
+  # the commit landed with ZERO FILES while reporting success.
+  #
+  # That is not theoretical. It ate this card's own fix: `[main 1755406d]`,
+  # "2 files changed" nowhere in sight, the work still sitting unstaged
+  # afterwards. Same command with AMUX_STAGED_RECHECK=0 committed 2 files and
+  # 268 insertions, which is the control that isolates it.
+  #
+  # `env -u GIT_INDEX_FILE` alone would be WRONG here, and that is the trap: the
+  # recheck exists to build WHAT YOU ARE COMMITTING, and without the temp index
+  # `checkout-index` materialises the repo's main index instead — validating
+  # content that is not the commit. So the index is COPIED, the copy feeds
+  # checkout-index, and only the worktree bookkeeping runs index-free.
+  _idx=$(mktemp "${TMPDIR:-/tmp}/amux-idx-XXXXXX" 2>/dev/null) || return 1
+  cp "${GIT_INDEX_FILE:-$ROOT/.git/index}" "$_idx" 2>/dev/null || return 1
   # shellcheck disable=SC2064
-  trap "git -C '$ROOT' worktree remove --force '$_sw' >/dev/null 2>&1; rm -rf '$_sw'; git -C '$ROOT' worktree prune >/dev/null 2>&1" EXIT
+  trap "env -u GIT_INDEX_FILE git -C '$ROOT' worktree remove --force '$_sw' >/dev/null 2>&1; rm -rf '$_sw' '$_idx'; env -u GIT_INDEX_FILE git -C '$ROOT' worktree prune >/dev/null 2>&1" EXIT
   rm -rf "$_sw"
-  if ! git -C "$ROOT" worktree add --detach -q "$_sw" HEAD >/dev/null 2>&1 \
-     || ! git -C "$ROOT" --work-tree="$_sw" checkout-index -a -f >/dev/null 2>&1; then
+  if ! env -u GIT_INDEX_FILE git -C "$ROOT" worktree add --detach -q "$_sw" HEAD >/dev/null 2>&1 \
+     || ! GIT_INDEX_FILE="$_idx" git -C "$ROOT" --work-tree="$_sw" checkout-index -a -f >/dev/null 2>&1; then
     echo "amux: could not materialise the index (worktree/checkout-index failed) —" >&2
     echo "      refusing, exactly as before. Nothing is skipped on your behalf." >&2
     return 1
@@ -394,7 +513,11 @@ elif echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
     # So: still refuse, always — a red workspace is a red workspace. But
     # PARTITION the offenders, because the next action is completely different
     # and the committer cannot work it out from clippy's output alone.
-    if ! _clippy_out=$(cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1); then
+    # AMUX-70: run through safe-cargo.sh (its own systemd scope), not bare
+    # cargo — a workspace-wide clippy run OOM-killed inside THIS hook's own
+    # process tree takes the whole interactive pane down with it, hook and
+    # all, exactly the incident this wrapper exists to prevent.
+    if ! _clippy_out=$(scripts/safe-cargo.sh clippy --workspace --all-targets --quiet -- -D warnings 2>&1); then
       printf '%s\n' "$_clippy_out" >&2
       # NEVER let the blame analysis change the verdict: it runs after the raw
       # output, its failure is swallowed, and the exit is unconditional. A
@@ -422,7 +545,8 @@ elif echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
     #
     # lint-blame parses `--> file:line` spans, which rustc emits in the same
     # form clippy does, so an E0063 partitions exactly like a lint denial.
-    if ! _check_out=$(cargo check --workspace --all-targets --quiet 2>&1); then
+    # AMUX-70: same reasoning as the clippy branch above — safe-cargo.sh, not bare cargo.
+    if ! _check_out=$(scripts/safe-cargo.sh check --workspace --all-targets --quiet 2>&1); then
       printf '%s\n' "$_check_out" >&2
       # SAME PATH AS THE CLIPPY BRANCH, via the shared helper. This branch's own
       # comment says it matters MORE there, since the failure reaching it is a
@@ -477,5 +601,88 @@ if echo "$STAGED" | grep -qx 'frustrations.md' && [ -f "$ROOT/scripts/frustratio
     echo "frustrations.md structure ok (board unreachable — card pointers unchecked)."
   else
     echo "frustrations.md structure ok."
+  fi
+fi
+
+# ── DOES YOUR GREEN RESULT DESCRIBE THIS COMMIT? (AF-195) ────────────────────
+#
+# A test run describes the bytes cargo compiled. A commit ships the bytes in the
+# INDEX. On a shared checkout those come apart in the window between the two:
+# a peer stages a change to a file you tested, and the commit carries a version
+# no test ever saw. Specimen, 2026-08-24: `cargo test -p amux-server --test
+# board_api` gave 37 passed / 0 failed, the commit that cited it (c971756b)
+# shipped RED, and a rerun minutes later failed at board_api.rs:2280. Both
+# results were TRUE when taken. The floor arrived through the index in between.
+#
+# THIS DOES NOT RUN TESTS AND DOES NOT BLOCK. The Rust gate above records, with
+# measurements, why it compiles tests and does not run them: ~40s on every
+# commit across ~50 lanes, and a failing assertion blocks only its author. That
+# trade stands. This costs one `ls-files -s` and a file read, and it answers a
+# question nothing else here can: whether the run you are about to cite covers
+# the bytes you are about to commit.
+#
+# WHY IT REPORTS WHEN THERE IS NO RECEIPT. "Silent" and "everything matches"
+# must not look the same (ethos rule 4). A commit with no receipt has no claim
+# behind it, which is fine and common; what is not fine is a reader inferring
+# coverage from silence.
+if [ -n "$STAGED" ] && echo "$STAGED" | grep -q '^crates/'; then
+  _rcpt="${AMUX_HOME:-$HOME/.amux}/test-receipts/${AMUX_SESSION:-unknown}.tsv"
+  _staged_crates=$(echo "$STAGED" | grep '^crates/' || true)
+  _n_staged=$(printf '%s\n' "$_staged_crates" | grep -c . || true)
+  if [ ! -f "$_rcpt" ]; then
+    echo "test receipt: none for session '${AMUX_SESSION:-unknown}' — $_n_staged staged crate"
+    echo "test receipt: file(s) carry no claim that any run compiled these bytes. Not a"
+    echo "test receipt: problem; said out loud so silence is not read as coverage."
+    # NAME THE COMMANDS THAT WRITE ONE (AF-478). This branch used to report the
+    # absence and stop, which is honest and unactionable: a reader who HAD run
+    # tests could not tell "you did not test" from "the command you used does
+    # not record it". That was a live conflict for a day — `safe-cargo.sh`
+    # wrote nothing, so following CLAUDE.md's isolation instruction produced
+    # this message after three green runs.
+    echo "test receipt: written by \`scripts/test-contended.sh <cargo test args>\` or"
+    echo "test receipt: \`scripts/safe-cargo.sh test <args>\`. A run through anything"
+    echo "test receipt: else (bare cargo, a remote build) leaves no receipt to read."
+  elif [ "$(grep -m1 '^# repo	' "$_rcpt" | cut -f2)" != "$ROOT" ]; then
+    echo "test receipt: the receipt on file is from a DIFFERENT checkout"
+    echo "test receipt: ($(grep -m1 '^# repo	' "$_rcpt" | cut -f2)) — it says nothing about this one."
+  else
+    _rc=$(grep -m1 '^# rc	' "$_rcpt" | cut -f2)
+    _age=$(( $(date -u +%s) - $(grep -m1 '^# at	' "$_rcpt" | cut -f2) ))
+    _args=$(grep -m1 '^# args	' "$_rcpt" | cut -f2-)
+    # The index blob sha per staged path, which git already has — no hashing.
+    _changed=""
+    while IFS= read -r _p; do
+      [ -n "$_p" ] || continue
+      _idx=$(git ls-files -s -- "$_p" 2>/dev/null | awk '{print $2}')
+      # LAST match, not first. The writer emits HEAD's blob for every tracked
+      # file and then OVERRIDES the dirty ones, so a dirty path appears twice
+      # and the worktree row is the second. Reading the first took HEAD's blob
+      # and reported every file you had edited-and-tested as "DIFFERS" — which
+      # is exactly what this said on its first real commit, about a run that had
+      # finished 27 seconds earlier with no edit in between.
+      _was=$(awk -F'\t' -v p="$_p" '$2==p {v=$1} END{if (v!="") print v}' "$_rcpt")
+      if [ -z "$_was" ]; then
+        _changed="$_changed
+    $_p (not in the tested set at all)"
+      elif [ "$_idx" != "$_was" ]; then
+        _changed="$_changed
+    $_p"
+      fi
+    done <<< "$_staged_crates"
+    if [ "$_rc" != "0" ]; then
+      echo "test receipt: your last run EXITED $_rc (\`$_args\`, ${_age}s ago). A red run"
+      echo "test receipt: vouches for nothing — do not cite it as evidence for this commit."
+    fi
+    if [ -n "$_changed" ]; then
+      _nc=$(printf '%s' "$_changed" | grep -c . || true)
+      echo "test receipt: $_nc of $_n_staged staged crate file(s) DIFFER from the bytes your"
+      echo "test receipt: last run compiled (\`$_args\`, ${_age}s ago):$_changed"
+      echo "test receipt: That green result does not describe this commit. It may still be"
+      echo "test receipt: fine — you may have edited after testing — but the run is not"
+      echo "test receipt: evidence for these bytes until you re-run it."
+    elif [ "$_rc" = "0" ]; then
+      echo "test receipt: all $_n_staged staged crate file(s) match the bytes your last run"
+      echo "test receipt: compiled (\`$_args\`, ${_age}s ago, exit 0)."
+    fi
   fi
 fi

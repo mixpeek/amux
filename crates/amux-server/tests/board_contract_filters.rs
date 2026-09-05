@@ -29,6 +29,7 @@ async fn contract() -> Value {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
     let res = app
@@ -161,6 +162,7 @@ async fn contract_serves_the_enforced_gate_not_just_type_defaults() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
 
@@ -272,6 +274,7 @@ async fn contract_and_rows() -> (Value, Value, Value) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
+    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
     let get = |uri: String, method: &'static str, body: Body| {

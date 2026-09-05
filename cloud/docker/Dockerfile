@@ -70,6 +70,12 @@ COPY scripts scripts
 # deploy. One 200KB text file in the build stage only, which the runtime stage
 # does not receive.
 COPY frustrations.md frustrations.md
+# ...and its ARCHIVE, for exactly the same reason and by the same guard. AF-430
+# added an include_str! of frustrations-archive.md in monitor.rs (the ledger
+# check reads BOTH files, since a title in one and not the other is the fault it
+# looks for) without adding this line, so the guard went red on origin/main.
+# Fourth recurrence of the class the comment above already numbers three.
+COPY frustrations-archive.md frustrations-archive.md
 
 # --release is REQUIRED, not a preference. `rust-embed` is built without the
 # `debug-embed` feature, so a DEBUG binary reads the dashboard from
@@ -119,17 +125,22 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code. This MUST run its postinstall: it downloads the platform-native
-# binary. A previous build used `--ignore-scripts ... 2>/dev/null || true`,
-# which skipped that download and swallowed the error, so every cloud container
-# shipped a `claude` that failed at runtime with "native binary not installed".
-RUN npm install -g @anthropic-ai/claude-code
+# Every provider the New Worker UI advertises. These MUST run their postinstall
+# scripts: Claude and Codex download platform-native binaries. Shipping the
+# provider enum without its executable makes create/start/send all look healthy
+# while the pane contains only `command not found`.
+RUN npm install -g \
+      @anthropic-ai/claude-code \
+      @openai/codex \
+      @google/gemini-cli
 
 # Fail the BUILD, not the customer's session, if the CLI is not runnable.
 # Same reasoning for chromium: the browser primitive resolving to nothing is a
 # capability that silently does not exist, and this is the last moment it is
 # cheap to notice.
 RUN claude --version && echo "claude CLI verified at build time" \
+    && codex --version && echo "codex CLI verified at build time" \
+    && gemini --version && echo "gemini CLI verified at build time" \
     && chromium --version && echo "chromium verified at build time"
 
 # Chrome cannot start with the server's launch flags in a container: there is no

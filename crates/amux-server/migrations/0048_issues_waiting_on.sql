@@ -1,0 +1,13 @@
+-- NeedsYou as a wait dimension, orthogonal to status (Gap 4).
+--
+-- `waiting_on` is a JSON object: {"actor":"human","type":"judgment",
+-- "question":"...","unblocks":"..."}. A card can be in any lifecycle
+-- status and separately declare it is waiting on someone, replacing the
+-- pattern where NeedsYou was the only way to say "stuck on a person."
+--
+-- The existing `ask_type`/`ask_question`/`ask_unblocks` fields remain for
+-- the typed-ask gate on the NeedsYou transition. `waiting_on` is the
+-- unified, status-orthogonal representation that advance() populates
+-- when entering NeedsYou and clears when leaving it.
+--
+-- ADDCOL: issues waiting_on TEXT

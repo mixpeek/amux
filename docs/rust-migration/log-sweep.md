@@ -57,6 +57,19 @@ fallback when a finding needs row-level inspection.
      self-hosted install should do — the comment above the first call says so.
      A 404 here means "self-hosted", not "broken".
 
+   **Known-benign 400s — same rule, different status.**
+
+   - `POST /api/git/staged-guard` -> 400 `{"error":"dir required"}` (~4/day,
+     unattributed, `Python-urllib`). This is `scripts/install-hooks.sh:315`
+     PROBING that the route exists: it posts an empty `{}` body on purpose and
+     treats **400 or 200 as success** (`ok server routes POST
+     /api/git/staged-guard (HTTP $code)`), because a 404 there means the guard is
+     unrouted and therefore inert — the AMUX-1730 failure. The 400 IS the pass
+     signal. The real guard cannot produce this row: `amux-staged-guard` computes
+     `top` as `git rev-parse --show-toplevel ... or os.getcwd()`, so `dir` is
+     never empty on the enforcing path. Read the count as "how many lanes ran
+     install-hooks.sh today", not as a malformed client.
+
    Add to this list rather than re-deriving it. AF-32 was filed on this endpoint
    after checking only that it 404s on both origins — a true fact that supported
    the wrong conclusion, because the discriminator is not "does any origin serve
@@ -172,19 +185,66 @@ fallback when a finding needs row-level inspection.
    Read `error_body` before counting a 403 as an auth failure — the spike shape
    (one IP, many, fast) is the signal, not the status on its own.
 
-5. **Worker traffic with no board trace.** Collect distinct `worker` values from
-   `GET /api/logs?since=$SINCE&limit=2000`, keeping only rows whose `method` is
-   POST/PATCH/PUT/DELETE; cross-check
-   `GET /api/board?done_limit=100000` for cards with that session
-   updated in the window. Finding = a worker doing MUTATING work whose board
-   shows nothing in `doing`/updated — silent work (task-ledger rule violation),
+5. **Sessions writing with no board trace.** One deterministic call:
+
+   ```
+   GET /api/logs/writers?since_h=24
+   ```
+
+   It returns every `amux_session` that made a mutating request in the window,
+   with per-method counts, `first_ts`/`last_ts`, and a `distinct_writers` total.
+   Cross-check `GET /api/board?done_limit=100000` for cards with that session
+   updated in the window. Finding = a session doing MUTATING work whose board
+   shows nothing in `doing`/updated: silent work (task-ledger rule violation),
    or a runaway loop hammering the API.
+
+   **Three fields decide whether you may draw a conclusion at all.** Read them
+   before the list, not after:
+
+   - `actual_window_h` is the window the rows ACTUALLY cover. `24` asked for and
+     `6.2` covered is a complete answer to a smaller question, and only this
+     field says so.
+   - `unattributed_mutations` is writes that named no caller. They belong to
+     nobody, and the count is published unowned for exactly that reason. At
+     ~7,708 unattributed reports a day (AF-67) a large number here is normal and
+     is NOT evidence about any lane.
+   - `scan_truncated` is true only if more than 500 distinct sessions wrote, in
+     which case `writers` is a slice while `distinct_writers` stays the full
+     count.
+
+   **This step used to page and could not cover its window (AF-475).** It said
+   "collect distinct `worker` values from `GET /api/logs?since=$SINCE&limit=2000`",
+   which is 2,000 of 417,852 rows: measured 2026-09-04, that page spanned **0.85
+   hours of the 24** it was characterising. The sessions it yielded were the ones
+   that happened to be writing in the last fifty minutes, and this step's output
+   is an accusation the qualifications below call "the expensive kind".
+
+   Adding a `method=` filter to the page was the obvious cheaper fix and does not
+   work. Measured from the aggregate over a full 24h window: 34,145 mutating rows
+   out of 416,340. A 2,000-row page of mutating-only rows is 5.9% of the day's
+   writes, roughly 1.4 hours of 24. Better than the 0.48% an unfiltered page
+   reaches, and still not a window.
+
+   The decisive number is the answer itself, not the ratio. On the same window
+   the prescribed page yielded **12 sessions**; a hand-rolled 14-page walk yielded
+   37; the aggregate yields **53**. A filter that closes as fixed while still
+   naming a third of the writers is the worse outcome, because the next sweep
+   inherits a closed card telling it not to re-check.
+
+   Do not extrapolate coverage from one page's `page_span_h`. Traffic here is
+   bursty enough that the newest page ran at ~2,400 rows/h against a 24h mean of
+   ~17,300, so a span read off the newest page overstates coverage by 7x. Both
+   this card's original estimate and its first correction were computed that way
+   and both were wrong. `mutating_rows` and `n_considered` on this endpoint are
+   whole-window counts and are the numbers to reason from.
 
    Three qualifications, each from a false positive this rule produced on
    2026-08-09 (AF-34). It accused a peer, and the accusation is the expensive
    kind — you cannot un-say "you are working off-ledger":
 
-   - **Mutating methods only.** `amux-homepage` was flagged on 105 requests with
+   - **Mutating methods only.** NOW ENFORCED BY THE ENDPOINT (`MUTATING_METHODS`),
+     kept because it says why and because a server-side rule can still regress.
+     `amux-homepage` was flagged on 105 requests with
      0 cards. All 105 were `GET/POST /api/sessions` — 103 GETs, every one a 200:
      polling and messaging, not work. Reading the board and peeking at lanes is
      not silent work, and under the old wording every idle observer looked guilty.
@@ -214,7 +274,11 @@ fallback when a finding needs row-level inspection.
    caught only by re-querying the store.** Neither is hypothetical; the first is
    this file's own rule, violated by someone who had just read it.
 
-   - **Attribute on `amux_session` ONLY. Never fall back to `worker`.** `worker`
+   - **Attribute on `amux_session` ONLY. Never fall back to `worker`.** NOW
+     ENFORCED BY THE ENDPOINT: its query does not select `worker` at all, so the
+     mistake is not available. Note that the old headline for this step said
+     "collect distinct `worker` values" while this bullet forbade it, so a reader
+     who followed the bold line did the forbidden thing. `worker`
      is PATH-derived (`/api/sessions/{name}/*`), so an UNATTRIBUTED report *about*
      lane X is tagged `worker=X` and reads as a mutation *by* X. That is what the
      header of this file means by "worker logs are a filter, never a second log".
@@ -368,27 +432,35 @@ a line when it resolves; do not let one rot unchecked.
 
 - **2026-08-20: zero 504s of ANY kind in the 24h window** (`SELECT COUNT(*) ...
   WHERE status=504` -> 0). AF-86 below could not discriminate; not a pass.
+  Re-checked 2026-09-03: still 0 across the whole window. Fourteen days with no
+  specimen. Worth stating in the summary each time rather than silently carrying
+  the line: a check that has never once had an input to judge is not accumulating
+  evidence, and if this reaches a month it is worth asking whether the helper
+  timeout path is reachable at all rather than continuing to wait for it.
 
-- **2026-08-25: does the CDP wait still fail, and does it now say WHICH way?**
-  AMUX-3689 (`6d179755`, 2026-08-24 18:52) fixed the MESSAGE — "CDP never answered
-  within 30s" was reported identically for connection-refused, a 1s poll timeout, a
-  403 and a 500, while the stderr in the same message said `DevTools listening on
-  ws://127.0.0.1:<that very port>`. It also hoisted a `reqwest::Client::new()` out of
-  a loop that built one ~120 times per start, each reading macOS system proxy
-  settings — the only one of its three defects that could plausibly be the CAUSE, and
-  the commit does not claim it was.
-  So there are two open questions and one of them cannot be answered by a green day:
-  **(a)** does `POST /api/browser/start` still 502? **(b)** when it does, does the
-  body now name the poll outcome (`HTTP 403 from .../json/version`, `connection
-  refused (nothing listening)`, `no response within the 1s poll timeout`) and the
-  attempt count, rather than the old flat "never answered"?
-  Query: `GET /api/logs/analyze?since_h=24`, any 502 group under `/api/browser`.
-  **Zero browser 502s is NOT a pass on its own — check the traffic first.** On
-  2026-08-25 the sweep found 48 browser 502s all predating the fix, 0 after it, and
-  **0 `/api/browser` requests of any kind after it**. An empty family is an absent
-  specimen, not a working fix. `SELECT COUNT(*) FROM _amux_request_log WHERE path
-  LIKE '/api/browser%' AND ts >= <fix ts>` separates the two, and the sweep that
-  reports "browser is clean" without it is reporting that nobody opened a browser.
+- **RESOLVED 2026-09-03 — the CDP wait now says WHICH way.** (Was: 2026-08-25,
+  AMUX-3689.) Both open questions are answered, and the specimen check the line
+  itself demanded is what makes that trustworthy rather than an empty family:
+  `SELECT COUNT(*) ... WHERE path LIKE '/api/browser%'` returned **2,096 rows in
+  the window**, so the family was live, not dormant.
+  **(a)** Yes, `/api/browser` still 502s: 3 on `POST /api/browser/start`, 2 on
+  `GET /api/browser/screenshot`.
+  **(b)** Yes, the body names the poll outcome and the reason, which is the whole
+  point of the fix. Verbatim from the `start` group's sample:
+  `Chrome (pid Some(33823)) exited exit status: 0 before CDP on port 64178 came
+  up — exit 0 is the delegation signature: another Chrome already holds this
+  --user-data-dir. amux reconciles known orphans before launch (AMUX-3207); an
+  untracked Chrome on this profile can still cause it. Try again, or GET
+  /api/browser/status and stop it first.`
+  That is a named cause with a named remedy, not the old flat "CDP never answered
+  within 30s". The screenshot 502s carry their own distinct body
+  (`WebSocket protocol error: Connection reset without closing handshake`), which
+  is the same property holding on a second path.
+  Note what this does NOT claim: the 502s did not stop, and the fix never promised
+  they would — AMUX-3689 fixed the MESSAGE and hoisted a per-loop
+  `reqwest::Client::new()`, and its commit explicitly does not claim the hoist was
+  the cause. A separate line if the 502 RATE ever matters; this one was about
+  whether the operator can tell the four failure modes apart, and they can.
 
 - **AF-86 — helper 504 must report the TOTAL the caller waited.** On any 504 group
   for `/api/orchestrate/plan` or `/api/lookup`, read `error_body`. PASS is

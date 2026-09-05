@@ -94,6 +94,32 @@ rows = [
     # stripping everything passes cell I by scoring nothing.
     (18, "this still doesnt work and i said already you didnt fix it",
          "user", "jj", now - 140_000, "", "", "direct"),
+    # K: identical bodies 22s apart to ONE lane, but with DIFFERENT composer
+    # prefixes. The prefix is stamped once at composition, so two prefixes means
+    # two submissions -- he sent it twice. Live specimen 2026-08-27: ids
+    # 34324/34325 to refresh-house, reported as a DELIVERY defect pointing the
+    # reader at send_dedup, which holds 4 rows in total and could not have
+    # settled it. Both rows were delivery=direct and both delivered.
+    (19, "[06:46 PM] we got a couple responses from the lob check our inbox",
+         "user", "kk", now - 130_000, "", "", "direct"),
+    (20, "[06:47 PM] we got a couple responses from the lob check our inbox",
+         "user", "kk", now - 108_000, "", "", "direct"),
+    # L: identical bodies AND the SAME prefix, 8s apart, one lane -- one
+    # composition that reached the store twice, which is the real defect this
+    # branch exists for and must still fire. Without this, cell K passes by
+    # classifying nothing as a double-delivery.
+    (21, "[06:46 PM] we got a couple responses from the lob check our inbox",
+         "user", "ll", now - 100_000, "", "", "direct"),
+    (22, "[06:46 PM] we got a couple responses from the lob check our inbox",
+         "user", "ll", now -  92_000, "", "", "direct"),
+    # M/N: delivery annotation (AF-281). Two QUEUED rows forming a repeat. This
+    # store has no steering_history, and the deliverer's record is the only
+    # thing that knows -- so the honest verdict is `unknown`, never `not
+    # delivered`. cmd_history.delivered_at is deliberately NOT stamped for
+    # queued rows (AMUX-3541), and one sweep read that NULL as loss and was a
+    # step from filing 92 lost messages.
+    (23, "did the nightly sync run", "user", "mm", now - 80_000, "", "", "queued"),
+    (24, "did the nightly sync run", "user", "mm", now - 70_000, "", "", "queued"),
 ]
 c.executemany("INSERT INTO cmd_history VALUES (?,?,?,?,?,?,?,?)", rows)
 c.commit()
@@ -232,6 +258,150 @@ sys.exit(0 if 18 in ids else 1)'; then
 else
   bad "J: marker detection is now inert — stripping went too far"
   echo "$OUT" | head -40 | sed 's/^/       /'
+fi
+
+
+# Cell K: differing composer prefixes -> NOT a double-delivery. It may be reported
+# as a repeat (he did send twice), but never as a delivery defect.
+if echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for f in d["findings"]:
+    ids={m["id"] for m in f["messages"]}
+    if ids & {19,20} and f["kind"]=="double-delivery":
+        sys.exit(1)
+sys.exit(0)'; then
+  ok "K: identical bodies with DIFFERENT composer prefixes are two sends, not a delivery defect"
+else
+  bad "K: a pair with different [HH:MM] prefixes was still called a DELIVERY defect"
+fi
+
+# Cell L: the SAME prefix on both rows is one composition delivered twice, and it
+# must STILL be classified double-delivery. Without this, cell K is satisfied by a
+# scanner that never classifies anything.
+if echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for f in d["findings"]:
+    ids={m["id"] for m in f["messages"]}
+    if ids & {21,22} and f["kind"]=="double-delivery":
+        sys.exit(0)
+sys.exit(1)'; then
+  ok "L: the SAME prefix twice IS still a double-delivery (cell K did not hollow it out)"
+else
+  bad "L: a genuine double-delivery (same prefix) was not classified"
+fi
+
+
+# Cell M: a `direct` send is annotated delivered, computed rather than looked up
+# by hand. Two sweeps checked this one message at a time through the HTTP API
+# before daring to call a repeat ordinary.
+if echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for f in d["findings"]:
+    for m in f["messages"]:
+        if m["id"] in (7,8):
+            if m.get("delivered") != "delivered": sys.exit(1)
+sys.exit(0)'; then
+  ok "M: a direct send is annotated delivered, without a per-message HTTP lookup"
+else
+  bad "M: a direct send was not annotated delivered"
+fi
+
+# Cell N: THE CONTROL, and the one that matters. A queued row with no
+# steering_history must read `unknown`, not `not delivered` — absence of the
+# deliverer's record is not evidence of loss. Without this, an annotator that
+# defaulted to "not delivered" would pass cell M and report every queued
+# message in a synthetic store as lost.
+if echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+seen=False
+for f in d["findings"]:
+    for m in f["messages"]:
+        if m["id"] in (23,24):
+            seen=True
+            if m.get("delivered") != "unknown": sys.exit(1)
+sys.exit(0 if seen else 1)'; then
+  ok "N: a queued row with no steering_history reads unknown, NOT 'not delivered'"
+else
+  bad "N: a queued row was not reported as unknown (absence read as loss)"
+fi
+
+# Cell O: the scan must PUBLISH what it structurally cannot answer, in the same
+# payload as the findings. A caveat that lives only in a sweep's prose has to be
+# remembered; two sweeps in a row had to add it by hand.
+if echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+cd=" ".join(d.get("cannot_discriminate") or [])
+sys.exit(0 if "ANSWERED" in cd else 1)'; then
+  ok "O: the scan publishes that reply-status is not knowable, beside the findings"
+else
+  bad "O: cannot_discriminate does not name the reply-status gap"
+fi
+
+# ---------------------------------------------------------------------------
+# Cells P/Q: a SECOND store, because these need steering_history to EXIST and
+# cell N needs it to be ABSENT. Adding the table to the first fixture would
+# still leave N green (no matching row also reads `unknown`) while silently
+# moving it off the table-absent path it was written for — the exact
+# hollowing-out this file guards against between K/L and I/J.
+DB2="$TMP/fixture2.db"
+python3 - "$DB2" <<'PY2'
+import sqlite3, sys, time
+c = sqlite3.connect(sys.argv[1])
+c.execute("""CREATE TABLE cmd_history (id INTEGER PRIMARY KEY, text TEXT, type TEXT,
+             session TEXT, ts INTEGER, origin TEXT, card_id TEXT, delivery TEXT)""")
+c.execute("""CREATE TABLE steering_history (id TEXT, session TEXT, text TEXT,
+             queued_at REAL, delivered_at REAL)""")
+now = int(time.time() * 1000)
+t1 = now - 200_000
+t2 = t1 + 40_000          # 40s apart: inside the 60s double-delivery gap, and
+                          # outside each other's +/-10s steering match window
+c.executemany("INSERT INTO cmd_history VALUES (?,?,?,?,?,?,?,?)", [
+    (1, "restart the ingestion worker", "user", "pp", t1, "", "", "queued"),
+    (2, "restart the ingestion worker", "user", "pp", t2, "", "", "queued"),
+    (3, "roll the shard", "user", "qq", t1, "", "", "queued"),
+    (4, "roll the shard", "user", "qq", t2, "", "", "queued"),
+])
+c.executemany("INSERT INTO steering_history VALUES (?,?,?,?,?)", [
+    # pp: the FIRST reached the lane, the second was suppressed -> dedupe worked
+    ("s1", "pp", "restart the ingestion worker", t1/1000.0, t1/1000.0 + 2),
+    ("s2", "pp", "restart the ingestion worker", t2/1000.0, None),
+    # qq: BOTH reached the lane -> a genuine double-delivery
+    ("s3", "qq", "roll the shard", t1/1000.0, t1/1000.0 + 2),
+    ("s4", "qq", "roll the shard", t2/1000.0, t2/1000.0 + 2),
+])
+c.commit()
+PY2
+
+OUT2=$(AMUX_DB="$DB2" python3 "$SCAN" 2>&1)
+
+if echo "$OUT2" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for f in d["findings"]:
+    if f["kind"]=="double-delivery" and any(m["id"] in (1,2) for m in f["messages"]):
+        sys.exit(1)
+sys.exit(0)'; then
+  ok "P: one delivered + one suppressed is the DEDUPE WORKING, not a delivery defect"
+else
+  bad "P: reported a delivery defect for a pair the dedupe correctly suppressed"
+fi
+
+if echo "$OUT2" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for f in d["findings"]:
+    if f["kind"]=="double-delivery" and any(m["id"] in (3,4) for m in f["messages"]):
+        sys.exit(0 if "BOTH were delivered" in " ".join(f["why"]) else 1)
+sys.exit(1)'; then
+  bad_unused=0
+  ok "Q: BOTH delivered IS still a double-delivery (cell P did not hollow it out)"
+else
+  bad "Q: a genuine double-delivery stopped being reported"
 fi
 
 echo "frustration-scan cells: $PASS passed, $FAIL failed"

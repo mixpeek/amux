@@ -3,7 +3,7 @@
 //! One stream, three event kinds:
 //! - Revisioned StateEvents (`{"type":"state",...}`) + gap detection
 //!   (`lagged`) + `hello` carrying the current rev.
-//! - `{"type":"invalidate","keys":["board"|"sessions",...]}` — the signal
+//! - `{"type":"invalidate","keys":["board"|"sessions"|"messages",...]}` — the signal
 //!   that replaced the legacy full-list pushes (AMUX-3503). The old dialect
 //!   shipped the ENTIRE board (883KB) + sessions (177KB) on every connect
 //!   and every coalesced change, RAW — CompressionLayer exempts
@@ -117,6 +117,10 @@ pub async fn events(
                         amux_core::revision::EntityType::Worker
                             | amux_core::revision::EntityType::Session
                     );
+                    let mut messages_dirty = matches!(
+                        ev.entity_type,
+                        amux_core::revision::EntityType::Message
+                    );
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     while let Ok(more) = rx.try_recv() {
                         board_dirty |= matches!(
@@ -128,9 +132,13 @@ pub async fn events(
                             amux_core::revision::EntityType::Worker
                                 | amux_core::revision::EntityType::Session
                         );
+                        messages_dirty |= matches!(
+                            more.entity_type,
+                            amux_core::revision::EntityType::Message
+                        );
                     }
-                    if board_dirty || sessions_dirty {
-                        let ev = invalidate_payload(board_dirty, sessions_dirty);
+                    if board_dirty || sessions_dirty || messages_dirty {
+                        let ev = invalidate_payload(board_dirty, sessions_dirty, messages_dirty);
                         if yielder.send(Event::default().data(ev)).await.is_err() {
                             break;
                         }
@@ -154,7 +162,7 @@ pub async fn events(
                         break;
                     }
                     if yielder
-                        .send(Event::default().data(invalidate_payload(true, true)))
+                        .send(Event::default().data(invalidate_payload(true, true, true)))
                         .await
                         .is_err()
                     {
@@ -220,13 +228,16 @@ fn ping_payload() -> &'static str {
 /// (`msg.keys`, an array), so the event shape predates this change on the
 /// client side. Pure so the contract is pinned by test: this exact JSON is
 /// what app.js parses, and a shape drift here silently stops every refetch.
-fn invalidate_payload(board: bool, sessions: bool) -> String {
+fn invalidate_payload(board: bool, sessions: bool, messages: bool) -> String {
     let mut keys: Vec<&str> = Vec::new();
     if board {
         keys.push("board");
     }
     if sessions {
         keys.push("sessions");
+    }
+    if messages {
+        keys.push("messages");
     }
     format!(
         "{{\"type\":\"invalidate\",\"keys\":{}}}",
@@ -319,19 +330,23 @@ mod ping_tests {
     #[test]
     fn invalidate_payload_is_the_exact_shape_the_client_parses() {
         assert_eq!(
-            super::invalidate_payload(true, true),
-            r#"{"type":"invalidate","keys":["board","sessions"]}"#
+            super::invalidate_payload(true, true, true),
+            r#"{"type":"invalidate","keys":["board","sessions","messages"]}"#
         );
         assert_eq!(
-            super::invalidate_payload(true, false),
+            super::invalidate_payload(true, false, false),
             r#"{"type":"invalidate","keys":["board"]}"#
         );
         assert_eq!(
-            super::invalidate_payload(false, true),
+            super::invalidate_payload(false, true, false),
             r#"{"type":"invalidate","keys":["sessions"]}"#
         );
         assert_eq!(
-            super::invalidate_payload(false, false),
+            super::invalidate_payload(false, false, true),
+            r#"{"type":"invalidate","keys":["messages"]}"#
+        );
+        assert_eq!(
+            super::invalidate_payload(false, false, false),
             r#"{"type":"invalidate","keys":[]}"#
         );
     }

@@ -15,12 +15,31 @@
 //! these run (Phase 11 rollback requirement), so migrations are ADDITIVE
 //! ONLY: no drops, no renames, no type changes.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 struct Migration {
     version: i64,
     name: &'static str,
     sql: &'static str,
+}
+
+/// Recorded names that are known to be an earlier name for the SAME migration.
+///
+/// A version/name mismatch normally means a migration was skipped and remains
+/// a startup error. This one is different and was already proven/documented in
+/// this file: version 35's regenerable-samples migration was renamed from a
+/// stale `0029_` filename prefix to `0035_` without changing its schema work.
+/// Keeping that fact executable prevents every healthy boot from raising a
+/// false migration-collision alarm while preserving the alarm for every
+/// unrecognized mismatch.
+const MIGRATION_NAME_ALIASES: &[(i64, &str, &str)] = &[
+    (35, "0029_regenerable_samples", "0035_regenerable_samples"),
+];
+
+fn known_name_alias(version: i64, recorded: &str, registered: &str) -> bool {
+    MIGRATION_NAME_ALIASES.iter().any(|(v, old, new)| {
+        *v == version && *old == recorded && *new == registered
+    })
 }
 
 // Embedded at compile time so the binary is self-contained (single-artifact
@@ -196,6 +215,123 @@ const MIGRATIONS: &[Migration] = &[
         name: "0034_request_log_load1",
         sql: include_str!("../../migrations/0034_request_log_load1.sql"),
     },
+    Migration {
+        version: 35,
+        name: "0035_regenerable_samples",
+        sql: include_str!("../../migrations/0035_regenerable_samples.sql"),
+    },
+    Migration {
+        version: 36,
+        name: "0036_issues_evidence",
+        sql: include_str!("../../migrations/0036_issues_evidence.sql"),
+    },
+    Migration {
+        version: 37,
+        name: "0037_issues_typed_ask",
+        sql: include_str!("../../migrations/0037_issues_typed_ask.sql"),
+    },
+    Migration {
+        version: 38,
+        name: "0038_nudge_feedback",
+        sql: include_str!("../../migrations/0038_nudge_feedback.sql"),
+    },
+    Migration {
+        version: 39,
+        name: "0039_issues_continuation",
+        sql: include_str!("../../migrations/0039_issues_continuation.sql"),
+    },
+    Migration {
+        version: 40,
+        name: "0040_issues_entered_state_at",
+        sql: include_str!("../../migrations/0040_issues_entered_state_at.sql"),
+    },
+    Migration {
+        version: 41,
+        name: "0041_issues_blocked_on",
+        sql: include_str!("../../migrations/0041_issues_blocked_on.sql"),
+    },
+    // Renumbered from 35 (collision with regenerable_samples) per merge of PR #174
+    Migration {
+        version: 42,
+        name: "0042_reclaim_skipped_hits_repair",
+        sql: include_str!("../../migrations/0042_reclaim_skipped_hits_repair.sql"),
+    },
+    Migration {
+        version: 43,
+        name: "0043_issues_source",
+        sql: include_str!("../../migrations/0043_issues_source.sql"),
+    },
+    Migration {
+        version: 44,
+        name: "0044_verifications",
+        sql: include_str!("../../migrations/0044_verifications.sql"),
+    },
+    Migration {
+        version: 45,
+        name: "0045_issues_workflow_fields",
+        sql: include_str!("../../migrations/0045_issues_workflow_fields.sql"),
+    },
+    Migration {
+        version: 46,
+        name: "0046_task_artifacts",
+        sql: include_str!("../../migrations/0046_task_artifacts.sql"),
+    },
+    Migration {
+        version: 47,
+        name: "0047_stage_contracts",
+        sql: include_str!("../../migrations/0047_stage_contracts.sql"),
+    },
+    Migration {
+        version: 48,
+        name: "0048_issues_waiting_on",
+        sql: include_str!("../../migrations/0048_issues_waiting_on.sql"),
+    },
+    // Renumbered from 35-38, then AGAIN from 49-52 (second collision, same
+    // contributor-collision case this pattern has hit repeatedly on this
+    // repo — main's own 0049_email_annotations landed independently while
+    // this branch also claimed 49; see versions_are_dense_and_match_their_
+    // filenames). This branch's telegram migrations are the losing side
+    // both times, renumbered to the next free slots after main's 49.
+    Migration {
+        version: 49,
+        name: "0049_email_annotations",
+        sql: include_str!("../../migrations/0049_email_annotations.sql"),
+    },
+    Migration {
+        version: 50,
+        name: "0050_telegram",
+        sql: include_str!("../../migrations/0050_telegram.sql"),
+    },
+    Migration {
+        version: 51,
+        name: "0051_telegram_relay",
+        sql: include_str!("../../migrations/0051_telegram_relay.sql"),
+    },
+    Migration {
+        version: 52,
+        name: "0052_telegram_routed_session",
+        sql: include_str!("../../migrations/0052_telegram_routed_session.sql"),
+    },
+    Migration {
+        version: 53,
+        name: "0053_telegram_relay_dedup",
+        sql: include_str!("../../migrations/0053_telegram_relay_dedup.sql"),
+    },
+    Migration {
+        version: 54,
+        name: "0054_telegram_chat_type",
+        sql: include_str!("../../migrations/0054_telegram_chat_type.sql"),
+    },
+    Migration {
+        version: 55,
+        name: "0055_issue_callbacks",
+        sql: include_str!("../../migrations/0055_issue_callbacks.sql"),
+    },
+    Migration {
+        version: 56,
+        name: "0056_search_prompts",
+        sql: include_str!("../../migrations/0056_search_prompts.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
@@ -370,11 +506,63 @@ fn truthy_env(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Pure so the collision itself is testable without a database: given what
+/// THIS binary's code expects at `version` (`expected_name`) and what the
+/// live DB actually has recorded there (`recorded_name`), returns a log
+/// message when they disagree, `None` when the recorded row is simply this
+/// same migration re-checked on a later boot (the ordinary, non-colliding
+/// case — every version this binary has ever successfully applied hits this
+/// path on every subsequent startup, and must stay silent).
+fn version_collision_warning(version: i64, expected_name: &str, recorded_name: &str) -> Option<String> {
+    if recorded_name == expected_name || known_name_alias(version, recorded_name, expected_name) {
+        return None;
+    }
+    Some(format!(
+        "migration VERSION COLLISION at {version}: this database recorded it as \
+         {recorded_name:?}, but this binary's code expects {expected_name:?} there. \
+         {expected_name}'s schema change will NEVER run against this database under \
+         version {version} — renumber it in db/migrate.rs."
+    ))
+}
+
 /// Guard + apply. `Store::open` calls this; the bare [`apply_all`] stays for
 /// tests, which run against temp and in-memory databases.
 pub fn apply_all_guarded(conn: &mut Connection, db_path: &std::path::Path) -> anyhow::Result<()> {
     guard_live_db(db_path, &pending(conn))?;
     apply_all(conn)
+}
+
+/// An in-memory DB carrying the REAL schema, for tests (AF-328).
+///
+/// Four test fixtures used to hand-write `CREATE TABLE issues (...)` mirroring
+/// this crate's migrations, and nothing kept them in step. Adding a column meant
+/// finding all four, and the failure when you missed one was badly misleading:
+/// `COLS` selects the new column, `prepare` fails, an `unwrap_or_default()`
+/// swallows the error, the query returns None, and the test reports its OWN
+/// assertion. Migration 0037 produced 38 failures across `board_drive` and not
+/// one of them mentioned a schema or named a column — the top one read
+/// "the 3-day-old card must be worked before the fresh one, left: None", which
+/// sends you to read the scoring logic. The same tax was paid on 0036.
+///
+/// Building the fixture FROM the migrations removes the class rather than
+/// detecting it: there is one schema, so drift is not possible. A new column is
+/// present in every fixture the moment its migration is registered.
+///
+/// The two deliberately NARROW fixtures are left alone on purpose — they declare
+/// only the columns their test uses, so they mirror nothing and cannot drift.
+/// [`test_memdb`] for INTEGRATION tests, which are separate crates and cannot
+/// see `#[cfg(test)]` items (AMUX-3952). Same chain, same guarantee.
+pub fn test_memdb_pub() -> Connection {
+    let mut conn = Connection::open_in_memory().expect("in-memory db");
+    apply_all(&mut conn).expect("migrations must apply cleanly to a fresh db");
+    conn
+}
+
+#[cfg(test)]
+pub(crate) fn test_memdb() -> Connection {
+    let mut conn = Connection::open_in_memory().expect("in-memory db");
+    apply_all(&mut conn).expect("migrations must apply cleanly to a fresh db");
+    conn
 }
 
 pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
@@ -391,14 +579,30 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
         );",
     )?;
     for m in MIGRATIONS {
-        let already: bool = conn
+        let recorded_name: Option<String> = conn
             .query_row(
-                "SELECT 1 FROM _amux_migrations WHERE version = ?1",
+                "SELECT name FROM _amux_migrations WHERE version = ?1",
                 [m.version],
-                |_| Ok(true),
+                |r| r.get(0),
             )
-            .unwrap_or(false);
-        if already {
+            .optional()?;
+        if let Some(recorded) = recorded_name {
+            if let Some(msg) = version_collision_warning(m.version, m.name, &recorded) {
+                // VERSION COLLISION, not a benign re-run. On a box that
+                // builds arbitrary off-main branches (this one, and every
+                // dev box the freshness hook warns about), the SAME version
+                // number can get consumed by UNRELATED migrations from
+                // different branches' own dense-ordered sequences (this
+                // exact shape cost a live outage 2026-08-30, see
+                // frustrations.md — telegram_relay ran for ~15 minutes
+                // erroring "no such column" because version 38 here was
+                // already someone else's migration). `m`'s SQL will NEVER
+                // run against this database under this number — the only
+                // fix is renumbering `m` in code — so this must be LOUD at
+                // startup, not a downstream error the first time the
+                // missing schema is actually touched.
+                tracing::error!("{msg}");
+            }
             continue;
         }
         // TIME EVERY MIGRATION. This function used to log nothing, so 0031
@@ -438,7 +642,82 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
             tracing::info!(migration = m.name, duration_ms = ms, "migration applied");
         }
     }
+    report_renumbered_migrations(conn);
     Ok(())
+}
+
+/// Versions whose RECORDED name differs from the name now registered for them,
+/// as `(version, recorded, registered)`.
+///
+/// AF-353. The runner dedupes on VERSION alone — `SELECT 1 FROM _amux_migrations
+/// WHERE version = ?1`, the name never consulted — so a version this database
+/// has already applied is skipped no matter WHICH migration now claims it. That
+/// is fine while a version keeps its meaning, and this repo routinely takes it
+/// away: renumbering an incoming migration is the DOCUMENTED fix for a
+/// contributor collision (see `versions_are_dense_and_match_their_filenames`
+/// below). Renumbering frees a number, the freed number gets handed to a
+/// different migration, and every database that recorded the old one at that
+/// version skips the new one forever, with a clean boot and a green `/health`.
+///
+/// `versions_are_dense_and_match_their_filenames` constrains the ARRAY, and
+/// nothing constrained the array against what a DATABASE already recorded.
+/// The benign case and the destructive case are byte-identical to the runner,
+/// which is why this reports rather than refuses: an old database legitimately
+/// carries an old name for a migration that was renumbered, and refusing to boot
+/// over that would be a gate with no truthful path (ethos rule 3).
+///
+/// Live on this box when written: v35 recorded as `0029_regenerable_samples`,
+/// registered as `0035_regenerable_samples`. Same migration, renamed, nothing
+/// skipped. That known alias is now excluded; every unknown mismatch remains a
+/// collision finding.
+pub(crate) fn renumbered_migrations(conn: &Connection) -> Vec<(i64, String, String)> {
+    let mut stmt = match conn.prepare("SELECT version, name FROM _amux_migrations") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        let (version, recorded) = row;
+        if let Some(m) = MIGRATIONS.iter().find(|m| m.version == version) {
+            if m.name != recorded && !known_name_alias(version, &recorded, m.name) {
+                out.push((version, recorded, m.name.to_string()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Log the above. Separate from the query so the decision is testable without a
+/// tracing subscriber, and so the count is emitted even when the list is empty
+/// — a silent probe and a clean database are the same output otherwise, which is
+/// the `measured` contract (ethos rule 4) at the point where someone greps.
+fn report_renumbered_migrations(conn: &Connection) {
+    let found = renumbered_migrations(conn);
+    if found.is_empty() {
+        tracing::info!(renumbered_migrations = 0, "migration version/name binding checked");
+        return;
+    }
+    for (version, recorded, registered) in &found {
+        tracing::warn!(
+            migration_version = version,
+            recorded_name = %recorded,
+            registered_name = %registered,
+            "migration version {version} was applied as {recorded:?} but is now registered as \
+             {registered:?}. The runner skips a version it has already applied WITHOUT reading \
+             the name, so if these are different migrations rather than one renumbered, this \
+             database has silently skipped {registered:?} and its schema lags the code."
+        );
+    }
+    tracing::warn!(
+        renumbered_migrations = found.len(),
+        "{} migration version(s) do not match their recorded name — see the lines above",
+        found.len()
+    );
 }
 
 /// Apply ONE migration's body, honouring `-- ADDCOL:` directives.
@@ -571,7 +850,18 @@ mod registration_guard {
     fn versions_are_dense_and_match_their_filenames() {
         for (i, m) in MIGRATIONS.iter().enumerate() {
             let expected = i as i64 + 1;
-            assert_eq!(m.version, expected, "{} is out of order", m.name);
+            assert_eq!(
+                m.version, expected,
+                "{} is out of order — expected version {expected} at this position.\n\
+                 If this fired while merging an OUTSIDE PR, it is very likely the \
+                 contributor-collision case rather than their error: they pick a number \
+                 against origin/main, this branch runs ahead of it, and a number that is free \
+                 from outside can already be taken here. CI cannot see it (their branch builds \
+                 against origin/main, where there is no conflict), so this guard is the first \
+                 thing that can. Renumber the incoming migration and its MIGRATIONS entry; do \
+                 not send it back as their bug. Twice on PR #160; see CONTRIBUTING.md.",
+                m.name
+            );
             let prefix = format!("{:04}_", m.version);
             assert!(
                 m.name.starts_with(&prefix),
@@ -585,6 +875,115 @@ mod registration_guard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AF-353: a version whose recorded name is no longer the registered one
+    /// must be REPORTED, and a clean database must stay quiet.
+    ///
+    /// Both directions on purpose. A detector that reported every version would
+    /// pass the first half of this alone while being useless, and one that
+    /// reported nothing would pass the second half alone while being the bug.
+    ///
+    /// It drives the SHIPPED query against a real database built through
+    /// `apply_all`, not a hand-made fixture. The defect being guarded lives in
+    /// the disagreement between what a database RECORDED and what the code now
+    /// registers, so a fixture that writes both sides itself would be asserting
+    /// against its own construction.
+    #[test]
+    fn a_version_applied_under_a_different_name_is_reported() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_all(&mut conn).unwrap();
+
+        // THE CONTROL, and it is load-bearing: a database the code agrees with
+        // reports nothing. Without it, `renumbered_migrations` returning
+        // everything would look like a pass below.
+        assert_eq!(
+            renumbered_migrations(&conn),
+            Vec::new(),
+            "a database in step with MIGRATIONS must report no renumbering"
+        );
+
+        // Now the real shape: version 1 was applied under the name it had
+        // before someone renumbered it. This is what every database that ran
+        // the pre-renumber code looks like, and the runner cannot tell it from
+        // the case where version 1 now means a DIFFERENT migration entirely.
+        let registered = MIGRATIONS[0].name;
+        conn.execute(
+            "UPDATE _amux_migrations SET name = ?1 WHERE version = ?2",
+            rusqlite::params!["0001_under_its_old_name", MIGRATIONS[0].version],
+        )
+        .unwrap();
+
+        let found = renumbered_migrations(&conn);
+        assert_eq!(found.len(), 1, "expected exactly the one mismatch: {found:?}");
+        assert_eq!(found[0].0, MIGRATIONS[0].version);
+        assert_eq!(found[0].1, "0001_under_its_old_name", "the RECORDED name");
+        assert_eq!(found[0].2, registered, "the REGISTERED name");
+
+        // And it survives a re-run. `apply_all` skips already-applied versions,
+        // so the mismatch must still be visible on the next boot rather than
+        // being a one-shot only the very first startup could have caught.
+        apply_all(&mut conn).unwrap();
+        assert_eq!(
+            renumbered_migrations(&conn).len(),
+            1,
+            "the mismatch must still be reported on a later boot"
+        );
+    }
+
+    #[test]
+    fn a_known_same_migration_rename_is_not_reported_as_a_collision() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_all(&mut conn).unwrap();
+        conn.execute(
+            "UPDATE _amux_migrations SET name = ?1 WHERE version = 35",
+            ["0029_regenerable_samples"],
+        )
+        .unwrap();
+
+        assert_eq!(
+            version_collision_warning(
+                35,
+                "0035_regenerable_samples",
+                "0029_regenerable_samples",
+            ),
+            None,
+            "the documented rename performed the same schema work"
+        );
+        assert!(
+            renumbered_migrations(&conn).is_empty(),
+            "known aliases must not keep every healthy startup in a false error state"
+        );
+
+        assert!(
+            version_collision_warning(35, "0035_regenerable_samples", "0035_unrelated").is_some(),
+            "only the exact documented alias may be suppressed"
+        );
+    }
+
+    /// A version RECORDED but no longer registered at all is NOT a renumber and
+    /// must not be reported as one.
+    ///
+    /// This is the false-positive edge: a database that ran a migration the code
+    /// has since dropped has a row with no counterpart, and reporting it would
+    /// send someone hunting a skipped migration that does not exist. The check
+    /// joins on the registered side for exactly this reason, and a join is the
+    /// kind of thing that gets "simplified" into a scan.
+    #[test]
+    fn a_recorded_version_the_code_no_longer_registers_is_not_a_renumber() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_all(&mut conn).unwrap();
+        let orphan = MIGRATIONS.iter().map(|m| m.version).max().unwrap() + 999;
+        conn.execute(
+            "INSERT INTO _amux_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![orphan, "9999_dropped_long_ago", "2026-01-01T00:00:00+00:00"],
+        )
+        .unwrap();
+        assert_eq!(
+            renumbered_migrations(&conn),
+            Vec::new(),
+            "a version the code no longer registers has nothing to disagree with"
+        );
+    }
 
     #[test]
     fn migrations_apply_to_fresh_db_and_are_idempotent() {
@@ -601,6 +1000,79 @@ mod tests {
             .query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rev, 0);
+    }
+
+    /// The 2026-08-30 incident, reproduced directly: a version number this
+    /// binary expects to mean one thing is already recorded in the DB under
+    /// a completely different migration's name (an unrelated branch's
+    /// migration having consumed the same number first). `apply_all` must
+    /// neither error nor silently pretend everything is fine — it skips the
+    /// colliding version (its SQL genuinely cannot run there) and leaves
+    /// every OTHER migration to apply normally.
+    #[test]
+    fn a_version_recorded_under_a_different_name_is_skipped_not_reapplied_or_fatal() {
+        // Collide a NON-foundational migration (this crate's own telegram
+        // relay dedup ALTER TABLE, found by name rather than a hardcoded
+        // number so this survives a future renumbering) — colliding version
+        // 1 would fake away the baseline schema every other migration here
+        // depends on, and this test wants to isolate ONE collision, not
+        // cascade-fail the whole suite.
+        let target = super::MIGRATIONS
+            .iter()
+            .find(|m| m.name.contains("telegram_relay_dedup"))
+            .expect("the migration this test collides must still exist")
+            .version;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE _amux_migrations (
+                version INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                applied_at TEXT NOT NULL, duration_ms INTEGER
+             );
+             INSERT INTO _amux_migrations (version, name, applied_at, duration_ms)
+             VALUES ({target}, 'some_other_branchs_migration', '2026-08-29T00:00:00Z', 1);"
+        ))
+        .unwrap();
+
+        // Must not error, must not touch the colliding row, and every
+        // migration whose version was NOT already taken still applies.
+        apply_all(&mut conn).unwrap();
+
+        let (name, duration): (String, Option<i64>) = conn
+            .query_row("SELECT name, duration_ms FROM _amux_migrations WHERE version = ?1", [target], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "some_other_branchs_migration", "the colliding row must be left exactly as found");
+        assert_eq!(duration, Some(1), "not re-timed — it was never actually re-run");
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_migrations", [], |r| r.get(0))
+            .unwrap();
+        // Every real migration except the one whose version collided.
+        assert_eq!(n as usize, super::MIGRATIONS.len(), "every non-colliding migration still applied");
+
+        let has_col: bool = conn
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('telegram_mappings') WHERE name = 'last_relayed_hash'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n > 0)
+            .unwrap();
+        assert!(!has_col, "the colliding migration's actual SQL must never have run");
+    }
+
+    #[test]
+    fn version_collision_warning_is_silent_on_a_genuine_rerun() {
+        assert_eq!(version_collision_warning(5, "0005_foo", "0005_foo"), None);
+    }
+
+    #[test]
+    fn version_collision_warning_names_both_sides_on_a_real_collision() {
+        let msg = version_collision_warning(38, "0038_telegram_relay_dedup", "0038_telegram")
+            .expect("names differ, must warn");
+        assert!(msg.contains("38"), "{msg:?}");
+        assert!(msg.contains("0038_telegram_relay_dedup"), "{msg:?}");
+        assert!(msg.contains("0038_telegram"), "{msg:?}");
     }
 
     /// AMUX-3609's backfill, driven through the SHIPPED migration body rather

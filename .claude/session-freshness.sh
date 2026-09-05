@@ -112,6 +112,96 @@ if git remote get-url origin >/dev/null 2>&1; then
       out+=$'    then append. If this is the only checkout, reconciling IS the remedy —\n'
       out+=$'    there is no current clone to go log in (.claude/rules/frustrations.md)\n'
     fi
+
+    # ── Axis 1e (AF-385): can the reconcile printed above actually RUN? ───────
+    #
+    # Both arms above hand out `git merge origin/main` as THE remedy. On
+    # 2026-09-01, in this checkout, that command exited 2 without starting:
+    #
+    #   error: Your local changes to the following files would be overwritten by merge:
+    #           crates/amux-server/src/runtime_jobs/commit_nudge.rs
+    #   Please commit your changes or stash them before you merge.
+    #
+    # "abort is clean" describes `git merge --abort`, which never becomes
+    # reachable because the merge never begins. And git's own two suggestions are
+    # both forbidden on a shared checkout: committing a peer's file lands their
+    # work under your name, stashing it takes it out of their worktree while they
+    # are in it. So the hook named a state, named the one command for it, and
+    # that command could not run, with no third option offered anywhere. That is
+    # ethos rule 3, shipped by the hook whose whole job is to prevent a silent
+    # loss.
+    #
+    # A safe third option existed and was one comparison away. The blocking
+    # file's worktree bytes were byte-identical to origin's copy: ts-gke's
+    # TG-3343 work, already merged upstream, unstaged only because this checkout
+    # was behind. Discarding it was provably lossless. Two lanes instead read
+    # those 184 lines as a peer mid-edit and routed around them, and the checkout
+    # stayed unreconciled through both.
+    #
+    # `drop_paths_identical_to_origin()` in commit_nudge.rs already computes this
+    # comparison for the idle nudge. The surface every lane reads at SessionStart
+    # did not (ethos rule 1: capability that exists but does not reach).
+    #
+    # The two verdicts are deliberately asymmetric. IDENTICAL earns a printed
+    # command, because the bytes are recoverable from the remote and the claim is
+    # checkable in one line. DIFFERENT earns no destructive command at all: that
+    # is somebody's live work, and whose it is cannot be derived here — mtime on
+    # this checkout names whoever was ACTIVE, never whoever WROTE (AMUX-3662).
+    if [ "${behind:-0}" -gt 0 ]; then
+      _fr_in="$(git diff --name-only "HEAD...$base" 2>/dev/null || true)"
+      _fr_dirty="$(git diff --name-only HEAD 2>/dev/null || true)"
+      _fr_block="$(comm -12 <(printf '%s\n' "$_fr_in" | sed '/^$/d' | sort -u) \
+                            <(printf '%s\n' "$_fr_dirty" | sed '/^$/d' | sort -u) 2>/dev/null || true)"
+      if [ -n "$_fr_block" ]; then
+        _fr_n="$(printf '%s\n' "$_fr_block" | sed '/^$/d' | wc -l | tr -d ' ')"
+        out+="  - THAT MERGE CANNOT RUN YET: ${_fr_n} dirty file(s) are also changed upstream"$'\n'
+        out+=$'    git refuses before it starts. Do NOT take its advice literally here:\n'
+        out+=$'    committing them lands a peer\'s work under your name, stashing them pulls\n'
+        out+=$'    it out of their worktree while they are still in it.\n'
+        _fr_safe=""; _fr_theirs=""
+        while IFS= read -r _fr_p; do
+          [ -z "$_fr_p" ] && continue
+          _fr_wt="$(git hash-object -- "$_fr_p" 2>/dev/null || echo none)"
+          _fr_up="$(git rev-parse "$base:$_fr_p" 2>/dev/null || echo none)"
+          if [ "$_fr_wt" != none ] && [ "$_fr_wt" = "$_fr_up" ]; then
+            _fr_safe+="      ${_fr_p}"$'\n'
+          else
+            _fr_theirs+="      ${_fr_p}"$'\n'
+          fi
+        done <<FRESHEOF
+$_fr_block
+FRESHEOF
+        if [ -n "$_fr_safe" ]; then
+          out+="    ALREADY UPSTREAM, byte-identical to ${base}, so discarding loses nothing:"$'\n'
+          out+="$_fr_safe"
+          out+=$'    git checkout HEAD -- <those paths>   and then the merge above runs\n'
+          out+="    check it yourself first: git hash-object <p> equals git rev-parse ${base}:<p>"$'\n'
+        fi
+        if [ -n "$_fr_theirs" ]; then
+          out+=$'    GENUINELY DIVERGENT from upstream, so somebody is mid-edit. No command is\n'
+          out+=$'    printed for these on purpose:\n'
+          out+="$_fr_theirs"
+          out+=$'    ask whoever is working there. This hook cannot tell you who, and neither\n'
+          out+=$'    can mtime on a checkout this many lanes share.\n'
+        fi
+        # Two-fix rule: the next occurrence announces itself to a sweep instead of
+        # waiting for a lane to hit it. One line per session start, counts plus the
+        # paths, so `wc -l` answers "how often" and a grep answers "which file".
+        #
+        # A MISSING FILE IS UNMEASURED, NOT ZERO. Nothing is written when the
+        # directory is absent, which is the non-amux case, so a sweep that reads a
+        # missing file as "never blocked" is reading a probe that never ran
+        # (ethos rule 4). Absent means no signal; zero lines in an existing file
+        # means the signal ran and found nothing.
+        _fr_log="${AMUX_RECONCILE_BLOCKED_LOG:-$HOME/.amux/reconcile-blocked.jsonl}"
+        if [ -d "$(dirname "$_fr_log")" ]; then
+          _fr_j() { printf '%s' "$1" | sed 's/^[[:space:]]*//; /^$/d' | tr '\n' ',' | sed 's/,$//; s/["\\]//g'; }
+          printf '{"ts":"%s","session":"%s","behind":%s,"ahead":%s,"blocked":%s,"already_upstream":"%s","divergent":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${AMUX_SESSION:-unknown}" "${behind:-0}" "${ahead:-0}" \
+            "${_fr_n}" "$(_fr_j "$_fr_safe")" "$(_fr_j "$_fr_theirs")" >> "$_fr_log" 2>/dev/null || true
+        fi
+      fi
+    fi
   fi
 fi
 
@@ -294,7 +384,7 @@ fi
 hooks_dir="$(git -C "$REPO" rev-parse --git-path hooks 2>/dev/null || true)"
 case "$hooks_dir" in /*) : ;; ?*) hooks_dir="$REPO/$hooks_dir" ;; esac
 if [ -n "${hooks_dir:-}" ] && [ -d "$REPO/scripts/git-hooks" ]; then
-  stale_hooks=""
+  stale_hooks=""; any_missing=""; any_older=""; stale_names=""
   for src in "$REPO"/scripts/git-hooks/*; do
     [ -f "$src" ] || continue
     name="$(basename "$src")"
@@ -305,14 +395,120 @@ if [ -n "${hooks_dir:-}" ] && [ -d "$REPO/scripts/git-hooks" ]; then
     dst="$hooks_dir/$name"
     if [ ! -e "$dst" ]; then
       stale_hooks="${stale_hooks}${stale_hooks:+, }${name} (MISSING)"
+      stale_names="${stale_names} ${name}"
+      any_missing=1
     elif ! diff -q "$src" "$dst" >/dev/null 2>&1; then
-      stale_hooks="${stale_hooks}${stale_hooks:+, }${name}"
+      # NAME THE VERSION ON BOTH SIDES when the file carries one. The byte diff
+      # is the right DETECTOR and is unchanged; what it cannot do is support the
+      # sentence this block used to print. On 2026-08-30 the only drift was a
+      # comment rewrite and BOTH copies read `GUARD_VERSION = 11`, so the guard
+      # had not stopped guarding in any sense â yet the notice said it had. That
+      # is ethos rule 4 failing in the direction that costs trust rather than
+      # safety: cry wolf on every doc edit to a hook and the remedy line stops
+      # being read, which is how the one real MISSING case gets waved through.
+      #
+      # Only amux-staged-guard carries a version today. The other three get the
+      # bare name, because inventing a confidence signal they cannot supply is
+      # the same error rewritten â and note that equal versions do NOT prove
+      # the logic matches, only that nobody bumped it. That is why this reports
+      # the two numbers and lets the reader judge, rather than declaring "safe".
+      iv="$(grep -m1 -oE '^GUARD_VERSION *= *[0-9]+' "$dst" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+      cv="$(grep -m1 -oE '^GUARD_VERSION *= *[0-9]+' "$src" 2>/dev/null | grep -oE '[0-9]+$' || true)"
+      detail=""
+      if [ -n "$iv" ] && [ -n "$cv" ]; then
+        if [ "$iv" -lt "$cv" ] 2>/dev/null; then
+          detail=" (installed GUARD_VERSION $iv < checkout $cv)"; any_older=1
+        else
+          detail=" (GUARD_VERSION $iv on both)"
+        fi
+      elif [ -z "$iv" ] && [ -n "$cv" ]; then
+        detail=" (installed carries no GUARD_VERSION; checkout $cv)"; any_older=1
+      fi
+      stale_hooks="${stale_hooks}${stale_hooks:+, }${name}${detail}"
+      stale_names="${stale_names} ${name}"
     fi
   done
+  # THE FIFTH GUARD, which no installer covered and which this axis could not see
+  # (AF-409). ~/.claude/settings.json invokes `python3
+  # ~/.amux/hooks/git-shared-guard.py` as a PreToolUse hook, outside any checkout,
+  # so the loop above — which compares against `git rev-parse --git-path hooks` —
+  # is structurally blind to it.
+  #
+  # It cost three days. Measured 2026-09-02: the running copy was 148 lines behind
+  # and byte-identical to a58a53cf, while the repo carried e782b68a's fix for a
+  # command-substitution BYPASS (AMUX-3932). Run through both copies directly,
+  # `echo "$(git add -A)"` was ALLOWED by the running one and blocked by the repo
+  # one. That is the command AF-316 exists to refuse, on a tree 125 lanes share.
+  #
+  # THREE STATES, and the third is why this is not a one-liner. An ABSENT
+  # destination means "not an amux host", which is not drift and must not be
+  # reported as any. install-hooks.sh now installs and verifies this file too, so
+  # this line is the half that fires without anyone remembering to run it.
+  _pgd="${AMUX_SHARED_GUARD_DEST:-$HOME/.amux/hooks/git-shared-guard.py}"
+  _pgs="$REPO/scripts/git-hooks/git-shared-guard.py"
+  if [ -f "$_pgs" ] && [ -f "$_pgd" ] && ! cmp -s "$_pgs" "$_pgd"; then
+    out+="  - the PreToolUse shared-checkout guard differs from this checkout"$'\n'
+    out+="    running: ${_pgd}"$'\n'
+    out+=$'    it has NO git-hook installer of its own and is not in the list above;\n'
+    out+=$'    a repo edit reaches nobody until someone installs it (AF-409)\n'
+    out+=$'    ./scripts/install-hooks.sh   installs and verifies it now\n'
+  fi
+
   if [ -n "$stale_hooks" ]; then
-    out+="  - installed git hooks differ from this checkout: ${stale_hooks}"$'\n'
-    out+=$'    a stale guard does not announce itself — it just stops guarding\n'
-    out+="    ./scripts/install-hooks.sh"$'\n'
+    out+="  - installed git hooks differ from this checkout: ${stale_hooks}"$'
+'
+    if [ -n "$any_missing" ]; then
+      out+=$'    a hook that is not installed is not running â that one is off, not stale
+'
+    elif [ -n "$any_older" ]; then
+      out+=$'    the installed copy is OLDER: it is guarding by the previous rules
+'
+    else
+      out+=$'    a byte diff cannot tell a comment edit from a disabled check â reinstalling settles it
+'
+    fi
+    out+="    ./scripts/install-hooks.sh"$'
+'
+
+    # AF-375, the half of the fix that was still open. This block was already
+    # correct and already printed at the top of the session that shipped TWO
+    # inert edits to `amux-staged-guard`; it was read as boilerplate about files
+    # the reader had not touched. It was right, and it was about somebody else's
+    # problem as far as the reader could tell.
+    #
+    # So cross it with the ONE thing that makes it the reader's problem: does
+    # this session have an edit record for one of the drifting files. That turns
+    # a standing notice into a statement about your own work, which is the whole
+    # difference between a line people skip and a line people act on.
+    #
+    # WHAT THE RECORD CAN AND CANNOT SAY (AMUX-3954). It is `<ts> <session> n=
+    # <count> paths=<names>` with no content hash, so it cannot testify that YOUR
+    # bytes are the difference. It can testify that this session wrote to that
+    # path, which is a claim about your own writes rather than about a peer's,
+    # and that is the weaker claim printed below on purpose. The remedy line
+    # names the falsifiable check rather than asking for trust: grep the
+    # INSTALLED copy, which is the check whose absence let AF-365 close on
+    # evidence that was true of the repo copy only.
+    _oe="${AMUX_OBSERVED_EDITS_LOG:-$HOME/.amux/hooks/state/observed-edits.log}"
+    if [ -n "${AMUX_SESSION:-}" ] && [ -r "$_oe" ]; then
+      _mine=""
+      # Bounded read: this log is megabytes and grows all day, and a SessionStart
+      # hook that scans it whole is a hook someone deletes.
+      _recent="$(tail -n 4000 "$_oe" 2>/dev/null | grep -F " ${AMUX_SESSION} " || true)"
+      for _n in $stale_names; do
+        case "$_recent" in *"git-hooks/$_n"*) _mine="${_mine}${_mine:+, }$_n";; esac
+      done
+      if [ -n "$_mine" ]; then
+        out+="    YOU EDITED THIS SESSION: ${_mine}"$'\n'
+        out+=$'    so do not assume your edit is what runs on commit. This hook ships by COPY,\n'
+        out+=$'    unlike the bash CLI beside it, which ships on save.\n'
+        out+="    check the INSTALLED copy, not the repo one: grep <your string> ${hooks_dir}/<hook>"$'\n'
+      fi
+    else
+      # A silent no is the failure this file exists to prevent: absent record and
+      # "none of these is yours" are different answers (ethos rule 4).
+      out+=$'    (whether one of these is your own edit was NOT checked: no session or no edit record)\n'
+    fi
   fi
 fi
 

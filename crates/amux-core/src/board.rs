@@ -128,6 +128,24 @@ pub enum ItemType {
     /// dormant type; its gate is the non-code default ("Outcome recorded"), an
     /// epic being done when its work is accounted for.
     Epic,
+    /// A choice that belongs to a human, carried as a card (AF-323). NOT a
+    /// synonym for `escalation`: an escalation is work that got stuck and needs
+    /// someone unblocked, while a decision card has no blocked work behind it
+    /// and is complete the moment the answer is given.
+    ///
+    /// It exists because the board was already STORING it. `mixpeek-orchestrator`
+    /// wrote five live cards typed `decision` through a path that skips
+    /// validation, the CLI advertised the word in its own usage line until
+    /// AMUX-2479, and 24% of `needsyou` has this shape (AF-318). Every one of
+    /// those fell through `core_item_type` to `Code` — the STRICTEST gate — so
+    /// closing them demanded "Implemented and merged" for a card whose entire
+    /// output is a sentence from Ethan. That is ethos rule 3: a constraint with
+    /// no truthful path in a legitimate state.
+    ///
+    /// Adding the type is what repairs those five cards. Retyping them is not
+    /// available: they belong to another lane, and rule 8 plus AMUX-3552 both
+    /// say surface, do not sweep.
+    Decision,
 }
 
 impl ItemType {
@@ -135,7 +153,7 @@ impl ItemType {
     /// hand-listed. The `is_dormant` comment below records what a re-typed
     /// literal already cost here once; this exists so the next one does not
     /// have to be written at all.
-    pub const ALL: [ItemType; 11] = [
+    pub const ALL: [ItemType; 12] = [
         ItemType::Code,
         ItemType::Escalation,
         ItemType::Blocker,
@@ -147,6 +165,7 @@ impl ItemType {
         ItemType::Tripwire,
         ItemType::Watch,
         ItemType::Epic,
+        ItemType::Decision,
     ];
 
     /// The wire/DB spelling — the same snake_case serde emits, so a value
@@ -164,6 +183,7 @@ impl ItemType {
             ItemType::Tripwire => "tripwire",
             ItemType::Watch => "watch",
             ItemType::Epic => "epic",
+            ItemType::Decision => "decision",
         }
     }
 
@@ -1098,14 +1118,19 @@ const CAPTURE_FILLER: [&str; 19] = [
 /// means "do not mint a ledger card", not "untitled".
 pub fn title_from_prompt(text: &str) -> Option<String> {
     let mut t = text.trim();
-    // Explicit opt-out marker, checked BEFORE stamp-stripping so the marker
-    // itself is never mistaken for a timestamp prefix.
-    let lower_all = t.to_lowercase();
-    if lower_all.starts_with("[no-board]") || lower_all.starts_with("[no_board]") {
-        return None;
-    }
-    // Drop leading "[03:47 PM] " / "[amux-origin: ...]" style stamps.
-    while t.starts_with('[') {
+    // Drop leading "[03:47 PM] " / "[amux-origin: ...]" style stamps, but
+    // recognize the opt-out marker at EVERY layer. Dashboard sends are stamped
+    // before capture, so checking only the raw prefix turned
+    // `[08:51 AM] [no-board] ...` into a normal task after the loop stripped
+    // both brackets (ATE-27).
+    loop {
+        let lower = t.to_lowercase();
+        if lower.starts_with("[no-board]") || lower.starts_with("[no_board]") {
+            return None;
+        }
+        if !t.starts_with('[') {
+            break;
+        }
         match t.find(']') {
             Some(i) => t = t[i + 1..].trim_start(),
             None => break,
@@ -1175,6 +1200,46 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     Some(out)
 }
 
+const CAPTURE_TASK_VERBS: &[&str] = &[
+    "add ", "audit ", "build ", "change ", "check ", "clean ", "close ", "commit ",
+    "configure ", "create ", "delete ", "deploy ", "diagnose ", "document ", "edit ",
+    "find ", "fix ", "generate ", "implement ", "install ", "investigate ", "make ",
+    "move ", "open ", "push ", "refactor ", "remove ", "reproduce ", "research ",
+    "run ", "ship ", "submit ", "take ", "test ", "try ", "update ", "verify ",
+    "write ",
+];
+
+fn capture_clause_starts_task(raw: &str) -> bool {
+    let clause = raw
+        .trim()
+        .trim_start_matches("please ")
+        .trim_start_matches("then ")
+        .trim_start_matches("also ")
+        .trim_start_matches("and ")
+        .trim_start_matches("can you ")
+        .trim_start_matches("could you ")
+        .trim_start_matches("if not, ");
+    CAPTURE_TASK_VERBS.iter().any(|verb| clause.starts_with(verb))
+}
+
+fn capture_has_task_followup(lower: &str) -> bool {
+    [
+        ";",
+        " — ",
+        " -- ",
+        ". ",
+        "! ",
+        "? ",
+        " and then ",
+        " and please ",
+        " and can you ",
+        " and could you ",
+        " if not,",
+    ]
+        .iter()
+        .any(|marker| lower.split(marker).skip(1).any(capture_clause_starts_task))
+}
+
 /// A pure status / information query about existing work: "status on MSG-29602?",
 /// "any update on the deploy?". These are answered inline and produce no
 /// deliverable, yet capture minted them as type=code/doing — which a question can
@@ -1230,7 +1295,192 @@ pub fn is_status_query(text: &str) -> bool {
         // follow-up prompt that asks for the work.
         "why is ", "why are ", "why does ", "why did ", "why was ", "why were ",
     ];
-    STATUS_OPENERS.iter().any(|o| lower.starts_with(o))
+    STATUS_OPENERS.iter().any(|o| lower.starts_with(o)) && !capture_has_task_followup(&lower)
+}
+
+/// A prompt whose requested outcome is an answer in the conversation, not a
+/// durable unit of work. It remains in Messages but should not consume a board
+/// id, a WIP slot, or the decomposition/drive loop.
+///
+/// This is intentionally a small, auditable intent boundary rather than a
+/// model call. Question words and explicit answer-only commands are message
+/// only; imperative follow-ups ("what broke; fix it?") and operational checks
+/// that require running work ("does this build?") remain cardable. Unknown
+/// shapes fail open to a card so the classifier can never silently lose work.
+pub fn is_informational_query(text: &str) -> bool {
+    let mut t = text.trim();
+    while t.starts_with('[') {
+        match t.find(']') {
+            Some(i) => t = t[i + 1..].trim_start(),
+            None => break,
+        }
+    }
+    let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return false;
+    }
+    let lower = collapsed.to_lowercase();
+    // A human doing an acceptance/smoke check will often qualify the question
+    // before asking it.  Treat only explicit answer-only preambles as syntax;
+    // the question that follows still has to pass every normal safeguard below
+    // (so, for example, "acceptance check only: does this build?" remains work).
+    const INFORMATIONAL_PREAMBLES: &[&str] = &[
+        "acceptance check only: ",
+        "informational check only: ",
+        "information only: ",
+        "informational only: ",
+        "question only: ",
+        "answer only: ",
+    ];
+    let intent = INFORMATIONAL_PREAMBLES
+        .iter()
+        .find_map(|prefix| lower.strip_prefix(prefix))
+        .unwrap_or(&lower);
+    if capture_has_task_followup(intent) {
+        return false;
+    }
+    if is_status_query(intent) {
+        return true;
+    }
+
+    let polite = intent.strip_prefix("please ").unwrap_or(intent);
+    const ANSWER_ONLY_COMMANDS: &[&str] = &[
+        "answer ", "compare ", "clarify ", "describe ", "explain ", "recap ",
+        "summarize ", "tell me ", "give me a summary ", "help me understand ",
+    ];
+    if !intent.contains('?') {
+        return ANSWER_ONLY_COMMANDS.iter().any(|p| polite.starts_with(p));
+    }
+
+    let question_end = intent.find('?').unwrap_or(intent.len());
+    let question = &intent[..question_end];
+    let tail = intent[question_end.saturating_add(1)..]
+        .trim()
+        .trim_end_matches(['.', '!', ';', ' ']);
+    // A second clause normally means the prompt has work after the question.
+    // Preserve explicit non-mutating tails people naturally add when they want
+    // only an answer. This is grammatical rather than an exact sentence list:
+    // `do not change files or create board work` means the same thing as `do
+    // not change anything`, and an opt-out contract must not depend on one
+    // memorized phrasing.
+    if !tail.is_empty() {
+        const QUESTION_TAILS: &[&str] = &[
+            "are ", "can ", "could ", "did ", "do ", "does ", "has ", "have ", "how ",
+            "is ", "should ", "was ", "were ", "what ", "when ", "where ", "which ",
+            "who ", "why ", "will ", "would ",
+        ];
+        if !is_non_mutating_answer_tail(tail)
+            && !(tail.ends_with('?') && QUESTION_TAILS.iter().any(|p| tail.starts_with(p)))
+        {
+            return false;
+        }
+    }
+
+    const QUESTION_WORDS: &[&str] = &[
+        "how ", "how's ", "hows ", "what ", "what's ", "whats ", "when ", "where ",
+        "which ", "who ", "who's ", "whos ", "why ",
+    ];
+    if QUESTION_WORDS.iter().any(|p| question.starts_with(p)) {
+        return true;
+    }
+
+    const ANSWER_REQUESTS: &[&str] = &[
+        "can you answer ", "can you compare ", "can you describe ", "can you explain ",
+        "can you help me understand ", "can you please explain ", "can you summarize ",
+        "can you tell me ", "could you answer ", "could you compare ",
+        "could you describe ", "could you explain ", "could you help me understand ",
+        "could you please explain ", "could you summarize ", "could you tell me ",
+        "would you explain ", "would you tell me ",
+    ];
+    if ANSWER_REQUESTS.iter().any(|p| question.starts_with(p)) {
+        return true;
+    }
+    // Preserve the existing operational-check contract. Answering these means
+    // running the build/test/deploy, so they are work even though grammatical
+    // questions surround them.
+    const OPERATIONAL_CHECKS: &[&str] = &[
+        "does this build", "does it build", "do the tests pass", "does the test pass",
+        "did the tests pass", "can this compile", "will this deploy",
+    ];
+    if OPERATIONAL_CHECKS.iter().any(|p| question.starts_with(p)) {
+        return false;
+    }
+    // Plain yes/no or advice questions are message-only. "Can you …" and
+    // "Could you …" reach here only when they did not use an answer verb, so
+    // they remain cardable requests such as "can you fix the redirect?".
+    if question.starts_with("can you ") || question.starts_with("could you ") {
+        return false;
+    }
+    const YES_NO_QUESTIONS: &[&str] = &[
+        "are ", "can ", "could ", "did ", "do ", "does ", "has ", "have ", "is ",
+        "should ", "was ", "were ", "will ", "would ",
+    ];
+    YES_NO_QUESTIONS.iter().any(|p| question.starts_with(p))
+}
+
+/// Whether every clause after a question explicitly asks for an answer and/or
+/// forbids mutation. Unknown clauses fail closed to WORK so this helper cannot
+/// silently swallow an imperative.
+fn is_non_mutating_answer_tail(tail: &str) -> bool {
+    const ANSWER_ONLY: &[&str] = &["answer only", "just answer", "please answer only"];
+    const ANSWER_FORMAT_PREFIXES: &[&str] = &["answer in ", "reply in ", "respond in "];
+    const ANSWER_FORMAT_WORDS: &[&str] = &[
+        "a", "one", "two", "three", "single", "short", "brief", "concise",
+        "word", "words", "line", "lines", "sentence", "sentences", "paragraph",
+        "paragraphs",
+    ];
+    const MUTATION_WORDS: &[&str] = &[
+        "change", "changes", "edit", "modify", "write", "create", "delete", "run",
+        "build", "fix", "make", "file", "files", "commit", "push", "deploy", "board",
+        "task", "tasks", "work",
+    ];
+
+    let mut saw_clause = false;
+    // Sentence punctuation is as natural here as a semicolon ("Answer in one
+    // sentence. Do not create a task."). Normalize it before applying the same
+    // per-clause proof; otherwise a negated mutation word in the second
+    // sentence makes the whole answer-only tail look like work.
+    let normalized = tail.replace(". ", ";").replace("! ", ";");
+    for raw in normalized.split(';') {
+        let clause = raw.trim().trim_end_matches(['.', '!', ' ']);
+        if clause.is_empty() {
+            continue;
+        }
+        saw_clause = true;
+        if ANSWER_ONLY.contains(&clause) || matches!(clause, "no changes" | "make no changes") {
+            continue;
+        }
+        if let Some(format) = ANSWER_FORMAT_PREFIXES
+            .iter()
+            .find_map(|prefix| clause.strip_prefix(prefix))
+        {
+            let words = format.split_whitespace().map(|word| {
+                word.trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            });
+            if !format.is_empty() && words.clone().all(|word| ANSWER_FORMAT_WORDS.contains(&word)) {
+                continue;
+            }
+        }
+        let negated = clause
+            .strip_prefix("please do not ")
+            .or_else(|| clause.strip_prefix("please don't "))
+            .or_else(|| clause.strip_prefix("do not "))
+            .or_else(|| clause.strip_prefix("don't "));
+        let Some(scope) = negated else { return false };
+        if !MUTATION_WORDS.iter().any(|word| scope.split_whitespace().any(|w| {
+            w.trim_matches(|c: char| !c.is_ascii_alphanumeric()) == *word
+        })) {
+            return false;
+        }
+        // Negation ended before a new imperative: do not edit X, then deploy Y.
+        if [", then ", ". then ", " and then "]
+            .iter()
+            .any(|marker| scope.contains(marker))
+        {
+            return false;
+        }
+    }
+    saw_clause
 }
 
 /// Bare demonstratives/pronouns: words whose referent lives OUTSIDE the title.
@@ -1364,6 +1614,11 @@ pub fn verified_is_meaningful(item_type: ItemType) -> bool {
         // An epic is a grouping container — it ships nothing itself, so there is
         // no prod to confirm; it is done when its children/outcome are recorded.
         | ItemType::Epic
+        // A decision produces an answer, not a deploy. Once it is recorded on
+        // the card there is no production to confirm it in, and asking the lane
+        // that ASKED the question to re-confirm the reply is the make-work this
+        // predicate exists to refuse. `done` is the honest end state (AF-323).
+        | ItemType::Decision
         | ItemType::Watch => false,
     }
 }
@@ -1399,6 +1654,12 @@ mod capture_tests {
             None,
             "explicit opt-out"
         );
+        for stamped in [
+            "[08:51 AM] [no-board] What is backlog? Answer only.",
+            "[amux-origin: dashboard] [no_board] Explain this without making changes.",
+        ] {
+            assert_eq!(title_from_prompt(stamped), None, "stamped opt-out: {stamped}");
+        }
     }
 
     #[test]
@@ -1436,6 +1697,56 @@ mod capture_tests {
             "why is the deploy pipeline failing on the third stage after the cache restore step when the lockfile has not changed at all?",
         ] {
             assert!(!is_status_query(s), "{s:?} is real work, must still card");
+        }
+    }
+
+    #[test]
+    fn informational_questions_are_message_only_but_work_requests_still_card() {
+        for s in [
+            "What is the difference between todo and backlog on this board?",
+            "What is the difference between todo and backlog? Please answer only; do not change anything.",
+            "What is the difference between todo and backlog? Answer only; do not change files or create board work.",
+            "What is backlog? Please do not edit files, create tasks, or run commands.",
+            "How does the Done gate work?",
+            "Can you explain why ATE-10 is linked to ATE-11?",
+            "Is the board source of truth the issue row or the message?",
+            "Compare Claude Code and Codex",
+            "Please explain why the gate is required",
+            "Could you please explain what a gate does?",
+            "Tell me what the worker status colors mean",
+            "What is backlog? How is todo different?",
+            "[amux-origin: dashboard]   WHAT is backlog?",
+            &format!("Why does this happen {}?", "in this particular configuration ".repeat(20)),
+            // ATE-17: the exact wording that reproduced this bug a day after the
+            // literal-list fix shipped — never matched ANSWER_ONLY_TAILS because
+            // that list only had "please answer only; do not change anything.".
+            "What is the difference between todo and backlog on this board? Answer only; do not change files or create board work.",
+            "[08:24 AM] What is the difference between todo and backlog in this September 3 rerun? Answer only; do not change files or create board work.",
+            "Acceptance check only: what provider and model are you currently running? Answer in one sentence. Do not create or modify any board task.",
+        ] {
+            assert!(is_informational_query(s), "{s:?} should remain message-only");
+        }
+        for s in [
+            "can you fix the OAuth redirect?",
+            "does this build?",
+            "what broke; fix the failing test?",
+            "why is the build red — investigate the failure?",
+            "what broke? please diagnose it",
+            "what broke? do not edit the docs; then fix the implementation",
+            "why did this fail and can you reproduce it?",
+            "is it done? if not, add a retry to the fetch",
+            "write an explanation to docs/status.md",
+            "",
+            "[broken stamp",
+            // A tail can stack a real task after its answer-only clause; the
+            // structural tail check must still catch it (negative control for
+            // the ATE-17 fix, so broadening the match cannot silently swallow
+            // real work stacked onto an answer-only opener).
+            "What is the difference between todo and backlog? Answer only, then update the docs.",
+            "Acceptance check only: does this build? Answer in one sentence. Do not create a board task.",
+            "Acceptance check only: what provider is active? Answer in one sentence. Do not create a board task, then update the docs.",
+        ] {
+            assert!(!is_informational_query(s), "{s:?} produces work and needs a card");
         }
     }
 

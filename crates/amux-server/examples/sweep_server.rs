@@ -85,6 +85,7 @@ async fn main() {
         started: Instant::now(),
         build_hash: amux_server::build_hash(),
         auth_token: None, // local read-only harness
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
 

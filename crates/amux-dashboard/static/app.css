@@ -18,8 +18,9 @@
   body.light .overlay-body {
     background: #1c2128 !important; color: #cdd9e5 !important;
   }
-  body.light .peek-copy-btn {
-    background: rgba(28,33,40,0.85); border-color: rgba(255,255,255,0.2); color: #cdd9e5;
+  body.light .peek-copy-btn,
+  body.light .peek-agent-nav button {
+    background: #1c2128; border-color: rgba(255,255,255,0.2); color: #cdd9e5;
   }
   /* Connection status — hardcoded neon colors are invisible on white */
   body.light .conn-status.online  { color: #1a7f37; background: rgba(26,127,55,0.1); }
@@ -179,7 +180,19 @@
   .card-menu {
     display: none; position: fixed;
     background: var(--card); border: 1px solid var(--border);
-    border-radius: 10px; min-width: 200px; z-index: 50;
+    /* TWO constraints, and only a value above BOTH satisfies them.
+       1. Menus can open upward into the global approval strip (90), so a
+          pending permission request must not make worker actions unclickable.
+       2. The column ellipsis menu also opens INSIDE #peek-overlay, which is
+          `.overlay { z-index: 100 }` a few hundred lines up. At 95 it paints
+          underneath: the menu is built, populated and positioned correctly and
+          the click does nothing. Measured with elementFromPoint at the menu's
+          own corner, which returned the tab bar. It works on the global board,
+          which is not inside an overlay, which is why 95 looks sufficient.
+       310 clears the strip (90) and the overlay (100) and the modal backdrop
+       (300), and stays under the toast/picker layers (2000+) that must cover
+       it. 95 clears only the first. */
+    border-radius: 10px; min-width: 200px; z-index: 310;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     overflow-x: hidden; overflow-y: auto; max-height: 500px;
   }
@@ -309,6 +322,13 @@
   .orch-plan-inc { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; }
   .orch-plan-worker { font-weight: 600; color: var(--accent); }
   .orch-plan-why { font-size: 0.7rem; color: var(--dim); text-align: right; }
+  /* WHICH ACTION this row is (AMUX-2984). The plan used to be send-only, so a
+     row needed no type; now a card, a message and a `stop` sit in one list and
+     the reader is approving all three from the same checkbox. `flex-shrink:0`
+     because at 375px the why-text is what should wrap, not the verb. */
+  .orch-plan-act { font-size: 0.68rem; color: var(--dim); background: var(--card);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px;
+    white-space: nowrap; flex-shrink: 0; }
   .orch-plan-msg { width: 100%; font-size: 0.85rem; padding: 6px 8px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--card); color: var(--text); font-family: inherit;
     box-sizing: border-box; resize: vertical; }
@@ -444,6 +464,8 @@
      would train people to ignore red. `unknown` is every row written before the
      verdict existed — grey, never green, because "not recorded" is not "fine". */
   .sched-run-dot.queued { background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent); }
+  .sched-run-dot.running { background:var(--yellow,#fbbf24);animation:sched-running-pulse 1.2s ease-in-out infinite; }
+  @keyframes sched-running-pulse { 50% { opacity:0.35;transform:scale(0.8); } }
   .sched-run-dot.warn { background:var(--yellow,#fbbf24); }
   .sched-run-dot.unknown { background:var(--dim,#6b7280);opacity:0.45; }
   .sched-cmd-expand { margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:180px;overflow-y:auto; }
@@ -635,6 +657,12 @@
      body.no-top-inset / js-bottom-extend toggle — both were retired 2026-07-05. */
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
+  /* NOTHING IN NORMAL FLOW MAY OUTRANK THESE TWO (AF-390). #email-approvals-banner
+     carried z-index 200 inline and painted over both, and because it is an in-flow
+     strip in the same screen band as these fixed overlays, it swallowed clicks on
+     the peek tab bar once it grew tall enough. Its z-index is 90 now and the reason
+     is written beside it in index.html. If you add another global strip, put it
+     under 100 too. */
   .overlay {
     padding: 12px; padding-top: max(12px, env(safe-area-inset-top));
     overflow: hidden;
@@ -755,6 +783,10 @@
     margin-bottom: 8px; flex-shrink: 0;
   }
   .overlay-header h2 { font-size: 1.1rem; }
+  /* Reserve the control strip so output does not start underneath it. Scoped
+     to #peek-body: .overlay-body is shared with overlays that have no such
+     controls, and padding them would be a gap with nothing in it. */
+  #peek-body { padding-top: 40px; }
   .overlay-body {
     flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
     background: #010409; border-radius: 8px;
@@ -797,10 +829,25 @@
      220-col lane: 4196 vs 1416 at 1440px desktop (2780px unreachable without
      panning) and 4196 vs 366 at 390px phone — ~9% of each line visible on the
      platform amux optimises for first. */
+  /* THE CONTROL STRIP MUST NOT BLEED (AMUX-4050). Ethan's phone screenshot:
+     `crates/amux-` of a panicked-at path was unreadable because these controls
+     float over #peek-body (position:absolute; inset:0) at 0.85 alpha, so the
+     terminal text showed THROUGH them and neither the text nor the button was
+     legible. Two changes, and both are needed:
+
+       1. Opaque. At 0.85 the text behind is still visible and the result is
+          mush. A sticky control that hides what is under it is honest; one
+          that half-hides it is not readable either way.
+       2. #peek-body reserves the strip (padding-top below), so at rest the
+          first line of output starts BELOW the buttons rather than under them.
+
+     The pane auto-scrolls to the bottom, so the occluded zone is the top,
+     which is exactly where someone scrolled up to read old output is looking.
+     That is the case in the screenshot. */
   .peek-copy-btn {
     position: absolute; top: 6px; right: 6px; z-index: 10;
     height: 28px; border-radius: 6px; padding: 0 8px;
-    border: 1px solid rgba(255,255,255,0.15); background: rgba(13,17,23,0.85);
+    border: 1px solid rgba(255,255,255,0.15); background: #0d1117;
     color: var(--dim); font-size: 0.75rem; cursor: pointer;
     display: flex; align-items: center; gap: 4px;
     -webkit-tap-highlight-color: transparent; transition: all 0.15s;
@@ -813,7 +860,7 @@
   }
   .peek-agent-nav button {
     height: 28px; min-width: 32px; border-radius: 6px; padding: 0 6px;
-    border: 1px solid rgba(255,255,255,0.15); background: rgba(13,17,23,0.85);
+    border: 1px solid rgba(255,255,255,0.15); background: #0d1117;
     color: var(--dim); font-size: 0.78rem; cursor: pointer;
     -webkit-tap-highlight-color: transparent; transition: all 0.15s;
   }
@@ -840,6 +887,7 @@
   .overlay-body a:active { color: #79c0ff; }
   .overlay-body .file-link { color: var(--cyan); text-decoration: none; border-bottom: 1px dashed var(--cyan); cursor: pointer; }
   .overlay-body .file-link:active { color: #79ead3; }
+  .overlay-body button.file-link { appearance: none; -webkit-appearance: none; background: none; border-top: 0; border-right: 0; border-left: 0; padding: 0; font: inherit; }
   .overlay-body .md-link { color: var(--yellow); text-decoration: none; border-bottom: 1px dashed var(--yellow); cursor: pointer; }
   .overlay-body .md-link:active { color: #e8c547; }
   /* A markdown link to ANOTHER file — opens IN the viewer (renderMarkdown +
@@ -1854,12 +1902,14 @@
   .peek-msg-count { font-size: 0.62rem; color: var(--dim); white-space: nowrap; line-height: 1; padding: 1px 0; min-width: 16px; text-align: center; user-select: none; }
   .peek-prompt.peek-msg-current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
   .peek-more-wrap { position: relative; }
-  .peek-more-dropdown { display: none; position: absolute; top: calc(100% + 4px); right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 160px; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+  .peek-more-dropdown { display: none; position: absolute; top: calc(100% + 4px); right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 260px; max-width:min(340px,calc(100vw - 16px)); max-height:min(500px,calc(100dvh - 120px)); overflow-x:hidden; overflow-y:auto; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
   .peek-more-dropdown.open { display: block; }
   .peek-more-item { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; font-size: 0.85rem; color: var(--text); border-bottom: 1px solid var(--border); -webkit-tap-highlight-color: transparent; }
   .peek-more-item:last-child { border-bottom: none; }
   .peek-more-item:active { background: var(--border); }
   .peek-more-item .mi { width: 18px; text-align: center; flex-shrink: 0; }
+  .peek-more-item.danger { color: var(--red); }
+  .peek-more-sep { height:1px; background:var(--border); }
   /* Peek search highlight */
   .peek-highlight { background: rgba(210,153,34,0.35); color: #fff; border-radius: 2px; }
   .peek-highlight.current { background: rgba(210,153,34,0.85); color: #000; }
@@ -1896,7 +1946,7 @@
   /* Peek compact mode — when visual viewport is constrained (pinch zoom / keyboard) */
   .overlay.vv-compact .peek-cmd-row .chips { display: none !important; }
   .overlay.vv-compact .peek-dir-bar { display: none; }
-  .overlay.vv-compact .peek-tabs { padding: 0 8px; }
+  .overlay.vv-compact .peek-tabs { padding: 0 0 0 8px; }   /* right stays 0, see .peek-tabs */
   .overlay.vv-compact .peek-tab { padding: 4px 10px; font-size: 0.75rem; }
   .overlay.vv-compact .overlay-header { padding-bottom: 4px !important; gap: 2px !important; }
   .overlay.vv-compact .peek-cmd-toggle { padding: 3px; }
@@ -1992,6 +2042,19 @@
     background: none; border: none; color: var(--text); font-size: 0.85rem; padding: 9px 10px;
     border-radius: 6px; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
   .peek-more-menu button:hover { background: var(--bg); }
+  /* The one destructive entry. A rule above it rather than a colour alone,
+     because on the phone this menu is a thumb-sized stack of near-identical
+     rows and "Clear input" is the only one that throws work away. The tint is
+     deliberately mild: this is not an error state, it is a reminder to aim. */
+  .peek-more-menu button.peek-more-danger { color: var(--red, #d9534f); margin-top: 4px;
+    padding-top: 11px; border-top: 1px solid var(--border); border-radius: 0 0 6px 6px; }
+  .peek-more-menu button.peek-more-danger:hover { background: rgba(217,83,79,0.12); }
+  /* 44px touch targets on the phone (.claude/rules/css-mobile.md). The desktop
+     padding gives ~34px, which is under the minimum on exactly the surface this
+     menu is mostly used from. */
+  @media (max-width: 600px) {
+    .peek-more-menu button { min-height: 44px; padding: 11px 12px; }
+  }
   /* Expand-to-fullscreen affordance inside the input's top-right corner */
   #peek-cmd-input { padding-right: 30px; }
   .peek-input-expand { position: absolute; top: 5px; right: 5px; z-index: 3; line-height: 1;
@@ -2025,7 +2088,11 @@
     border-radius: 12px; font-weight: 600; letter-spacing: 0.02em;
   }
   /* Peek tabs & memory panel */
-  .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 12px;
+  /* padding-RIGHT is 0 deliberately (AF-45): #peek-tab-customize below is
+     position:sticky at right:0 of this scrollport, and a right padding is inside
+     the scrollable area, so tabs render in that gap and bleed past the pinned
+     button. The button carries its own padding, so nothing is lost. */
+  .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 0 0 12px;
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
     overscroll-behavior-x: contain; touch-action: pan-x; }
   .peek-tabs::-webkit-scrollbar { display: none; }
@@ -2062,10 +2129,10 @@
   /* In-progress board issues for this worker: informational, so accent rather
      than a success/failure colour — it is a count, not a verdict. */
   .meta-count .mc-doing { color: var(--accent); font-weight: 700; }
-  /* Total board items: deliberately DIMMER than .mc-doing. Both sit in the same
-     bare-number row, and if the larger number (total is always >= doing) were
-     the brighter one it would read as the more urgent figure. Doing is what
-     wants attention. */
+  /* Todo is actionable but not running; later lifecycle states stay dimmer
+     than .mc-doing so the running count remains the most urgent figure. The
+     legacy class names remain for compatible themes; renderer-specific
+     mc-todo/mc-backlog classes make the status semantics explicit. */
   .meta-count .mc-active { color: var(--green, #4ade80); font-weight: 700; }
   .meta-count .mc-total { color: var(--dim); font-weight: 600; }
   /* Session card: scrollback cached on this device (readable with no signal). */
@@ -2201,7 +2268,7 @@
     #peek-overlay .overlay-header { padding-bottom: 0 !important; gap: 2px !important; margin-bottom: 2px; }
     #peek-overlay #peek-task-row { display: none !important; }
     #peek-overlay .peek-dir-bar { padding: 1px 6px; font-size: 0.68rem; }
-    #peek-overlay .peek-tabs { padding: 0 4px; }
+    #peek-overlay .peek-tabs { padding: 0 0 0 4px; }   /* right stays 0, see .peek-tabs */
     #peek-overlay .peek-tab { padding: 3px 8px; min-height: 36px; font-size: 0.75rem; }
     #peek-overlay .overlay-body { padding: 6px; }
     /* Reclaim the "Updated … · vX" status line on mobile — its ~20px is
@@ -2384,6 +2451,17 @@
   .status-badge.idle { background: rgba(139,148,158,0.15); color: var(--dim); }
   .status-badge.steering { background: rgba(137,87,229,0.2); color: var(--purple,#8957e5); }
   .status-badge.rate-limited { background: rgba(248,81,73,0.18); color: #f85149; }
+  .status-badge.work-queued-chip {
+    border: 0; margin-left: 6px; cursor: pointer; font-family: inherit;
+    white-space: nowrap; max-width: min(260px, 42vw); overflow: hidden;
+    text-overflow: ellipsis; -webkit-tap-highlight-color: transparent;
+  }
+  .work-queued-short { display: none; }
+  @media (max-width: 600px) {
+    .work-queued-wide { display: none; }
+    .work-queued-short { display: inline; }
+    .status-badge.work-queued-chip { max-width: 170px; }
+  }
   .last-active { font-size: 0.7rem; color: var(--dim); flex-shrink: 0; }
   .token-count { font-size: 0.65rem; color: var(--dim); flex-shrink: 0; font-family: "SF Mono","Fira Code",monospace; opacity: 0.7; }
 
@@ -2901,6 +2979,33 @@
     color: var(--dim); padding: 4px 2px; transition: color 0.15s;
   }
   .tab-customize-btn:hover { color: var(--fg); }
+  /* AF-45, the part three passes at this card kept missing: on a phone the peek's
+     ⊞ is not merely SMALL, it is OFF-SCREEN. Measured 2026-09-04 on the shipped
+     build, both mobile targets, peek open with the default tab set:
+       iPhone 15 / WebKit  viewport 393  strip scrollWidth 1025  ⊞ at left=983
+       Chromium 375        viewport 375  strip scrollWidth  985  ⊞ at left=943
+     Nine of sixteen tabs and the ⊞ itself sit past the right edge. Reaching the
+     customizer requires discovering that a strip with no scrollbar
+     (`::-webkit-scrollbar{display:none}`) scrolls horizontally, and panning it
+     ~590px. That is consistent with every report on this card and with either
+     reading of "the box", so it needed no branch decision to fix.
+     WHY THE E2E WENT GREEN THROUGH ALL OF IT, and this is the same shape as the
+     44px comment above: Playwright scrolls an element into view before clicking
+     it. `btn.click()` therefore tests a path the user cannot take. The check that
+     discriminates is the button's rect against the viewport with NO scrolling,
+     which is what tab-customizer.spec.ts now asserts.
+     The main dashboard never had this bug because `.tab-bar-outer` keeps its
+     `.tab-customize-wrap` OUTSIDE the scroller as a sibling. The peek's button is
+     the last child INSIDE `.peek-tabs`. Sticky reproduces that pinning without
+     restructuring a strip whose focus/compact/mobile rules select `.peek-tabs`
+     by name in five places — a wrapper would have had to be added to each, and
+     missing one hides the border or leaves a stray button in focus mode. */
+  #peek-tab-customize {
+    position: sticky; right: 0; z-index: 2;
+    background: var(--bg);
+    border-left: 1px solid var(--border);
+    box-shadow: -10px 0 10px -8px rgba(0, 0, 0, 0.45);
+  }
   /* AF-45. Ethan, three reports: "I click it and nothing happens. It doesn't show."
      Measured on his viewport (screenshot 1125x2436 @3x = 375x812) under WebKit: the
      button's box is 16.5 x 35. The MENU was never the bug — it opens correctly,
@@ -2925,6 +3030,17 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 6px;
     min-width: 150px; z-index: 200; padding: 6px 0;
     box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    /* AC-403: 21 rows rendered 680px tall from an anchor at y=342 and ran 222px
+       past an 800px fold. BODY computes to a clipper, so those rows were CLIPPED
+       rather than merely scrolled past, and the menu's boundingBox still looked
+       correct — which is how every box assertion passed while the last rows were
+       invisible. The <=600px bottom-sheet below has had max-height since it was
+       written; this rule never did.
+       --tc-max-h is set from the live anchor by _capTabCustomizerHeight. The
+       60vh fallback is for the no-JS path only and is NOT the fix: from that
+       anchor it lands at 822, still 22px over, which is the number the e2e run
+       reported. */
+    max-height: var(--tc-max-h, 60vh); overflow-y: auto; overscroll-behavior: contain;
   }
   #peek-tab-customizer-menu { position: fixed; z-index: 300; }
   .tab-customizer-item {
@@ -3493,6 +3609,13 @@
     background:var(--green,#3fb950); margin-right:5px; vertical-align:1px;
     animation: boardLivePulse 1.6s ease-in-out infinite;
   }
+  .board-card-live-label {
+    display:inline-flex; align-items:center; margin-left:8px; padding:1px 6px;
+    border-radius:8px; color:var(--green,#3fb950); background:rgba(63,185,80,0.12);
+    border:1px solid rgba(63,185,80,0.35); font-family:system-ui,sans-serif;
+    font-size:0.62rem; font-weight:700; letter-spacing:0; text-transform:none;
+  }
+  .board-card-live-label .board-live-dot { flex:0 0 auto; }
   @keyframes boardLivePulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
   .board-card-live .board-card-session { color: var(--green,#3fb950); border-color: rgba(63,185,80,0.4); }
   .board-pin-btn {
@@ -3571,6 +3694,7 @@
       flex: 0 0 auto; min-width: auto; max-width: 40vw; padding: 4px 8px;
     }
     .board-col.col-collapsed .col-gate-btn,
+    .board-col.col-collapsed .col-more-btn,
     .board-col.col-collapsed .col-del-btn { display: none; }
     .board-col.col-collapsed .board-col-header {
       position: static; border-bottom: none; padding-bottom: 2px; margin-bottom: 0;
@@ -3677,6 +3801,38 @@
   .board-sortable-chosen { opacity: 0.7; box-shadow: none; }
   /* Drag = the floating clone following the pointer */
   .board-sortable-drag { opacity: 0.96; box-shadow: 0 14px 36px rgba(0,0,0,0.45); transform: rotate(1.2deg) scale(1.03); border-radius: 8px; }
+  /* Column actions (AMUX-4044) — the ellipsis beside Gate. Same restrained
+     weight as the gate button: it opens a menu, it does not act on its own.
+     A 44px minimum so it is a real tap target on a phone, matching the
+     css-mobile rule the gate button already follows. */
+  .col-more-btn {
+    background: none; border: 1px solid transparent; border-radius: 5px;
+    color: var(--dim); cursor: pointer; font-size: 0.95rem; line-height: 1;
+    padding: 2px 6px; opacity: 0.75;
+    transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .col-more-btn:hover, .col-more-btn:active {
+    opacity: 1; color: var(--text); border-color: var(--border);
+  }
+  @media (max-width: 600px) {
+    .col-more-btn { min-width: 44px; min-height: 44px; }
+  }
+  /* Run-now on a system job (AMUX-4046). Quiet by default: this section is a
+     health view first, and the button must not compete with the status word
+     that says whether the job is alive. The disabled state stays visible
+     rather than hidden, so "cannot be run on demand" reads as a deliberate
+     refusal instead of a missing feature. */
+  .sysjob-run {
+    background: none; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--dim); cursor: pointer; font-size: 0.7rem; padding: 2px 8px;
+    margin-right: 8px; line-height: 1.4; white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .sysjob-run:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+  .sysjob-run:disabled { opacity: 0.35; cursor: not-allowed; }
+  @media (max-width: 600px) { .sysjob-run { min-height: 44px; padding: 2px 12px; } }
   .col-del-btn {
     background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.75rem;
     padding: 0 2px; line-height: 1; opacity: 0.5; transition: opacity 0.15s, color 0.15s;
@@ -3718,6 +3874,28 @@
   .scope-tile-val { font-size:0.66rem; color:var(--dim);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .scope-detail { border-top:1px solid var(--border); padding-top:7px; margin-top:2px; }
+  .worker-config-intro { color:var(--dim); font-size:0.7rem; line-height:1.45; margin:0 0 9px; }
+  .worker-config-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; margin-bottom:10px; }
+  .worker-config-section { border:1px solid var(--border); background:color-mix(in srgb, var(--card) 72%, transparent); border-radius:10px; overflow:hidden; min-width:0; }
+  .worker-config-section-head { padding:10px 11px 8px; background:color-mix(in srgb, var(--hover) 72%, transparent); border-bottom:1px solid var(--border); }
+  .worker-config-section-title { color:var(--text); font-size:0.78rem; font-weight:700; }
+  .worker-config-section-note { color:var(--dim); font-size:0.65rem; line-height:1.35; margin-top:2px; }
+  .worker-config-section-rows { padding:0 11px; }
+  .worker-config-row { display:flex; align-items:center; gap:8px; padding:9px 0; border-top:1px solid var(--border); }
+  .worker-config-row:first-child { border-top:0; }
+  .worker-config-copy { min-width:0; flex:1; }
+  .worker-config-label { color:var(--text); font-size:0.74rem; font-weight:600; }
+  .worker-config-note { color:var(--dim); font-size:0.66rem; line-height:1.35; overflow-wrap:anywhere; }
+  .worker-config-actions { display:flex; align-items:center; gap:5px; flex:0 0 auto; }
+  .worker-config-grid-board { margin-top:0; }
+  @media (min-width: 980px) {
+    #peek-scope-panel .worker-config-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    #peek-scope-panel .worker-config-grid-board { grid-template-columns:minmax(0,1fr); }
+  }
+  @media (max-width: 560px) {
+    .worker-config-row { align-items:flex-start; flex-direction:column; }
+    .worker-config-actions { width:100%; justify-content:flex-end; }
+  }
   @media (max-width: 600px) {
     .scope-tile { min-width:118px; padding:9px 10px; }
     .scope-tile-label { font-size:0.8rem; }
@@ -4052,6 +4230,7 @@
     resize: none; overflow: hidden; word-wrap: break-word;
   }
   .board-detail-title-input::placeholder { color: var(--dim); }
+  .board-detail-title-input[readonly] { cursor: default; }
   .board-detail-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .board-detail-status-row { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
   .board-detail-status-btn {
@@ -4076,12 +4255,15 @@
     margin-bottom: -1px; -webkit-tap-highlight-color: transparent;
   }
   .board-detail-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  @media (max-width: 600px) {
+    .board-detail-tab { min-height: 44px; }
+  }
   .board-detail-desc-input {
     width: 100%; min-height: 200px; font-size: 0.92rem; background: none;
     border: none; color: var(--text); outline: none; padding: 10px 0;
     font-family: inherit; line-height: 1.65; resize: none; box-sizing: border-box;
   }
-  .board-detail-log { margin-top: 10px; padding: 8px 10px; background: var(--panel2, rgba(255,255,255,0.03)); border-radius: 8px; font-size: 0.74rem; line-height: 1.5; color: var(--dim); max-height: 180px; overflow-y: auto; }
+  .board-detail-log { margin-top: 10px; padding: 8px 10px; background: var(--panel2, rgba(255,255,255,0.03)); border-radius: 8px; font-size: 0.74rem; line-height: 1.5; color: var(--dim); max-height: 55vh; overflow-y: auto; }
   .board-detail-key { cursor: pointer; }
   .board-detail-key:hover { text-decoration: underline; }
   .bd-status-banner { background: var(--accent-dim, rgba(199,91,46,0.12)); border: 1px solid var(--accent);
@@ -4102,9 +4284,20 @@
   .bd-log-title { font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; color: var(--dim); }
   .bd-log-line { white-space: pre-wrap; word-break: break-word; }
   .board-detail-desc-input::placeholder { color: var(--dim); }
-  .board-detail-preview { min-height: 200px; font-size: 0.92rem; color: var(--text); padding: 10px 0; }
-  .board-detail-meta { margin-top: 12px; font-size: 0.78rem; color: var(--dim); border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+  .board-detail-preview { min-height: 80px; font-size: 0.92rem; color: var(--text); padding: 10px 0; }
+  .board-detail-meta { margin: 2px 0 16px; font-size: 0.78rem; color: var(--dim); display: flex; flex-direction: column; gap: 8px; }
   .board-detail-meta-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .bd-card-facts { display:flex; flex-wrap:wrap; gap:5px 12px; padding:0 2px 2px; color:var(--dim); }
+  .bd-card-section { border:1px solid var(--border); border-radius:9px; padding:10px 12px; background:var(--panel2, rgba(255,255,255,0.025)); display:flex; flex-direction:column; gap:6px; }
+  .bd-card-section h4 { margin:0 0 2px; color:var(--text); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.055em; }
+  .bd-link-chip { font:inherit; cursor:pointer; }
+  .bd-gate { padding:6px 0; border-top:1px solid var(--border); }
+  .bd-gate:first-of-type { border-top:0; padding-top:0; }
+  .bd-gate-head { display:flex; align-items:center; gap:7px; color:var(--dim); font-size:0.7rem; text-transform:uppercase; }
+  .bd-gate ul { margin:5px 0 0; padding-left:20px; color:var(--text); }
+  .bd-gate li { margin:3px 0; line-height:1.4; }
+  .bd-activity-all { align-self:flex-start; border:0; background:none; color:var(--accent); padding:4px 0; cursor:pointer; font-size:0.76rem; }
+  .bd-notes-empty { color:var(--dim); font-size:0.84rem; padding:12px 2px; line-height:1.5; }
   .board-detail-footer { display: flex; justify-content: space-between; align-items: center; padding-top: 10px; flex-shrink: 0; border-top: 1px solid var(--border); }
 
 
@@ -5655,59 +5848,6 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .xlsx-trunc { color: var(--yellow, #d4a017); font-size: 0.76rem; margin-top: 10px; }
 @media (max-width: 600px) { .xlsx-tab { min-height: 44px; } .xlsx-table th, .xlsx-table td { max-width: 220px; } }
 
-/* ── Lineage tab in the board card detail (AMUX-2393) ──────────────────────
-   Renders GET /api/why/task/<id>. The visual hierarchy is load-bearing, not
-   decoration: verdict and gaps come FIRST and are the only coloured blocks,
-   because a reader who scrolls a plausible-looking trail and never reaches the
-   caveats has been misled by layout alone. Zero-row sources stay visible (dimmed,
-   never hidden) — a source that found nothing is evidence, and hiding it would
-   recreate the ambiguity the endpoint reports its predicates to avoid. */
-.board-detail-lineage { margin-top: 10px; font-size: 0.76rem; line-height: 1.5; max-height: 420px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-.bd-lin-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; margin-bottom: 10px; }
-.bd-lin-vlabel { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.72rem; }
-.bd-lin-vwhy { color: var(--dim); flex: 1 1 180px; min-width: 0; }
-.bd-lin-ok   { background: rgba(46,160,67,0.10); border-color: rgba(46,160,67,0.35); }
-.bd-lin-warn { background: rgba(210,153,34,0.10); border-color: rgba(210,153,34,0.40); }
-.bd-lin-bad  { background: rgba(218,54,51,0.10);  border-color: rgba(218,54,51,0.40); }
-.bd-lin-h { font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.68rem; margin: 12px 0 5px; }
-.bd-lin-gaps { background: rgba(210,153,34,0.07); border-left: 3px solid rgba(210,153,34,0.5); border-radius: 6px; padding: 6px 10px; }
-.bd-lin-gaps .bd-lin-h { margin-top: 2px; }
-.bd-lin-gaps ul { margin: 0; padding-left: 16px; }
-.bd-lin-gaps li { margin-bottom: 5px; }
-.bd-lin-srcs { display: flex; flex-direction: column; gap: 3px; }
-.bd-lin-src { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; min-width: 0; }
-.bd-lin-src code { font-size: 0.72rem; background: var(--panel2, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 4px; }
-.bd-lin-zero { opacity: 0.62; }
-.bd-lin-rows { font-variant-numeric: tabular-nums; color: var(--dim); }
-.bd-lin-cap { color: #d29922; font-size: 0.68rem; border: 1px solid rgba(210,153,34,0.4); border-radius: 4px; padding: 0 4px; }
-.bd-lin-dim { color: var(--dim); opacity: 0.75; font-size: 0.70rem; word-break: break-word; min-width: 0; }
-/* flex-basis:100% forces the note onto its own row inside the wrapping
-   .bd-lin-src line. These notes are full sentences (a reaped-journal horizon
-   runs to ~250 chars), so sharing a row with the table name and row count would
-   push past 375px — which the lineage e2e spec asserts against. */
-.bd-lin-srcnote { flex: 0 0 100%; min-width: 0; color: var(--dim); opacity: 0.85; font-size: 0.68rem;
-  line-height: 1.4; word-break: break-word; overflow-wrap: anywhere; padding-left: 2px; }
-.bd-lin-tl { display: flex; flex-direction: column; }
-.bd-lin-line { display: flex; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border, rgba(255,255,255,0.07)); min-width: 0; }
-.bd-lin-when { flex: 0 0 96px; color: var(--dim); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
-.bd-lin-what { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.bd-lin-sum { word-break: break-word; }
-.bd-lin-actor { color: var(--accent, #58a6ff); font-size: 0.70rem; }
-.bd-lin-badge { display: inline-block; margin-left: 5px; font-size: 0.60rem; text-transform: uppercase; border: 1px solid rgba(210,153,34,0.5); color: #d29922; border-radius: 3px; padding: 0 3px; }
-.bd-lin-untimed { background: rgba(210,153,34,0.04); }
-.bd-lin-note { color: var(--dim); padding: 8px 10px; }
-.bd-lin-todo { border: 1px dashed var(--border, rgba(255,255,255,0.15)); border-radius: 6px; margin-top: 12px; }
-
-@media (max-width: 600px) {
-  /* 375px: the fixed timestamp gutter costs a third of the width and forces the
-     summary into a 2-character column, so the trail stacks instead. */
-  .board-detail-lineage { max-height: 60vh; font-size: 0.78rem; }
-  .bd-lin-line { flex-direction: column; gap: 2px; }
-  .bd-lin-when { flex: none; }
-  /* Touch target: the tab row is what a thumb actually hits. */
-  #bd-tab-lineage { min-height: 44px; }
-}
-
 /* ARCHIVED SECTION (AMUX-3715, requested by tubescience).
    Read-only and appended after the columns — never a drop target, because they
    archive deliberately via the CLI in bulk and a drag affordance would be a
@@ -5766,4 +5906,111 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 @media (max-width: 600px) {
   .board-archived-section { margin-top: 8px; }
   .board-archived-row { padding: 10px; }
+}
+
+/* Declare-a-connector form (AMUX-3990). Grid collapses to one column under the
+   existing 600px breakpoint; inputs are 44px tall so they are touch targets on
+   the phone PWA, which is the primary surface. */
+.conn-add { margin: 10px 0 14px; }
+.conn-add-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+.conn-add-grid label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: .85em; color: var(--dim);
+}
+.conn-add-grid input, .conn-add-grid select {
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--bg2, #1a1a1a);
+  color: inherit;
+  font-size: .95em;
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .conn-add-grid { grid-template-columns: 1fr; }
+}
+
+/* Email tab layout (AMUX-3998).
+   A flex item's default `min-width: auto` refuses to shrink below its content,
+   so the long From addresses forced the wrapper to 432px inside a 343px parent
+   and clipped the account and folder chips on the right at phone width. Measured
+   at 390px: subtabs container 400px wide, chips cut off.
+   `min-width: 0` is the fix that lets a flex child actually be narrower than its
+   content; the ellipsis rules below then decide WHAT gets truncated, rather than
+   the browser silently cutting whatever hangs past the edge. */
+#email-view > div { min-width: 0; max-width: 100%; box-sizing: border-box; }
+#email-subtabs, #email-folders { min-width: 0; max-width: 100%; }
+#email-subtabs button, #email-folders button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The row's text column has to be shrinkable too, or the same rule that clipped
+   the chips clips the subject instead. */
+#email-list > div > div { min-width: 0; }
+
+/* Mail rows (AMUX-3998). Deliberately the conventions every mail client shares,
+   because an inbox is a scanning surface: one line per message, sender in a
+   fixed column, subject and preview on the same line, time right-aligned, unread
+   in bold. The first version stacked five buttons under each row — a control
+   panel, not an inbox. */
+.mail-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
+  cursor: pointer; font-size: 0.84rem; min-height: 44px; box-sizing: border-box;
+}
+.mail-row:hover { background: var(--hover); }
+.mail-row.unread .mail-from, .mail-row.unread .mail-subj { font-weight: 700; }
+/* Read mail recedes; unread is the default weight. */
+.mail-row:not(.unread) .mail-from, .mail-row:not(.unread) .mail-subj { opacity: 0.82; }
+.mail-star {
+  background: none; border: none; cursor: pointer; padding: 0;
+  font-size: 1rem; line-height: 1; color: var(--dim);
+  min-width: 22px; min-height: 44px;
+}
+.mail-row.flagged .mail-star { color: #eab308; }
+.mail-from { flex: 0 0 168px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* min-width:0 is what lets the middle column actually shrink; without it the
+   long subject forces the row wider than its parent (the bug this tab already
+   hit once at phone width). */
+.mail-mid { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-snip { color: var(--dim); }
+.mail-themes { margin-left: 8px; }
+.mail-score { flex: 0 0 auto; color: var(--accent, #2563eb); font-weight: 700; min-width: 1.6em; text-align: right; }
+.mail-when { flex: 0 0 74px; text-align: right; color: var(--dim); font-size: 0.76rem; }
+/* SAME SLOT as the timestamp: hovering swaps them, so the row never reflows and
+   the list does not jump under the cursor. */
+.mail-actions { display: none; flex: 0 0 74px; gap: 2px; justify-content: flex-end; }
+.mail-row:hover .mail-when { display: none; }
+.mail-row:hover .mail-actions { display: flex; }
+.mail-actions button {
+  background: var(--hover); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; font-size: 0.72rem; padding: 2px 5px; min-height: 28px;
+}
+.mail-body {
+  white-space: pre-wrap; word-break: break-word; background: var(--hover);
+  padding: 10px 12px; font-size: 0.8rem; max-height: 420px; overflow: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+/* PHONE: the two-line stack every mobile mail app uses. Hover does not exist on
+   touch, so the actions are always visible there — hiding them behind a hover
+   that can never fire would make them unreachable, which is worse than the
+   density cost. */
+@media (max-width: 600px) {
+  .mail-row { flex-wrap: wrap; padding: 8px 6px; }
+  .mail-from { flex: 1 1 auto; order: 1; }
+  .mail-when { order: 2; flex: 0 0 auto; }
+  .mail-score { order: 3; }
+  .mail-mid { order: 4; flex: 1 1 100%; white-space: normal; }
+  .mail-actions { order: 5; display: flex; flex: 1 1 100%; justify-content: flex-start; margin-top: 4px; }
+  .mail-actions button { min-height: 44px; min-width: 44px; }
+  .mail-row:hover .mail-when { display: block; }
 }

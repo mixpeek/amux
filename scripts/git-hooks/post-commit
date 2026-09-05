@@ -16,6 +16,83 @@
 # checkout carried the dead address forward. The literal is deliberately not
 # repeated here: tests/legacy_port_guard.rs greps for it, and a comment
 # containing it is exactly how it spreads.
+# ── AN EMPTY COMMIT SAYS SO, OUT LOUD (AMUX-3872) ────────────────────────────
+#
+# git reports a commit containing ZERO FILES with exactly the same `[main
+# <sha>]` line as a full one, and nothing in this repo's hooks ever looked at
+# what a commit actually CONTAINED. Every other guard asks whether the commit
+# should PROCEED.
+#
+# Three of them landed in a single session, from three unrelated causes: an
+# index emptied during the pre-commit window, a peer's `git reset` inside it,
+# and the staged-recheck writing the pending commit's own temporary index. Each
+# time the message shipped, the work did not, and each was found later by
+# accident. One card was closed citing a sha that contained nothing.
+#
+# So this runs BEFORE the `AMUX_SESSION` guard below: an empty commit is a bug
+# in every checkout, not only inside amux.
+#
+# `--root` is load-bearing. `diff-tree` prints nothing at all for a parentless
+# commit, so without it the very first commit in a repo always reads as empty.
+# A merge legitimately carries no changes of its own against its first parent,
+# so merges are exempted by parent count rather than by guessing from the diff.
+_ec_parents=$(git rev-list --parents -n 1 HEAD 2>/dev/null | wc -w | tr -d ' ')
+_ec_files=$(git diff-tree --no-commit-id --name-only -r --root HEAD 2>/dev/null | wc -l | tr -d ' ')
+if [ "$_ec_files" = "0" ] && [ "${_ec_parents:-0}" -lt 3 ]; then
+  echo "" >&2
+  echo "amux: ⚠ THIS COMMIT CONTAINS ZERO FILES — $(git rev-parse --short HEAD 2>/dev/null)" >&2
+  echo "      The message shipped and the work did not. git prints the same line for" >&2
+  echo "      an empty commit as a full one, which is why this needs saying." >&2
+  echo "      Your changes are most likely still sitting unstaged: check \`git status\`" >&2
+  echo "      before recording this sha anywhere. Do NOT close a card citing it." >&2
+  echo "      Known causes: something emptied the index during the pre-commit window" >&2
+  echo "      (a peer's reset on a shared checkout), or a hook wrote GIT_INDEX_FILE" >&2
+  echo "      while a pathspec commit was pending (AMUX-3872)." >&2
+  echo "" >&2
+fi
+
+# ── A COMMITTED HOOK IS NOT AN INSTALLED HOOK (AF-375) ───────────────────────
+#
+# The hooks in scripts/git-hooks/ ship by COPY: install-hooks.sh cp's them into
+# .git/hooks/. So editing one and committing it changes NOTHING for any lane
+# until someone re-installs, and nothing anywhere said so.
+#
+# It cost two closes in one session. Both of that day's staged-guard changes were
+# in the repo and reaching nobody, and one card was marked `done` with evidence
+# reading "ALL PASS" that was true of the repo copy and silent about the
+# installed one:
+#     grep -c 'COMMIT ONLY YOUR OWN PATHS'  installed=0  repo=1
+#
+# WHY POST-COMMIT AND NOT PRE-COMMIT. 88 of the last 500 commits touch
+# scripts/git-hooks/, so warning on every one of those is a warning on the normal
+# path, which is the noise that trained people to scroll past the last one
+# (AF-342). Here the condition is compared, not assumed: it fires only while the
+# installed copy actually differs, and it stops firing the moment you install.
+# Editing a hook and not installing it IS the defect, so this reports a real
+# state rather than an activity.
+#
+# The comparison is `cmp`, the same one install-hooks.sh already runs at the end
+# of its own run. Moved to where it gets read.
+if git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -q '^scripts/git-hooks/'; then
+  _root=$(git rev-parse --show-toplevel 2>/dev/null)
+  _drift=""
+  for _h in pre-commit amux-staged-guard prepare-commit-msg pre-push post-commit append-only-push-guard; do
+    if [ -f "$_root/scripts/git-hooks/$_h" ] && [ -f "$_root/.git/hooks/$_h" ]; then
+      cmp -s "$_root/scripts/git-hooks/$_h" "$_root/.git/hooks/$_h" || _drift="$_drift $_h"
+    fi
+  done
+  if [ -n "$_drift" ]; then
+    echo "" >&2
+    echo "amux post-commit: HOOK COMMITTED BUT NOT INSTALLED —$_drift" >&2
+    echo "  These ship by COPY, so this commit changed the repo and nothing else." >&2
+    echo "  No lane runs your change, including you, until:" >&2
+    echo "      ./scripts/install-hooks.sh" >&2
+    echo "  Verify the INSTALLED copy afterwards, not the repo one: that distinction" >&2
+    echo "  is what let a fix be closed as done while it was inert (AF-375)." >&2
+    echo "" >&2
+  fi
+fi
+
 [ -n "$AMUX_SESSION" ] || exit 0
 sha=$(git rev-parse --short HEAD 2>/dev/null)
 # tr strips the two JSON-hostile characters instead of escaping them — a

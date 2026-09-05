@@ -410,5 +410,53 @@ else
   sed 's/^/       /' "$TMP/out"
 fi
 
+# ── Q/R. AF-479: a foreign stamp on a commit THIS lane actually made ────────
+# prepare-commit-msg adds `Amux-Committer` only when the message already
+# declared a different `Amux-Session`. Two very different things land here as
+# foreign — a cherry-pick keeping its real author, and a hand-typed stamp naming
+# the wrong lane — and every exit this refusal offers assumes the first. Measured
+# 2026-09-04: ac550324 was stamped `amux` from a typed trailer while the lane was
+# `amux-frustrations`, so the guard would have prescribed asking a peer for
+# consent to ship work they never touched.
+#
+# The cell asserts the ROUTING NOTE, and R asserts the commit is still BLOCKED.
+# Splitting them is the point: a "fix" that cleared these commits would pass Q
+# and hollow the guard out for exactly the cherry-picked-peer-WIP case it exists
+# to stop.
+Q="$TMP/q"; mkrepo "$Q"
+echo committed-here > "$Q/work/qfile"; git -C "$Q/work" add qfile
+git -C "$Q/work" commit -qm "typed the wrong lane
+
+Amux-Session: other-lane
+Amux-Committer: mine"
+QTIP=$(git -C "$Q/work" rev-parse HEAD)
+rc=$(run_hook "$Q" "$QTIP" "$ZERO" main)
+if [ "$rc" -ne 0 ] && grep -q "COMMITTED BY YOU, STAMPED TO ANOTHER LANE" "$TMP/out"; then
+  ok "Q: a foreign stamp with Amux-Committer=mine is named as committed here"
+else
+  bad "Q: the refusal sent me to ask a peer about a commit this lane made (rc=$rc)"
+  sed 's/^/       /' "$TMP/out"
+fi
+if [ "$rc" -ne 0 ] && grep -q "PUSH BLOCKED" "$TMP/out"; then
+  ok "R: and it is STILL BLOCKED — a cherry-picked peer WIP has this exact shape"
+else
+  bad "R: the committer note cleared the commit; the guard is hollowed out (rc=$rc)"
+  sed 's/^/       /' "$TMP/out"
+fi
+
+# ── S. CONTROL for Q. Same foreign stamp, no Amux-Committer trailer. ────────
+# Without this, a note printed unconditionally on every foreign commit would
+# pass Q and tell every reader their peer's commit was really their own.
+S="$TMP/s"; mkrepo "$S"
+commit_as "$S" "other-lane" "genuinely-theirs"
+STIP=$(git -C "$S/work" rev-parse HEAD)
+rc=$(run_hook "$S" "$STIP" "$ZERO" main)
+if [ "$rc" -ne 0 ] && ! grep -q "COMMITTED BY YOU" "$TMP/out"; then
+  ok "S: a plain foreign commit gets no committed-here note (presence is the signal)"
+else
+  bad "S: the note fired on a commit with no Amux-Committer trailer (rc=$rc)"
+  sed 's/^/       /' "$TMP/out"
+fi
+
 echo "push-guard range: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

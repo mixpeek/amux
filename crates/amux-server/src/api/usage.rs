@@ -357,19 +357,19 @@ fn shape_probe(probe: UsageProbe) -> Value {
         ),
         UsageProbe::Expired => degraded(
             "expired_token",
-            "Token expired — run any Claude command to refresh it".into(),
+            "Token expired. Run any Claude command to refresh it.".into(),
         ),
         UsageProbe::Http(401) | UsageProbe::Http(403) => degraded(
             "token_rejected",
-            "Token rejected (401) — run any Claude command to refresh it".into(),
+            "Token rejected (401). Run any Claude command to refresh it.".into(),
         ),
         // Called out from the generic HTTP arm because it is the one failure
         // that is neither the user's fault nor persistent: it clears on its
         // own, and telling someone to re-login would be actively wrong.
         UsageProbe::Http(429) => degraded(
             "rate_limited",
-            "Anthropic rate-limited the usage probe (HTTP 429) — this clears on its own; \
-             it is usually many Claude processes sharing one account"
+            "Anthropic rate-limited the usage probe (HTTP 429). This clears on its own; \
+             it is usually many Claude processes sharing one account."
                 .into(),
         ),
         UsageProbe::Http(code) => degraded(
@@ -554,7 +554,7 @@ fn trigger_label(t: &str) -> &'static str {
         "pickup" => "amux handed this lane a board card",
         "system" => "an amux nudge",
         "direct" | "steering" => "a steering message",
-        "" => "no prompt matched — the turn predates this lane's history",
+        "" => "no prompt matched; the turn predates this lane's history",
         _ => "other",
     }
 }
@@ -712,6 +712,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let app = axum::Router::new()
             .nest("/api/usage", routes_with(probe_fn(UsageProbe::Ok(json!({})), Arc::new(AtomicUsize::new(0)))))
@@ -849,6 +850,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         Router::new()
             .nest("/api/usage", routes_with(probe))

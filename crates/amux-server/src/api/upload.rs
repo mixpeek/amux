@@ -24,7 +24,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const STALE_SECS: u64 = 3600;
-const PURGE_AGE_SECS: u64 = 86400;
 /// How many swept dirs the sweep names individually. The aggregate counts stay
 /// authoritative and `elided` says how many were not named, so a large backlog
 /// cannot flood the log while the claim stays auditable (the AF-179 shape).
@@ -362,26 +361,22 @@ async fn finish(state: UploadState, Path(id): Path<String>) -> Response {
         map.remove(&id);
     }
 
-    // Purge old uploads (>24h)
-    if let Ok(entries) = std::fs::read_dir(&dest_dir) {
-        let cutoff = now_secs().saturating_sub(PURGE_AGE_SECS);
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            if let Ok(meta) = e.metadata() {
-                let mtime = meta.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                if mtime < cutoff {
-                    let _ = std::fs::remove_file(e.path());
-                }
-            }
-        }
-    }
+    // NO PLAIN-FILE PURGE HERE (AMUX-3937). This used to reap every file in
+    // `uploads` older than a hardcoded 24h, on every completed upload, reading
+    // no env var and logging nothing. `runtime_jobs::storage::AGE_PRUNED_DIRS`
+    // already reaps this directory and its docstring calls itself "the single
+    // authority on what ephemeral means on this box" -- but the tighter window
+    // silently won, so `AMUX_UPLOADS_RETAIN_DAYS` could not extend retention
+    // past 24h no matter what it was set to. Setting it to 30 changed nothing.
+    //
+    // Cost: of 113 board references into ~/.amux/uploads, 109 pointed at a file
+    // that no longer existed, 20 of them on cards still OPEN across 7 lanes. A
+    // card reading "make it so this is all automatic @<screenshot>" with the
+    // screenshot gone cannot be worked by anyone.
+    //
+    // The `.chunked-*` orphan sweep above STAYS: the storage sweep only removes
+    // FILES and never descends, so those directories genuinely have no other
+    // reaper (AF-235). That one is a gap; this one was a duplicate.
 
     Json(json!({
         "path": save_path.display().to_string(),
@@ -513,6 +508,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 

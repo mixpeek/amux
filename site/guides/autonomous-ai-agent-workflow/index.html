@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>How to Build an Autonomous AI Engineering Team That Self-Manages (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Run an AI engineering team that self-assigns tasks from a shared backlog, recovers from crashes overnight, and alerts you on your phone when it needs attention. A practical guide to autonomous AI agent workflows with amux.">
+  <meta name="keywords" content="autonomous AI engineering team, self-managing AI agents, AI agents auto-assign tasks, run AI engineering team on autopilot, autonomous AI coding agents, AI agent board drain, self-healing AI agents, unattended AI agents overnight, amux auto-drain">
+  <link rel="canonical" href="https://amux.io/guides/autonomous-ai-agent-workflow/">
+  <meta property="og:title" content="How to Build an Autonomous AI Engineering Team That Self-Manages (2026) — amux">
+  <meta property="og:description" content="Run an AI engineering team that self-assigns tasks from a shared backlog, recovers from crashes overnight, and alerts you on your phone when it needs attention.">
+  <meta property="og:url" content="https://amux.io/guides/autonomous-ai-agent-workflow/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Autonomous AI Agent Workflow","item":"https://amux.io/guides/autonomous-ai-agent-workflow/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Build an Autonomous AI Engineering Team That Self-Manages (2026)","description":"Run an AI engineering team that self-assigns tasks from a shared backlog, recovers from crashes overnight, and alerts you on your phone when it needs attention. A practical guide to autonomous AI agent workflows with amux.","url":"https://amux.io/guides/autonomous-ai-agent-workflow/","datePublished":"2026-09-03","dateModified":"2026-09-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"keywords":"autonomous AI engineering team, self-managing AI agents, AI agents auto-assign tasks, amux auto-drain"}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Build an Autonomous AI Engineering Team","description":"Set up amux so your AI coding agents self-assign tasks from a shared backlog, recover from crashes without waking you up, and alert you on Telegram when they need attention.","totalTime":"PT30M","step":[{"@type":"HowToStep","position":1,"name":"Set up the shared board backlog","text":"Create task cards in the amux board's todo column. Each card becomes a unit of work an agent can claim. Write cards as self-contained prompts: the agent that picks one up should have everything it needs in the card title and description."},{"@type":"HowToStep","position":2,"name":"Enable auto-drain on each session","text":"In the amux dashboard, open each worker session's settings and toggle on 'Auto-drain from backlog'. When a session finishes its current task and has no more cards, it automatically claims the next open card from the todo column. Scope drain to a group to keep frontend agents on frontend tasks."},{"@type":"HowToStep","position":3,"name":"Configure the self-healing watchdog","text":"amux runs a background watchdog that monitors every session. If a session's context window fills, it auto-compacts and resumes. If a session crashes, the watchdog restarts it and replays the last message. No configuration needed — it runs by default."},{"@type":"HowToStep","position":4,"name":"Set up Telegram alerts","text":"Connect your Telegram account by adding your bot token to server.env and linking a chat with /start. Each session can then send you a message when it finishes a task or gets stuck. In group chats, use @lane mentions to route messages to specific sessions."},{"@type":"HowToStep","position":5,"name":"Run overnight and review in the morning","text":"Leave the dashboard. Your agents work through the backlog, recover from any failures, and ping you on Telegram if something genuinely needs attention. In the morning, check the board: done cards show completed work, and any card still in-progress has a timestamp showing how long it ran."}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an autonomous AI engineering team?","acceptedAnswer":{"@type":"Answer","text":"An autonomous AI engineering team is a set of AI coding agents that self-assign tasks from a shared backlog, recover from failures without human intervention, and run continuously without anyone watching each terminal. The key capabilities are: a shared task queue agents claim atomically (no two agents take the same task), a self-healing layer that restarts crashed sessions and compacts full context windows, and a notification channel (like Telegram) that only surfaces issues that genuinely require human attention. amux provides all three in a single open-source control plane."}},{"@type":"Question","name":"How does auto-drain work in amux?","acceptedAnswer":{"@type":"Answer","text":"Auto-drain is a per-session toggle. When enabled, a session that finishes its current task and has no more assigned cards automatically claims the next open card from the board's todo column. The claim is atomic — SQLite row-level locking ensures no two sessions take the same card. You can scope drain to a group (e.g., only frontend sessions drain from the frontend backlog) or leave it global. The feature shipped in AMUX-4055 on 2026-09-02."}},{"@type":"Question","name":"What happens when an agent crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"The amux watchdog detects the crash within seconds and restarts the session. It then replays the last message the session was working on, so the agent resumes from context rather than starting from scratch. If the context window is full at restart time, the watchdog runs auto-compact first, then replays. In most cases you will see the crash only as a brief gap in the session's output log. If the session crashes repeatedly on the same task, it stops claiming new work and sends a Telegram alert."}},{"@type":"Question","name":"Can agents steal each other's tasks?","acceptedAnswer":{"@type":"Answer","text":"No. The board uses atomic claiming backed by SQLite transactions. When a session claims a card, it transitions from todo to doing in a single transaction. Any concurrent claim attempt by another session fails and that session moves to the next available card. This prevents duplicate work even when dozens of sessions drain the same backlog simultaneously."}},{"@type":"Question","name":"How do I get notified when an agent finishes?","acceptedAnswer":{"@type":"Answer","text":"Connect your amux instance to Telegram by adding a bot token and linking a chat. Each session can then send you a message when it completes a task or encounters a problem. amux supports both private Telegram chats (one-to-one session routing) and group chats where @lane mentions route messages to a specific session. You can also use the iOS app or mobile PWA to check board status from your phone without enabling Telegram."}},{"@type":"Question","name":"Is it safe to leave agents running unattended overnight?","acceptedAnswer":{"@type":"Answer","text":"Yes, with standard precautions. amux itself is safe to leave running: the watchdog restarts crashes, auto-drain keeps agents busy, and the board's atomic claiming prevents duplicate work. For the agents themselves, use the board's quality gates (require peer review before a card moves to done) and keep destructive operations behind approval steps. The practical baseline: agents that write and test code can run fully unattended. Agents that deploy to production or send external communications should have a human review gate before irreversible steps."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Autonomous AI Agent Workflow</span></div>
+
+    <h1>How to Build an Autonomous AI Engineering Team That Self-Manages</h1>
+    <p class="subtitle">Your agents should work through a backlog, recover from crashes, and alert you only when they genuinely need you. This is the setup that makes it happen. Updated September 2026.</p>
+
+    <div class="cta-top" style="background:var(--green,#22c55e10);border:1px solid var(--green,#22c55e);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+      <span style="font-size:14px;color:var(--fg);">Build an AI engineering team that runs itself overnight.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="typeof posthog!=='undefined'&&posthog.capture('exp073_autonomous_workflow_topofpage_cta_click')"
+         style="background:var(--green,#22c55e);color:#000;padding:0.45rem 1.1rem;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free</a>
+    </div>
+
+    <p><strong>An autonomous AI engineering team runs a shared backlog without a human assigning each task.</strong> Agents claim work atomically, so no two agents take the same card. A self-healing watchdog restarts crashes and compacts full context windows. Telegram alerts surface only the issues that require your attention. amux provides all of this as a single open-source control plane: one Rust binary, zero external dependencies, MIT licensed.</p>
+
+    <p>This guide covers the five-step setup and explains the mechanics behind each layer: board auto-drain, the watchdog, group-scoped work queues, and Telegram routing.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#manual-vs-autonomous" style="color:var(--dim);text-decoration:none;">Manual vs Autonomous: What Changes</a></li>
+        <li><a href="#step1" style="color:var(--dim);text-decoration:none;">Step 1: Set Up the Shared Board Backlog</a></li>
+        <li><a href="#step2" style="color:var(--dim);text-decoration:none;">Step 2: Enable Auto-Drain on Each Session</a></li>
+        <li><a href="#step3" style="color:var(--dim);text-decoration:none;">Step 3: Configure the Self-Healing Watchdog</a></li>
+        <li><a href="#step4" style="color:var(--dim);text-decoration:none;">Step 4: Set Up Telegram Alerts</a></li>
+        <li><a href="#step5" style="color:var(--dim);text-decoration:none;">Step 5: Run Overnight and Review</a></li>
+        <li><a href="#group-scoping" style="color:var(--dim);text-decoration:none;">Group-Scoped Drain: Keeping Agents in Their Lane</a></li>
+        <li><a href="#quality-gates" style="color:var(--dim);text-decoration:none;">Quality Gates and Human Checkpoints</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─── MANUAL VS AUTONOMOUS ─── -->
+    <h2 id="manual-vs-autonomous">Manual vs Autonomous: What Changes</h2>
+
+    <p>Most teams start with manual agent management: assign a task, watch the terminal, reassign when done. That works for one or two agents. At five or more, the overhead becomes the bottleneck.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Dimension</th>
+            <th>Manual management</th>
+            <th>Autonomous workflow</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Task assignment</strong></td>
+            <td>You assign each card to a specific session</td>
+            <td>Sessions claim from the backlog automatically when they finish</td>
+          </tr>
+          <tr>
+            <td><strong>Crash recovery</strong></td>
+            <td>You notice the crash, restart manually, re-send the task</td>
+            <td>Watchdog restarts and replays within seconds; no action needed</td>
+          </tr>
+          <tr>
+            <td><strong>Overnight monitoring</strong></td>
+            <td>You stay up or accept lost progress until morning</td>
+            <td>Agents run through the backlog; Telegram alerts only on real problems</td>
+          </tr>
+          <tr>
+            <td><strong>Cost visibility</strong></td>
+            <td>Check each terminal manually; no aggregate view</td>
+            <td>Dashboard shows per-session and fleet-wide token spend in real time</td>
+          </tr>
+          <tr>
+            <td><strong>Mobile access</strong></td>
+            <td>SSH into a server or VPN to a terminal</td>
+            <td>iOS app or mobile PWA; Telegram for alerts and steering</td>
+          </tr>
+          <tr>
+            <td><strong>Scaling</strong></td>
+            <td>Linear: each new agent adds coordination overhead</td>
+            <td>Sub-linear: the backlog and watchdog absorb the overhead</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The goal is to shift the human role from coordinator to reviewer. You write the backlog and set quality gates. The agents work through it.</p>
+
+    <!-- ─── STEP 1 ─── -->
+    <h2 id="step1">Step 1: Set Up the Shared Board Backlog</h2>
+
+    <p>The board is a SQLite-backed kanban shared across every session. Each card in the todo column is a unit of work an agent can claim.</p>
+
+    <p>Write cards as self-contained prompts. The agent that picks one up has only the card's title and description to work from, so include everything it needs:</p>
+
+    <ul>
+      <li><strong>Clear scope.</strong> "Implement the /api/users/search endpoint with pagination" is claimable. "Work on the API" is not.</li>
+      <li><strong>Success condition.</strong> "All existing tests pass and a new integration test covers the pagination edge case" gives the agent a checkable stop condition.</li>
+      <li><strong>No external assumptions.</strong> If the agent needs a file path, a branch name, or a reference to another card, put it in the description.</li>
+    </ul>
+
+    <pre><code><span class="comment"># Add a card via CLI</span>
+amux board add "Implement /api/users/search with cursor-based pagination"
+
+<span class="comment"># Or via REST API</span>
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Implement /api/users/search with cursor pagination",
+       "desc":"Add GET /api/users/search?q=&cursor= endpoint. Must support: full-text search on name/email, cursor-based pagination (50 results per page), < 200ms p99 on 100k users. Tests: all existing pass + new integration test for pagination boundary."}' \
+  $AMUX_URL/api/board</code></pre>
+
+    <p>Populate the backlog before your evening session. Ten cards is a reasonable overnight batch for a five-agent team. Add more with the scheduler if you want the backlog to replenish automatically on a schedule.</p>
+
+    <!-- ─── STEP 2 ─── -->
+    <h2 id="step2">Step 2: Enable Auto-Drain on Each Session</h2>
+
+    <p>Auto-drain is the mechanism that makes agents self-assign. When a session finishes its current card and the auto-drain toggle is on, it claims the next available card from the todo column without waiting for you.</p>
+
+    <p>Enable it per session from the dashboard: open the session card, click the settings icon, and toggle "Auto-drain from backlog." You can also enable it globally in the Settings tab under Fleet defaults, which applies to all new sessions.</p>
+
+    <p>The claim is atomic. When two sessions finish simultaneously and both try to claim the same next card, SQLite's row-level locking ensures exactly one succeeds. The other session moves to the next open card. No duplicate work, no coordination logic on your side.</p>
+
+    <p>Auto-drain respects card type and group scope. A session in the "frontend" group only drains cards tagged for that group. A session with no group assignment drains any untagged card. This lets you keep backend agents on backend work without manual assignment.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0;">
+      <strong style="font-size:0.85rem;">When to leave auto-drain off</strong>
+      <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--dim);">Sessions doing exploratory or open-ended work often should not auto-drain. A session debugging a production incident needs focused attention, not a queue of unrelated backlog items waiting to start the moment it finishes. Toggle auto-drain at the session level to match each agent's role.</p>
+    </div>
+
+    <!-- ─── STEP 3 ─── -->
+    <h2 id="step3">Step 3: Configure the Self-Healing Watchdog</h2>
+
+    <p>The watchdog runs automatically on every session. No configuration is required. Understanding what it does lets you tune the backlog card size for maximum overnight throughput.</p>
+
+    <p>The watchdog handles three failure modes:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Failure mode</th><th>What triggers it</th><th>Watchdog response</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Context window full</strong></td>
+            <td>Claude Code hits its context limit mid-task</td>
+            <td>Auto-compact runs, compressing context; session resumes on the same task</td>
+          </tr>
+          <tr>
+            <td><strong>Session crash</strong></td>
+            <td>Process exits unexpectedly (OOM, signal, network drop)</td>
+            <td>Session restarts within seconds; last message replayed automatically</td>
+          </tr>
+          <tr>
+            <td><strong>Repeated failure</strong></td>
+            <td>Same session crashes 3 times on the same card</td>
+            <td>Session stops claiming new work; Telegram alert fires with the card details</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Write backlog cards at a size where a session can finish them in one context window. For most coding tasks, that means cards scoped to one endpoint, one test suite, or one component. Cards that span multiple files and require many tool calls will hit context limits more often and benefit most from auto-compact.</p>
+
+    <!-- ─── STEP 4 ─── -->
+    <h2 id="step4">Step 4: Set Up Telegram Alerts</h2>
+
+    <p>The goal of Telegram integration in an autonomous workflow is selective: you want to know when something genuinely needs you, not when every task completes. Set up the connection first, then configure each session for its alert level.</p>
+
+    <p><strong>Connect Telegram:</strong></p>
+    <ol>
+      <li>Create a bot via BotFather on Telegram. Copy the token.</li>
+      <li>Add <code>TELEGRAM_BOT_TOKEN=your_token</code> to <code>~/.amux/server.env</code>.</li>
+      <li>Start a chat with your bot and send <code>/start</code>. This links your chat ID to the amux instance.</li>
+      <li>Reload the server: <code>launchctl kickstart -k gui/$(id -u)/com.amux.server-rs</code>.</li>
+    </ol>
+
+    <p>For group chats: link the group by sending <code>/start</code> from inside the group after you have an existing private link. Group delivery requires a <code>@lane</code> mention so only the intended session responds.</p>
+
+    <p><strong>Useful alert patterns for autonomous workflows:</strong></p>
+    <ul>
+      <li><strong>Watchdog escalation alert:</strong> fires automatically when a session fails the same card three times. No setup needed.</li>
+      <li><strong>Task completion summary:</strong> have each session send a brief summary card to a group chat when it marks a card done. Gives you a morning digest without polling the dashboard.</li>
+      <li><strong>Human gate trigger:</strong> for cards that touch production, set a quality gate requiring approval before the card moves to done. The session alerts you and waits.</li>
+    </ul>
+
+    <p>See the full <a href="/guides/ai-agent-telegram-notifications/">Telegram notifications guide</a> for the complete setup and routing options.</p>
+
+    <!-- ─── STEP 5 ─── -->
+    <h2 id="step5">Step 5: Run Overnight and Review in the Morning</h2>
+
+    <p>With auto-drain, the watchdog, and Telegram configured, the overnight workflow is:</p>
+
+    <ol>
+      <li><strong>Before bed:</strong> populate the backlog with tomorrow's tasks. Verify each session has auto-drain enabled. Check the dashboard shows all sessions as active.</li>
+      <li><strong>During the night:</strong> agents work through cards in order. Crashes self-heal. If a card genuinely blocks, you get a Telegram message.</li>
+      <li><strong>In the morning:</strong> open the board. Done cards show completed work. Any card still in-progress has a timestamp. Cards that moved back to todo were returned by the watchdog escalation.</li>
+    </ol>
+
+    <pre><code><span class="comment"># Morning review: see what finished overnight</span>
+curl -sk $AMUX_URL/api/board | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+done = [i for i in items if i['status'] == 'done']
+todo = [i for i in items if i['status'] == 'todo']
+print(f'{len(done)} done, {len(todo)} remaining')
+for i in done: print(' ', i['title'][:60])
+"</code></pre>
+
+    <p>A well-loaded backlog of 10 cards for 5 agents typically completes in 4-6 hours for average-complexity coding tasks. Adjust card granularity based on what you see in the morning: if agents are finishing in under 30 minutes each, cards are too small. If the watchdog is firing frequently, cards are too large.</p>
+
+    <!-- ─── GROUP SCOPING ─── -->
+    <h2 id="group-scoping">Group-Scoped Drain: Keeping Agents in Their Lane</h2>
+
+    <p>Without group scoping, every auto-drain session competes for every card. That works for homogeneous teams (all backend, all same codebase) but breaks for mixed teams where a frontend agent should not pick up a database migration card.</p>
+
+    <p>amux groups solve this. Assign each session to a group in its settings. Tag each board card with a group. Auto-drain then only claims cards matching the session's group, or cards with no group tag if the session is ungrouped.</p>
+
+    <p>Typical group setup for a five-agent team:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr><th>Session</th><th>Group</th><th>Drains from</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>frontend-1</td><td>frontend</td><td>Cards tagged "frontend" or untagged</td></tr>
+          <tr><td>frontend-2</td><td>frontend</td><td>Cards tagged "frontend" or untagged</td></tr>
+          <tr><td>backend-1</td><td>backend</td><td>Cards tagged "backend" or untagged</td></tr>
+          <tr><td>backend-2</td><td>backend</td><td>Cards tagged "backend" or untagged</td></tr>
+          <tr><td>tests</td><td>qa</td><td>Cards tagged "qa" or untagged</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Read the full <a href="/guides/ai-agent-groups/">agent groups guide</a> for group-level messaging, cross-group permissions, and the group default settings.</p>
+
+    <!-- ─── QUALITY GATES ─── -->
+    <h2 id="quality-gates">Quality Gates and Human Checkpoints</h2>
+
+    <p>Autonomous does not mean unsupervised. Quality gates let you insert human checkpoints at the right moments without slowing down the rest of the backlog.</p>
+
+    <p>The board supports per-card and per-type gates. A gate blocks the card from moving to done until the condition is acknowledged:</p>
+
+    <ul>
+      <li><strong>Peer review gate:</strong> requires another session to review the work before done. Useful for complex or risky tasks.</li>
+      <li><strong>Human approval gate:</strong> requires a human to run <code>amux board done CARD_ID --checked "..."</code> with evidence. Good for anything that deploys or sends external messages.</li>
+      <li><strong>Test gate:</strong> requires test output to be recorded as evidence. The session cannot mark done without pasting the test result.</li>
+    </ul>
+
+    <p>Gates pair naturally with auto-drain: the blocked session stops on its current card and does not drain new work until the gate is resolved. The watchdog fires a Telegram alert so you know a card is waiting.</p>
+
+    <p>For overnight runs, a pragmatic setup:</p>
+    <ul>
+      <li>Feature cards: peer review gate (another session verifies before done)</li>
+      <li>Deploy cards: human approval gate (you confirm in the morning)</li>
+      <li>Test-only cards: test gate (the session provides the pass line as evidence)</li>
+    </ul>
+
+    <!-- ─── FAQ ─── -->
+    <h2 id="faq">FAQ</h2>
+
+    <details open>
+      <summary><strong>What is an autonomous AI engineering team?</strong></summary>
+      <p>An autonomous AI engineering team is a set of AI coding agents that self-assign tasks from a shared backlog, recover from failures without human intervention, and run continuously without anyone watching each terminal. The key capabilities: a shared task queue agents claim atomically, a self-healing layer that restarts crashes and compacts full context windows, and a notification channel that surfaces only the issues that require human attention. amux provides all three in a single open-source control plane.</p>
+    </details>
+
+    <details>
+      <summary><strong>How does auto-drain work in amux?</strong></summary>
+      <p>Auto-drain is a per-session toggle. When enabled, a session that finishes its current task automatically claims the next open card from the board's todo column. The claim is atomic: SQLite row-level locking ensures no two sessions take the same card. You can scope drain to a group so frontend sessions only drain frontend cards. The feature shipped in AMUX-4055 on 2026-09-02.</p>
+    </details>
+
+    <details>
+      <summary><strong>What happens when an agent crashes overnight?</strong></summary>
+      <p>The amux watchdog detects the crash within seconds and restarts the session. It replays the last message the session was working on so the agent resumes from context rather than starting over. If the context window is full at restart, auto-compact runs first. In most cases you see the crash only as a brief gap in the output log. If a session crashes repeatedly on the same card, it stops draining new work and sends a Telegram alert.</p>
+    </details>
+
+    <details>
+      <summary><strong>Can agents steal each other's tasks?</strong></summary>
+      <p>No. The board uses atomic claiming backed by SQLite transactions. When a session claims a card, it transitions from todo to doing in a single transaction. Any concurrent claim attempt by another session fails, and that session moves to the next available card. This holds even when dozens of sessions drain the same backlog simultaneously.</p>
+    </details>
+
+    <details>
+      <summary><strong>How do I get notified when an agent finishes?</strong></summary>
+      <p>Connect your amux instance to Telegram by adding a bot token and linking a chat. Each session can send you a message when it completes a task or encounters a problem. amux supports both private Telegram chats and group chats where @lane mentions route messages to specific sessions. You can also check board status from the iOS app or mobile PWA without Telegram.</p>
+    </details>
+
+    <details>
+      <summary><strong>Is it safe to leave agents running unattended overnight?</strong></summary>
+      <p>Yes, with standard precautions. amux handles the infrastructure safety: crash recovery, atomic task claiming, and escalation alerts. For the agents themselves, scope cards to reversible operations or use approval gates before irreversible steps. The practical baseline: agents that write and test code can run fully unattended. Agents that deploy to production or send external messages should have a human review gate before those specific steps.</p>
+    </details>
+
+    <!-- ─── RELATED ─── -->
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/agent-control-plane/">What is an Agent Control Plane?</a> — the infrastructure layer that makes autonomous workflows possible</li>
+      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Coding Agents Overnight</a> — overnight-specific setup and monitoring patterns</li>
+      <li><a href="/blog/running-ai-agents-24-7/">Running AI Agents 24/7: The Overnight Setup</a> — a practical walkthrough for continuous operation</li>
+      <li><a href="/guides/ai-agent-telegram-notifications/">AI Agent Telegram Notifications</a> — full setup guide for Telegram integration</li>
+      <li><a href="/guides/getting-started/">Getting Started with amux</a> — install and first session in under 10 minutes</li>
+    </ul>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.4rem 1.8rem;margin:2.5rem 0 1rem;">
+      <p style="margin:0 0 0.6rem;font-size:0.95rem;"><strong>Get started</strong></p>
+      <p style="margin:0 0 1rem;font-size:0.9rem;color:var(--dim);">amux is open source, MIT licensed, and takes under 10 minutes to set up. Single Rust binary, zero external dependencies.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         style="background:var(--green,#22c55e);color:#000;padding:0.5rem 1.2rem;border-radius:6px;font-size:0.88rem;font-weight:600;text-decoration:none;">View on GitHub (381 stars)</a>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-links">
+      <a href="/guides/">Guides</a>
+      <a href="/compare/">Compare</a>
+      <a href="/blog/">Blog</a>
+      <a href="/changelog/">Changelog</a>
+      <a href="/press/">Press</a>
+      <a href="https://github.com/mixpeek/amux">GitHub</a>
+    </div>
+    <p class="footer-copy">&copy; 2026 amux. MIT licensed.</p>
+  </footer>
+</body>
+</html>

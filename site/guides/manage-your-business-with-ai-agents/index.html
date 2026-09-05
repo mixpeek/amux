@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Manage Your Business With AI Agents (2026 Guide) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How founders, solopreneurs, and small teams use AI agent fleets to handle engineering, operations, and business workflows — from code to customer email — without hiring.">
+  <meta name="keywords" content="manage business with AI agents, run business on AI agents 2026, AI agents for business operations, solopreneur AI automation, AI coding agents for founders, agentic business workflows, automate business tasks AI, AI agent team for startups, replace manual work with AI agents">
+  <link rel="canonical" href="https://amux.io/guides/manage-your-business-with-ai-agents/">
+  <meta property="og:title" content="Manage Your Business With AI Agents (2026 Guide)">
+  <meta property="og:description" content="How founders, solopreneurs, and small teams use AI agent fleets to handle engineering, operations, and business workflows without hiring.">
+  <meta property="og:url" content="https://amux.io/guides/manage-your-business-with-ai-agents/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Manage Your Business With AI Agents","item":"https://amux.io/guides/manage-your-business-with-ai-agents/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Manage Your Business With AI Agents (2026 Guide)","description":"How founders, solopreneurs, and small teams use AI agent fleets to handle engineering, operations, and business workflows without hiring.","url":"https://amux.io/guides/manage-your-business-with-ai-agents/","datePublished":"2026-09-04","dateModified":"2026-09-04","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Manage Your Business With AI Agents","description":"Set up a fleet of AI agents to handle engineering, operations, and business workflows without hiring.","step":[{"@type":"HowToStep","position":1,"name":"Map your workflows to agent categories","text":"Split your work into three categories: coding tasks (Claude Code workers), GUI/SaaS tasks (browser automation robots), and communication tasks (email, Slack, calendar via amux connectors). Most businesses need all three."},{"@type":"HowToStep","position":2,"name":"Start your coding fleet","text":"Install amux and start one named worker per active project: amux start frontend, amux start backend, amux start devops. Each runs an isolated Claude Code session. The shared board collects all their in-progress and completed work in one view."},{"@type":"HowToStep","position":3,"name":"Add a board for task intake","text":"Create a board card for every task you want agents to handle. Agents with auto-drain enabled pick up cards automatically — you post the task once and an idle worker claims it within seconds."},{"@type":"HowToStep","position":4,"name":"Connect your business tools","text":"Wire up amux connectors for the SaaS tools your business runs on: Telegram for real-time alerts, email for summaries, calendar for agent scheduling. Robots handle repetitive GUI workflows like pulling reports or checking dashboards."},{"@type":"HowToStep","position":5,"name":"Monitor from your phone","text":"Open the amux iOS app. Every session, board card, and alert is live. You can send new tasks, read agent output, and approve quality-gated work from anywhere — the morning standup becomes a scroll through completed cards."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents really manage a whole business?","acceptedAnswer":{"@type":"Answer","text":"They handle a large share of the execution — coding, QA, report generation, data pulls, routine communication — but a human still sets direction, reviews quality gates, and handles anything that requires judgment or relationship context. Think of it as a highly capable team where you are the only decision-maker and the agents do the implementation."}},{"@type":"Question","name":"What kinds of business tasks can AI agents handle?","acceptedAnswer":{"@type":"Answer","text":"Engineering: code features, write tests, fix bugs, review PRs. Operations: pull SaaS reports, reconcile dashboards, check API status pages. Communication: draft email summaries, send Telegram alerts, generate daily standups. Documentation: update READMEs, write changelogs, keep API docs current. Most tasks a junior-to-mid employee would handle without judgment calls."}},{"@type":"Question","name":"How is this different from hiring a virtual assistant?","acceptedAnswer":{"@type":"Answer","text":"Speed and cost. A fleet of 5 coding agents running overnight can complete 15-20 feature-sized tasks by morning at API cost, not salary cost. They also don't need onboarding, don't make communication errors, and produce artifacts (code, commits, docs) directly in your repo. The tradeoff: they need clear specs and quality gates rather than judgment calls."}},{"@type":"Question","name":"Do I need to be a developer to run AI agents for my business?","acceptedAnswer":{"@type":"Answer","text":"For coding work, yes — you still need to review code, write specs, and understand what was built. For non-coding workflows (browser automation, email summaries, report pulls), less so. amux's GUI robot feature lets you describe an SOP in plain text and the agent follows it against the live UI."}},{"@type":"Question","name":"How much does it cost to run an AI agent fleet?","acceptedAnswer":{"@type":"Answer","text":"amux itself is free and open source (MIT). You pay for the underlying AI API — Claude Code on Anthropic's API runs roughly $2-8 per task-hour depending on context size and model. A fleet of 5 agents running 8 hours overnight costs $80-320 in API fees. That is one hour of senior developer time in most markets."}},{"@type":"Question","name":"What is the biggest risk with AI agents running my business?","acceptedAnswer":{"@type":"Answer","text":"Quality drift and unchecked compounding errors. An agent that writes bad code commits it. One that sends a wrong email sends it. The fix is quality gates — amux's board requires explicit verification before a card moves to done — and never giving agents write access to production or customer-facing systems without a human review step."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Manage Your Business With AI Agents</span></div>
+    <h1>Manage Your Business With AI Agents</h1>
+    <p class="subtitle">How founders, solopreneurs, and small teams use AI agent fleets to handle engineering, operations, and business workflows — without hiring.</p>
+    <p style="font-family:var(--font-mono);font-size:12px;color:var(--fg-mute);margin-top:-0.5rem;"><!-- last-updated: 2026-09-04 --> Published September 2026</p>
+
+    <div style="background:oklch(0.80 0.18 145 / .12);border:1px solid oklch(0.72 0.18 145);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+      <span style="font-size:0.95rem;color:var(--fg);">amux is the orchestration layer — run a fleet of parallel AI agents across coding, operations, and business tasks from one dashboard.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog && posthog.capture('exp077_biz_agents_guide_topofpage_cta_click')" style="background:oklch(0.72 0.18 145);color:#000;font-weight:600;padding:0.5rem 1.1rem;border-radius:6px;text-decoration:none;white-space:nowrap;font-size:0.9rem;">View amux on GitHub ★</a>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-agents-handle" style="color:var(--dim);text-decoration:none;">What AI Agents Can Handle</a></li>
+        <li><a href="#three-categories" style="color:var(--dim);text-decoration:none;">Three Categories of Business Work</a></li>
+        <li><a href="#setup" style="color:var(--dim);text-decoration:none;">How to Set This Up (5 Steps)</a></li>
+        <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">Real Workflow Examples</a></li>
+        <li><a href="#cost" style="color:var(--dim);text-decoration:none;">What It Costs</a></li>
+        <li><a href="#limits" style="color:var(--dim);text-decoration:none;">What Agents Still Cannot Do</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <p>A solo founder running a SaaS product in 2026 can maintain a product, ship features, handle customer support tickets, monitor infrastructure, and generate weekly reports — with a fleet of AI agents doing most of the execution. The bottleneck is no longer staffing; it is task clarity and quality review.</p>
+
+    <p>This guide covers how to structure that fleet, what kinds of tasks work well, and where human judgment is still required.</p>
+
+    <h2 id="what-agents-handle">What AI Agents Can Handle</h2>
+
+    <p>AI coding agents (Claude Code, Codex, Gemini CLI) operate inside your codebase. Browser automation robots operate inside your SaaS tools. Together they cover most of what a small ops/engineering team handles day to day.</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Example tasks</th>
+          <th>Agent type</th>
+          <th>Readiness</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Feature development</td>
+          <td>Implement specs, write tests, fix bugs, update docs</td>
+          <td>Coding agent</td>
+          <td>Production-ready</td>
+        </tr>
+        <tr>
+          <td>Code review</td>
+          <td>Review PRs for style, bugs, test coverage</td>
+          <td>Coding agent</td>
+          <td>Production-ready</td>
+        </tr>
+        <tr>
+          <td>Infrastructure</td>
+          <td>Run migrations, update dependencies, check CI failures</td>
+          <td>Coding agent</td>
+          <td>Production-ready with human approval gate</td>
+        </tr>
+        <tr>
+          <td>SaaS reporting</td>
+          <td>Pull Stripe revenue, Mixpanel funnels, Linear ticket counts</td>
+          <td>Browser robot</td>
+          <td>Production-ready</td>
+        </tr>
+        <tr>
+          <td>Lead intake</td>
+          <td>Read form submissions, enrich via Clay, draft outreach</td>
+          <td>Browser robot + coding agent</td>
+          <td>Production-ready with review gate</td>
+        </tr>
+        <tr>
+          <td>Customer support triage</td>
+          <td>Classify tickets, draft responses, escalate blockers</td>
+          <td>Coding agent</td>
+          <td>Draft mode — human approves before sending</td>
+        </tr>
+        <tr>
+          <td>Documentation</td>
+          <td>Keep API docs, changelogs, and READMEs current</td>
+          <td>Coding agent</td>
+          <td>Production-ready</td>
+        </tr>
+        <tr>
+          <td>Data analysis</td>
+          <td>Summarize PostHog funnels, write weekly reports</td>
+          <td>Coding agent</td>
+          <td>Production-ready</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2 id="three-categories" style="margin-top:2.5rem;">Three Categories of Business Work</h2>
+
+    <p>Every business workflow maps to one of three agent categories. Identifying which you need first determines your setup cost.</p>
+
+    <div style="display:grid;gap:1rem;margin:1.5rem 0;">
+      <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--accent);margin-bottom:0.5rem;">Category 1 — Coding Agents</div>
+        <p style="margin:0 0 0.5rem;"><strong>What they do:</strong> Work inside your codebase — write code, run tests, commit, open PRs.</p>
+        <p style="margin:0;color:var(--fg-dim);font-size:0.9rem;">Setup: <code>amux start &lt;worker-name&gt;</code>. Each worker runs an isolated Claude Code session. Stack 5-10 for a full engineering team. The <a href="/guides/running-10-plus-agents/">running 10+ agents guide</a> covers the hardware requirements.</p>
+      </div>
+      <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--blue);margin-bottom:0.5rem;">Category 2 — Browser Robots</div>
+        <p style="margin:0 0 0.5rem;"><strong>What they do:</strong> Navigate your SaaS tools, pull data, fill forms, and produce structured outputs.</p>
+        <p style="margin:0;color:var(--fg-dim);font-size:0.9rem;">Setup: <a href="/guides/ai-agent-automations/">amux browser automation</a> with saved profiles. Write an SOP in plain text; the robot resolves it against the live UI each run. Schedule via the amux scheduler — daily at 9am, weekly, or on webhook.</p>
+      </div>
+      <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;">
+        <div style="font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:oklch(0.75 0.14 300);margin-bottom:0.5rem;">Category 3 — Connectors</div>
+        <p style="margin:0 0 0.5rem;"><strong>What they do:</strong> Bridge your agent fleet to external channels — Telegram alerts, email summaries, calendar events.</p>
+        <p style="margin:0;color:var(--fg-dim);font-size:0.9rem;">Setup: amux connectors for <a href="/guides/ai-agent-telegram-notifications/">Telegram</a>, email, and calendar. Agents send structured output; connectors route it to the right channel. You get a Telegram message when an agent finishes, not a terminal log.</p>
+      </div>
+    </div>
+
+    <h2 id="setup" style="margin-top:2.5rem;">How to Set This Up (5 Steps)</h2>
+
+    <ol style="line-height:2.2;">
+      <li><strong>Map your workflows</strong> — List every recurring task you do. For each: is it code-touching (Category 1), SaaS-UI-touching (Category 2), or communication (Category 3)? This inventory determines which agent types you need first.</li>
+      <li><strong>Start your coding fleet</strong> — Install amux, then <code>amux start &lt;worker-name&gt;</code> for each active project. A three-person startup maps well to 5-8 workers: frontend, backend, devops, docs, qa, and 2-3 feature workers for the current sprint.</li>
+      <li><strong>Add the shared board</strong> — Every task goes on the board before an agent picks it up. Agents with <a href="/guides/autonomous-ai-agent-workflow/">auto-drain enabled</a> claim idle cards automatically. You post the task; an available worker starts it within seconds.</li>
+      <li><strong>Set up quality gates</strong> — For any output that ships to customers or touches production data, add a gate. The board's <code>done</code> state requires evidence; <code>verified</code> requires a human reviewer. This is where agent-authored work meets human judgment.</li>
+      <li><strong>Connect your phone</strong> — Install the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">amux iOS app</a>. Start agents before bed; review completed board cards from your phone in the morning. The Telegram connector sends a message when any agent finishes a task, so you know without polling.</li>
+    </ol>
+
+    <h2 id="workflows" style="margin-top:2.5rem;">Real Workflow Examples</h2>
+
+    <h3>Solo founder shipping a SaaS product</h3>
+    <p>Evening routine: post 8-12 feature cards to the board, start 4 coding workers, start 1 docs worker. Workers pick up cards autonomously through the night. Morning: 6-8 cards in <code>done</code>, 2-3 in <code>doing</code> on longer tasks. Review the diff for each, approve the clean ones, give the complex ones a closer look. Telegram sent a message at 2am when the migration worker hit a blocker — you see it at 7am and unblock it in 5 minutes.</p>
+
+    <h3>Two-person team with a part-time designer</h3>
+    <p>The two engineers each run 3-4 coding workers. The designer's requests come in as board cards. A browser robot pulls Monday.com task status every morning and creates summary cards. Engineering picks them up automatically. Weekly: a coding agent generates the sprint summary report from board history and commits it to the team's docs repo.</p>
+
+    <h3>Consulting firm doing client work</h3>
+    <p>Each client project gets its own amux worker group. Agents in the group share context (env, memory, CLAUDE.md) but can't see each other's code. A browser robot pulls the client's Linear project every evening and generates a status email draft for the consultant to approve and send. Another robot monitors the client's staging environment and files a board card on any error spike.</p>
+
+    <h2 id="cost" style="margin-top:2.5rem;">What It Costs</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Fleet size</th>
+          <th>Hours/day</th>
+          <th>Est. API cost/day</th>
+          <th>Tasks completed</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>2 workers</td>
+          <td>8h overnight</td>
+          <td>$30–80</td>
+          <td>4–8 feature-sized tasks</td>
+        </tr>
+        <tr>
+          <td>5 workers</td>
+          <td>8h overnight</td>
+          <td>$80–200</td>
+          <td>10–20 tasks</td>
+        </tr>
+        <tr>
+          <td>10 workers</td>
+          <td>8h overnight</td>
+          <td>$160–400</td>
+          <td>20–40 tasks</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="color:var(--fg-dim);font-size:0.9rem;">API cost varies by model (Sonnet vs Opus) and context size. amux itself is free. The <a href="/guides/ai-agent-cost-monitoring/">cost monitoring guide</a> covers how to set per-session token budgets to stay within a daily cap.</p>
+
+    <h2 id="limits" style="margin-top:2.5rem;">What Agents Still Cannot Do</h2>
+
+    <p>Knowing where agents break down is as important as knowing where they succeed.</p>
+
+    <ul style="line-height:2.2;">
+      <li><strong>Judgment calls on unclear requirements</strong> — An agent given an ambiguous spec will make a plausible decision that may be wrong. Write explicit specs; treat agent output as a first draft, not a final answer.</li>
+      <li><strong>Customer relationship management</strong> — Agents can draft emails and triage tickets, but the relationship itself requires a human. Anything where tone, history, or trust matters needs a person in the loop.</li>
+      <li><strong>Financial and legal decisions</strong> — Agents can surface data, but signing contracts, approving invoices, and making budget calls stay with you.</li>
+      <li><strong>Novel architecture decisions</strong> — Agents execute within an architecture; they don't redesign it. Strategic technical decisions require human engineering judgment.</li>
+      <li><strong>Anything with blast radius you cannot afford</strong> — Give agents read access to production; hold write access behind a gate. An agent that can delete data will eventually try to.</li>
+    </ul>
+
+    <h2 id="faq" style="margin-top:2.5rem;">FAQ</h2>
+
+    <details style="margin-bottom:1rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.75rem 0;">Can AI agents really manage a whole business?</summary>
+      <div style="padding:0.5rem 0 0.5rem 1rem;color:var(--fg-dim);">They handle a large share of the execution — coding, QA, report generation, data pulls, routine communication — but a human still sets direction, reviews quality gates, and handles anything requiring judgment or relationship context. Think of it as a highly capable team where you are the only decision-maker and the agents do the implementation.</div>
+    </details>
+    <details style="margin-bottom:1rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.75rem 0;">How is this different from hiring a virtual assistant?</summary>
+      <div style="padding:0.5rem 0 0.5rem 1rem;color:var(--fg-dim);">Speed and cost. A fleet of 5 coding agents running overnight can complete 15-20 feature-sized tasks at API cost, not salary cost. They also produce artifacts (code, commits, docs) directly in your repo and don't need onboarding. The tradeoff: they need clear specs and quality gates rather than judgment calls.</div>
+    </details>
+    <details style="margin-bottom:1rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.75rem 0;">Do I need to be a developer to run AI agents for my business?</summary>
+      <div style="padding:0.5rem 0 0.5rem 1rem;color:var(--fg-dim);">For coding work, yes — you still need to review code and write specs. For non-coding workflows (browser automation, email summaries, report pulls), less so. amux's GUI robot feature lets you describe an SOP in plain text and the agent follows it against the live UI.</div>
+    </details>
+    <details style="margin-bottom:1rem;">
+      <summary style="cursor:pointer;font-weight:600;padding:0.75rem 0;">What is the biggest risk?</summary>
+      <div style="padding:0.5rem 0 0.5rem 1rem;color:var(--fg-dim);">Quality drift and unchecked compounding errors. An agent that writes bad code commits it. The fix is quality gates — amux's board requires explicit verification before a card moves to done — and never giving agents write access to production without a human review step.</div>
+    </details>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.4rem;margin:2.5rem 0;">
+      <strong>Related guides:</strong>
+      <ul style="margin:0.75rem 0 0;line-height:2;">
+        <li><a href="/guides/autonomous-ai-agent-workflow/">Autonomous AI Agent Workflow</a> — auto-drain, self-healing, and overnight operations</li>
+        <li><a href="/guides/running-10-plus-agents/">Running 10+ AI Agents in Parallel</a> — hardware, rate limits, and fleet sizing</li>
+        <li><a href="/guides/ai-agent-cost-monitoring/">AI Agent Cost Monitoring</a> — per-session token budgets and daily caps</li>
+        <li><a href="/guides/ai-agent-telegram-notifications/">Telegram Notifications for AI Agents</a> — real-time alerts when agents finish or fail</li>
+        <li><a href="/use-cases/ai-coding-while-you-sleep/">AI Coding While You Sleep</a> — overnight run setup and morning review workflow</li>
+      </ul>
+    </div>
+
+    <div class="cta-block" style="margin-top:3rem;">
+      <h3 style="margin-top:0;">Start running your business on AI agents</h3>
+      <p>amux is open source, self-hosted, and free. A single Rust binary, zero external dependencies. iOS app included.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog && posthog.capture('exp077_biz_agents_guide_bottomcta_click')" class="btn-primary">View amux on GitHub ★</a>
+    </div>
+  </main>
+  <footer class="site-footer">
+    <p>&copy; 2026 <a href="/">amux</a> &mdash; <a href="/changelog/">Changelog</a> &mdash; <a href="https://github.com/mixpeek/amux">GitHub</a> &mdash; <a href="/docs/">Docs</a> &mdash; <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS App</a></p>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

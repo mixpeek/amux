@@ -15,6 +15,15 @@ After=network-online.target
 # timer is the only thing that should be starting this.
 Type=oneshot
 ExecStart=$SCRIPT_DIR/scripts/rust-auto-build.sh
+# Needed so AMUX_REMOTE_BUILD_HOST (and anything else server.env carries)
+# actually reaches this script — found missing 2026-08-31 wiring the
+# remote-build offload: the unit set CARGO_TARGET_DIR explicitly but never
+# sourced server.env at all, so the config knob silently never took
+# effect. EnvironmentFile lines before Environment= so an explicit
+# Environment= below still wins on a key collision (systemd's own
+# documented precedence), matching amux-server.service.template's
+# existing EnvironmentFile placement.
+EnvironmentFile=-$HOME/.amux/server.env
 Environment="CARGO_TARGET_DIR=$HOME/.amux/rust-build-target"
 WorkingDirectory=$SCRIPT_DIR
 StandardOutput=journal

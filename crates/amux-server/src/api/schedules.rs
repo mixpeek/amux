@@ -1124,6 +1124,115 @@ pub async fn run_now(
         Err(e) => return internal(e),
     };
 
+    // A shell command may legitimately take minutes. Waiting for it in the
+    // HTTP handler left Run Now disabled with the old last-run timestamp and
+    // no run row, so repeated taps from other tabs launched the same side
+    // effect again. Claim a durable provisional row atomically, return it at
+    // once, and complete that same row in the background.
+    if sched.str_field("kind") == "shell" {
+        let claim_slot = Arc::new(Mutex::new(None));
+        let claim_slot_w = claim_slot.clone();
+        let sid = sched.id().to_string();
+        let sid_w = sid.clone();
+        let source_w = source.clone();
+        let by_w = by.clone();
+        let claim_write = state
+            .store
+            .write_async(move |conn| {
+                let claim = scheduler::claim_manual_shell_run(conn, &sid_w, &source_w)?;
+                let events = if claim.started() {
+                    vec![
+                        ev(&sid_w, MutationKind::Updated),
+                        PendingEvent {
+                            entity_type: EntityType::Other("schedule_manual_run".into()),
+                            entity_id: sid_w.clone(),
+                            mutation: MutationKind::StatusChanged {
+                                from: by_w,
+                                to: "running".into(),
+                            },
+                            payload: None,
+                        },
+                    ]
+                } else {
+                    Vec::new()
+                };
+                *claim_slot_w.lock().expect("shell claim slot poisoned") = Some(claim);
+                Ok(WriteOutcome { applied: claim.started(), events })
+            })
+            .await;
+        if let Err(e) = claim_write {
+            return internal(e);
+        }
+        let Some(claim) = claim_slot.lock().expect("shell claim slot poisoned").take() else {
+            return internal("shell run claim produced no outcome");
+        };
+
+        if claim.started() {
+            let state_bg = state.clone();
+            let sched_bg = sched.clone();
+            let source_bg = source.clone();
+            let run_id = claim.run_id();
+            tokio::spawn(async move {
+                let outcome = LiveDeliverer::new(state_bg.clone())
+                    .deliver(&sched_bg, &source_bg)
+                    .await;
+                let status = outcome.status().to_string();
+                let sid_done = sched_bg.id().to_string();
+                let update = state_bg
+                    .store
+                    .write_async(move |conn| {
+                        scheduler::finish_manual_shell_run(conn, run_id, &outcome)?;
+                        Ok(WriteOutcome {
+                            applied: true,
+                            events: vec![
+                                ev(&sid_done, MutationKind::Updated),
+                                PendingEvent {
+                                    entity_type: EntityType::Other(
+                                        "schedule_manual_run".into(),
+                                    ),
+                                    entity_id: sid_done,
+                                    mutation: MutationKind::StatusChanged {
+                                        from: "running".into(),
+                                        to: status,
+                                    },
+                                    payload: None,
+                                },
+                            ],
+                        })
+                    })
+                    .await;
+                if let Err(e) = update {
+                    tracing::error!(schedule = %sched_bg.id(), run_id, error = %e,
+                        "could not record completed manual shell run");
+                }
+            });
+        }
+
+        return (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "ok": true,
+                "pending": true,
+                "deduped": !claim.started(),
+                "ran": sched.str_field("title"),
+                "run_id": claim.run_id(),
+                "ran_at": claim.ran_at(),
+                "status": "running",
+                "note": if claim.started() {
+                    "started on host; result pending"
+                } else {
+                    "already running; attached to the existing run"
+                },
+                "delivery": "shell",
+                "submission": Value::Null,
+                "session": sched.str_field("session"),
+                "kind": "shell",
+                "source": source,
+            })),
+        )
+            .into_response();
+    }
+
     let deliverer = LiveDeliverer::new(state.clone());
     let outcome = deliverer.deliver(&sched, &source).await;
 
@@ -1389,6 +1498,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let router = Router::new().nest("/api/schedules", routes()).with_state(state);
         (router, dir)

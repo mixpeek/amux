@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Parallel Feature Development — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Run multiple Claude Code agents simultaneously to develop different features in parallel.">
-  <meta name="keywords" content="parallel feature development, multiple AI agents, concurrent coding, parallel AI coding">
+  <title>Parallel Feature Development with AI Agents — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Ship a full sprint in a day. amux runs one AI coding agent per feature branch simultaneously — Claude Code, Codex, or Gemini CLI — coordinated on a shared kanban board from your dashboard or phone.">
+  <meta name="keywords" content="parallel feature development AI agents, multiple AI coding agents, concurrent feature branches, Claude Code parallel, AI engineering team, ship faster with AI">
   <link rel="canonical" href="https://amux.io/use-cases/parallel-feature-development/">
-  <meta property="og:title" content="Parallel Feature Development — amux">
-  <meta property="og:description" content="Run multiple Claude Code agents simultaneously to develop different features in parallel.">
+  <meta property="og:title" content="Parallel Feature Development with AI Agents — amux">
+  <meta property="og:description" content="Ship a full sprint in a day. amux runs one AI coding agent per feature branch simultaneously — coordinated on a shared kanban board from your dashboard or phone.">
   <meta property="og:url" content="https://amux.io/use-cases/parallel-feature-development/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,123 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Parallel Feature Development","item":"https://amux.io/use-cases/parallel-feature-development/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Parallel Feature Development","description":"Run multiple Claude Code agents simultaneously to develop different features in parallel.","url":"https://amux.io/use-cases/parallel-feature-development/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Use Cases", "item": "https://amux.io/use-cases/"},
+      {"@type": "ListItem", "position": 3, "name": "Parallel Feature Development", "item": "https://amux.io/use-cases/parallel-feature-development/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Parallel Feature Development with AI Agents",
+    "description": "Ship a full sprint in a day by running one AI coding agent per feature branch simultaneously. amux coordinates Claude Code, Codex, or Gemini CLI sessions on a shared kanban board, prevents git conflicts, and lets you monitor the entire fleet from your phone.",
+    "url": "https://amux.io/use-cases/parallel-feature-development/",
+    "datePublished": "2026-02-26",
+    "dateModified": "2026-08-31",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to run parallel feature development with AI coding agents",
+    "description": "Run one AI coding agent per feature branch simultaneously using amux. Each agent works independently on its own branch while a shared kanban board prevents duplicate work.",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Register one session per feature",
+        "text": "Create an amux session for each feature: amux register auth --dir ~/Dev/app && amux register search --dir ~/Dev/app && amux register payments --dir ~/Dev/app"
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Post tasks to the shared board",
+        "text": "Add one card per feature to the amux kanban board. Each agent claims its task atomically — no two agents can pick up the same card."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Start all agents in parallel",
+        "text": "Run amux start-all to launch every registered session simultaneously. Agents begin working on their assigned branches immediately."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Monitor from your dashboard or phone",
+        "text": "Watch progress in the amux web dashboard or the iOS app. Each agent's status, current task, and branch appear in real time."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Review and merge when complete",
+        "text": "Agents post completion to the board when done. Review each branch's pull request from the dashboard or approve from your phone."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How many AI coding agents can run in parallel with amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux supports dozens of simultaneous sessions on a single machine. The practical limit is RAM and CPU: each Claude Code, Codex, or Gemini CLI session uses roughly 200-400 MB of memory. A 32 GB machine comfortably runs 20-40 parallel agents. amux monitors memory headroom and refuses new sessions before the host runs out."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux prevent git conflicts between parallel agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux detects when two sessions share the same working directory and warns you before conflicts happen. The standard pattern is one isolated branch per agent — each agent works on its own feature branch and opens its own pull request. The shared kanban board uses atomic task claiming (SQLite compare-and-swap) so no two agents pick the same feature card."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I mix Claude Code, Codex, and Gemini CLI in the same parallel run?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is runtime-agnostic. You can assign Claude Code to one feature branch, Codex CLI to another, and Gemini CLI to a third. Each session is configured independently with its own runtime and model. The shared board, monitoring dashboard, and phone app work identically regardless of which AI runtime an agent uses."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens if one agent crashes mid-feature?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux's self-healing watchdog automatically restarts crashed sessions and replays the last message. The agent resumes from its previous context without losing progress. You see a notification in the dashboard when a restart happens, and the feature card stays claimed on the board so no other agent picks it up."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I coordinate dependencies between features that are being built in parallel?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use amux's board dependency graph. Mark a card as blocked-on another card — the blocked dimension surfaces clearly in the dashboard. The GET /api/board/ready endpoint returns only the unblocked tasks, so agents pull work in the correct order. When the blocking feature completes, dependent cards automatically become available."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -37,27 +151,167 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
     </nav>
   </header>
+
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>Parallel Feature Development</span></div>
-    <h1>Parallel Feature Development</h1>
-<p class="subtitle">Assign each feature to its own agent. Ship a week's work in a day.</p>
-<p>Instead of working on features sequentially, spin up a Claude Code agent for each one. amux manages them all from a single dashboard, prevents git conflicts, and tracks progress on a shared board.</p>
-<h2>How it works</h2>
-<ol>
-<li>Register one session per feature: <code>amux register auth --dir ~/Dev/app --yolo</code></li>
-<li>Start them all: <code>amux start auth && amux start search && amux start payments</code></li>
-<li>Send each agent its task from the dashboard or CLI</li>
-<li>Monitor progress from the web UI or your phone</li>
-</ol>
-<h2>Git conflict avoidance</h2>
-<p>amux detects when two sessions share the same directory and branch, warning you before conflicts happen. One click isolates each agent onto its own branch.</p>
-<h2>Coordination via the board</h2>
-<p>Post tasks to the kanban board. Agents claim work atomically — no duplicated effort, no lock broker needed.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+
+    <h1>Parallel Feature Development with AI Agents</h1>
+    <p class="subtitle">A full sprint's features — shipped in a day.</p>
+
+    <p>Run one AI coding agent per feature branch simultaneously. amux coordinates each session on a shared kanban board, prevents git conflicts, and lets you monitor every agent from a single dashboard or your phone. A four-person sprint's worth of features — auth, search, payments, onboarding — runs in parallel and finishes together instead of one after another.</p>
+
+    <p>amux works with <a href="/compare/amux-vs-codex/">Claude Code</a>, <a href="/guides/claude-code-vs-codex-vs-gemini-cli/">Codex CLI, and Gemini CLI</a> in the same fleet. Each agent claims tasks atomically — no two agents pick the same feature card. If one crashes overnight, the <a href="/guides/self-healing-ai-agents/">self-healing watchdog</a> restarts it and replays the last message so work continues unattended.</p>
+
+    <p style="font-size:0.85rem;color:var(--fg-dim)">Last updated: August 2026</p>
+
+    <h2>Sequential vs. parallel: what actually changes</h2>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.5rem 0">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:0.6rem 0.8rem;font-weight:600">Dimension</th>
+          <th style="text-align:left;padding:0.6rem 0.8rem;font-weight:600">Sequential (one agent)</th>
+          <th style="text-align:left;padding:0.6rem 0.8rem;font-weight:600">Parallel with amux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border-faint)">
+          <td style="padding:0.6rem 0.8rem">Time for 4 features</td>
+          <td style="padding:0.6rem 0.8rem">4× per-feature time</td>
+          <td style="padding:0.6rem 0.8rem">~1× per-feature time</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border-faint)">
+          <td style="padding:0.6rem 0.8rem">Git conflicts</td>
+          <td style="padding:0.6rem 0.8rem">None (sequential)</td>
+          <td style="padding:0.6rem 0.8rem">Prevented by isolated branches + amux shared-checkout guard</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border-faint)">
+          <td style="padding:0.6rem 0.8rem">Crash recovery</td>
+          <td style="padding:0.6rem 0.8rem">Manual restart</td>
+          <td style="padding:0.6rem 0.8rem">Auto-restart with context replay</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border-faint)">
+          <td style="padding:0.6rem 0.8rem">Monitoring</td>
+          <td style="padding:0.6rem 0.8rem">Terminal window</td>
+          <td style="padding:0.6rem 0.8rem">Dashboard + iPhone PWA</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border-faint)">
+          <td style="padding:0.6rem 0.8rem">Duplicate work risk</td>
+          <td style="padding:0.6rem 0.8rem">None</td>
+          <td style="padding:0.6rem 0.8rem">Eliminated by atomic board claiming</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border-faint)">
+          <td style="padding:0.6rem 0.8rem">Dependency ordering</td>
+          <td style="padding:0.6rem 0.8rem">Manual</td>
+          <td style="padding:0.6rem 0.8rem">Board dependency graph (<code>blocked-on</code> + <code>/api/board/ready</code>)</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.8rem">AI runtime</td>
+          <td style="padding:0.6rem 0.8rem">One</td>
+          <td style="padding:0.6rem 0.8rem">Mix Claude Code, Codex CLI, Gemini CLI per agent</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>How to run parallel feature development</h2>
+
+    <h3>Step 1: Register one session per feature</h3>
+    <p>Each feature gets its own named amux session. All can share the same repo directory — amux isolates them on separate branches.</p>
+    <pre><code>amux register auth     --dir ~/Dev/app --yolo
+amux register search   --dir ~/Dev/app --yolo
+amux register payments --dir ~/Dev/app --yolo
+amux register onboard  --dir ~/Dev/app --yolo</code></pre>
+
+    <h3>Step 2: Post tasks to the shared board</h3>
+    <p>Add a card per feature. The board is the coordination layer — agents claim tasks atomically so no two agents start the same work.</p>
+    <pre><code># From the dashboard, CLI, or phone — add one card per feature:
+amux board add "Build auth: JWT login + refresh tokens"
+amux board add "Build search: full-text across notes and tasks"
+amux board add "Build payments: Stripe checkout flow"
+amux board add "Build onboarding: multi-step wizard"</code></pre>
+
+    <p>If auth must land before payments can start, set a dependency:</p>
+    <pre><code># Mark payments as blocked until auth is done
+curl -sk -X PATCH -d '{"blocked_on":"CARD-AUTH-ID"}' $AMUX_URL/api/board/CARD-PAYMENTS-ID</code></pre>
+    <p>The <code>GET /api/board/ready</code> endpoint returns only unblocked tasks, so agents pull work in the correct order automatically.</p>
+
+    <h3>Step 3: Start all agents at once</h3>
+    <pre><code>amux start-all</code></pre>
+    <p>All registered sessions launch simultaneously. amux staggers startup by one second per agent to avoid a cold-boot memory spike. Each agent reads from the board, claims a task, creates a branch, and starts coding.</p>
+
+    <h3>Step 4: Monitor from the dashboard or your iPhone</h3>
+    <p>Open <code>https://localhost:8824</code> or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a>. Each agent's status, current card, branch, and most recent output appear in real time. If an agent goes quiet for too long, the self-healing watchdog flags it in the dashboard — and restarts it if it has crashed.</p>
+
+    <p>You can approve pull requests, send new instructions to a specific agent, or reassign a card — all from your phone, without touching a laptop.</p>
+
+    <h3>Step 5: Handle blocked agents</h3>
+    <p>When one feature depends on another, mark it blocked:</p>
+    <pre><code>amux board doing CARD-AUTH-ID     # auth is in progress
+# payments agent sees no ready task and waits</code></pre>
+    <p>The dashboard shows a <strong>blocked</strong> dimension across the fleet. When auth completes and its card moves to <code>done</code>, payments automatically becomes ready and any idle agent can claim it.</p>
+
+    <h2>Avoiding git conflicts in a parallel run</h2>
+
+    <p>The standard approach is one branch per agent:</p>
+    <ul>
+      <li>Each session works on <code>feature/auth</code>, <code>feature/search</code>, etc. — never on the same branch simultaneously.</li>
+      <li>amux's shared-checkout guard refuses <code>git add -A</code> inside a shared working directory, which is the most common accidental cross-branch write.</li>
+      <li>If two sessions do end up on the same branch, amux warns you before either commits.</li>
+    </ul>
+
+    <p>Agents that need shared infrastructure (a new DB table, a shared utility module) should be sequenced: one agent writes the shared piece first, the rest depend on that card completing before they begin.</p>
+
+    <h2>Runtime flexibility: mix Claude Code, Codex, and Gemini CLI</h2>
+
+    <p>amux is not tied to a single AI runtime. Register each session with whatever CLI fits the task:</p>
+    <pre><code># Claude Code for complex reasoning tasks
+amux register auth --model claude-sonnet-5 --dir ~/Dev/app
+
+# Codex CLI for fast, high-volume tasks
+amux register search --model gpt-5 --dir ~/Dev/app
+
+# Gemini CLI for tasks that need large context windows
+amux register onboard --model gemini-2-5-pro --dir ~/Dev/app</code></pre>
+
+    <p>The dashboard, board, and phone app treat all runtimes identically. See the <a href="/guides/claude-code-vs-codex-vs-gemini-cli/">Claude Code vs Codex vs Gemini CLI guide</a> for a per-runtime feature comparison.</p>
+
+    <h2>Running the fleet overnight</h2>
+
+    <p>Set agents loose before you sleep. amux keeps them running unattended:</p>
+    <ul>
+      <li>Context compaction fires automatically before any session hits its context limit — no stalled agents at 3am.</li>
+      <li>Crashed sessions restart themselves and replay the last prompt.</li>
+      <li>The board prevents any agent from picking up a task that was already completed by another.</li>
+    </ul>
+    <p>Wake up to a queue of pull requests, one per feature, ready to review. See <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> for the full overnight workflow.</p>
+
+    <h2>What amux is</h2>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT licensed.</p>
+
+    <div class="cta-box">
+      <h3>Run your first parallel sprint</h3>
+      <p>Install amux, register your feature sessions, and start them all at once. Open source, self-hosted, zero vendor lock-in.</p>
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
+amux register feature-1 --dir ~/Dev/myapp --yolo
+amux register feature-2 --dir ~/Dev/myapp --yolo
+amux start-all
+# → open https://localhost:8824</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:1rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+      </div>
+    </div>
+
+    <h2>Related resources</h2>
+    <ul>
+      <li><a href="/guides/splitting-work-across-ai-agents/">How to split a project across multiple AI agents</a></li>
+      <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep — the overnight run guide</a></li>
+      <li><a href="/guides/agent-fleet-operations/">Agent fleet operations</a></li>
+      <li><a href="/guides/claude-code-vs-codex-vs-gemini-cli/">Claude Code vs Codex vs Gemini CLI</a></li>
+      <li><a href="/use-cases/large-scale-refactoring/">Large-scale refactoring with AI agents</a></li>
+    </ul>
   </main>
+
   <footer class="sub-footer">
     <div class="footer-inner">
       <div class="footer-top">
@@ -104,6 +358,6 @@ amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

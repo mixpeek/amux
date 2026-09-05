@@ -8,7 +8,19 @@
   <a href="https://amux.io/changelog/"><img src="https://img.shields.io/badge/changelog-amux.io%2Fchangelog-green?style=flat-square" alt="Changelog"/></a>
 </p>
 
-**amux is a multi-session agent orchestrator.** Run dozens of parallel AI agent workers (Claude Code, Codex, Gemini CLI) from a web dashboard or your phone: a shared kanban board with status gates, schedulers, inter-worker messaging, per-scope memory and environment, browser automation, email, and self-healing recovery. Local-first, self-hosted, SQLite-backed.
+**amux is the open-source control plane for AI coding agents.** Run an AI engineering team: dozens of parallel workers (Claude Code, Codex, Gemini CLI, OpenCode, Ollama) coordinated from one web dashboard or your phone. Local-first, self-hosted, SQLite-backed, one Rust binary.
+
+What the fleet gets that a single agent never had:
+
+- **Atomic tasks**: a shared kanban board where claiming is compare-and-swap, so two workers can never grab the same card; `done` requires evidence, `verified` requires a peer check
+- **Worker awareness**: every worker sees the fleet (who is live, what they own, what they are doing) and can peek into any peer's terminal before interrupting
+- **@ each other**: origin-stamped inter-worker messaging; the server records the true sender, so provenance is a fact rather than a claim
+- **Steering**: type into any running session from the dashboard or phone; redirect mid-task without stopping the run
+- **Schedules & loops**: cron-style recurring prompts (`daily at 9am`, `every 15m`) plus self-pacing autonomous loops for overnight runs
+- **Groups & scope**: workers organize into lanes that share memory, environment, and gates; settings resolve card → worker → group → global
+- **Model switching**: swap the model or provider on a running worker; pick the brain per task, keep the context
+- **Message history**: every prompt, reply, and delivery is a ledger row you can fetch later
+- **Self-healing**: a watchdog that auto-compacts, restarts crashed sessions, and replays the last message
 
 > **[amux.io](https://amux.io)** · [Getting started](https://amux.io/guides/getting-started/) · [FAQ](https://amux.io/faq/) · [Blog](https://amux.io/blog/)
 
@@ -148,7 +160,8 @@ Write a five-line brief that states each decision and the single most
 important open question, using only the connected sources.
 ```
 
-- `sources` is a list of connections, each `{path, prompt}`. `path` is a file, a folder (expanded to its files, size-capped), or another `.mdai` file, resolved relative to the containing `.mdai` file's directory. `prompt` is the configurable edge prompt; a sensible default is filled in when a connection is created without one. A bare string entry (just the path) is also accepted and gets the default prompt.
+- `sources` is a list of connections, each `{path, prompt}`. `path` is a file, a folder (expanded to its files, size-capped), another `.mdai` file resolved relative to the containing `.mdai` file's directory, or the live amux source `amux:messages?days=N&limit=N&offset=N`. `prompt` is the configurable edge prompt; a sensible default is filled in when a connection is created without one. A bare string entry (just the path) is also accepted and gets the default prompt.
+- `amux:messages` reads user directives from `cmd_history`. With no query it uses the last 14 days. `days=N` is capped at 90. A count window like `limit=1000` has no implicit day cutoff, and `offset=N` pages backward from the newest message; rows are rendered oldest-first with `MSG-<id>` evidence labels.
 - `model` is an optional per-file override.
 - The markdown body is the node synthesis instruction. A plain markdown file with no frontmatter is a valid node with no sources.
 
@@ -231,6 +244,96 @@ Server configuration lives in `~/.amux/server.env` (plain `KEY=value`; process e
 
 [`server.env.example`](server.env.example) documents the full set. Never commit your real `server.env` — several values are secrets.
 
+## macOS permissions
+
+amux drives a few system apps on your behalf, and macOS gates each one behind
+TCC. Each grant below is load-bearing. Without it the feature hangs or fails
+silently rather than reporting a problem. Granting them takes about two minutes, and
+they are listed **most-unblocking first** so you can stop when you have what you
+use.
+
+Everything is under **System Settings → Privacy & Security**.
+
+### 1. Automation → Messages  *(the urgent owner alert)*
+
+**Grant:** Privacy & Security → Automation → find your terminal (iTerm, Terminal)
+and the `amux-server-rs` entry → tick **Messages**.
+
+**Without it:** `amux alert` cannot text you. The send *hangs* for the full 12s
+timeout on every page, so the fire alarm is slowest exactly when it matters. amux breaks the circuit after the first timeout and says so in the
+channel map, but the message does not arrive.
+
+**Also check:** Messages must be *signed in to iMessage* (Messages → Settings →
+iMessage). AppleScript can accept a `send` against a signed-out account and report success,
+so treat the grant and the delivery as two separate things to confirm.
+
+### 2. Automation → iTerm2  *(creating and inspecting workers)*
+
+**Grant:** Privacy & Security → Automation → your terminal → tick **iTerm2**.
+
+**Without it:** `amux start`, the worker grid and pane discovery cannot see or
+place panes. `worker_create.rs` asks iTerm2 to list panes and gives up after 5s.
+
+### 3. Full Disk Access  *(reading Messages history, Mail, Calendar stores)*
+
+**Grant:** Privacy & Security → Full Disk Access → add your terminal **and**
+`~/.local/bin/amux-server-rs`.
+
+**Without it:** reads of `~/Library/Messages/chat.db` and the Mail/Calendar
+stores fail with `authorization denied`. Anything that reconciles what was
+actually delivered against what amux believes it sent is blind.
+
+### 4. Automation → Mail  *(only if you use a non-Gmail account)*
+
+**Grant:** Privacy & Security → Automation → your terminal → tick **Mail**.
+
+**Without it:** nothing, if your accounts are Gmail or Workspace. Those go through
+the Gmail API and never touch Mail.app. This is the fallback path only.
+
+### 5. Accessibility  *(only if you use keystroke automation)*
+
+**Grant:** Privacy & Security → Accessibility → add your terminal.
+
+**Without it:** anything driving another app through System Events keystrokes
+fails. Core amux does not need this; grant it if a worker of yours does.
+
+### What amux does NOT need
+
+Camera, Microphone, Location, Contacts, Reminders, Photos. If something asks,
+it is a worker's own tooling and not the harness. Browser automation uses a
+dedicated Chrome profile over CDP, so it needs no Screen Recording grant either.
+
+### After granting
+
+macOS caches TCC decisions per binary. The auto-builder replaces
+`amux-server-rs` on every commit, and an ad-hoc-signed rebuild reads as a *new
+program*, so prompts can reappear. Setting a stable signing identity
+(`AMUX_CODESIGN_IDENTITY`) makes an approval stick across rebuilds.
+
+Verify a grant by what it *did*, not by the checkbox:
+
+```bash
+amux alert "permissions test" "verifying Automation for Messages"
+curl -sk $(amux url)/api/alert/owner | head -c 400   # read the channels map
+```
+
+### Evidence this list is real
+
+Measured across ~1.5 GB of fleet logs on 2026-09-01, counting only machine-emitted
+signatures (prose describing an error cannot match these):
+
+| Signature | Count |
+|---|---|
+| `(-1712)` AppleEvent timed out | 166 |
+| `kTCCServiceScreenCapture` | 12 |
+| `Operation not permitted` | 9 |
+| `Not authorized to send Apple events` | 6 |
+| `errAEEventNotPermitted` | 5 |
+
+An earlier pass over the same logs reported far larger numbers. It was matching
+this document's own prose being echoed back through the message log, which is why
+the counts above are restricted to strings a human report would not contain.
+
 ## Naming
 
 A **worker** is one agent lane. A **group** is a label shared by several workers; workers see and coordinate with same-group peers. The HTTP API and env vars still carry the older `session`/`tag` spellings (`/api/sessions`, `X-Amux-Session`, `CC_TAGS`); renaming them would break every running worker at once, so the wire names migrate behind aliases. Worker = session, group = tag, wherever you see them in a request.
@@ -262,5 +365,3 @@ amux is growing into the durable operating system around agents: it owns executi
 - iOS app: [App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435) · Managed onboarding: [amux.io/concierge](https://amux.io/concierge/)
 
 If amux saves you time, a ⭐ helps others find it.
-
-[![Star History Chart](https://api.star-history.com/svg?repos=mixpeek/amux&type=Date)](https://star-history.com/#mixpeek/amux&Date)

@@ -720,6 +720,117 @@ instead of open ones, because it changes what the tool CONCLUDES rather than how
 phrases it, so only an assertion reading the logic can catch it. Mutate the arithmetic or
 the predicate; a text mutation measures coupling, not correctness.
 
+**A GREEN RESULT AND A RESULT THAT NEVER RAN ARE THE SAME SILENCE, and only one of
+them is visible to "print what the probe matched"** (2026-08-28, amux + amux-frustrations,
+the fifth instance in a day of four). Four of that day's failures were PROBES that could
+not see their target: a `find('REVIEW')` that matched `REVIEWER` 1,867 characters early, a
+`grep -q ... | head` whose exit status was masked by head's, a scan over a board list
+payload that is slim and carries no `log` field at all, and a multi-word grep asserting
+adjacency the source never had. The remedy for all four is the same: anchor on the form you
+mean, and PRINT WHAT THE PROBE MATCHED before believing what it did not find.
+
+The fifth was different and the remedy above does not reach it. A mutation was applied to a
+`format!` string but removed the arguments with the text, so the crate did not compile, the
+test never ran, and the output was empty — one step from reading as "the control does not
+fire". There was nothing matched to print. The discriminator is the EXIT STATUS, which
+separates "ran and passed", "ran and failed" and "never ran"; the printed body collapses the
+first and third into the same blankness.
+
+A THIRD failure mode joined the pair the same day, from the other lane, and its rule is
+the narrowest and most usable of the three. Verifying a frustrations entry, amux ran
+
+    grep -n "AMUX_FOREIGN_CONSENT\\|AMUX_ALLOW_FOREIGN" scripts/git-hooks/pre-push | head -4
+
+Four `AMUX_ALLOW_FOREIGN` hits at lines 18/182/196/217 filled the budget, `head -4` cut the
+output, and the `AMUX_FOREIGN_CONSENT` lines at 358+ never printed. That read as "the
+tracked source lacks the escape", and sent them looking for a hook divergence that does not
+exist — the files are byte-identical at 41360 bytes. One step from reporting a fix as
+missing when ten mentions of it were in the file.
+
+**Never `head` a grep whose ABSENCE you intend to act on. Cap the output when you are
+SAMPLING; never when you are CONCLUDING. `grep -c` first, then look.** The count costs
+nothing and it cannot be truncated.
+
+Note the symmetry with the `grep -q ... | head -3` failure hours earlier in the other lane:
+there `head` masked the EXIT STATUS, here it truncated the RESULT SET. Same command, two
+different ways of turning an incomplete read into a confident negative.
+
+**Third instance, same day, and the one that cost the most: `| tail -4` on a COMMIT.**
+amux-frustrations piped `git commit` through `tail -4` to keep the output short.
+The staged-guard had printed two co-edit NOTEs above the cut, each carrying the line
+that exists for exactly this case — *"This commit stages N insertions / M deletions
+there; if that is MORE than you wrote, their work is in it."* What survived the pipe
+was `cargo clippy passed` and the `[main a474bbc4]` line, which is indistinguishable
+from a clean commit. A peer's uncommitted hunk went in, main was red for ten minutes,
+and a card was filed hypothesising the guard had been structurally BLIND. It had not:
+`guard_verdicts` recorded `n_shared=2` at 19:14:01, so the warning existed and was
+never read. One step from filing a false mechanism against a working instrument
+(AF-243's failure, aimed at a guard instead of a ledger entry).
+
+So the rule generalises past search. **Never truncate the output of a GATE.** A gate
+puts its verdict first and its success last, so `tail` keeps precisely the part that
+always looks fine, and `head` keeps precisely the part that is missing when it fails.
+The reason this is worth a third entry: the first two were about believing a NEGATIVE
+you could not see. This one is about believing a POSITIVE you could not see, and the
+tell is identical — output that ends in success while the interesting half is gone.
+
+And before blaming an instrument for silence, check whether the instrument recorded
+itself. This one did, in a table, and the query took one line. The list of instruments
+here that persist their own verdicts, so far: `guard_verdicts` (every staged-guard
+decision with its counts), `_amux_migrations` (what actually applied, by version),
+`_amux_invariant_result` (every evaluation with its verdict), `session_events` (which
+settled a 24h-vs-1h dispute outright, because the nudge's own firing was in there with
+its card ids), `steering_queue.queued_at` (how long a delivery has really been pending,
+which no log line carries), and the builder's `rust-build-stamp` beside its log, which
+separates "did not build" from "built something else". Reasoning about any of these
+from stdout is a choice to use the worse source.
+
+## The sibling class: a check that ran in full and still could not answer
+
+Truncation hides output you DID have. This one is the opposite cause with the same
+symptom: the check ran completely, nothing was hidden, and the question was too small.
+It is the worse of the two, because there is no missing output to go looking for. The
+green is real; it is just green about something narrower than you think.
+
+Four specimens, two lanes, one day:
+
+- **A trigger I wrote myself.** AF-204 retires the `/api/workers` catch-all. Its
+  trigger read "every RESOURCE verb has its own route", and the card said, in writing,
+  that this was *checkable in one command rather than by judgement*. It was. It became
+  true. It fired, and auto-pickup delivered the card as ready while the catch-all still
+  served 29 verbs across five other categories, whose deletion would also have broken
+  the bare-PATCH alias onto `config`.
+- **A guard assertion.** `every_arm_that_prescribes_a_restore...` asserted
+  `m.contains(guard)` per arm: "this arm mentions the guard at least once", not "every
+  prescription is guarded". A sibling occurrence in the same message satisfied it, and
+  a mutation of one of six production strings stayed green across 41 tests.
+- **A cycle assertion.** A seen-set test asserted the walk TERMINATES (necessary) and
+  not that it DEDUPES (sufficient). Deleting the seen-set left the suite green.
+- **The counter-example, and it is the useful one.** `is_pool_exhaustion` shipped with
+  a control asserting that two unrelated 500s stay two cards. Its author says they wrote
+  it only because they had been mutation-tested that morning. The habit transferred
+  between lanes in hours; it was not present the day before.
+
+**Mechanising a check makes it repeatable, not correct.** That is the whole trap, and
+"checkable in one command rather than by judgement" is the sentence to distrust,
+because it sounds like rigour. A trigger that needs judgement and SAYS so is more
+honest than a green one-liner testing a corner of the condition.
+
+The operational form, which is ethos rule 4 pointed at your own check: name what your
+check CANNOT express, in the same breath as what it can. A necessary condition stated
+as a necessary condition is useful. The failure is only ever in reading it as the
+whole answer.
+
+So the pair, and both halves are needed:
+- For a search: print what it matched, not only what it concluded.
+- For a harness: read the exit status, not the output. `cargo test` returning non-zero with
+  no test lines is a compile failure wearing a green suit.
+
+The general form is the one rule 4 already states and this sharpens: an output that can read
+empty must publish whether the measurement RAN. A mutation harness is an instrument like any
+other, and "I mutated it and nothing changed" is a claim about a run that has to have
+happened.
+
 **And confirm the mutation LANDED before reading the suite's colour.** The same review
 produced the inverse failure minutes later: an attempt to zero the open count used a
 regex that matched NOTHING, the harness printed `count expr found: False`, and the
@@ -760,6 +871,31 @@ over 12 days, the last 31 minutes before the reword, then 0 across 100 deliverie
 Rule 4's demand for an accompaniment applies to guards as much as to reports — a
 detector whose silence is indistinguishable from success needs a rate, a last-fired
 timestamp, or a signal on the path it declines to act on.
+
+**A TEST WRITTEN TO SATISFY RULE 7 IS NOT THEREBY A TEST THAT CAN FAIL** (2026-08-28,
+amux + amux-frustrations, twice in one day). Both times a reviewer found a check that could
+not fail, and both times the check was one its author had written *specifically* to satisfy
+this rule.
+
+The clearest specimen: `human_blocked_root` walks a `depends_on` graph with a `seen` set to
+stop re-expansion, and carried a cell asserting `Some("C-1" -> "C-2" -> "C-1")` returns
+None, labelled "a cycle terminates". Deleting the seen-set entirely leaves that cell GREEN.
+`DEPENDS_ON_MAX_DEPTH` is 12 and the fixture is a two-node cycle, so the frontier is one
+element at every level and the walk runs out of depth — the right answer by the wrong
+mechanism. What `seen` actually buys is protection against re-expansion in a DIAMOND, and a
+cycle cannot exercise that. The discriminating fixture is a 12-level diamond asserting the
+LOOKUP CALL COUNT, not the return value, because the return is None either way and only a
+counter can see cost: neutered, it fails at 4,095 expansions.
+
+The mechanism of the failure is the point. Writing a test *because* the rule asks for one
+produces the feeling of coverage, and the feeling of coverage is exactly what stops anyone
+mutating it afterwards. The rule says a check must be able to fail; it does not say a check
+written in its name already can. So the obligation the rule creates is not "add a cell", it
+is "make the cell red on purpose, once, and watch it".
+
+Corollary worth keeping separate, because it bit on the same day: a fixture chosen to be
+*small enough to read* is often too small to reach the branch under test. Two nodes is a
+legible cycle and an unreachable diamond.
 
 ## 8. Are you deciding something that is the human's to decide?
 
@@ -969,3 +1105,112 @@ The general form, worth more than the instance: **ask what the mechanism's FAILU
 is for, before replacing it with one that cannot fail.** An optimistic-concurrency
 conflict is not friction to be engineered away; it is the moment the system tells you
 two parties disagreed, which is exactly what an attributed ledger exists to surface.
+
+---
+
+## A rigorous-sounding check that would have been 57% wrong (AF-311, 2026-08-29)
+
+The proposal was mine and it sounded unarguable. `has_asset_link` pattern-matches a
+commit-sha-shaped token and never checks whether the commit exists, so a `done` card
+can cite `deadbee` and pass. Resolve the pointer against the owner's repo, refuse only
+on positive refutation, done.
+
+Measured across 4753 open done/verified cards before writing the gate:
+
+| outcome | n | |
+|---|---:|---|
+| sha resolves in the owner's repo | 3296 | 95.4% of the 3454 carrying one |
+| absent but another pointer present | 44 | would pass the narrowing |
+| **would refuse** | **35** | **1.0%** |
+| unmeasured (no repo for the lane) | 79 | never refused |
+
+A 1% refusal rate on a board this size is the profile of a good gate, and at that point
+the work looked finished. Reading all 35 changed the answer completely:
+
+| class | n | |
+|---|---:|---|
+| not a commit identifier at all | 20 | 57% |
+| explicit commit claim | 6 | 17% |
+| ambiguous | 9 | 26% |
+
+The 57% are amux **build ids** (`live on build 767a8a2`, `build 6a7425d9` on three
+cards), Kubernetes **replicaset and pod names** (`gha-runner-87f58f4b5`,
+`gpu-warmpool-746d6475fd`), **Gmail message ids** (`1a0446e1d1b998cb`), UUIDs, an X post
+id, a file digest. Every one is a card doing precisely what the asset-link gate asks:
+writing down what it produced. The new gate would have refused them for it.
+
+The 17% is not clean either. Two of the six are cards *reporting* an unresolvable sha
+(`MHC-350's recorded sha eb3b790ad8 ... not on origin/main at all`), which no detector
+can separate from a card *claiming* one.
+
+**The general form.** `has_asset_link`'s docstring already stated the asymmetry it was
+built on: generous on accept, because "a false accept only lets an honest-looking card
+through; a false reject would block real work." Resolution converts a harmless false
+accept into a false accusation. A repo has exactly one namespace of commit shas; a
+fleet has many namespaces of hex identifiers, and **nothing in the token distinguishes
+them** — the detector was reading a type it could not observe.
+
+Two things to carry forward:
+
+1. **A refusal rate is not a verdict; read the refusals.** 1% looked shippable and was
+   mostly wrong. The aggregate could not express which kind of card it had selected,
+   which is rule 4 about a metric rather than a probe.
+2. **When a check reads a token whose meaning depends on context the token does not
+   carry, the fix belongs on the WRITER, not the reader.** Any future version needs the
+   card to say which namespace it means. Guessing is what produced the 57%.
+
+## The control that points at the wrong layer (2026-08-30, four in one session)
+
+Rule 7 asks whether your check can fail. These four all could, and all were green
+for the wrong reason. The CONTROL, not the assertion, was the broken half every
+time: it tested something adjacent to the thing that could break, so the headline
+assertion looked pinned and was not.
+
+All four were caught by `scripts/mutate.sh`, none by reading the tests. That is
+the point worth carrying: a control is exactly the kind of code nobody re-reads,
+because its job is to pass.
+
+**1. A predicate arm the fixture could not reach.** `deps_blocking` returns the
+open blockers in `depends_on`. The control asserted "a card with no dependencies
+is never blocked". Mutating `None => false` to `None => true` (an id resolving to
+nothing blocks, parking the holder forever) SURVIVED it, because a card with an
+EMPTY `depends_on` never enters the filter at all. Two different things were both
+being called "no dependency".
+
+**2. A control that tested the schema instead of the scan.** A new test asserted
+every timestamp-shaped column declares its unit. Its control asked
+`pragma_table_info` whether the columns exist, which proves the SCHEMA has them
+and says nothing about whether the SCAN finds them. Disabling the scan's match
+left both green. The fix was to make the function return `(undeclared,
+n_scanned)`, because an empty list is BOTH the pass condition and what a broken
+scan returns. That is the AF-320 `measured`/`n_considered` rule applied to a
+function rather than an endpoint.
+
+**3. Logic no test could call.** The ready frontier's blocked-on exclusion lived
+inline in a handler that needs `AppState`, so the only cells able to run tested
+the store instead. Disabling the arm outright kept every one of them green. A
+predicate the tests cannot call is a predicate nothing pins, whatever else is
+asserted about its neighbourhood.
+
+**4. Arrival is not payload.** A board note now notifies the named REVIEWER
+(AMUX-3771). Verified by inspecting the recipient's `steering_queue`, which
+proves the steer LANDED. `amux-frustrations`, from the receiving end, supplied
+the half that check could not: the payload named the right card and framed the
+role correctly. A notify path can deliver to the right lane and still mislabel
+the role or point at the wrong id, and from the sender's side that arm looks
+IDENTICAL. "It landed" is true in both cases.
+
+A fifth, independently, the same day: `amux-frustrations`'s own AF-346 test
+asserted the slim hydrate returns empty prose and the full one returns it. Both
+true, neither touched the consumer, so the suite was green while the dashboard
+blanked.
+
+**The shape.** Testing only the arm you expect to fire. The refusal without the
+acceptance, the acceptance without the refusal, the store without the consumer,
+the delivery without the contents. Each is half a claim wearing a whole one.
+
+**What to do instead.** Before believing a control, ask what it would still say
+if the thing it guards were deleted. If the answer is "the same", it is not a
+control. And prefer a control that runs through the SAME function the assertion
+trusts: every failure above came from a control that reached the subject by a
+different path than the code under test.

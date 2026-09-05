@@ -37,6 +37,7 @@
 
 use super::AppState;
 use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -81,6 +82,12 @@ const FAMILIES: &[(&str, &str, &str)] = &[
     ("memory", "_amux_memories", "deleted_at IS NULL"),
     ("message", "_amux_messages", "1=1"),
     ("worker", "_amux_workers", "1=1"),
+    // AF-499. Only type='user': the rest of cmd_history is machine traffic
+    // (auto-pickup dispatches, peer relays, scheduler commands) and indexing it
+    // would turn the corpus into a log. The predicate is repeated in
+    // 0056_search_prompts.sql's trigger and backfill; this table is what makes
+    // the status view describe the SAME population the index holds.
+    ("prompt", "cmd_history", "type = 'user'"),
 ];
 
 #[derive(Deserialize, Default)]
@@ -229,21 +236,70 @@ async fn search(State(st): State<AppState>, Query(p): Query<SearchParams>) -> Re
         Err(e) => return internal(e),
     };
     match run_search(&conn, &match_expr, &types, limit, offset) {
-        Ok((hits, total, total_capped)) => Json(json!({
-            "q": p.q,
-            "match": match_expr,
-            "types": types,
-            "hits": hits,
-            "total": total,
-            "total_capped": total_capped,
-            "limit": limit,
-            "limit_capped": limit_raw > MAX_LIMIT,
-            "offset": offset,
-            "took_ms": started.elapsed().as_millis() as u64,
-        }))
-        .into_response(),
+        Ok((hits, total, total_capped)) => {
+            // A ZERO MUST SAY WHETHER THE MEASUREMENT RAN (TG-3303, ethos rule 4).
+            //
+            // ts-gke searched for a card they had created two hours earlier,
+            // got `{"hits":[]}` with HTTP 200, and were one step from re-filing
+            // a peer's work as untracked. Only a known-positive control told
+            // them the instrument was dead rather than the data absent — and
+            // `/api/board` REFUSES `q=` with a 400 that redirects here, so the
+            // documented way to find a card by content was the one that could
+            // silently answer "nothing".
+            //
+            // A silently-empty search does not fail, it AGREES WITH YOU. Every
+            // "no prior art exists, I will build it" decision made through it
+            // is then unfalsifiable from the outside.
+            //
+            // So the zero path, and only the zero path, pays one COUNT: an
+            // index with no documents cannot answer any query, and returning
+            // 200 with an empty list is the lie. That case is now a 503.
+            let indexed = if hits.is_empty() { index_doc_count(&conn) } else { None };
+            if hits.is_empty() && indexed == Some(0) {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": "search index is empty — this is a broken index, not a query with no matches",
+                        "q": p.q,
+                        "index_docs": 0,
+                        "hits": [],
+                        "total": 0,
+                        "fix": "POST /api/search/reindex rebuilds it; GET /api/search/status reports \
+                                per-family index vs live counts",
+                        "card": "TG-3303",
+                    })),
+                )
+                    .into_response();
+            }
+            Json(json!({
+                "q": p.q,
+                "match": match_expr,
+                "types": types,
+                "hits": hits,
+                "total": total,
+                "total_capped": total_capped,
+                "limit": limit,
+                "limit_capped": limit_raw > MAX_LIMIT,
+                "offset": offset,
+                "took_ms": started.elapsed().as_millis() as u64,
+                // Present ONLY on a zero-hit answer, which is the only time a
+                // caller needs it: it is the difference between "I looked
+                // through 10,423 documents and none matched" and "I have
+                // nothing to look through". Null means the count itself could
+                // not be taken, which is a third answer and not a zero.
+                "index_docs": indexed,
+            }))
+            .into_response()
+        }
         Err(e) => internal(e),
     }
+}
+
+/// How many documents the index holds, or `None` if the count could not be
+/// taken. `None` is deliberately not `0`: "I could not measure" and "there is
+/// nothing there" send a reader to different places.
+fn index_doc_count(conn: &Connection) -> Option<i64> {
+    conn.query_row("SELECT COUNT(*) FROM search_docs", [], |r| r.get::<_, i64>(0)).ok()
 }
 
 /// The ranked query. bm25 weights `title` 10x `body`, which is what makes a
@@ -449,6 +505,16 @@ pub const BACKFILL_SQL: &[(&str, &str)] = &[
                 json_object('thread', thread, 'from', from_actor, 'target', target),
                 COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0)
          FROM _amux_messages",
+    ),
+    (
+        "prompt",
+        "INSERT OR IGNORE INTO search_docs (doc_id, entity_type, entity_id, title, body, scope, task_id, worker_id, link, meta, updated_at)
+         SELECT 'prompt:'||id, 'prompt', id,
+                substr(replace(text, char(10), ' '), 1, 80), text,
+                session, card_id, session, '#history/'||id,
+                json_object('session', session, 'origin', origin, 'card_id', card_id),
+                ts
+         FROM cmd_history WHERE type = 'user'",
     ),
     (
         "worker",

@@ -305,6 +305,121 @@ async function toggleAutofix(checked) {
 // dropping the server-resolved --model (passing `flags` at create would replace
 // it). Default OFF: skipping permission prompts is opt-in, per worker or globally.
 let _yoloDefault = false;
+// FLEET-WIDE cross-group default (AMUX-4018). Writes the GLOBAL env layer, which
+// `cross_group_send_ok` resolves at worker > group > global — so a per-worker
+// setting still wins and this is genuinely a default rather than an override.
+//
+// No X-Amux-Session header: the server refuses this write from a worker origin,
+// because a session that could set it would be granting itself and every peer a
+// standing cross-group channel.
+async function readCrossGroupDefault() {
+  // This initializer runs before the main transport constants are declared
+  // below.  Referencing `API` here used to hit its temporal dead zone, get
+  // swallowed by initCrossGroupDefault's catch, and leave the unchecked HTML
+  // default on every page load even though amux.env correctly contained `*`.
+  // The dashboard is served at the API origin, so the root-relative endpoint
+  // is both sufficient and safe during early boot.
+  const r = await fetch('/api/config/cross-group', { headers: _authHeaders() });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(d.error || 'could not read saved setting');
+  return d;
+}
+
+async function toggleCrossGroupDefault(checked) {
+  const note = document.getElementById('crossgroup-default-note');
+  const cb = document.getElementById('crossgroup-default-checkbox');
+  const rollback = () => { if (cb) cb.checked = !checked; };
+  try {
+    const r = await fetch('/api/config/cross-group', {
+      method: 'PUT',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ allow: checked ? '*' : '' }),
+    });
+    const d = await r.json().catch(() => ({}));
+    // This setting is a capability grant. A synthetic offline-outbox 202 says
+    // only "saved in this browser", not "persisted in amux.env". Treating it
+    // as success made the switch look saved until the next GET reset it.
+    if (_isLocallyQueued(r) || !r.ok || d.error) {
+      showToast(d.error || 'could not save');
+      rollback();
+      return;
+    }
+    // Read after write. The response echoes the intended value; only a fresh
+    // GET proves the global env layer now resolves to it. Keep the visible
+    // switch only when the authoritative reader agrees.
+    const saved = await readCrossGroupDefault();
+    if (!!saved.enabled !== !!checked) {
+      rollback();
+      showToast('setting was not persisted; please try again');
+      return;
+    }
+    if (cb) cb.checked = !!saved.enabled;
+    showToast(d.message || (checked ? 'Cross-group messaging on' : 'Cross-group messaging off'));
+    if (note && saved.gate_enforcing === false) {
+      note.textContent = 'Note: AMUX_GROUP_SEND_ENFORCE is off, so all cross-group sends pass regardless of this switch.';
+    }
+  } catch (e) {
+    rollback();
+    showToast('failed: ' + String(e));
+  }
+}
+
+(async function initCrossGroupDefault() {
+  try {
+    const d = await readCrossGroupDefault();
+    const cb = document.getElementById('crossgroup-default-checkbox');
+    if (cb) cb.checked = !!d.enabled;
+    // SAY IT OUT LOUD when the gate is not enforcing at all. Otherwise an
+    // operator reads an OFF switch as a closed door that is not there.
+    const note = document.getElementById('crossgroup-default-note');
+    if (note && d.gate_enforcing === false) {
+      note.textContent = 'AMUX_GROUP_SEND_ENFORCE is off, so ALL cross-group sends pass regardless of this switch.';
+      note.style.color = '#b8860b';
+    }
+  } catch (e) {}
+})();
+
+async function readBoardDrainDefault() {
+  // Early-boot initializer: keep this root-relative for the same reason as the
+  // cross-group reader above (the main API constant is declared later).
+  const r = await fetch('/api/config/board-drain', { headers: _authHeaders() });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(d.error || 'could not read saved setting');
+  return d;
+}
+
+async function toggleBoardDrainDefault(checked) {
+  const cb = document.getElementById('board-drain-default-checkbox');
+  const rollback = () => { if (cb) cb.checked = !checked; };
+  try {
+    const r = await fetch('/api/config/board-drain', {
+      method: 'PUT',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ enabled: !!checked }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (_isLocallyQueued(r) || !r.ok || d.error) {
+      showToast(d.error || 'could not save'); rollback(); return;
+    }
+    const saved = await readBoardDrainDefault();
+    if (!!saved.enabled !== !!checked) {
+      rollback(); showToast('setting was not persisted; please try again'); return;
+    }
+    if (cb) cb.checked = !!saved.enabled;
+    showToast(d.message || (checked ? 'Backlog drain on' : 'Backlog drain off'));
+  } catch (e) {
+    rollback(); showToast('failed: ' + String(e));
+  }
+}
+
+(async function initBoardDrainDefault() {
+  try {
+    const d = await readBoardDrainDefault();
+    const cb = document.getElementById('board-drain-default-checkbox');
+    if (cb) cb.checked = !!d.enabled;
+  } catch (e) {}
+})();
+
 async function toggleYoloDefault(checked) {
   _yoloDefault = !!checked;
   await fetch('/api/prefs', {
@@ -693,12 +808,19 @@ let _connState = null;   // 'live' | 'polling' | 'offline' — null until first 
 let _connEvents = [];
 try { _connEvents = JSON.parse(localStorage.getItem('amux_conn_events') || '[]'); } catch(e) { _connEvents = []; }
 const _CONN_SESSION_START = Date.now();
+// AMUX-3917. `hid` records whether the PAGE WAS HIDDEN at the transition.
+// Without it a backgrounded phone and a server outage are the same row: Ethan's
+// panel showed "Disconnected (offline) 4h 16m, 9:38 PM → 1:55 AM", which was an
+// iPhone asleep overnight, rendered as the largest incident on the screen. The
+// browser fires the same offline transition for both, so no amount of reading
+// the transitions can separate them; the discriminator has to be recorded AT the
+// transition or it does not exist.
 function _recordConnState(s) {
   if (s === _connState) return;
   const prev = _connState;
   _connState = s;
   if (prev === null) return;   // first observation — not a transition, don't log
-  _connEvents.push({ ts: Date.now(), from: prev, to: s });
+  _connEvents.push({ ts: Date.now(), from: prev, to: s, hid: document.hidden ? 1 : 0 });
   if (_connEvents.length > 300) _connEvents = _connEvents.slice(-300);
   try { localStorage.setItem('amux_conn_events', JSON.stringify(_connEvents)); } catch(e) {}
 }
@@ -709,7 +831,12 @@ function _connEpisodes() {
   let cur = null;
   for (const e of _connEvents) {
     if (e.to !== 'live') {
-      if (!cur) cur = { start: e.ts, worst: e.to };
+      // `hid` is absent on events stored before AMUX-3917. Undefined is carried
+      // through as UNKNOWN rather than coerced to false: "we did not look" and
+      // "we looked and the page was visible" are different facts, and reading
+      // the first as the second is what would let an old sleep keep posing as
+      // an outage with a confident new label on it.
+      if (!cur) cur = { start: e.ts, worst: e.to, hid: ('hid' in e) ? !!e.hid : null };
       else if (e.to === 'offline') cur.worst = 'offline';
     } else if (cur) {
       cur.end = e.ts; eps.push(cur); cur = null;
@@ -717,6 +844,24 @@ function _connEpisodes() {
   }
   if (cur) eps.push(cur);   // still degraded (ongoing)
   return eps.reverse();     // most recent first
+}
+
+// A momentary fallback to polling that recovered on its own is the reconnect
+// logic WORKING. Ten of them listed as incidents is what made the panel read as
+// a wall of outages; six of the ten rows on Ethan's screen were 0s or 1s.
+const _CONN_BLIP_MS = 5000;
+
+// What a row IS, separated from how it renders so it can be reasoned about (and
+// tested) without a DOM.
+//   'sleep'  — offline that began while the page was hidden: the device slept or
+//              the app was backgrounded. Not an amux outage.
+//   'blip'   — under 5s and never offline: recovered automatically.
+//   'outage' — everything else, including any offline episode we cannot attribute.
+function _connEpisodeKind(ep, now) {
+  const dur = (ep.end || now) - ep.start;
+  if (ep.worst === 'offline' && ep.hid === true) return 'sleep';
+  if (ep.worst !== 'offline' && ep.end && dur < _CONN_BLIP_MS) return 'blip';
+  return 'outage';
 }
 // _fmtDur lives once, further down. A second copy was declared here; the last
 // declaration wins in a classic script, so this one was already dead — the
@@ -791,24 +936,52 @@ function showConnHistory() {
   const eps = _connEpisodes();
   const stateLabel = { live: '● Live', polling: '● Polling', offline: '● Offline' }[_connState] || '● —';
   const stateColor = { live: '#3fb950', polling: '#facc15', offline: '#f85149' }[_connState] || 'var(--dim)';
+  const _now = Date.now();
+  const kinds = eps.map(ep => _connEpisodeKind(ep, _now));
+  const blips = eps.filter((_, i) => kinds[i] === 'blip');
+  const shown = eps.filter((_, i) => kinds[i] !== 'blip');
   let rows = '';
   if (!eps.length) {
-    rows = '<div style="color:var(--dim);font-size:0.85rem;padding:10px 2px;">No disconnections recorded on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
+    rows = '<div style="color:var(--dim);font-size:0.85rem;padding:10px 2px;">No interruptions recorded on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
+  } else if (!shown.length) {
+    rows = '<div style="color:var(--dim);font-size:0.85rem;padding:10px 2px;">No outages on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
   } else {
-    rows = eps.map(ep => {
+    rows = shown.map(ep => {
+      const kind = _connEpisodeKind(ep, _now);
       const ongoing = !ep.end;
-      const dur = _fmtDur((ep.end || Date.now()) - ep.start);
+      const dur = _fmtDur((ep.end || _now) - ep.start);
       const isOff = ep.worst === 'offline';
-      const ico = isOff ? '🔴' : '🟡';
-      const label = isOff ? 'Disconnected (offline)' : 'Degraded to polling';
+      const sleep = kind === 'sleep';
+      const ico = sleep ? '🌙' : isOff ? '🔴' : '🟡';
+      const label = sleep ? 'Device asleep or app backgrounded'
+                  : isOff ? 'Disconnected (offline)'
+                  : 'Degraded to polling';
       const when = _fmtClock(ep.start) + ' → ' + (ongoing ? '<span style="color:' + (isOff ? '#f85149' : '#facc15') + '">ongoing</span>' : _fmtClock(ep.end));
+      // WHAT THE RECORD CANNOT SAY, said in the row rather than left to the
+      // reader (AMUX-3917). An offline episode stored before this build carries
+      // no visibility flag, so a sleeping phone and a real outage are the same
+      // bytes. Claiming either would be a guess; naming the gap is not.
+      const note = sleep
+        ? '<div style="color:var(--dim);font-size:0.72rem;">Not an amux outage: the browser reports offline while the page is hidden. Data resumed on wake.</div>'
+        : (isOff && ep.hid === null
+            ? '<div style="color:var(--dim);font-size:0.72rem;">Cause not recorded on this build — a sleeping or backgrounded device looks identical to an outage here.</div>'
+            : '');
       return '<div style="display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-top:1px solid var(--border);font-size:0.82rem;">'
         + '<span style="flex-shrink:0;">' + ico + '</span>'
         + '<div style="flex:1;min-width:0;"><div style="font-weight:600;">' + label + '</div>'
-        + '<div style="color:var(--dim);font-size:0.76rem;">' + when + '</div></div>'
+        + '<div style="color:var(--dim);font-size:0.76rem;">' + when + '</div>' + note + '</div>'
         + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;">' + dur + '</span></div>';
     }).join('');
   }
+  // THE COUNT BESIDE THE ZERO. Folded blips are summarised, never silently
+  // dropped: "no outages" and "no data" must not render the same, and a client
+  // that starts flapping should show it as a rising number here.
+  const blipHtml = blips.length
+    ? '<div style="display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-top:1px solid var(--border);font-size:0.82rem;color:var(--dim);">'
+      + '<span style="flex-shrink:0;">✅</span><div style="flex:1;min-width:0;">'
+      + blips.length + ' momentary fallback' + (blips.length === 1 ? '' : 's') + ' to polling, under '
+      + Math.round(_CONN_BLIP_MS / 1000) + 's each, recovered automatically. Not listed above.</div></div>'
+    : '';
   const pending = offlineQueue.length + drafts.length;
   const pendingHtml = pending
     ? '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:0.8rem;color:var(--dim);">' + pending + ' operation' + (pending === 1 ? '' : 's') + ' queued while offline. <a href="#" onclick="event.preventDefault();document.getElementById(\'conn-hist-modal\').remove();showQueueModal();" style="color:var(--accent);">View queue</a></div>'
@@ -823,8 +996,8 @@ function showConnHistory() {
   modal.innerHTML = '<div onclick="event.stopPropagation()" style="background:var(--bg);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;max-height:80dvh;overflow:auto;padding:1.2rem;box-shadow:0 8px 32px rgba(0,0,0,0.4);">'
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
     + '<span style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
-    + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Disconnections from this device (this browser)</div>'
-    + _pingWidgetHtml() + rows + pendingHtml + clearHtml + '</div>';
+    + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Connection interruptions on this device (this browser)</div>'
+    + _pingWidgetHtml() + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
 }
 
@@ -2117,7 +2290,24 @@ const _origFetch = window.fetch.bind(window);
 // Never queue interactive/ephemeral endpoints: telemetry, speed tests, live
 // terminal keystrokes, uploads (bodies too big for localStorage), login and
 // tunnel flows, and request/response helpers whose answer the UI needs NOW.
-const _OUTBOX_SKIP = /\/api\/(client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser)/;
+// `files/mdai/run` joined this list for BOTH of the reasons the comment above
+// gives, and it is the clearest case of each (AF-371).
+//
+// ANSWER NEEDED NOW: an mdai run's whole product is the output the panel is
+// about to render. A synthetic 202 hands the panel `{ok:true,queued:true}`,
+// which has no output in it, and the run silently never happened.
+//
+// TOO EXPENSIVE TO REPLAY: a run is a chain of model calls, measured at 82-127s
+// on Priorities.mdai. Replaying it from the outbox hours later spends that again
+// on a question nobody is still asking, against sources that have since moved.
+// It is not idempotent in cost even where it is in effect.
+//
+// This is reachable on the ORDINARY path here, not on a real outage: the
+// auto-builder restarts the server on every commit, so any run straddling a
+// deploy has its fetch fail, get queued, and report success. Ethan saw the two
+// halves separately — "mdai files are stuck at running", and a banner reading
+// `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
+const _OUTBOX_SKIP = /\/api\/(client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|config\/cross-group)/;
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -2670,11 +2860,104 @@ function _agentsChip(s) {
 }
 
 // ═══════ RENDERING ═══════
+// EXECUTION IDLE AND WORK IDLE ARE DIFFERENT QUESTIONS (AMUX-4029).
+//
+// Ethan, 2026-09-02: "byo-ray is idle despite having todo and backlog". The
+// header badge is derived from terminal and model activity, and the board's
+// column counts are card counts. Neither answers "could this lane pick anything
+// up", so a lane at its WIP cap and a lane with genuinely nothing to do render
+// identically — byo-ray showed IDLE over 5 todo cards, 3 of them ready, none
+// claimable because BR-51 held a cap of 1.
+//
+// Read from /api/board/ready, which is the endpoint the CLI already uses and
+// which shares `lane_frontier` with the dispatcher's own predicate, so this
+// badge cannot claim a stall the dispatcher denies. Fetched ONLY for the open
+// peek and cached, because the frontier is per-lane DB work and /api/sessions
+// is already the slowest thing here (AMUX-3864) — putting it in that payload
+// would cost 127 lanes' queries to answer a question about one.
+let _workFrontier = {};
+let _workFrontierBusy = {};
+let _workFrontierReported = {};
+function _workFrontierFor(name) {
+  const c = _workFrontier[name];
+  if (c && Date.now() - c.ts < 20000) return c;
+  if (!_workFrontierBusy[name]) {
+    _workFrontierBusy[name] = true;
+    fetch(API + '/api/board/ready?session=' + encodeURIComponent(name), { headers: _authHeaders() })
+      .then(r => r.json())
+      .then(d => {
+        _workFrontier[name] = {
+          ready: (d.ready || []).length,
+          readyCards: d.ready || [],
+          claimable: d.claimable_now,
+          holding: (d.wip || {}).holding || [],
+          // `measured` decides whether this may render at all: an unmeasured
+          // frontier reads as 0 ready and would quietly mean "nothing to do".
+          measured: d.measured !== false,
+          ts: Date.now(),
+        };
+        if (peekSession === name) updatePeekStatus();
+      })
+      .catch(() => {})
+      .finally(() => { _workFrontierBusy[name] = false; });
+  }
+  return c || null;
+}
+// One diagnostic per distinct frontier shape. Both verdicts are useful in a
+// sweep: `queued-behind-wip` explains a healthy wait; `stalled` says there is
+// ready work but no current work explaining why it cannot be claimed.
+function _reportWorkFrontier(s, w, verdict) {
+  const readyIds = (w.readyCards || []).map(c => c.id).filter(Boolean);
+  const key = [s.name, verdict, readyIds.join(','), w.claimable, w.holding.join(',')].join('|');
+  if (_workFrontierReported[key]) return;
+  _workFrontierReported[key] = true;
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'idle-ready-work', verdict, session: s.name,
+        ready: w.ready, ready_cards: readyIds, claimable: w.claimable,
+        holding: w.holding, ver: APP_VER }),
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+// The badge, or '' when this lane is not idle with ready-but-unclaimable work.
+// Holding work is a queue explanation, not a stall: TubeScience's detached
+// import legitimately held TUBES-2418 while TUBES-2419 waited behind WIP-1.
+// With no holding work, preserve the alarming verdict because nothing in the
+// board explains why an idle lane cannot claim its ready card.
+function _stalledChip(s) {
+  if (!s.running || s.status !== 'idle') return '';
+  const w = _workFrontierFor(s.name);
+  if (!w || !w.measured || !(w.ready > 0) || w.claimable !== 0) return '';
+  if (w.holding.length) {
+    const first = w.holding[0];
+    const readyCard = ((w.readyCards || [])[0] || {}).id || (w.ready + ' ready');
+    const readyMore = w.ready > 1 ? ' +' + (w.ready - 1) : '';
+    const more = w.holding.length > 1 ? ' +' + (w.holding.length - 1) : '';
+    _reportWorkFrontier(s, w, 'queued-behind-wip');
+    return '<button type="button" class="status-badge waiting work-queued-chip" '
+      + 'onclick="event.stopPropagation();_openIssue(\'' + escJs(first) + '\')" '
+      + 'title="' + esc(readyCard) + readyMore + ' queued behind current work: '
+      + esc(w.holding.join(', ')) + '. Open ' + esc(first) + '." '
+      + 'aria-label="' + esc(readyCard) + readyMore + ' queued behind current work ' + esc(first) + '">'
+      + '<span class="work-queued-wide">' + esc(readyCard) + readyMore + ' queued behind ' + esc(first) + more + '</span>'
+      + '<span class="work-queued-short">' + esc(readyCard) + readyMore + ' behind ' + esc(first) + more + '</span>'
+      + '</button>';
+  }
+  _reportWorkFrontier(s, w, 'stalled');
+  return '<span class="status-badge rate-limited" style="margin-left:6px;" title="'
+    + w.ready + ' card(s) ready, 0 claimable, and no current work explains the block.'
+    + '">stalled &middot; '
+    + w.ready + ' ready</span>';
+}
+
 function updatePeekStatus() {
   const el = document.getElementById('peek-session-status');
   if (!el || !peekSession) { if (el) el.innerHTML = ''; return; }
   const s = sessions.find(s => s.name === peekSession);
   if (!s) { el.innerHTML = ''; return; }
+  _renderPeekWorkerActions(s);
   let badge = '';
   // NAME · STATUS · MODEL, and nothing else (Ethan, 2026-08-11: "top we only
   // need the task name, status and model"). `_liveWorkLine` used to append the
@@ -2692,7 +2975,7 @@ function updatePeekStatus() {
   else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
   else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
   else if (s.status === 'api_error') badge = `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;.">API ${esc(s.api_error_code || '5xx')}</span>`;
-  else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>';
+  else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>' + _stalledChip(s);
   else if (!s.running)             badge = '<span class="status-badge" style="background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);">stopped</span>';
   if (s.rate_limited_until) {
     const _lbl = s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until';
@@ -2830,14 +3113,62 @@ function _cardBoardActive(name) {
   });
   return n;
 }
-function _cardBoardTotal(name) {
-  let n = 0;
+function _cardBoardStatusCounts(name) {
+  const counts = {};
   (boardItems || []).forEach(c => {
-    if (!c.deleted && !c.archived && c.session === name) n++;
+    if (c.deleted || c.archived || c.session !== name) return;
+    const status = String(c.status || 'unknown').toLowerCase();
+    counts[status] = (counts[status] || 0) + 1;
   });
-  return n;
+  return counts;
 }
-// Worker cards embed board-derived figures (the three helpers above), so ANY
+// The ONE board card a worker explicitly claims through `task_board_id`.
+//
+// Do not derive this from "worker active + card doing". A worker may have more
+// than one historical/captured card in doing (TubeScience had four), while one
+// terminal turn can execute only one parent task. The old newest-doing fallback
+// made all four cards say "Working now" and could also replace the task named by
+// the status hook with whichever card happened to be touched last. An active
+// worker can also be answering an informational message that correctly produced
+// no card. Runtime activity is not a board error state; guessing a task is wrong.
+function _cardDoingItem(name) {
+  const session = (sessions || []).find(s => s.name === name);
+  const claimed = String(session && session.task_board_id || '').trim();
+  if (!claimed) return null;
+  return (boardItems || []).find(c =>
+    !c.deleted && !c.archived && c.session === name && c.status === 'doing' && c.id === claimed
+  ) || null;
+}
+
+// Turn the board-drive trace into the smallest useful operator explanation.
+// The trace keeps the complete detail for diagnostics; worker cards need the
+// actionable reason. In particular, "all-candidates-refused" hid a dependency
+// chain behind a generic label. Resolve the root blocker from the structured
+// prose the mechanism itself emitted instead of inventing a second readiness
+// predicate in the UI.
+function _boardDriveCardReason(drive) {
+  if (!drive) return '';
+  const detail = String(drive.detail || '');
+  if (drive.reason === 'all-candidates-refused') {
+    const edges = [...detail.matchAll(/(?:^|;\s*)([^;\s]+) blocked by ([^;,\s]+)/g)];
+    if (edges.length) {
+      const cards = new Set(edges.map(m => m[1]));
+      const roots = [...new Set(edges.map(m => m[2]).filter(id => !cards.has(id)))];
+      if (roots.length) return 'blocked by ' + roots.join(', ') + ' (dependency root)';
+      return 'dependency blocked';
+    }
+    if (detail.includes('continuation gate')) return 'missing next action';
+    return 'no dispatchable task';
+  }
+  if (drive.reason === 'no-eligible-card') {
+    if (/drain:\s*OFF/i.test(detail)) return 'backlog auto-drain off';
+    if (/parked on a human or a live trigger/i.test(detail)) return 'backlog parked on human/trigger';
+    return 'no dispatchable task';
+  }
+  if (drive.reason === 'mid-turn') return 'working now';
+  return String(drive.reason || drive.outcome || 'checked').replaceAll('-', ' ');
+}
+// Worker cards embed board-derived figures (the helpers above), so ANY
 // boardItems ingest must repaint the workers view when those inputs move —
 // the board fetch used to end at renderBoard(), and a board response landing
 // AFTER the workers view painted left every card without its counts until
@@ -2847,9 +3178,10 @@ function _cardBoardTotal(name) {
 // free, keyed on exactly the fields the helpers read.
 function _nudgeWorkersOnBoardChange() {
   try {
-    const sig = (boardItems || [])
-      .map(c => `${c.id}:${c.status}:${c.session || ''}:${c.archived ? 1 : 0}${c.deleted ? 'd' : ''}`)
-      .join('|');
+    const sig = JSON.stringify((boardItems || []).map(c => [
+      c.id, c.status, c.session || '', c.archived ? 1 : 0, c.deleted ? 1 : 0,
+      c.title || '', c.updated || c.created || 0,
+    ]));
     if (window._boardCountSig === sig) return;
     window._boardCountSig = sig;
     if (activeView === 'sessions') render();
@@ -2898,6 +3230,147 @@ async function _grpSchedFetch(g) {
     if (!prev || prev.n !== n) {
       render();
     }
+  } catch (e) {}
+}
+
+// One inventory for every worker-level action/configuration entry point. The
+// card and peek used to carry independent menus: 25 actions on the card, two in
+// peek, including two different meanings of "File browser". Keep dynamic
+// labels and provider/running predicates here so adding or removing an action
+// changes both surfaces in the same edit.
+function _workerActionDefinitions(s) {
+  const name = escJs(s.name);
+  const provider = sessionProvider(s);
+  const model = sessionConfiguredModel(s);
+  const effort = provider === 'claude' ? flagValue(s.flags || '', '--effort') : '';
+  return [
+    { key: 'task-label', icon: '&#x270F;', label: 'Task label' + (s.task_override ? '' : ' (none)'),
+      run: "editField('" + name + "','task','" + escJs(s.task_override || '') + "')" },
+    { separator: true },
+    { key: 'peek-terminal', icon: '&#x1F4BB;', label: 'Peek terminal',
+      run: "closeAllMenus();openPeek('" + name + "')" },
+    { key: 'read-latest', icon: '&#x1F50A;', label: 'Read latest message',
+      run: "closeAllMenus();_readLatestMessage('" + name + "')" },
+    s.dir ? { key: 'browse-files', icon: '&#x1F4C1;', label: 'Browse files',
+      run: "_browseWorkerFiles('" + name + "','worker-menu')" } : null,
+    { key: 'info', icon: '&#x2139;', label: 'Info',
+      run: "closeAllMenus();showSessionInfo('" + name + "')" },
+    { key: 'pin', icon: '&#x1F4CC;', label: s.pinned ? 'Unpin' : 'Pin to top',
+      run: "togglePin('" + name + "')" },
+    { key: 'rename', icon: '&#x270E;', label: 'Rename',
+      run: "editField('" + name + "','name','" + name + "')" },
+    { key: 'provider', icon: '&#x21C4;', label: 'Provider: ' + providerLabel(provider),
+      run: "editField('" + name + "','provider','" + escJs(provider) + "')" },
+    { key: 'model', icon: '&#x2699;', label: 'Model' + (model ? ': ' + model : ''),
+      run: "editField('" + name + "','model','" + escJs(model || '') + "','" + escJs(provider) + "')" },
+    provider === 'claude' ? { key: 'effort', icon: '&#x1F9E0;',
+      label: 'Effort' + (effort ? ': ' + effort : ' (default)'),
+      run: "editField('" + name + "','effort','" + escJs(effort || '') + "','" + escJs(provider) + "')" } : null,
+    { key: 'yolo', icon: s.yolo ? '&#x2611;' : '&#x2610;', label: 'YOLO mode',
+      run: "toggleYolo('" + name + "')" },
+    { key: 'isolated', icon: s.isolated ? '&#x2611;' : '&#x2610;',
+      label: 'Isolated (raw agent, no amux harness)',
+      title: 'Run as a raw agent: just tmux plus the CLI, no amux harness, hidden from peers. The owner can still peek and send.',
+      run: "toggleIsolated('" + name + "')" },
+    { key: 'description', icon: '&#x1F4DD;', label: 'Description',
+      run: "editField('" + name + "','desc','" + escJs(s.desc || '') + "')" },
+    // `tags` is the API field. "Groups" is only the display vocabulary; using
+    // the label as the field name once made Save silently do nothing.
+    { key: 'groups', icon: '&#x1F3F7;', label: 'Groups',
+      run: "editField('" + name + "','tags','" + escJs((s.tags || []).join(', ')) + "')" },
+    { key: 'auto-drain', icon: s.auto_drain_backlog ? '&#x2611;' : '&#x2610;', label: 'Auto-drain backlog',
+      title: 'When this worker runs out of todo cards, pull its oldest eligible backlog card into todo automatically. Human, trigger, and dependency blocks stay parked.',
+      run: "toggleAutoDrain('" + name + "')" },
+    { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
+      labelHtml: 'Spans groups' + _spansLabel(s),
+      title: 'Let this worker message workers in other groups according to its resolved cross-group configuration.',
+      run: "toggleSpansGroups('" + name + "')" },
+    { key: 'directory', icon: '&#x1F4C1;', label: 'Directory',
+      run: "editField('" + name + "','dir','" + escJs(s.dir || '') + "')" },
+    s.running ? { key: 'restart', icon: '&#x21BB;', label: 'Restart',
+      run: "closeAllMenus();doRestart('" + name + "')" } : null,
+    s.running ? { key: 'stop', icon: '&#x23F9;', label: 'Stop',
+      run: "closeAllMenus();doStop('" + name + "')" } : null,
+    s.running ? { key: 'clear-scrollback', icon: '&#x239A;', label: 'Clear scrollback',
+      run: "clearScrollback('" + name + "')" } : null,
+    { key: 'duplicate', icon: '&#x2398;', label: 'Duplicate',
+      run: "duplicateSession('" + name + "')" },
+    { key: 'new-conversation', icon: '&#x1F195;', label: 'New conversation',
+      run: "newConversation('" + name + "'," + (s.running ? 'true' : 'false') + ")" },
+    { key: 'share', icon: '&#x1F517;', label: 'Share link',
+      run: "closeAllMenus();shareSession('" + name + "')" },
+    { key: 'archive', icon: '&#x1F4E6;', label: 'Archive',
+      run: "archiveSession('" + name + "')" },
+    { separator: true },
+    { key: 'delete', icon: '&#x2716;', label: 'Delete', danger: true,
+      run: "deleteSession('" + name + "')" },
+  ].filter(Boolean);
+}
+
+function _renderWorkerActionMenu(s, surface) {
+  const peek = surface === 'peek';
+  const itemClass = peek ? 'peek-more-item' : 'card-menu-item';
+  return _workerActionDefinitions(s).map(action => {
+    if (action.separator) return '<div class="' + (peek ? 'peek-more-sep' : 'card-menu-sep') + '"></div>';
+    const classes = itemClass + (action.danger ? ' danger' : '');
+    const close = peek ? '_closePeekMore();' : '';
+    const title = action.title ? ' title="' + esc(action.title) + '"' : '';
+    return '<div class="' + classes + '" role="menuitem" data-worker-action="' + action.key
+      + '" onclick="event.stopPropagation();' + close + action.run + '"' + title + '>'
+      + '<span class="mi">' + action.icon + '</span>'
+      + (action.labelHtml || esc(action.label)) + '</div>';
+  }).join('');
+}
+
+function _renderPeekWorkerActions(s) {
+  const menu = document.getElementById('peek-more-dropdown');
+  if (!menu) return;
+  const html = _renderWorkerActionMenu(s, 'peek')
+    + '<div class="peek-more-sep"></div>'
+    + '<div class="peek-more-item" id="peek-file-browser-btn" data-peek-action="file-browser" role="menuitem" '
+    + 'onclick="event.stopPropagation();_closePeekMore();_browseWorkerFiles(peekSession,\'peek-file-browser\')">'
+    + '<span class="mi">&#x1F4C2;</span>File browser</div>'
+    + '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
+    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
+    + '<span class="mi">&#x25B4;</span>Focus mode</div>';
+  if (menu.innerHTML !== html) menu.innerHTML = html;
+}
+
+// Both menu Browse actions and the displayed directory path land here. One
+// function owns the session/root selection and always enters the full Files
+// route; the old peek-only branch toggled an unrelated split pane on desktop.
+function _browseWorkerFiles(name, source) {
+  const s = (sessions || []).find(row => row.name === name);
+  const root = (peekSession === name && peekSessionDir) || (s && s.dir) || '';
+  if (!root) { showToast('This worker has no directory to browse'); return; }
+  closeAllMenus();
+  _closePeekMore();
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'worker-file-entry', verdict: 'canonical-files-route',
+        source: source || 'unknown', session: name, root, measured: true,
+        n_considered: 1, ver: APP_VER }),
+    }).catch(() => {});
+  } catch (e) {}
+  openExplore(root, name);
+}
+
+function _reportWorkerActionParity(s) {
+  const menu = document.getElementById('peek-more-dropdown');
+  if (!menu) return;
+  const expected = _workerActionDefinitions(s).filter(a => !a.separator).map(a => a.key);
+  const actual = Array.from(menu.querySelectorAll('[data-worker-action]')).map(el => el.dataset.workerAction);
+  const duplicateIds = document.querySelectorAll('#peek-worker-menu-btn').length !== 1
+    || document.querySelectorAll('#peek-composer-more-btn').length !== 1;
+  if (expected.join('|') === actual.join('|') && !duplicateIds) return;
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'worker-action-menu-parity', verdict: 'mismatch',
+        session: s.name, expected, actual, duplicate_ids: duplicateIds,
+        measured: true, n_considered: expected.length, ver: APP_VER }),
+    }).catch(() => {});
   } catch (e) {}
 }
 
@@ -3049,9 +3522,17 @@ function render() {
     const model = sessionConfiguredModel(s);
     const effort = provider === 'claude' ? flagValue(flags, '--effort') : '';
     const pLabel = providerLabel(provider);
-    const taskStale = _taskStaleAge(s);
+    const liveBoardTask = _cardDoingItem(s.name);
+    // A board transition and the next sessions poll are not atomic. Render the
+    // SSE-synced doing card immediately, then naturally converge on the server
+    // fields on the next poll. This also repairs old/stale task summaries while
+    // the board has a stronger, current fact.
+    const displayTaskName = liveBoardTask ? (liveBoardTask.title || liveBoardTask.id) : (s.task_name || '');
+    const displayTaskSource = liveBoardTask ? 'board' : s.task_source;
+    const displayTaskBoardId = liveBoardTask ? liveBoardTask.id : s.task_board_id;
+    const taskStale = liveBoardTask ? 0 : _taskStaleAge(s);
     const offCached = !!(_peekIndex && _peekIndex[s.name]);
-    const taskDim = taskStale && s.task_source === 'board';   // stale board title shown as last resort
+    const taskDim = taskStale && displayTaskSource === 'board';   // stale board title shown as last resort
     // AF-148: a lane with no active card falls back to its static DESCRIPTION,
     // and the payload says so (`task_source: 'desc'`) — but the client only ever
     // read task_source to dim a STALE BOARD title, so the fallback rendered
@@ -3067,7 +3548,7 @@ function render() {
     // Same discriminator the stale case already uses, applied to the case it
     // skipped. Not a mood, not a guess: the field was in the payload the whole
     // time and one consumer read it for one branch.
-    const taskIsDesc = s.task_source === 'desc' && !!s.task_name;
+    const taskIsDesc = displayTaskSource === 'desc' && !!displayTaskName;
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
@@ -3076,37 +3557,7 @@ function render() {
           <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config, no self-report hooks. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
           <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
           <div class="card-menu" id="menu-${s.name}">
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_name||"")}')"><span class="mi">&#x270F;</span> Task label${s.task_name ? '' : ' (none)'}</div>
-          <div class="card-menu-sep"></div>
-          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openPeek('${s.name}')"><span class="mi">&#x1F4BB;</span> Peek terminal</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();_readLatestMessage('${s.name}')"><span class="mi">&#x1F50A;</span> Read latest message</div>
-          ${s.dir ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openExplore('${s.dir.replace(/'/g,"\\'")}','${s.name.replace(/'/g,"\\'")}')"><span class="mi">&#x1F4C1;</span> Browse files</div>` : ''}
-          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();showSessionInfo('${s.name}')"><span class="mi">&#x2139;</span> Info</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();togglePin('${s.name}')"><span class="mi">${s.pinned?'&#x1F4CC;':'&#x1F4CC;'}</span> ${s.pinned ? 'Unpin' : 'Pin to top'}</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','name','${escJs(s.name)}')"><span class="mi">&#x270E;</span> Rename</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')"><span class="mi">&#x21C4;</span> Provider: ${pLabel}</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','model','${escJs(model||"")}','${escJs(provider)}')"><span class="mi">&#x2699;</span> Model${model ? ': '+esc(model) : ''}</div>
-          ${provider === 'claude' ? `<div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','effort','${escJs(effort||"")}','${escJs(provider)}')"><span class="mi">&#x1F9E0;</span> Effort${effort ? ': '+esc(effort) : ' (default)'}</div>` : ''}
-          <div class="card-menu-item" onclick="event.stopPropagation();toggleYolo('${s.name}')"><span class="mi">${isYolo?'&#x2611;':'&#x2610;'}</span> YOLO mode</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();toggleIsolated('${s.name}')" title="Run as a raw agent: just tmux plus the CLI, no amux harness, hidden from peers. The owner can still peek and send."><span class="mi">${s.isolated?'&#x2611;':'&#x2610;'}</span> Isolated (raw agent, no amux harness)</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','desc','${escJs(s.desc||"")}')"><span class="mi">&#x1F4DD;</span> Description</div>
-          ${/* field is 'tags', the INTERNAL name — b009f6e's vocab pass renamed
-               this argument to 'groups' as if it were a display string, and
-               every branch in editField/submitEdit tests 'tags', so the Groups
-               editor opened as a bare text box and Save silently did nothing
-               (AMUX-2559, "I cant add a worker to a group"). The label is the
-               vocab; the field is the contract. */ ''}
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','tags','${escJs(s.tags.join(", "))}')"><span class="mi">&#x1F3F7;</span> Groups</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','dir','${esc(s.dir)}')"><span class="mi">&#x1F4C1;</span> Directory</div>
-          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doRestart('${s.name}')"><span class="mi">&#x21BB;</span> Restart</div>` : ''}
-          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
-          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();clearScrollback('${s.name}')"><span class="mi">&#x239A;</span> Clear scrollback</div>` : ''}
-          <div class="card-menu-item" onclick="event.stopPropagation();duplicateSession('${s.name}')"><span class="mi">&#x2398;</span> Duplicate</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();newConversation('${s.name}', ${s.running ? 'true' : 'false'})"><span class="mi">&#x1F195;</span> New conversation</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();shareSession('${s.name}')"><span class="mi">&#x1F517;</span> Share link</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();archiveSession('${s.name}')"><span class="mi">&#x1F4E6;</span> Archive</div>
-          <div class="card-menu-sep"></div>
-          <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
+          ${_renderWorkerActionMenu(s, 'card')}
         </div>
         </div>
         ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || s.credit_limited || s.sched_on || s.sched_off || !online) ? `<div class="card-header-meta">
@@ -3126,22 +3577,40 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
           ${(() => {
             /* Bare numbers, no chips (Ethan: "just numbers no outline ...
-               conservative with real estate"). sched = active/inactive
-               schedules from the payload; doing = this worker's in-progress
-               board issues, computed from the boardItems the client already
-               holds. Successor to the counts row 09aa88e removed — this is
-               the two-figure version of it. */
-            const d = _cardDoingCount(s.name);
-            const active = _cardBoardActive(s.name);
-            const tot = _cardBoardTotal(s.name);
+               conservative with real estate"). Keep runtime status and board
+               state separate: "idle · 11 active" called parked/human-blocked
+               and even done cards active, making Primis's correctly parked
+               queue look like a stalled worker. Spell out the nonzero board
+               columns from the SSE-synced boardItems instead. */
+            const byStatus = _cardBoardStatusCounts(s.name);
+            const d = byStatus.doing || 0;
+            const todo = byStatus.todo || 0;
+            const backlog = byStatus.backlog || 0;
+            const needsYou = (byStatus.needsyou || 0) + (byStatus.blocked || 0);
+            const review = byStatus.review || 0;
+            const done = byStatus.done || 0;
             const parts = [];
             if (s.sched_on || s.sched_off) {
               parts.push(_schedCountHTML(s.sched_on, s.sched_off) + ' sched');
             }
             if (d) parts.push(`<span class="mc-doing">${d}</span> doing`);
-            if (active) parts.push(`<span class="mc-active">${active}</span> active`);
-            if (tot && tot !== active) parts.push(`<span class="mc-total">${tot}</span> total`);
-            return parts.length ? `<span class="meta-count">${parts.join(' · ')}</span>` : '';
+            if (todo) parts.push(`<span class="mc-active mc-todo">${todo}</span> todo`);
+            const drive = s.board_drive || null;
+            const driveFresh = drive && drive.checked_at && (Date.now()/1000 - drive.checked_at) < 180;
+            // A non-empty queue plus an idle badge is never left unexplained.
+            // This applies to backlog-only and doing/review lanes too, not only
+            // todo: Primis was parked on a live trigger and looked abandoned;
+            // rtsp-connection had a dependency chain and looked identical.
+            if (s.status === 'idle' && (todo || backlog || d || review) && driveFresh) {
+              const ready = Number(drive.eligible_todos || 0);
+              const why = _boardDriveCardReason(drive);
+              parts.push(`<span class="mc-total" title="${esc(drive.detail || 'Latest board-drive decision')}">${ready} ready · ${esc(why)}</span>`);
+            }
+            if (backlog) parts.push(`<span class="mc-total mc-backlog">${backlog}</span> backlog`);
+            if (needsYou) parts.push(`<span class="mc-total">${needsYou}</span> needs you`);
+            if (review) parts.push(`<span class="mc-total">${review}</span> review`);
+            if (done) parts.push(`<span class="mc-total">${done}</span> done`);
+            return parts.length ? `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${parts.join(' · ')}</span>` : '';
           })()}
           ${!online ? '<span class="cached-badge">cached</span>' : ''}
         </div>` : ''}
@@ -3151,7 +3620,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
 
-      ${!isExp && s.task_name ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
+      ${!isExp && displayTaskName ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(displayTaskName)}${_taskIdChip({task_board_id: displayTaskBoardId})}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
         const hits = _logMatches[s.name];
@@ -3172,7 +3641,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && s.task_name ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}" title="Click the id to open the board card" style="font-weight:600;"><span onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" style="cursor:pointer;">${esc(s.task_name)}</span>${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
+        ${isExp && displayTaskName ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}" title="Click the id to open the board card" style="font-weight:600;"><span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>${_taskIdChip({task_board_id: displayTaskBoardId})}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Worker</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
           ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
@@ -3589,7 +4058,7 @@ function showBranchPopover(name, e) {
   if (hasBranch) {
     pop.innerHTML = `
       <div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;font-weight:600;">⎇ ${esc(displayBranch)}</div>
-      ${gi._conflict ? '<div style="font-size:0.78rem;color:var(--red);margin-bottom:6px;">⚠ Another worker shares this branch — conflicts possible</div>' : '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Isolated on worker branch</div>'}
+      ${gi._conflict ? '<div style="font-size:0.78rem;color:var(--red);margin-bottom:6px;">⚠ Another worker shares this branch — conflicts possible</div>' : '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Isolated from other workers</div><div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;">Not on main, so nothing here reaches anyone until it is merged or pushed. Isolation is not delivery.</div>'}
       <button class="btn" style="width:100%;" onclick="document.querySelectorAll('.branch-popover').forEach(p=>p.remove())">Close</button>`;
   } else {
     const suggested = 'session/' + name;
@@ -3897,10 +4366,41 @@ function toggleTabCustomizer() {
   if (_tabCustomizerOpen) {
     _renderTabCustomizerMenu();
     menu.style.display = '';
+    _capTabCustomizerHeight(menu);
     _tabCustBeacon(menu, 'global');
   } else {
     menu.style.display = 'none';
   }
+}
+
+// Keep the open menu inside the viewport (AC-403).
+//
+// The desktop rule had no max-height and no overflow, so 21 rows rendered 680px
+// tall from an anchor at y=342 and ran 222px past an 800px fold. BODY computes
+// to a clipper (overflow-x:clip pairs overflow-y down from visible), so the rows
+// past the fold are not merely below the scroll, they are CLIPPED: the menu's
+// boundingBox still looks correct, which is why every box assertion passed while
+// the last rows were invisible. The mobile bottom-sheet at <=600px got
+// `max-height: 60vh; overflow-y: auto` when it was written; the desktop rule
+// never did.
+//
+// MEASURED, NOT GUESSED AT, because a static cap cannot be right. 60vh from that
+// anchor is 480px and lands at 822, still 22px over — which is exactly the
+// overflow the e2e run reported, so the obvious CSS-only fix reproduces the bug
+// at a smaller size. The cap has to come from where the menu actually opens.
+//
+// Set as a custom property rather than an inline max-height so the media query's
+// bottom-sheet rule still wins on mobile, where the anchor is irrelevant.
+function _capTabCustomizerHeight(menu) {
+  try {
+    const top = menu.getBoundingClientRect().top;
+    // 12px of breathing room at the fold, and the iOS home indicator inset,
+    // which css-mobile.md requires for anything reaching a screen edge.
+    const inset = parseFloat(getComputedStyle(document.documentElement)
+      .getPropertyValue('--safe-bottom')) || 0;
+    const avail = Math.max(120, window.innerHeight - top - 12 - inset);
+    menu.style.setProperty('--tc-max-h', avail + 'px');
+  } catch (e) { /* a cap we cannot compute must not stop the menu opening */ }
 }
 
 function _renderTabCustomizerMenu() {
@@ -4667,29 +5167,79 @@ async function _orchPlan() {
     list.innerHTML = '<div style="color:#f85149;padding:12px;">' + esc(e.message || 'error') + '</div>';
   }
 }
+// The plan is no longer send-only (AMUX-2984). An entry is a send, a board
+// action (create a card, or append a note to an existing one) or a lifecycle
+// verb. `action` is absent on entries from an older server, and that means
+// send — the shape this endpoint had for its first two weeks.
+//
+// Each type keeps ONE editable field, because the review step is where a
+// misheard word gets corrected and a field you cannot edit is a field you have
+// to reject and re-record.
+function _orchEditableOf(p) {
+  const a = p.action || 'send';
+  if (a === 'board') return p.card ? 'note' : 'title';
+  if (a === 'verb') return null;              // a verb has nothing to word
+  return 'message';
+}
+function _orchLabelOf(p) {
+  const a = p.action || 'send';
+  if (a === 'board') return p.card ? 'note on ' + p.card : 'new card';
+  if (a === 'verb') return p.verb;
+  return 'message';
+}
 function _orchRenderPlan(d) {
-  _orchPlanData = (d.plan || []).map((p, i) => ({ worker: p.worker, message: p.message, why: p.why || '', include: true, idx: i }));
+  _orchPlanData = (d.plan || []).map((p, i) => ({
+    action: p.action || 'send', worker: p.worker, message: p.message || '',
+    title: p.title || '', card: p.card || '', note: p.note || '', verb: p.verb || '',
+    why: p.why || '', include: true, idx: i,
+  }));
   const summary = document.getElementById('orch-plan-summary');
   const list = document.getElementById('orch-plan-list');
   const drop = document.getElementById('orch-plan-dropped');
   const sendBtn = document.getElementById('orch-send-btn');
-  if (drop) drop.textContent = (d.dropped_unknown_workers && d.dropped_unknown_workers.length)
-    ? '⚠ dropped unknown worker(s): ' + d.dropped_unknown_workers.join(', ') : '';
+  // EVERY DROPPED CLASS, SEPARATELY. A refused verb is amux declining something
+  // it understood; an unknown worker is a mis-hearing. Collapsing them would
+  // tell the reader something was discarded without telling them whether the
+  // command needs re-wording or was simply not allowed.
+  if (drop) {
+    const bits = [];
+    if ((d.dropped_unknown_workers || []).length) bits.push('unknown worker(s): ' + d.dropped_unknown_workers.join(', '));
+    if ((d.dropped_unknown_cards || []).length) bits.push('unknown card(s): ' + d.dropped_unknown_cards.join(', '));
+    if ((d.dropped_unknown_verbs || []).length) bits.push('not a verb: ' + d.dropped_unknown_verbs.join(', '));
+    if ((d.refused_verbs || []).length) bits.push('refused from voice: ' + d.refused_verbs.join(', ')
+      + ' (do these by hand; only ' + (d.verbs_available || []).join('/') + ' are voice-proposable)');
+    drop.textContent = bits.length ? '⚠ ' + bits.join(' · ') : '';
+  }
   if (!_orchPlanData.length) {
-    if (summary) summary.textContent = 'No workers matched';
-    list.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center;">The router did not find a worker for this command. Edit the wording above (Re-record → edit) and re-route, or start over.</div>';
+    // AN EMPTY PLAN AFTER A REFUSAL IS NOT "NOTHING MATCHED". Measured live:
+    // "delete the tubescience worker" produced an empty plan because the router
+    // understood it perfectly and declined, and this branch told the human the
+    // opposite — that it had not found a worker. Say which happened.
+    const ref = d.refused_verbs || [];
+    if (ref.length) {
+      if (summary) summary.textContent = 'Understood, and refused';
+      list.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center;">amux will not take <b>'
+        + esc(ref.join(', ')) + '</b> from a spoken command &mdash; a misheard word is too cheap for an action that expensive. '
+        + 'Only <b>' + esc((d.verbs_available || []).join(', ')) + '</b> are voice-proposable; do this one by hand.</div>';
+    } else {
+      if (summary) summary.textContent = 'No workers matched';
+      list.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center;">The router did not find a worker for this command. Edit the wording above (Re-record → edit) and re-route, or start over.</div>';
+    }
     if (sendBtn) sendBtn.style.display = 'none';
     return;
   }
   if (sendBtn) sendBtn.style.display = '';
-  if (summary) summary.innerHTML = _orchPlanData.length + ' message' + (_orchPlanData.length === 1 ? '' : 's')
-    + ' &mdash; review, edit, then send' + (d.via ? ' <span style="color:var(--dim);font-size:0.7rem;">via ' + esc(d.via) + '</span>' : '');
-  list.innerHTML = _orchPlanData.map(p =>
-    '<div class="orch-plan-item" data-idx="' + p.idx + '">'
-    + '<div class="orch-plan-top"><label class="orch-plan-inc"><input type="checkbox" checked onchange="_orchToggleInc(' + p.idx + ',this.checked)"> <span class="orch-plan-worker">' + esc(p.worker) + '</span></label>'
-    + (p.why ? '<span class="orch-plan-why">' + esc(p.why) + '</span>' : '') + '</div>'
-    + '<textarea class="orch-plan-msg" rows="2" oninput="_orchEditMsg(' + p.idx + ',this.value)">' + esc(p.message) + '</textarea>'
-    + '</div>').join('');
+  if (summary) summary.innerHTML = _orchPlanData.length + ' action' + (_orchPlanData.length === 1 ? '' : 's')
+    + ' &mdash; review, edit, then run' + (d.via ? ' <span style="color:var(--dim);font-size:0.7rem;">via ' + esc(d.via) + '</span>' : '');
+  list.innerHTML = _orchPlanData.map(p => {
+    const f = _orchEditableOf(p);
+    return '<div class="orch-plan-item" data-idx="' + p.idx + '">'
+      + '<div class="orch-plan-top"><label class="orch-plan-inc"><input type="checkbox" checked onchange="_orchToggleInc(' + p.idx + ',this.checked)"> <span class="orch-plan-worker">' + esc(p.worker) + '</span></label>'
+      + '<span class="orch-plan-act">' + esc(_orchLabelOf(p)) + '</span>'
+      + (p.why ? '<span class="orch-plan-why">' + esc(p.why) + '</span>' : '') + '</div>'
+      + (f ? '<textarea class="orch-plan-msg" rows="2" oninput="_orchEditMsg(' + p.idx + ',this.value)">' + esc(p[f]) + '</textarea>' : '')
+      + '</div>';
+  }).join('');
   _orchUpdateSendBtn();
 }
 function _orchToggleInc(idx, on) {
@@ -4697,33 +5247,62 @@ function _orchToggleInc(idx, on) {
   document.querySelector('.orch-plan-item[data-idx="' + idx + '"]')?.classList.toggle('excluded', !on);
   _orchUpdateSendBtn();
 }
-function _orchEditMsg(idx, v) { const p = _orchPlanData.find(x => x.idx === idx); if (p) p.message = v; }
+function _orchEditMsg(idx, v) {
+  const p = _orchPlanData.find(x => x.idx === idx); if (!p) return;
+  const f = _orchEditableOf(p); if (f) p[f] = v;
+}
+// A verb has no text, so "has text" cannot be the readiness test any more —
+// that would silently exclude every verb from the count and the run.
+function _orchReady(p) {
+  const f = _orchEditableOf(p);
+  return p.include && (!f || (p[f] || '').trim() !== '');
+}
 function _orchUpdateSendBtn() {
-  const n = _orchPlanData.filter(p => p.include && p.message.trim()).length;
+  const n = _orchPlanData.filter(_orchReady).length;
   const b = document.getElementById('orch-send-btn');
-  if (b) { b.textContent = 'Send ' + n + ' message' + (n === 1 ? '' : 's'); b.disabled = n === 0; }
+  if (b) { b.textContent = 'Run ' + n + ' action' + (n === 1 ? '' : 's'); b.disabled = n === 0; }
+}
+// Each action goes through the endpoint that ALREADY owns it — send, board,
+// session verb. The orchestrator composes primitives; it does not grow a
+// private execution path, and every one of these carries the same attribution
+// and gates a human clicking the same button by hand would get.
+function _orchRequestFor(p) {
+  const w = encodeURIComponent(p.worker);
+  if (p.action === 'board' && p.card) {
+    return { url: API + '/api/board/' + encodeURIComponent(p.card), method: 'PATCH',
+             body: { desc_append: '`voice` ' + p.note } };
+  }
+  if (p.action === 'board') {
+    return { url: API + '/api/board', method: 'POST',
+             body: { title: p.title, session: p.worker, status: 'todo' } };
+  }
+  if (p.action === 'verb') {
+    return { url: API + '/api/sessions/' + w + '/' + encodeURIComponent(p.verb), method: 'POST', body: {} };
+  }
+  return { url: API + '/api/sessions/' + w + '/send', method: 'POST',
+           body: { text: p.message, record_history: true, deliver_now: true } };
 }
 async function _orchSendAll() {
-  const items = _orchPlanData.filter(p => p.include && p.message.trim());
+  const items = _orchPlanData.filter(_orchReady);
   if (!items.length) return;
-  const btn = document.getElementById('orch-send-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  const btn = document.getElementById('orch-send-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
   const results = [];
   for (const p of items) {
+    const label = p.worker + ' · ' + _orchLabelOf(p);
     try {
-      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(p.worker) + '/send',
-        { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ text: p.message, record_history: true, deliver_now: true }) });
+      const q = _orchRequestFor(p);
+      const r = await fetch(q.url, { method: q.method, headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(q.body) });
       const d = await r.json().catch(() => ({}));
-      results.push({ worker: p.worker, ok: r.ok && d.ok !== false, msg: d.error || (typeof d.msg === 'string' ? d.msg : '') || (r.ok ? 'sent' : 'failed') });
-    } catch (e) { results.push({ worker: p.worker, ok: false, msg: e.message || 'error' }); }
+      results.push({ label, ok: r.ok && d.ok !== false, msg: d.error || (typeof d.msg === 'string' ? d.msg : '') || (r.ok ? 'done' : 'failed') });
+    } catch (e) { results.push({ label, ok: false, msg: e.message || 'error' }); }
   }
   const ok = results.filter(r => r.ok).length;
   _orchShowStep('');
   const res = document.getElementById('orch-result');
   if (res) {
     res.style.display = '';
-    res.innerHTML = '<div class="orch-label">Sent ' + ok + ' of ' + results.length + '</div>'
-      + results.map(r => '<div class="orch-res-row ' + (r.ok ? 'ok' : 'bad') + '">' + (r.ok ? '&#10003;' : '&#10007;') + ' <b>' + esc(r.worker) + '</b> <span style="color:var(--dim);">' + esc(r.msg) + '</span></div>').join('')
+    res.innerHTML = '<div class="orch-label">Ran ' + ok + ' of ' + results.length + '</div>'
+      + results.map(r => '<div class="orch-res-row ' + (r.ok ? 'ok' : 'bad') + '">' + (r.ok ? '&#10003;' : '&#10007;') + ' <b>' + esc(r.label) + '</b> <span style="color:var(--dim);">' + esc(r.msg) + '</span></div>').join('')
       + '<div class="orch-actions" style="margin-top:12px;"><button class="btn" onclick="_orchReset()">Orchestrate again</button><button class="btn primary" onclick="_orchClose()">Done</button></div>';
   }
 }
@@ -4753,8 +5332,8 @@ function _editAddGroup(sel) {
 let editState = null;  // {session, field, current}
 function editField(session, field, current, provider) {
   closeAllMenus();
-  const titles = { name: 'Rename worker', provider: 'Change provider', model: 'Change model', effort: 'Reasoning effort', dir: 'Change directory', desc: 'Set description', tags: 'Edit groups', task: 'Edit task label', duplicate: 'Duplicate worker', clone: 'Clone & continue' };
-  const placeholders = { name: 'Worker name', model: 'e.g. opus, sonnet, haiku', dir: window._cloudEmail ? '/root' : '/path/to/project', desc: 'Brief description...', tags: 'e.g. work, frontend, urgent', task: 'e.g. Fix login bug (blank to auto-generate)', duplicate: 'New worker name', clone: 'New worker name' };
+  const titles = { name: 'Rename worker', provider: 'Change provider', model: 'Change model', effort: 'Reasoning effort', dir: 'Change directory', desc: 'Set description', tags: 'Edit groups', task: 'Edit task label', branch: 'Set worker branch', mcp: 'Browser tooling', send_allow: 'Cross-group messaging', duplicate: 'Duplicate worker', clone: 'Clone & continue' };
+  const placeholders = { name: 'Worker name', model: 'e.g. opus, sonnet, haiku', dir: window._cloudEmail ? '/root' : '/path/to/project', desc: 'Brief description...', tags: 'e.g. work, frontend, urgent', task: 'e.g. Fix login bug (blank to auto-generate)', branch: 'Branch name; blank = detected branch; none = main', send_allow: 'Comma-separated groups, * for all, blank to refuse', duplicate: 'New worker name', clone: 'New worker name' };
   document.getElementById('edit-title').textContent = titles[field] || 'Edit';
   const inp = document.getElementById('edit-input');
   const sel = document.getElementById('edit-select');
@@ -4778,7 +5357,7 @@ function editField(session, field, current, provider) {
     const claudeModels = [
       {v:'',l:'Default'},{v:'opus',l:'opus'},{v:'sonnet',l:'sonnet'},{v:'haiku',l:'haiku'},
       {v:'claude-opus-5',l:'claude-opus-5'},{v:'claude-opus-5[1m]',l:'claude-opus-5 [1M]'},
-      {v:'claude-fable-5',l:'claude-fable-5'},
+      {v:'claude-fable-5-1',l:'claude-fable-5-1'},{v:'claude-fable-5',l:'claude-fable-5'},
       {v:'claude-opus-4-8',l:'claude-opus-4-8'},{v:'claude-opus-4-8[1m]',l:'claude-opus-4-8 [1M]'},
       {v:'claude-opus-4-7',l:'claude-opus-4-7'},{v:'claude-opus-4-7[1m]',l:'claude-opus-4-7 [1M]'},
       {v:'claude-opus-4-6',l:'claude-opus-4-6'},{v:'claude-opus-4-6[1m]',l:'claude-opus-4-6 [1M]'},
@@ -4786,7 +5365,12 @@ function editField(session, field, current, provider) {
       {v:'claude-haiku-4-5-20251001',l:'claude-haiku-4-5-20251001'}
     ];
     const codexModels = [
-      {v:'',l:'Default'},{v:'gpt-5.5',l:'gpt-5.5'},{v:'o3',l:'o3'},{v:'o4-mini',l:'o4-mini'},
+      {v:'',l:'Default'},
+      {v:'gpt-5.6-sol',l:'GPT-5.6 Sol'},{v:'gpt-5.6-terra',l:'GPT-5.6 Terra'},
+      {v:'gpt-5.6-luna',l:'GPT-5.6 Luna'},{v:'gpt-5.5',l:'GPT-5.5'},
+      {v:'gpt-5.4',l:'GPT-5.4'},{v:'gpt-5.4-mini',l:'GPT-5.4 Mini'},
+      {v:'gpt-5.3-codex-spark',l:'GPT-5.3 Codex Spark'},
+      {v:'o3',l:'o3'},{v:'o4-mini',l:'o4-mini'},
       {v:'gpt-4o',l:'gpt-4o'},{v:'gpt-4.1',l:'gpt-4.1'},{v:'gpt-4.1-mini',l:'gpt-4.1-mini'}
     ];
     const geminiModels = [
@@ -4848,6 +5432,13 @@ function editField(session, field, current, provider) {
     ];
     sel.innerHTML = '';
     efforts.forEach(e => { const o = document.createElement('option'); o.value = e.v; o.textContent = e.l; sel.appendChild(o); });
+    inpWrap.style.display = 'none';
+    sel.style.display = 'block';
+    sel.value = current || '';
+  } else if (field === 'mcp') {
+    const modes = [{v:'',l:'Disabled'},{v:'chrome',l:'Chrome browser tooling'}];
+    sel.innerHTML = '';
+    modes.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
     inpWrap.style.display = 'none';
     sel.style.display = 'block';
     sel.value = current || '';
@@ -4914,10 +5505,10 @@ function _editSelectChanged() {
 }
 async function submitEdit() {
   if (!editState) return;
-  const val = (editState.field === 'model' || editState.field === 'provider' || editState.field === 'effort')
+  const val = (editState.field === 'model' || editState.field === 'provider' || editState.field === 'effort' || editState.field === 'mcp')
     ? document.getElementById('edit-select').value.trim()
     : document.getElementById('edit-input').value.trim();
-  if (!val && editState.field !== 'desc' && editState.field !== 'tags' && editState.field !== 'model' && editState.field !== 'task' && editState.field !== 'effort') return;
+  if (!val && !['desc','tags','model','task','effort','branch','mcp','send_allow'].includes(editState.field)) return;
   const { session, field } = editState;
   // Capture the reasoning-effort dial before closeEdit() tears the dialog down.
   let _effortVal = null;
@@ -4938,10 +5529,15 @@ async function submitEdit() {
       body: JSON.stringify({ new_name: val })
     });
   } else if (field === 'name') {
-    await apiCall(API + '/api/sessions/' + session + '/config', {
+    const renamed = await apiCall(API + '/api/sessions/' + session + '/config', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ rename: val })
     });
+    // The worker identity survives a rename, but this legacy surface addresses
+    // it by display name. Keep the open Configurations panel attached to the
+    // renamed worker instead of reloading the now-stale route and showing an
+    // unexplained 404.
+    if (renamed && peekSession === session) peekSession = val;
   } else if (field === 'model') {
     const payload = { model: val };
     if (_effortVal !== null) payload.effort = _effortVal;  // Claude only
@@ -4979,8 +5575,26 @@ async function submitEdit() {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ tags: val })
     });
+  } else if (field === 'branch') {
+    await apiCall(API + '/api/sessions/' + session + '/config', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ branch: val })
+    });
+  } else if (field === 'mcp') {
+    await apiCall(API + '/api/sessions/' + session + '/config', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ mcp: val })
+    });
+  } else if (field === 'send_allow') {
+    await apiCall(API + '/api/sessions/' + session + '/config', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ send_allow: val })
+    });
   }
   await fetchSessions();
+  if (peekSession && (peekSession === session || (field === 'name' && peekSession === val)) && _peekTab === 'scope') {
+    _scopeLoad({ level: 'worker', name: peekSession }, 'peek-scope-body');
+  }
 }
 
 // Edit modal dir autocomplete
@@ -5152,6 +5766,67 @@ async function togglePin(session) {
 // harness (AMUX_SESSION/URL env, self-report hooks, --mcp-config) and hides the
 // worker from peers at the NEXT spawn, so the toast says restart to apply. Paint
 // the flip immediately like togglePin, then let fetchSessions be the truth.
+// Says WHERE the allowance comes from, because the resolved value and the
+// worker's own value are different facts. A lane granted by a group layer shows
+// a ticked box it cannot untick here, and saying "(inherited)" is the difference
+// between a confusing control and an honest one.
+function _spansLabel(s) {
+  if (!s.spans_groups) return '';
+  const v = s.spans_groups_value || '';
+  const scope = v === '*' ? 'all' : v;
+  return s.spans_groups_own ? ': ' + esc(scope) : ': ' + esc(scope) + ' (inherited)';
+}
+
+// AUTO-DRAIN BACKLOG (AMUX-4055). Ethan: "the configuration needs to be a
+// button/toggle too". Same worker-level key Configurations writes, so the toggle
+// and the env box are two views of one setting.
+//
+// The toast says what it will and will NOT do, because the honest answer to
+// "why is nothing draining" is usually the skip rule rather than the switch:
+// tubescience had this ON with 20 backlog cards and drained none, every one of
+// them re-confirmed as waiting on an external condition within the last day.
+async function toggleAutoDrain(session) {
+  closeAllMenus();
+  const s = sessions.find(x => x.name === session);
+  const was = s ? !!s.auto_drain_backlog : false;
+  const next = !was;
+  if (s) { s.auto_drain_backlog = next; lastSessionsJSON = ''; render(); }
+  const r = await apiCall(API + '/api/sessions/' + session + '/config', {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ auto_drain_backlog: next })
+  });
+  if (!r && s) { s.auto_drain_backlog = was; lastSessionsJSON = ''; render(); }
+  else if (r) {
+    // Report the RESOLVED value, not the click. A group or global layer can
+    // supply this, so "turned off" can be false the moment it is said.
+    if (s && typeof r.auto_drain_backlog === 'boolean') s.auto_drain_backlog = r.auto_drain_backlog;
+    showToast(r.message || (next ? 'Auto-drain on' : 'Auto-drain off'));
+  }
+  await fetchSessions();
+}
+
+async function toggleSpansGroups(session) {
+  closeAllMenus();
+  const s = sessions.find(x => x.name === session);
+  const was = s ? !!s.spans_groups : false;
+  // Turning OFF only clears this worker's own value. If a group or global layer
+  // granted it, the server says so in its reply rather than reporting success
+  // for a change the next send would disprove.
+  if (was && s && !s.spans_groups_own) {
+    showToast('Granted by a group or global layer — turn it off in Configurations');
+    return;
+  }
+  const next = !was;
+  if (s) { s.spans_groups = next; lastSessionsJSON = ''; render(); }
+  const r = await apiCall(API + '/api/sessions/' + session + '/config', {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ spans_groups: next })
+  });
+  if (!r && s) { s.spans_groups = was; lastSessionsJSON = ''; render(); }
+  else if (r) { showToast(r.message || (next ? 'Spans groups on' : 'Spans groups off')); }
+  await fetchSessions();
+}
+
 async function toggleIsolated(session) {
   closeAllMenus();
   const s = sessions.find(x => x.name === session);
@@ -5435,6 +6110,43 @@ function hidePeekLoading() {
   if (ind) ind.style.display = 'none';
 }
 
+/// Does `text` already open with a send-time stamp this client wrote?
+///
+/// The stamp shape is `[<clock time>[ <author>]] `, so the discriminator is a
+/// CLOCK TIME immediately inside the leading bracket. Deliberately not "starts
+/// with a bracket": `[urgent] ship this` is an ordinary message and must still
+/// get stamped. AM/PM is optional because `toLocaleTimeString` drops it in a
+/// 24-hour locale, and the stamp has to be recognised in the same locale that
+/// wrote it.
+function _hasSendTimeStamp(text) {
+  return /^\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?[^\]]*\]\s/i.test(text || '');
+}
+
+/// Prefix `text` with the send time, ONCE.
+///
+/// Idempotent on purpose. Re-sending a message that already carries a stamp is
+/// ordinary: Ethan re-asks by pasting the text back out of the transcript, and
+/// the offline queue replays a payload that was already built. Both used to
+/// produce a nested stamp, measured live on MSG-35221, whose stored text is
+///
+///   "[10:00 AM] [11:32 PM] where are we at with all of the items ..."
+///
+/// The inner one is 10.5 hours stale and reaches the model as message CONTENT,
+/// because the reader strips a SINGLE leading stamp (`strip_context_wrapper`,
+/// opencode/events.rs) and the survivor looks exactly like a real one. So the
+/// lane is told a time that is not when the message was sent, and cannot tell
+/// which of the two is now.
+///
+/// Returning the text unchanged rather than restamping it is the deliberate
+/// choice: the FIRST stamp is the one that was true when a human typed it, and
+/// a replay from the offline queue should not claim to have been sent at replay
+/// time.
+function _stampSendTime(text, now, author) {
+  if (_hasSendTimeStamp(text)) return text;
+  const ts = (now || new Date()).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: true});
+  return `[${ts}${author ? ` ${author}` : ''}] ${text}`;
+}
+
 async function doSend(name, text) {
   showSendingIndicator();
   // OPTIMISTIC STATUS (Ethan, 2026-08-16: "very snappy"). Flip to working the
@@ -5453,13 +6165,7 @@ async function doSend(name, text) {
   // Slash commands (e.g. /clear, /compact) must be sent verbatim — no timestamp prefix
   const isSlashCmd = /^\/[a-z]/.test(text.trim());
   amuxTrack('message_sent', { session: name, is_slash: isSlashCmd, cmd: isSlashCmd ? text.trim().split(/\s+/)[0] : null, length: text.length });
-  let payload = text;
-  if (!isSlashCmd) {
-    const now = new Date();
-    const ts = now.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: true});
-    const author = _cloudEmail ? ` ${_cloudEmail}` : '';
-    payload = `[${ts}${author}] ${text}`;
-  }
+  const payload = isSlashCmd ? text : _stampSendTime(text, new Date(), _cloudEmail);
   // One msg_id per logical send, reused verbatim by the offline-queue replay:
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
@@ -5838,7 +6544,7 @@ async function loadPeekTranscript(showLoading) {
   }
 }
 
-// ── Scope tab: what this worker operates under, and which layer set it ──────
+// ── Configurations tab: editable values plus the layer that supplies each ──
 // Ethan: "a very easy way in the user experience to understand each of these
 // scoped characteristics." The provenance existed across five API surfaces and
 // nobody opens five surfaces to answer one question.
@@ -5933,6 +6639,18 @@ function _grpOpenBoard(g) {
 
 let _scopeRowOpen = {};   // capability rows are CONTRACTED by default
 
+/// Where a scope panel re-renders after a write. Mirrors `_scopeRowToggle`,
+/// which is the only place that got it right.
+///
+/// The save paths computed this as `name ? 'grp-scope-body-'+name : undefined`,
+/// which for a WORKER names the GROUP panel's element id. That element does not
+/// exist in the peek, `_scopeLoad` returns early on a missing target, and the
+/// tile keeps showing its pre-save value underneath a green "Saved". The write
+/// landed; only the panel disagreed, which gets reported as "it doesn't save".
+function _scopeTargetId(lvl, name) {
+  return (lvl === 'group') ? ('grp-scope-body-' + name) : 'peek-scope-body';
+}
+
 function _scopeRowToggle(key) {
   _scopeRowOpen[key] = !_scopeRowOpen[key];
   const parts = key.split(':');
@@ -5991,51 +6709,7 @@ function _grpGoto(g, where) {
 // a closed onclick cycle only its own buttons could enter. The real pages ARE
 // the group views now, scoped by their own filter controls.
 
-// The WRITE surface for one capability at one level (AMUX-2359). Renders a
-// control ONLY where the server says a value can actually be set; everywhere
-// else it renders the REASON. A field whose write the resolver would outrank is
-// worse than no field — it is an instruction you can follow exactly that does
-// nothing (AMUX-2140), and the read half already publishes `supported`, so
-// there is no excuse for the client to guess.
-function _scopeEditorHTML(lvl, name, cap) {
-  const id = 'scope-ed-' + lvl + '-' + (name || 'global') + '-' + cap.key;
-  if (!cap.supported) {
-    return '<div style="margin-top:6px;font-size:0.68rem;color:#d29922;">'
-      + 'Not settable here. It is decided at: ' + esc((cap.order || []).filter(x => x !== lvl).join(' > '))
-      + '</div>';
-  }
-  const v = cap.value || {};
-  // Text-backed capabilities get a textarea; keyed/structured ones are edited
-  // where they live (env file, gate editor) rather than half-edited here.
-  if (cap.kind === 'text') {
-    // A capped read must never be writable: saving it back would replace the
-    // file with its own first N bytes, turning a DISPLAY limit into data loss.
-    if (v.truncated) {
-      return '<div style="margin-top:6px;font-size:0.68rem;color:#d29922;">'
-        + 'Too large to edit here (' + (v.bytes || 0) + ' bytes, shown truncated), so editing is '
-        + 'disabled — saving a truncated copy would delete the rest. Edit '
-        + '<code>' + esc(v.path || '') + '</code> directly.</div>';
-    }
-    return '<div style="margin-top:7px;">'
-      + '<textarea id="' + id + '" placeholder="Nothing set at this level. Type to set it."'
-      + ' style="width:100%;min-height:74px;background:var(--bg);border:1px solid var(--border);'
-      + 'border-radius:6px;padding:6px 8px;font-size:0.72rem;color:var(--text);font-family:inherit;'
-      + 'resize:vertical;" oninput="event.stopPropagation();">' + esc(v.text || '') + '</textarea>'
-      + '<div style="display:flex;gap:6px;align-items:center;margin-top:5px;">'
-      + '<button class="btn primary" style="font-size:0.68rem;min-height:32px;padding:4px 10px;"'
-      + ' onclick="event.stopPropagation();_scopeSave(\'' + escJs(lvl) + '\',\'' + escJs(name || '') + '\',\''
-      + escJs(cap.key) + '\',\'' + escJs(id) + '\')">Save</button>'
-      + '<span id="' + id + '-msg" style="font-size:0.64rem;color:var(--dim);">'
-      + (v.bytes ? v.bytes + ' bytes at this level' : 'unset at this level') + '</span>'
-      + '</div></div>';
-  }
-  return '<div style="margin-top:6px;font-size:0.66rem;color:var(--dim);">'
-    + 'Edited where it lives (' + esc(cap.kind) + '). Writable via '
-    + '<code>PUT /api/scope</code> with capability <code>' + esc(cap.key) + '</code>.'
-    + '</div>';
-}
-
-// ── Scope editor (AMUX-2436) ──────────────────────────────────────────────
+// ── Configuration editor (AMUX-2436) ──────────────────────────────────────
 // Ethan: "when I click memory, environment, board gates in the expandable group
 // bar I should be able to see/override/edit group level overrides ... same ux as
 // the actual memory environment and board gates pages."
@@ -6048,7 +6722,7 @@ function _scopeEditorHTML(lvl, name, cap) {
 let _scopeEditCtx = null, _scopeEditDirty = false;
 
 function _scopeEditClose() {
-  if (_scopeEditDirty && !confirm('Discard unsaved changes to this scope?')) return;
+  if (_scopeEditDirty && !confirm('Discard unsaved configuration changes?')) return;
   document.getElementById('scope-edit-backdrop').classList.remove('open');
   _scopeEditCtx = null; _scopeEditDirty = false;
 }
@@ -6059,6 +6733,8 @@ const _SCOPE_EDIT_HINT = {
   env:    'KEY=VALUE per line, shell style. Merged by key; a worker’s own .env wins on a clash.',
   gates:  'JSON: {"status": ["criterion", ...]}. Replaces this level’s gate for the statuses named; omit a status to inherit.',
   status_mode: 'JSON array of status ids this level opts into, e.g. ["verified"].',
+  skin: 'JSON object. Keys override terms, colours, and tabs at this level; omitted keys inherit.',
+  connectors: 'JSON object keyed by connector. Each value can set enabled, account, and mcp; omitted connectors inherit.',
 };
 
 async function _scopeEditOpen(lvl, name, key) {
@@ -6096,11 +6772,12 @@ async function _scopeEditOpen(lvl, name, key) {
       text = v.text || '';
     } else if (key === 'env') {
       const keys = v.keys || [];
+      _scopeEditCtx.originalKeys = keys.slice();
       text = keys.length
         ? keys.map(k => k + '=').join('\n')
         : '';
       document.getElementById('scope-edit-msg').textContent = keys.length
-        ? 'Values are not shown (secrets). Re-enter a value to change it; a bare KEY= is ignored.'
+        ? 'Values are hidden. Re-enter a value to change it, leave KEY= to preserve it, or remove the line to delete it.'
         : '';
     } else {
       text = JSON.stringify(v && Object.keys(v).length ? v : (Array.isArray(v) ? v : {}), null, 2);
@@ -6135,12 +6812,20 @@ async function _scopeEditSave() {
   let value;
   if (key === 'memory' || key === 'rules') value = { text: ta.value };
   else if (key === 'env') {
-    // Only lines with an actual value are sent — a bare KEY= from the masked
-    // read would otherwise BLANK the secret it was standing in for.
+    // Existing values stay masked. A bare KEY= preserves one, a changed value
+    // overwrites it, and removing the line emits null so the server deletes it.
+    // Without the original-key diff the UI could add env keys but never remove
+    // them, which is not a configuration editor.
     const out = {};
+    const present = new Set();
     (ta.value || '').split('\n').forEach(l => {
       const m = l.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
-      if (m && m[2].trim() !== '') out[m[1]] = m[2].trim();
+      if (!m) return;
+      present.add(m[1]);
+      if (m[2].trim() !== '') out[m[1]] = m[2].trim();
+    });
+    ((_scopeEditCtx && _scopeEditCtx.originalKeys) || []).forEach(k => {
+      if (!present.has(k)) out[k] = null;
     });
     value = out;
   } else {
@@ -6166,38 +6851,154 @@ async function _scopeEditSave() {
     msg.textContent = 'Saved'; msg.style.color = 'var(--green)';
     showToast(key + ' saved at ' + (lvl === 'global' ? 'global' : lvl + ' ' + name));
     _scopeLoad(lvl === 'global' ? { level: 'global' } : { level: lvl, name: name },
-               name ? 'grp-scope-body-' + name : undefined);
+               _scopeTargetId(lvl, name));
   } catch (e) {
     msg.textContent = 'Save failed: ' + e.message; msg.style.color = '#f85149';
   }
 }
 
-async function _scopeSave(lvl, name, key, elId) {
-  const ta = document.getElementById(elId);
-  const msg = document.getElementById(elId + '-msg');
-  if (!ta) return;
-  if (msg) { msg.textContent = 'Saving…'; msg.style.color = 'var(--dim)'; }
-  try {
-    const r = await fetch(API + '/api/scope', {
-      method: 'PUT',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
-      body: JSON.stringify({ level: lvl, name: name, capability: key, value: { text: ta.value } }),
-    });
-    const d = await r.json();
-    if (!r.ok || d.error) {
-      // Show the server's REASON verbatim. A 403 here is a real policy answer
-      // ("a session may not write the group layer"), not a glitch, and
-      // paraphrasing it into "save failed" would hide the one useful sentence.
-      if (msg) { msg.textContent = d.error || ('save failed (' + r.status + ')'); msg.style.color = '#f85149'; }
-      return;
-    }
-    if (msg) { msg.textContent = 'Saved · ' + (d.value && d.value.bytes != null ? d.value.bytes + ' bytes' : 'ok'); msg.style.color = 'var(--green)'; }
-    // Re-read so the tile's supplying-layer badge reflects the write, which is
-    // the card's acceptance criterion — not just "the POST returned 200".
-    _scopeLoad(lvl === 'global' ? { level: 'global' } : { level: lvl, name: name },
-               name ? 'grp-scope-body-' + name : undefined);
-  } catch (e) {
-    if (msg) { msg.textContent = 'save failed: ' + e.message; msg.style.color = '#f85149'; }
+// Board automation is configuration, so expose the runtime's actual switches
+// beside gates/status availability instead of scattering one in a card menu
+// and hiding the other two as environment-variable trivia. Each switch writes
+// the worker layer; Inherit removes that override and immediately re-resolves
+// global -> group -> worker precedence on the server.
+const _WORKER_BOARD_CONFIGS = [
+  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
+    label: 'Backlog → To Do', note: 'Pull the oldest eligible backlog card when To Do is empty. On by default; parked and human-owned cards stay put.' },
+  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
+    label: 'To Do → In Progress', note: 'Claim the next eligible To Do card when the worker is idle.' },
+  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
+    label: 'Continue non-terminal work', note: 'Re-check actionable blocked work instead of stopping early.' },
+  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
+    label: 'Pickup / continue master', note: 'Master switch for To Do pickup and non-terminal continuation.' },
+];
+
+function _workerConfigurationRow(key, label, value, note, controls) {
+  return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
+    + '<div class="worker-config-copy"><div class="worker-config-label">'
+    + esc(label) + '</div><div class="worker-config-note">'
+    + (value ? '<span style="color:var(--text);">' + esc(value) + '</span>' + (note ? ' · ' : '') : '')
+    + esc(note || '') + '</div></div><div class="worker-config-actions">'
+    + controls + '</div></div>';
+}
+
+function _workerConfigurationSection(key, title, note, rows) {
+  return '<section class="worker-config-section" data-config-section="' + esc(key) + '">'
+    + '<div class="worker-config-section-head"><div class="worker-config-section-title">' + esc(title) + '</div>'
+    + '<div class="worker-config-section-note">' + esc(note || '') + '</div></div>'
+    + '<div class="worker-config-section-rows">' + rows.join('') + '</div></section>';
+}
+
+// Complete inventory of the durable PATCH /config surface. Commands that do
+// not describe durable worker state (restart, archive, duplicate, fresh
+// conversation) stay in the worker menu; every actual configuration field is
+// reachable here. The raw Environment editor remains the escape hatch for
+// open-ended startup keys such as CC_BACKEND/CC_CREATOR/CC_FLAGS — it is part
+// of this same tab, not a hidden file-editing workflow.
+function _workerPrimaryConfigurationsHTML(name) {
+  const s = sessions.find(x => x.name === name) || {};
+  const provider = sessionProvider(s);
+  const model = sessionConfiguredModel(s);
+  const effort = flagValue(s.flags || '', '--effort');
+  const q = escJs(name);
+  const edit = (field, current, extra) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
+    + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
+    + escJs(current || '') + '\'' + (extra ? ',\'' + escJs(extra) + '\'' : '') + ')">Edit</button>';
+  const sw = (on, fn, label) => '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="'
+    + !!on + '" style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+    + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')" aria-label="' + esc(label) + '">'
+    + (on ? 'On' : 'Off') + '</button>';
+  const identity = [
+    _workerConfigurationRow('name', 'Name', s.name || name, 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
+    _workerConfigurationRow('description', 'Description', s.desc || '', 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
+    _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
+    _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
+  ];
+  const runtime = [
+    _workerConfigurationRow('directory', 'Working directory', s.dir || '', 'Changing it restarts a running worker in the new directory.', edit('dir', s.dir || '')),
+    _workerConfigurationRow('branch', 'Git branch', s.branch || '', 'Blank follows the detected branch; “none” explicitly uses the main checkout.', edit('branch', s.branch || '')),
+    _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
+    _workerConfigurationRow('model', 'Model version', model || 'Provider default', 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),
+    _workerConfigurationRow('effort', 'Reasoning effort', effort || 'Provider default', provider === 'claude' ? 'Can be changed independently or together with the model.' : 'This provider does not expose the effort picker.', provider === 'claude' ? edit('effort', effort || '', provider) : ''),
+    _workerConfigurationRow('mcp', 'Browser tooling', s.mcp === 'chrome' ? 'Chrome enabled' : 'Disabled', 'Applied on the next worker start.', edit('mcp', s.mcp || '')),
+  ];
+  const permissions = [
+    _workerConfigurationRow('yolo', 'Model tool approval bypass (YOLO)', s.yolo ? 'Enabled' : 'Disabled', 'Uses the selected provider’s native tool-permission flag.', sw(!!s.yolo, 'toggleYolo', 'Toggle model tool approval bypass')),
+    _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'No amux harness, hooks, MCP config, or peer discovery; restart to apply.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
+    _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_own ? 'Worker override.' : (s.spans_groups ? 'Inherited from a group/global layer.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
+    _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
+  ];
+  const advanced = [
+    _workerConfigurationRow('pinned', 'Pinned in worker list', s.pinned ? 'Pinned' : 'Not pinned', 'Presentation preference; does not change execution priority.', sw(!!s.pinned, 'togglePin', 'Toggle pinned state')),
+    _workerConfigurationRow('advanced_environment', 'Advanced environment', 'backend: ' + (s.backend || 'tmux') + (s.creator ? ' · creator: ' + s.creator : ''), 'Edit arbitrary worker-level keys. Startup-only values apply on restart.', '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;" onclick="event.stopPropagation();_scopeEditOpen(\'worker\',\'' + q + '\',\'env\')">Edit environment</button>'),
+  ];
+  return '<div class="worker-config-intro">Every durable worker setting, grouped by what it changes. Lifecycle commands remain in the worker menu.</div>'
+    + '<div class="worker-config-grid">'
+    + _workerConfigurationSection('identity', 'Identity & organization', 'How this worker is named, described, and grouped.', identity)
+    + _workerConfigurationSection('runtime', 'Runtime & model', 'Where it runs and which model/tooling it uses.', runtime)
+    + _workerConfigurationSection('permissions', 'Permissions & communication', 'Standing authority for tools, peers, and external email.', permissions)
+    + _workerConfigurationSection('advanced', 'Display & advanced', 'Presentation and lower-level environment controls.', advanced)
+    + '</div>';
+}
+
+function _workerEmailPermissionControls(name, s) {
+  const on = !!s.external_email_allowed;
+  const own = !!s.external_email_allowed_own;
+  const set = '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
+    + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+    + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>';
+  const inherit = own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
+    + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',null)">Inherit</button>' : '';
+  return set + inherit;
+}
+
+async function _workerExternalEmailSet(name, value) {
+  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ external_email_allowed: value }),
+  });
+  if (!r) return;
+  showToast(r.message || 'External email authorization saved');
+  await fetchSessions();
+  if (peekSession === name && _peekTab === 'scope') {
+    _scopeLoad({ level: 'worker', name: name }, 'peek-scope-body');
+  }
+}
+
+function _workerBoardConfigurationsHTML(name) {
+  const s = sessions.find(x => x.name === name) || {};
+  const rows = _WORKER_BOARD_CONFIGS.map(c => {
+    const on = s[c.value] !== false;
+    const own = !!s[c.own];
+    return '<div class="worker-config-row">'
+      + '<div class="worker-config-copy"><div class="worker-config-label">'
+      + esc(c.label) + (own ? ' <span style="font-size:0.62rem;color:var(--accent);">worker override</span>'
+                              : ' <span style="font-size:0.62rem;color:var(--dim);">inherited/default</span>')
+      + '</div><div class="worker-config-note">' + esc(c.note) + '</div></div><div class="worker-config-actions">'
+      + '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
+      + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+      + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
+      + escJs(c.field) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>'
+      + (own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
+          + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
+          + escJs(c.field) + '\',null)">Inherit</button>' : '')
+      + '</div></div>';
+  }).join('');
+  return '<div class="worker-config-grid worker-config-grid-board">'
+    + _workerConfigurationSection('task-lifecycle', 'Task lifecycle', 'Controls automatic backlog → To Do → In Progress and continuation until terminal. Status availability and Board gates below define transition requirements.', [rows])
+    + '</div>';
+}
+
+async function _workerBoardConfigurationSet(name, field, value) {
+  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ [field]: value }),
+  });
+  if (!r) return;
+  showToast(r.message || 'Worker configuration saved');
+  await fetchSessions();
+  if (peekSession === name && _peekTab === 'scope') {
+    _scopeLoad({ level: 'worker', name: name }, 'peek-scope-body');
   }
 }
 
@@ -6241,8 +7042,20 @@ async function _scopeLoad(scope, targetId) {
     const G = byKey(gl), Gr = grp.map(byKey);
     const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sum = (c) => {
-      const v = c && c.value;
+      let v = c && c.value;
       if (!v) return '\u2014';
+      // UNWRAP THE ENVELOPE FIRST. `skin` and `connectors` come back as
+      // {"skin": {...}} / {"connectors": {...}}, so every branch below sees a
+      // one-key object and summarises it as the literal word "connectors"
+      // rather than what is configured. Measured: the tile read "global ·
+      // connectors" while the global layer had granola enabled. (An earlier
+      // form of the predicate below returned an em-dash for the same input,
+      // which is the same defect one stage worse.)
+      if (typeof v === 'object' && !Array.isArray(v)) {
+        const ks = Object.keys(v);
+        if (ks.length === 1 && (ks[0] === 'skin' || ks[0] === 'connectors')) v = v[ks[0]];
+        if (!v) return '\u2014';
+      }
       // Array check FIRST: an empty list is [] and `v.keys` on it is undefined,
       // but the object branch below rendered it as "0 keys" — a keyed summary
       // for something that has no keys, which reads as a real but empty setting
@@ -6250,7 +7063,15 @@ async function _scopeLoad(scope, targetId) {
       if (Array.isArray(v)) return v.length ? v.join(', ') : '\u2014';
       if (v.keys) return v.keys.length + ' key' + (v.keys.length === 1 ? '' : 's');
       if (typeof v.bytes === 'number') return v.bytes ? v.bytes + ' bytes' : '\u2014';
-      if (typeof v === 'object') { const k = Object.keys(v).filter(x => v[x] && v[x].length); return k.length ? k.join(', ') : '\u2014'; }
+      if (typeof v === 'object') {
+        const k = Object.keys(v).filter(x => {
+          const z = v[x];
+          if (Array.isArray(z) || typeof z === 'string') return z.length > 0;
+          if (z && typeof z === 'object') return Object.keys(z).length > 0;
+          return z !== null && z !== undefined && z !== '';
+        });
+        return k.length ? k.join(', ') : '\u2014';
+      }
       return String(v);
     };
     const chips = (arr) => arr.map(g => '<span class="msg-tag" style="background:rgba(88,166,255,0.14);color:var(--accent);">' + esc(g) + '</span>').join(' ');
@@ -6259,7 +7080,8 @@ async function _scopeLoad(scope, targetId) {
     // group thing should be horizontal above the workers below the pills"), and
     // stack on a phone. The wrapper classes carry that; the tile row itself was
     // already horizontal.
-    let h = '<div class="grp-scope-row">'
+    let h = (lvl === 'worker' ? _workerPrimaryConfigurationsHTML(w) + _workerBoardConfigurationsHTML(w) : '')
+          + '<div class="grp-scope-row">'
           + '<div class="grp-scope-ident" style="color:var(--text);font-size:0.86rem;">'
           + '<b>' + esc(lvl === 'global' ? 'Global' : w) + '</b>'
           + (lvl === 'worker' ? ' \u00b7 groups: ' + (groups.length ? chips(groups) : '<i>none</i>') : '')
@@ -6271,7 +7093,7 @@ async function _scopeLoad(scope, targetId) {
     // 2026-08-06: "remove rules(binding) from group configs. it should just be
     // memory, board gates and env variables for now"). A DISPLAY trim, not a
     // capability removal: _SCOPE_CAPS, GET/PUT /api/scope and the worker peek
-    // Scope tab still carry rules and status_mode — "for now" means the panel,
+    // Configurations tab still carries rules and status_mode — "for now" means the panel,
     // and hiding a tile must not silently delete the API behind it.
     const _visCaps = (lvl === 'worker') ? d.capabilities
       : d.capabilities.filter(c => ['memory', 'gates', 'env'].includes(c.key));
@@ -6328,13 +7150,13 @@ async function _scopeLoad(scope, targetId) {
         + ' <span style="opacity:0.6;">\u00b7 ' + esc(_l.merge) + '</span>'
         + (_l.supported ? '' : ' <span style="color:#d29922;">\u00b7 not settable at this level</span>')
         + '</div>'
-        + ((lvl === 'group' || lvl === 'global') && _l.supported
+        + (_l.supported
             ? '<div style="margin-top:7px;"><button class="btn primary" '
               + 'style="font-size:0.7rem;min-height:36px;padding:5px 11px;" '
               + 'onclick="event.stopPropagation();_scopeEditOpen(\'' + escJs(lvl) + '\',\''
               + escJs(w || '') + '\',\'' + escJs(_l.key) + '\')">Edit ' + esc(_l.label)
               + ' at this level</button></div>'
-            : _scopeEditorHTML(lvl, w, _l))
+            : '<div style="margin-top:6px;font-size:0.68rem;color:#d29922;">Not settable at this level.</div>')
         + '</div>';
     }
     h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px;">'
@@ -6356,7 +7178,7 @@ async function _scopeLoad(scope, targetId) {
     dst.innerHTML = h;
   } catch (e) {
     const dst = document.getElementById(targetId || 'peek-scope-body') || el;
-    dst.textContent = 'Could not load scope: ' + e.message;
+    dst.textContent = 'Could not load configurations: ' + e.message;
   }
 }
 
@@ -7269,6 +8091,144 @@ function setPeekIssuesView(mode) {
   renderPeekIssues();
 }
 
+/// Export THIS worker's board, from the server, with complete descriptions.
+///
+/// Deliberately not the client-side `exportBoard()` the main Board tab uses.
+/// That one exports what is rendered, and the rendered rows carry `desc_head`
+/// because `GET /api/board` never sends `desc` (AMUX-3861). On a worker page
+/// the thing you want is that worker's cards IN FULL, which only the server can
+/// produce — so this hits `/api/board/export` and lets the browser download the
+/// response.
+///
+/// Honours the "This worker / All workers" toggle rather than ignoring it: the
+/// scope you can see in the panel is the scope you get in the file, and the
+/// export's own header restates it so the file is readable out of context.
+function exportPeekBoard(fmt) {
+  const scoped = !_peekIssuesAllSessions && peekSession;
+  const qs = new URLSearchParams({ format: fmt });
+  if (scoped) qs.set('worker', peekSession);
+  const url = _authUrl('/api/board/export?' + qs.toString());
+  const a = document.createElement('a');
+  a.href = url;
+  // The server sets Content-Disposition with the filename; this attribute only
+  // matters if that header is ever dropped by a proxy.
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast(`Exporting ${scoped ? peekSession + "'s" : 'the whole'} board as ${fmt.toUpperCase()} (full descriptions)`);
+}
+
+// ── Board nudges panel ──────────────────────────────────────────────────────
+// Reads/writes CC_STANDING_ORDERS at global, group, or worker scope via
+// GET/PATCH /api/board/nudges. The panel opens from the toolbar "Nudges" button.
+
+let _nudgesState = null;   // last GET /api/board/nudges response
+
+async function _nudgesLoad() {
+  try {
+    const r = await fetch(API + '/api/board/nudges', { headers: _authHeaders() });
+    _nudgesState = await r.json();
+  } catch (e) { _nudgesState = null; }
+  _nudgesRender();
+}
+
+function _nudgesRow(label, enabled, level, name) {
+  // Use data attributes so onclick strings stay simple and quote-safe.
+  const on = enabled !== false;
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid var(--border);">'
+    + '<span style="color:var(--text);font-size:0.76rem;">' + esc(label) + '</span>'
+    + '<button class="btn' + (on ? '' : ' primary') + '" data-nlvl="' + esc(level) + '" data-nname="' + esc(name || '') + '" data-nen="' + (!on) + '" style="font-size:0.7rem;min-height:28px;padding:3px 9px;flex:0 0 auto;" onclick="_nudgesRowClick(this)">'
+    + (on ? 'On' : 'Off') + '</button>'
+    + '</div>';
+}
+
+function _nudgesRowClick(btn) {
+  const level = btn.dataset.nlvl;
+  const name = btn.dataset.nname || null;
+  const enabled = btn.dataset.nen === 'true';
+  _nudgesSet(level, name, enabled);
+}
+
+function _nudgesRender() {
+  const el = document.getElementById('nudges-panel');
+  if (!el || el.style.display === 'none') return;
+  const s = _nudgesState;
+  if (!s) { el.innerHTML = '<div style="color:var(--dim);">Loading…</div>'; return; }
+
+  let h = '<div style="font-size:0.7rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Board nudges</div>';
+
+  // Global row — null/undefined means key absent = on
+  h += _nudgesRow('Global (all workers)', s.global, 'global', null);
+
+  // Group rows — only groups with an explicit value
+  const grps = s.groups || {};
+  const grpNames = Object.keys(grps).sort();
+  if (grpNames.length) {
+    h += '<div style="color:var(--dim);font-size:0.68rem;margin:6px 0 2px;">Groups with overrides</div>';
+    grpNames.forEach(g => { h += _nudgesRow(g, grps[g], 'group', g); });
+  }
+
+  // Worker rows — only workers with an explicit value
+  const wkrs = s.workers || {};
+  const wkrNames = Object.keys(wkrs).sort();
+  if (wkrNames.length) {
+    h += '<div style="color:var(--dim);font-size:0.68rem;margin:6px 0 2px;">Workers with overrides</div>';
+    wkrNames.forEach(w => { h += _nudgesRow(w, wkrs[w], 'worker', w); });
+  }
+
+  // Quick-set for the currently open worker peek
+  if (peekSession) {
+    h += '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">'
+      + '<div style="color:var(--dim);font-size:0.68rem;margin-bottom:4px;">Set for: <b>' + esc(peekSession) + '</b></div>'
+      + '<div style="display:flex;gap:6px;">'
+      + '<button class="btn" data-nlvl="worker" data-nname="' + esc(peekSession) + '" data-nen="true" style="font-size:0.7rem;min-height:28px;flex:1;" onclick="_nudgesRowClick(this)">On</button>'
+      + '<button class="btn primary" data-nlvl="worker" data-nname="' + esc(peekSession) + '" data-nen="false" style="font-size:0.7rem;min-height:28px;flex:1;" onclick="_nudgesRowClick(this)">Off</button>'
+      + '</div></div>';
+  }
+
+  h += '<div style="color:var(--dim);font-size:0.66rem;margin-top:8px;">On = default. Off disables board nudges at that scope (sets CC_STANDING_ORDERS=False).</div>';
+  el.innerHTML = h;
+}
+
+async function _nudgesSet(level, name, enabled) {
+  const body = { level, enabled };
+  if (name) body.name = name;
+  try {
+    await fetch(API + '/api/board/nudges', {
+      method: 'PATCH',
+      headers: Object.assign({}, _authHeaders(), { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    showToast('Nudges ' + (enabled ? 'enabled' : 'disabled') + ' at ' + level + (name ? ':' + name : ''));
+    await _nudgesLoad();
+  } catch (e) { showToast('Failed to update nudges: ' + e.message); }
+}
+
+function _nudgesTogglePanel(e) {
+  if (e) e.stopPropagation();
+  const el = document.getElementById('nudges-panel');
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    el.innerHTML = '<div style="color:var(--dim);">Loading…</div>';
+    _nudgesLoad();
+    setTimeout(() => document.addEventListener('click', _nudgesPanelOutside, true), 0);
+  } else {
+    el.style.display = 'none';
+    document.removeEventListener('click', _nudgesPanelOutside, true);
+  }
+}
+
+function _nudgesPanelOutside(e) {
+  const el = document.getElementById('nudges-panel');
+  const btn = document.getElementById('nudges-btn');
+  if (el && !el.contains(e.target) && e.target !== btn) {
+    el.style.display = 'none';
+    document.removeEventListener('click', _nudgesPanelOutside, true);
+  }
+}
+
 function togglePeekIssuesAll() {
   _peekIssuesAllSessions = !_peekIssuesAllSessions;
   localStorage.setItem('amux_peek_issues_all', _peekIssuesAllSessions ? '1' : '0');
@@ -7944,7 +8904,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.746';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.813';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -8232,16 +9192,22 @@ function openPeek(name, opts) {
     if (el) { el.textContent = ''; el.classList.remove('has-count', 'has-pending', 'sched-on', 'sched-off'); }
   });
   _peekUpdateTabCounts();
-  // AMUX-3201: a codex/ollama peek opens straight to the Claude-like structured
-  // transcript rather than the raw native TUI (Ethan's complaint). The Terminal
-  // tab stays one tap away as the raw-terminal toggle. Guarded: a hidden
-  // Transcript tab, a non-codex provider, or a missing helper is a no-op that
-  // leaves openPeek's default terminal view untouched.
-  try {
-    const _pv = _peekSess ? sessionProvider(_peekSess) : 'claude';
-    const _hidden = (typeof peekHiddenTabs !== 'undefined' && peekHiddenTabs.has) ? peekHiddenTabs.has('transcript') : false;
-    if ((_pv === 'codex' || _pv === 'ollama') && !_hidden) setPeekTab('transcript');
-  } catch (e) {}
+  // Every worker opens on its live terminal. A provider-specific default made
+  // Codex/Ollama workers jump to Transcript after the reset above, so the
+  // default differed by provider and hid the interactive pane at the moment a
+  // user opened a worker. Transcript remains an explicit tab, never a redirect.
+  // If a later call reintroduces an override, leave a server-visible signal for
+  // `/api/client-debug` and the normal log sweep rather than relying on a
+  // screenshot to discover it.
+  if (_peekTab !== 'terminal') {
+    try {
+      fetch(API + '/api/client-debug', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ kind: 'peek-default-tab-violation', ver: APP_VER, tab: _peekTab,
+          provider: _peekSess ? sessionProvider(_peekSess) : 'unknown' }),
+      }).catch(() => {});
+    } catch (e) {}
+  }
   loadPeekCommitGuard(name);
   updateConnectionStatus();
   const peekOv = document.getElementById('peek-overlay');
@@ -9531,8 +10497,23 @@ async function _peekLoadEarlier() {
     } else {
       const text = await r.text();
       const remaining = parseInt(r.headers.get('X-Log-Remaining') || '0', 10);
-      // New chunk is OLDER than everything loaded — it goes on top.
-      _peekEarlier.chunks.unshift('<span class="pe-chunk">' + esc(text) + '</span>');
+      // THROUGH THE SAME PIPELINE AS THE LIVE VIEW (AMUX-4021). This was
+      // `esc(text)`, which is raw escaped text with none of the peek render
+      // stages — and `_peekHtml`'s own comment warns about exactly that: "the
+      // four call sites each spelled the chain out, so adding a stage meant
+      // finding all of them". This was a fifth call site that never got them.
+      //
+      // The symptom was not subtle. A worker log is full of box-drawing runs
+      // and long unbroken lines; without `wrapBoxBlocks` they inherit the
+      // container's pre-wrap + break-word and wrap at EVERY CHARACTER, so
+      // loading earlier output rendered a 2-3 character wide column of
+      // gibberish instead of a log. `wrapBoxBlocks` gives each box run its own
+      // `.peek-box` with white-space:pre and its own horizontal scroller, which
+      // is what keeps tables, diffs and framed output aligned; `_fitRules`
+      // stops a 220-column pane rule forcing a scroller; `_linkifyPaths` and
+      // `highlightPrompts` make the earlier text behave like the live text it
+      // is continuous with.
+      _peekEarlier.chunks.unshift('<span class="pe-chunk">' + _peekHtml(text) + '</span>');
       _peekEarlier.loadedKb += _PEEK_LOG_CHUNK_KB;
       _peekEarlier.done = remaining <= 0;
     }
@@ -9758,9 +10739,14 @@ function peekSearchPrev() {
 function togglePeekMoreMenu() {
   const dd = document.getElementById('peek-more-dropdown');
   if (!dd) return;
+  const s = (sessions || []).find(row => row.name === peekSession);
+  if (s) _renderPeekWorkerActions(s);
   const opening = !dd.classList.contains('open');
   dd.classList.toggle('open');
-  if (opening) setTimeout(() => document.addEventListener('click', _closePeekMore, {once: true}), 0);
+  if (opening) {
+    if (s) requestAnimationFrame(() => _reportWorkerActionParity(s));
+    setTimeout(() => document.addEventListener('click', _closePeekMore, {once: true}), 0);
+  }
 }
 function _closePeekMore() {
   const dd = document.getElementById('peek-more-dropdown');
@@ -10126,6 +11112,38 @@ function retryCardFile(name, idx) {
   const f = (_cardFiles[name] || [])[idx];
   if (!f || f.inflight || f.path) return;
   _runUpload(f, _cardSink(name));
+}
+
+/// Clear the composer: text, the saved draft, and any staged attachments.
+///
+/// CLEARS THE DRAFT, NOT JUST THE BOX. Blanking `inp.value` alone leaves
+/// `_draftGet(session)` holding the text, and the next open puts it back — which
+/// is the ghost AMUX-3388 was about, where an already-sent message reappeared
+/// and got sent twice. The comment above `_draftGet` says drafts live in ONE
+/// place precisely so a clear cannot hit one store and miss another; this uses
+/// that one place.
+///
+/// Attachments go too, because a "clear" that silently left files staged would
+/// put them on the NEXT message, which is a worse surprise than losing them. The
+/// toast names what went so it is not silent either way. This is the same
+/// four-step sequence the send path uses, deliberately: the composer has exactly
+/// one notion of "emptied", and two spellings of it would drift.
+function _peekClearInput() {
+  const inp = document.getElementById('peek-cmd-input');
+  if (!inp) return;
+  const hadText = (inp.value || '').trim().length > 0;
+  const nFiles = (typeof peekFiles !== 'undefined' && peekFiles) ? peekFiles.length : 0;
+  if (!hadText && !nFiles) { showToast('Composer is already empty'); return; }
+  inp.value = '';
+  inp.style.height = 'auto';
+  _draftClear(peekSession);
+  if (nFiles) clearPeekFiles();
+  try { inp.focus(); } catch (e) {}
+  showToast(
+    nFiles
+      ? `Cleared${hadText ? ' input and' : ''} ${nFiles} attachment${nFiles === 1 ? '' : 's'}`
+      : 'Cleared input'
+  );
 }
 
 function clearPeekFiles() {
@@ -11049,6 +12067,44 @@ function _atAttach(inp) {
   inp.addEventListener('blur', () => setTimeout(() => dd.classList.remove('open'), 200));
 }
 
+// The status of each lane, in the @-mention list (Ethan, 2026-09-02: "i want
+// these to say the status of each when i @ it").
+//
+// The row used to carry a bare filled/hollow dot, which answers "is the process
+// up" and not the question you are actually asking at an @ — whether the lane
+// you are about to address can take the message now. A running lane at a
+// permission prompt and a running lane mid-turn drew the identical dot.
+//
+// Reuses `_sessStatusKey` and the `.status-badge` classes rather than a second
+// vocabulary, so this list cannot drift from the cards, the peek header or the
+// filter facets — they all resolve the same `s.status` through the same
+// helpers. `waiting` keeps `_waitingLabel`'s specific reason ("permission
+// prompt") because that is the state where knowing WHY decides whether you
+// should be sending anything at all.
+function _atStatusBadge(s) {
+  const k = _sessStatusKey(s);
+  if (k === 'stopped') {
+    return '<span class="status-badge" style="background:rgba(255,255,255,0.06);' +
+      'color:var(--dim);border:1px solid var(--border);margin-right:6px;">stopped</span>';
+  }
+  const b = (cls, txt, extra) =>
+    `<span class="status-badge ${cls}" style="margin-right:6px;"${extra || ''}>${txt}</span>`;
+  if (k === 'working') return b('active', 'working') + _atAgentsChip(s);
+  if (k === 'waiting') return b('waiting', esc(_waitingLabel(s)), _waitingTitle(s));
+  if (k === 'rate_limited') return b('rate-limited', 'rate limited');
+  if (k === 'api_error') return b('rate-limited', 'API ' + esc(s.api_error_code || '5xx'));
+  return b('idle', 'idle');
+}
+// Same chip as the peek header, minus the left margin that assumes a badge
+// precedes it. Whether a lane has live background agents is the difference
+// between "idle, say what you like" and "mid-delegation" (AMUX-4024).
+function _atAgentsChip(s) {
+  return s.agents_working
+    ? '<span class="status-badge active" style="margin-right:6px;" ' +
+      'title="Background agents are live">\u2699 agents</span>'
+    : '';
+}
+
 // Populate dropdown with @session matches; returns true if @ mode active.
 // Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
@@ -11068,7 +12124,7 @@ function _atRender(inp, el, pickCall) {
       : esc(r.s.name);
     return `<div class="ac-item at-item" onmousedown="${pickCall}(${i})">` +
       `<span class="at-at">@</span>${name}` +
-      `<span class="ac-desc">${r.s.running ? '● ' : '○ '}open channel &rarr;</span></div>`;
+      `<span class="ac-desc">${_atStatusBadge(r.s)}open channel &rarr;</span></div>`;
   }).join('');
   el._atItems = ranked.map(r => r.s);
   el.classList.add('open');
@@ -11226,7 +12282,16 @@ async function _approvalsRefresh() {
     if (!r.ok) return;
     const d = await r.json();
     const pending = Array.isArray(d.pending) ? d.pending : [];
-    if (!pending.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    // PERMISSION GRANTS SHARE THIS BANNER (AMUX-3997). Ethan asked for the email
+    // approval flow to be leveraged for other ad-hoc permissions, and "leverage"
+    // has to include the SURFACE: a second banner elsewhere would mean a human
+    // has two places to look before knowing whether anything is waiting.
+    let grants = [];
+    try {
+      const gr = await fetch(API + '/api/grants', { headers: _authHeaders() });
+      if (gr.ok) { const gd = await gr.json(); grants = Array.isArray(gd.pending) ? gd.pending : []; }
+    } catch (e) { /* the email queue still renders if grants are unreachable */ }
+    if (!pending.length && !grants.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
     // COLLAPSIBLE (Ethan, 2026-08-25: "i should be able to collapse this").
     //
     // This is a full-width block at the top of a mobile-first dashboard, and it
@@ -11261,12 +12326,32 @@ async function _approvalsRefresh() {
       + 'title="' + (collapsed ? 'Show the drafts' : 'Collapse') + '">'
       + '<span style="display:inline-block;width:1em;transition:transform .12s;'
       + 'transform:rotate(' + (collapsed ? '-90' : '0') + 'deg);">&#x25BE;</span>'
-      + '<span>&#x2709;&#xFE0F; ' + pending.length + ' external email'
-      + (pending.length === 1 ? '' : 's') + ' held for your approval</span></div>';
+      + '<span>' + _apprHeadline(pending.length, grants.length) + '</span></div>';
     if (collapsed) {
       el.innerHTML = html + '</div>';
       el.style.display = 'block';
       return;
+    }
+    for (const g of grants) {
+      const gp = g.payload || {};
+      const gmins = Math.max(1, Math.round((g.expires_in_s || 0) / 60));
+      html += '<details open style="margin:4px 0;text-align:left;">'
+        + '<summary style="cursor:pointer;display:flex;align-items:center;gap:10px;min-height:34px;">'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        + '&#x1F511; <b>' + esc(g.requested_by || '?') + '</b> wants to message <b>'
+        + esc(gp.target || '?') + '</b> across a group boundary</span>'
+        + '<span style="opacity:0.7;font-size:0.76rem;">expires in ' + gmins + 'm</span>'
+        + '<button onclick="event.preventDefault();_grantApprove(\'' + esc(g.id) + '\',this)" '
+        + 'style="background:#16a34a;color:#fff;border:none;border-radius:6px;'
+        + 'padding:8px 14px;font-size:0.8rem;cursor:pointer;min-height:34px;">Allow once</button>'
+        + '<button onclick="event.preventDefault();_grantReject(\'' + esc(g.id) + '\',this)" '
+        + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
+        + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
+        + 'min-height:34px;min-width:44px;">Deny</button>'
+        + '</summary>'
+        + '<div style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
+        + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:220px;overflow:auto;">'
+        + esc(gp.preview || '(no message preview)') + '</div></details>';
     }
     for (const p of pending) {
       const pv = p.preview || {};
@@ -11299,11 +12384,47 @@ async function _approvalsRefresh() {
         + (pv.cc ? 'cc: ' + esc(pv.cc) + '\n' : '')
         + esc(pv.body || '') + '</div></details>';
     }
-    html += '<div style="opacity:0.65;font-size:0.74rem;margin-top:4px;">Nothing sends without Approve. Discard drops a draft now and records who dropped it; unapproved drafts also expire on their own.</div></div>';
+    html += '<div style="opacity:0.65;font-size:0.74rem;margin-top:4px;">'
+      + (grants.length ? 'Allow once releases exactly ONE message to that worker, then the wall is back. ' : '')
+      + 'Nothing sends without Approve. Discard drops a draft now and records who dropped it; unapproved drafts also expire on their own.</div></div>';
     el.innerHTML = html;
     el.style.display = 'block';
   } catch (e) {}
 }
+// Says what is waiting WITHOUT flattening two different asks into one noun. An
+// email draft and a permission grant need different decisions from the reader.
+function _apprHeadline(emails, grants) {
+  const parts = [];
+  if (grants) parts.push('\u{1F511} ' + grants + ' permission request' + (grants === 1 ? '' : 's'));
+  if (emails) parts.push('\u2709\uFE0F ' + emails + ' external email' + (emails === 1 ? '' : 's'));
+  return parts.join(' \u00B7 ') + ' held for your approval';
+}
+
+async function _grantApprove(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Allowing…'; }
+  try {
+    // NO auth-session header on purpose: the server reads its absence as "this
+    // is the human". Sending one here would make the dashboard look like a
+    // worker approving its own grant, which is exactly what the gate refuses.
+    const r = await fetch(API + '/api/grants/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { showToast(d.error || 'approve failed'); if (btn) { btn.disabled = false; btn.textContent = 'Allow once'; } return; }
+    showToast(d.note || 'Allowed once');
+  } catch (e) { showToast('approve failed: ' + String(e)); }
+  _approvalsRefresh();
+}
+
+async function _grantReject(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Denying…'; }
+  try {
+    const r = await fetch(API + '/api/grants/' + encodeURIComponent(id) + '/reject', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { showToast(d.error || 'deny failed'); if (btn) { btn.disabled = false; btn.textContent = 'Deny'; } return; }
+    showToast('Denied');
+  } catch (e) { showToast('deny failed: ' + String(e)); }
+  _approvalsRefresh();
+}
+
 function _apprToggle() {
   const now = localStorage.getItem('amuxApprCollapsed') === '1' ? '0' : '1';
   localStorage.setItem('amuxApprCollapsed', now);
@@ -12963,6 +14084,28 @@ function _linkifyCardIds(safeHtml) {
         : m);
   } catch (e) { return safeHtml; }
 }
+
+// Schedule ids in Messages are navigation, not inert provenance. Scheduler
+// deliveries already stamp `[SCHED-N]` into origin; leaving that token as plain
+// text forced the reader to copy it, change tabs, and search manually. Load the
+// current schedule set before opening so a Messages-only visit is not dependent
+// on whether the Scheduler tab happened to be opened earlier.
+async function _openScheduleFromMessage(id) {
+  const sid = String(id || '');
+  if (!/^SCHED-\d+$/.test(sid)) return;
+  switchView('scheduler');
+  await Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit()]);
+  renderScheduler();
+  if ((schedules || []).some(s => s.id === sid && !s.deleted)) openSchedModal(sid);
+  else showToast(sid + ' is no longer active — see scheduler audit');
+}
+function _linkifyScheduleIds(safeHtml) {
+  try {
+    return String(safeHtml).replace(/\b(SCHED-\d+)\b/g, (m, id) =>
+      '<a href="javascript:void(0)" onclick="event.stopPropagation();_openScheduleFromMessage(\''
+      + id + '\')" style="color:var(--accent);text-decoration:underline dotted;">' + id + '</a>');
+  } catch (e) { return safeHtml; }
+}
 // Turn bare http(s) URLs in ALREADY-escaped HTML into clickable links, so a
 // resume / sign-in deep link an agent drops in a needs-you ask (AMUX-3073) is
 // clickable rather than dead plain text — the card's whole premise is a
@@ -12981,21 +14124,38 @@ function _linkifyUrls(safeHtml) {
     });
   } catch (e) { return safeHtml; }
 }
-function _msgCardChip(cardId) {
+function _msgCardChip(cardId, message) {
   if (!cardId) return '';
-  const c = (typeof boardItems !== 'undefined' && Array.isArray(boardItems))
+  const live = (typeof boardItems !== 'undefined' && Array.isArray(boardItems))
     ? boardItems.find(i => i.id === cardId) : null;
+  // Message history can outlive the board's deliberately capped working set.
+  // Treat the history API's authoritative issues-table metadata as a real card,
+  // rather than claiming an archived/older card is "gone" merely because this
+  // browser has not loaded it into `boardItems` (MSG-38618 / TUBES-2372).
+  const recorded = message && typeof message === 'object'
+    && (message.card_title != null || message.card_status != null);
+  const c = live || (recorded ? {
+    id: cardId,
+    title: message.card_title || '',
+    status: message.card_status || 'todo',
+    archived: !!message.card_archived,
+    deleted: message.card_deleted != null,
+    log: ''
+  } : null);
   const stC = st => st === 'verified' ? 'var(--green)' : st === 'done' ? '#3fb950'
     : st === 'doing' ? '#d29922' : st === 'review' ? '#bc8cff'
     : st === 'discarded' ? 'var(--dim)' : 'var(--accent)';
   const st = c ? (c.status || 'todo') : '';
+  const displaySt = c && c.deleted ? 'deleted'
+    : c && c.archived ? 'archived'
+    : st;
   const undec = c && ((c.log || '').indexOf('capture: worker prompt') !== -1) && st === 'todo';
   const lastCommit = c ? (((c.log || '').match(/commit ([0-9a-f]{7,12}) \u2014 [^\n]*/g) || []).pop() || '') : '';
   return '<span class="msg-card-chip" onclick="event.stopPropagation();switchView(\'board\');setTimeout(() => openBoardDetail(\'' + escJs(cardId) + '\'), 250);" '
     + 'title="' + esc(c ? (c.title || '') : 'card no longer on the board') + (lastCommit ? '\n' + esc(lastCommit) : '') + '" '
     + 'style="cursor:pointer;font-size:0.68rem;border:1px solid ' + (c ? stC(st) : 'var(--border)') + ';border-radius:6px;padding:1px 7px;white-space:nowrap;'
     + 'color:' + (c ? stC(st) : 'var(--dim)') + ';">\u2192 ' + esc(cardId)
-    + (c ? ' \u00B7 ' + esc(undec ? 'captured, not yet decomposed' : st) : ' \u00B7 gone')
+    + (c ? ' \u00B7 ' + esc(undec ? 'captured, not yet decomposed' : displaySt) : ' \u00B7 gone')
     + (lastCommit ? ' \u00B7 \u2318' : '') + '</span>';
 }
 
@@ -13026,7 +14186,9 @@ function _msgNorm(x) {
   const t = (x.time !== undefined && x.time !== null) ? x.time : x.ts;
   return { id: x.id, text: x.text, type: x.type, session: x.session,
            time: t, ts: t, origin: x.origin || '', kind: x.kind,
-           queued: x.queued, card_id: x.card_id || '' };
+           queued: x.queued, card_id: x.card_id || '',
+           card_title: x.card_title, card_status: x.card_status,
+           card_archived: x.card_archived, card_deleted: x.card_deleted };
 }
 // ONE row renderer for all three message surfaces. `ctx` carries only what
 // genuinely differs — which selection set the checkbox belongs to, which resend
@@ -13082,7 +14244,7 @@ function _cmdHistItemHTML(e, ctx) {
   // path — "Human · queued" vs plain "Human".
   const originTxt = kind === 'human'
     ? ''   // delivery chip below carries direct/queued for every kind now
-    : (origin ? ' &middot; ' + origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32) : '');
+    : (origin ? ' &middot; ' + _linkifyScheduleIds(origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32)) : '');
   const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
   const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
@@ -13094,7 +14256,8 @@ function _cmdHistItemHTML(e, ctx) {
   const idTag = _mid
     ? `<code class="msg-id-badge" title="Message id — click to copy" onclick="event.stopPropagation();_copyMsgId('${esc(_mid)}')">MSG-${esc(_mid)}</code>`
     : '';
-  const meta = tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + sessTag + tsTag + idTag + _msgCardChip(typeof e === 'string' ? '' : (e.card_id || ''));
+  const meta = tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + sessTag + tsTag + idTag
+    + _msgCardChip(typeof e === 'string' ? '' : (e.card_id || ''), e);
   const locSess = (session || (typeof peekSession !== 'undefined' ? peekSession : '') || '').replace(/'/g,'');
   const _target = ctx.target(e) || locSess;
   // A MATCHING message is force-expanded while a search is active, even if the
@@ -13105,7 +14268,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyCardIds(safe), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -13323,7 +14486,7 @@ function _mergeUnechoed(serverRows, session) {
 // still passes a worker, so the change is provably behaviour-preserving before a
 // group or global caller exists — the sequencing amux-cloud called the most
 // valuable paragraph on the original card, and the same order that made the
-// Scope tab's second caller a one-liner instead of a second renderer.
+// Configurations tab's second caller a one-liner instead of a second renderer.
 async function _peekMsgFetch(scope, offset) {
   const sc = (typeof scope === 'string') ? { level: 'worker', name: scope } : (scope || {});
   const q = sc.level === 'group'  ? '&group=' + encodeURIComponent(sc.name)
@@ -15530,22 +16693,33 @@ let _filesShowHidden = true;
 
 async function openInFinder() {
   const path = _filesPath || '/';
-  // If accessing remote server, construct smb:// or sftp:// URL for Finder
-  const isRemote = location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' && !location.hostname.endsWith('.local');
-  if (isRemote) {
-    // Open as SFTP remote folder in Finder via sftp:// URL scheme
-    const host = location.hostname;
-    const url = 'sftp://' + host + path;
-    window.open(url, '_blank');
-    showToast('Opening remote folder: ' + host + ':' + path);
-    return;
-  }
+  // THE CLIENT CANNOT KNOW IF IT IS LOCAL, SO IT NO LONGER GUESSES (AF-282).
+  //
+  // This used to test `location.hostname` against localhost/127.0.0.1/.local and
+  // treat everything else as remote, emitting `sftp://<host><path>`. Reaching
+  // your own desktop by its Tailscale name is none of those three, so a LOCAL
+  // machine took the remote branch: Chrome handed `sftp://` to whatever
+  // registered the scheme (VLC) and it failed with "Your input can't be opened".
+  // macOS Finder has no `sftp://` handler either, so the branch was broken for
+  // genuinely-remote too — it could not succeed in either case it split on.
+  //
+  // The server is the only party that can answer this: it compares the request's
+  // peer IP against the addresses the Host header resolves to. So we always ask,
+  // and render whatever it says. A 409 here is a real answer, not a failure.
   try {
     const r = await apiCall(API + '/api/fs/open', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ path })
     });
-    if (r) showToast('Opened in Finder');
+    if (r && r.ok) { showToast('Opened in Finder'); return; }
+    if (r && r.local === false) {
+      // Remote browser: the folder lives on the server's machine. Say so and
+      // leave the path where it can be copied, rather than reporting a success
+      // the user would never see.
+      showToast('That folder is on the amux server, not this machine — ' + (r.path || path));
+      return;
+    }
+    showToast((r && r.error) ? r.error : 'Failed to open folder');
   } catch(e) { showToast('Failed to open folder'); }
 }
 
@@ -16411,6 +17585,360 @@ let _mdaiRootPath;   // cached mdai_root pref (the local.amux folder), '' if uns
 // /api/scope connectors capability. A connector is a scopable capability, not a
 // new subsystem — the tab composes primitives (scope + env), it does not add one.
 let _connectorsData = null;
+function _connAddToggle() {
+  const f = document.getElementById('conn-add-form');
+  if (!f) return;
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+function _connAddKind() {
+  const k = (document.getElementById('conn-new-kind') || {}).value;
+  const ak = document.getElementById('conn-new-apikey');
+  const oa = document.getElementById('conn-new-oauth');
+  if (ak) ak.style.display = k === 'oauth2' ? 'none' : 'grid';
+  if (oa) oa.style.display = k === 'oauth2' ? 'grid' : 'none';
+}
+
+function _connAddScope() {
+  // global needs no name; group/worker do.
+  const lvl = (document.getElementById('conn-new-scope-level') || {}).value;
+  const wrap = document.getElementById('conn-new-scope-name-wrap');
+  if (wrap) wrap.style.display = (lvl === 'global') ? 'none' : 'block';
+}
+
+// Add the new connector to a scope layer WITHOUT clobbering what is already
+// there. The connectors capability stores one JSON object per level mapping
+// connector -> config, so a bare PUT of {id:{enabled:true}} would delete every
+// other connector's entry at that level. Read, merge, write.
+async function _connScopeEnable(id, level, name) {
+  const qs = '/api/scope?level=' + encodeURIComponent(level)
+    + (level === 'global' ? '' : '&name=' + encodeURIComponent(name || ''))
+    + '&capability=connectors';
+  let current = {};
+  try {
+    const r = await fetch(API + qs, { headers: _authHeaders() });
+    const d = await r.json();
+    if (d && d.connectors && typeof d.connectors === 'object') current = d.connectors;
+  } catch (e) { /* absent layer reads as {} — the merge below still writes ours */ }
+  current[id] = Object.assign({}, current[id] || {}, { enabled: true });
+  const r2 = await fetch(API + '/api/scope', {
+    method: 'PUT',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+    body: JSON.stringify({ level: level, name: name || '', capability: 'connectors', value: current }),
+  });
+  const d2 = await r2.json().catch(() => ({}));
+  if (!r2.ok || d2.error) throw new Error(d2.error || ('scope save failed (' + r2.status + ')'));
+}
+
+async function _connCreate() {
+  const msg = document.getElementById('conn-add-msg');
+  const val = (id) => ((document.getElementById(id) || {}).value || '').trim();
+  const kind = val('conn-new-kind') || 'api_key';
+  const level = val('conn-new-scope-level') || 'global';
+  const scopeName = val('conn-new-scope-name');
+  if (level !== 'global' && !scopeName) {
+    if (msg) { msg.textContent = 'Name the group or worker to scope to.'; msg.style.color = '#f85149'; }
+    return;
+  }
+  const body = {
+    id: (val('conn-new-id') || val('conn-new-label')).toLowerCase().replace(/[^a-z0-9_-]+/g, '-'),
+    label: val('conn-new-label'),
+    kind: kind,
+    setup_note: val('conn-new-note'),
+    docs: val('conn-new-docs'),
+  };
+  if (kind === 'oauth2') {
+    body.client_id_env = val('conn-new-cid-env').toUpperCase();
+    body.client_secret_env = val('conn-new-csec-env').toUpperCase();
+    body.authorize_url = val('conn-new-auth-url');
+    body.token_url = val('conn-new-token-url');
+    body.scopes = val('conn-new-scopes');
+  } else {
+    body.key_env = val('conn-new-key-env').toUpperCase();
+    body.test_url = val('conn-new-test-url');
+  }
+  if (msg) { msg.textContent = 'Creating…'; msg.style.color = 'var(--dim)'; }
+  try {
+    const r = await fetch(API + '/api/connectors', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) {
+      // Show the server's REASON verbatim: it explains WHY an id or env name was
+      // refused, and it refuses rather than rewriting.
+      if (msg) { msg.textContent = (d.error || ('create failed (' + r.status + ')')) + (d.how ? ' — ' + d.how : ''); msg.style.color = '#f85149'; }
+      return;
+    }
+    // The definition exists; now make the scope explicit. Reported separately,
+    // because a connector that was created but not scoped is a different state
+    // from one that failed to create, and saying "done" for both would hide it.
+    try {
+      await _connScopeEnable(body.id, level, scopeName);
+      if (msg) { msg.textContent = 'Created and enabled at ' + level + ' scope. Paste the key in its row below.'; msg.style.color = ''; }
+    } catch (e) {
+      if (msg) { msg.textContent = 'Created, but the configuration write failed: ' + String(e.message || e) + ' — set it in Configurations.'; msg.style.color = '#b8860b'; }
+    }
+    _connAddToggle();
+    _connectorsTabLoad();
+  } catch (e) {
+    if (msg) { msg.textContent = 'Create failed: ' + String(e); msg.style.color = '#f85149'; }
+  }
+}
+
+async function _connDelete(id) {
+  if (!confirm('Forget connector "' + id + '"?\n\nThe definition is removed. Any credential VALUES already in server.env are left alone.')) return;
+  try {
+    const r = await fetch(API + '/api/connectors/' + encodeURIComponent(id), {
+      method: 'DELETE', headers: _authHeaders(),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { showToast(d.error || 'delete failed'); return; }
+    const left = (d.credentials_left_in_server_env || []).join(', ');
+    showToast('Removed ' + id + (left ? ' — ' + left + ' still in server.env' : ''));
+    _connectorsTabLoad();
+  } catch (e) { showToast('delete failed: ' + String(e)); }
+}
+
+let _emailAccount = null;
+let _emailFolder = 'inbox';
+
+async function _emailLoad() {
+  const host = document.getElementById('email-list');
+  if (!host) return;
+  // Accounts come from the SAME place the Connectors tab reads, so a mailbox
+  // cannot appear here and be missing there.
+  let accounts = [];
+  try {
+    const r = await fetch(API + '/api/gmail/accounts', { headers: _authHeaders() });
+    const d = await r.json();
+    accounts = Array.isArray(d.accounts) ? d.accounts : [];
+    _emailRenderSubtabs(accounts, d.health || {});
+  } catch (e) { /* fall through: the list below will say it found nothing */ }
+  if (!accounts.length) {
+    host.innerHTML = '<div class="conn-empty">No connected email accounts. Connect one in the Connectors tab.</div>';
+    return;
+  }
+  if (!_emailAccount || accounts.indexOf(_emailAccount) < 0) _emailAccount = accounts[0];
+  _emailRenderSubtabs(accounts, {});
+  host.innerHTML = '<div class="conn-empty">Loading ' + esc(_emailAccount) + '…</div>';
+  try {
+    const r = await fetch(API + '/api/email/ranked?count=60&folder=' + encodeURIComponent(_emailFolder)
+      + '&account=' + encodeURIComponent(_emailAccount), { headers: _authHeaders() });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      // Name WHICH half failed. `stage` distinguishes a mailbox problem from a
+      // ranking problem, and sending a reader to the themes for an IMAP error
+      // is the wrong door.
+      host.innerHTML = '<div class="conn-empty">Could not load '
+        + esc(_emailAccount) + (d.stage ? ' (' + esc(d.stage) + ')' : '') + ': '
+        + esc(String(d.error || r.status)) + '</div>';
+      return;
+    }
+    _emailRenderFolders();
+    _emailRenderThemes(d.ranking || {});
+    _emailRenderList(d.messages || []);
+  } catch (e) {
+    host.innerHTML = '<div class="conn-empty">Failed to load: ' + esc(String(e)) + '</div>';
+  }
+}
+
+function _emailRenderSubtabs(accounts, health) {
+  const el = document.getElementById('email-subtabs');
+  if (!el) return;
+  el.innerHTML = accounts.map(a => {
+    const on = a === _emailAccount;
+    const bad = health[a] && health[a] !== 'ok';
+    return '<button class="conn-scope-btn" onclick="_emailPick(\'' + esc(a) + '\')" '
+      + 'style="min-height:34px;' + (on ? 'background:var(--accent,#2563eb);color:#fff;' : '') + '">'
+      + esc(a) + (bad ? ' ⚠️' : '') + '</button>';
+  }).join('');
+}
+
+function _emailPick(a) { _emailAccount = a; _emailLoad(); }
+function _emailFolderPick(f) { _emailFolder = f; _emailLoad(); }
+
+function _emailRenderFolders() {
+  const el = document.getElementById('email-folders');
+  if (!el) return;
+  // Inbox is the UNFILED set, not "everything" — a list that keeps showing mail
+  // you already filed is one you stop reading.
+  el.innerHTML = [['inbox','Inbox'],['approved','Approved'],['rejected','Rejected']].map(([k,label]) => {
+    const on = k === _emailFolder;
+    return '<button class="conn-scope-btn" onclick="_emailFolderPick(\'' + k + '\')" '
+      + 'style="min-height:34px;' + (on ? 'background:var(--accent,#2563eb);color:#fff;' : '') + '">'
+      + label + '</button>';
+  }).join('');
+}
+
+// The inference's provenance, stated rather than implied. An all-zero ranking
+// with measured:false is a probe that never ran; with measured:true it is a
+// genuine "none of this is about anything you asked for".
+function _emailRenderThemes(r) {
+  const el = document.getElementById('email-themes');
+  if (!el) return;
+  if (!r.measured) {
+    el.innerHTML = '<b>Not ranked yet.</b> ' + esc(r.why_unmeasured || 'the inference has not run')
+      + ' — scores below are all 0 because nothing has been learned, not because nothing matters.';
+    return;
+  }
+  const when = r.computed_at ? new Date(r.computed_at * 1000).toLocaleString() : 'unknown';
+  el.innerHTML = 'Ranking on <b>' + (r.themes || 0) + ' learned theme'
+    + ((r.themes === 1) ? '' : 's') + '</b>, inferred from <b>' + (r.n_considered || 0)
+    + '</b> of your messages via <code>' + esc(r.model || '?') + '</code> at ' + esc(when) + '.';
+}
+
+// ---- inbox rendering -------------------------------------------------------
+//
+// These follow MAIL-CLIENT conventions rather than the scored-list shape this
+// started as. The first version put five always-visible buttons under every row,
+// which is a control panel, not an inbox: it tripled row height, buried the
+// subject, and made the list unscannable — the one thing an inbox is for.
+//
+// What the conventions actually are, and why each is here:
+//   * SENDER first and fixed-width, so the eye scans one column, not ragged text
+//   * SUBJECT bold + snippet dimmed on ONE line, the Gmail/Mail/Outlook shape
+//   * TIME right-aligned, relative (time today, month-day this year, else date)
+//   * UNREAD is bold — the oldest convention in mail, and `read` was already in
+//     the payload and ignored
+//   * ACTIONS ON HOVER, not always on. A row at rest shows content; the controls
+//     appear when you are pointing at the thing they act on
+//   * CLICK THE ROW TO OPEN IT, because that is what every mail client does
+
+function _emailSender(from) {
+  const f = String(from || '');
+  const m = f.match(/^\s*"?([^"<]+?)"?\s*<(.+)>\s*$/);
+  if (m) return { name: m[1].trim(), addr: m[2].trim() };
+  return { name: f.replace(/[<>]/g, '').trim(), addr: f.replace(/[<>]/g, '').trim() };
+}
+
+// Relative like a mail client: a time for today, a date for this year, a full
+// date beyond it. An absolute timestamp on every row is noise you have to read.
+function _emailWhen(d) {
+  const t = Date.parse(d || '');
+  if (!t || isNaN(t)) return '';
+  const dt = new Date(t), now = new Date();
+  if (dt.toDateString() === now.toDateString()) {
+    return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  if (dt.getFullYear() === now.getFullYear()) {
+    return dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+  return dt.toLocaleDateString([], { year: '2-digit', month: 'numeric', day: 'numeric' });
+}
+
+// One line, tags stripped, whitespace collapsed. A raw body carries invisible
+// padding characters that render as a long blank gap in the preview.
+function _emailSnippet(body) {
+  // DECODE ENTITIES FIRST. A mail body is HTML, so an apostrophe arrives as
+  // &#39; and rendered verbatim it reads "We weren&#39;t able to charge your
+  // card" — seen live in the Stripe row. Decoding via a detached textarea is the
+  // standard trick and is safe here because the result is re-escaped by esc()
+  // before it reaches the DOM; it is never assigned as innerHTML.
+  const ta = document.createElement('textarea');
+  ta.innerHTML = String(body || '').replace(/<[^>]*>/g, ' ');
+  return String(ta.value)
+    .replace(/[͏​-‍⁠﻿­]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
+
+function _emailRenderList(msgs) {
+  const host = document.getElementById('email-list');
+  if (!host) return;
+  if (!msgs.length) {
+    host.innerHTML = '<div class="conn-empty">Nothing here.</div>';
+    return;
+  }
+  let html = '';
+  for (const m of msgs) {
+    const s = _emailSender(m.from);
+    const unread = m.read === false;
+    const score = Number(m.score || 0);
+    const hits = Array.isArray(m.matched_themes) ? m.matched_themes : [];
+    const arg = _emailArg(m);
+    const id = 'em-' + (m.gmail_id || Math.random().toString(36).slice(2));
+    html += '<div class="mail-row' + (unread ? ' unread' : '') + (m.flagged ? ' flagged' : '') + '"'
+      + ' onclick="_emailToggleBody(\'' + id + '\')">'
+      // Star is the flag, in the position every client puts it.
+      + '<button class="mail-star" title="Flag" onclick="event.stopPropagation();_emailAnnotate('
+      + arg + ',{flagged:' + (m.flagged ? 'false' : 'true') + '})">' + (m.flagged ? '★' : '☆') + '</button>'
+      + '<div class="mail-from" title="' + esc(s.addr) + '">' + esc(s.name || s.addr) + '</div>'
+      + '<div class="mail-mid">'
+      + '<span class="mail-subj">' + esc(m.subject || '(no subject)') + '</span>'
+      + '<span class="mail-snip"> — ' + esc(_emailSnippet(m.body)) + '</span>'
+      + (hits.length ? '<span class="mail-themes">' + hits.map(h => '<span class="conn-cat">'
+          + esc(h) + '</span>').join('') + '</span>' : '')
+      + '</div>'
+      // The score is why this row is HERE, so it sits with the metadata, small.
+      + '<div class="mail-score" title="' + (hits.length ? 'matched: ' + esc(hits.join(', ')) : 'no theme matched')
+      + (Number(m.rank_delta || 0) !== 0 ? ' · base ' + Number(m.base_score || 0).toFixed(0)
+          + ', your nudge ' + (Number(m.rank_delta) > 0 ? '+' : '') + Number(m.rank_delta).toFixed(0) : '')
+      + '">' + (score > 0 ? score.toFixed(0) : '') + '</div>'
+      + '<div class="mail-when">' + esc(_emailWhen(m.date)) + '</div>'
+      // AT REST this is hidden and the time shows; on hover they swap. Same slot,
+      // so the row never reflows and the list does not jump under the cursor.
+      + '<div class="mail-actions" onclick="event.stopPropagation()">'
+      + '<button title="Keep" onclick="_emailAnnotate(' + arg + ',{verdict:\''
+        + (m.verdict === 'approved' ? '' : 'approved') + '\'})">✓</button>'
+      + '<button title="Reject" onclick="_emailAnnotate(' + arg + ',{verdict:\''
+        + (m.verdict === 'rejected' ? '' : 'rejected') + '\'})">✕</button>'
+      + '<button title="Rank higher" onclick="_emailAnnotate(' + arg + ',{rank_delta:'
+        + (Number(m.rank_delta || 0) + 5) + '})">▲</button>'
+      + '<button title="Rank lower" onclick="_emailAnnotate(' + arg + ',{rank_delta:'
+        + (Number(m.rank_delta || 0) - 5) + '})">▼</button>'
+      + '</div>'
+      + '</div>'
+      + '<div class="mail-body" id="' + id + '" hidden>' + esc(String(m.body || '').slice(0, 4000)) + '</div>';
+  }
+  host.innerHTML = html;
+}
+
+function _emailToggleBody(id) {
+  const el = document.getElementById(id);
+  if (el) el.hidden = !el.hidden;
+}
+
+function _emailArg(m) {
+  // The message's IDENTITY plus what the ranker was SHOWING. Both travel to the
+  // server: the verdict alone teaches nothing once the themes are recomputed.
+  return JSON.stringify({
+    message_id: m.message_id || m.id || '',
+    from: m.from || '', subject: m.subject || '',
+    score: Number(m.base_score || m.score || 0),
+    matched_themes: Array.isArray(m.matched_themes) ? m.matched_themes : [],
+  }).replace(/"/g, '&quot;');
+}
+
+async function _emailAnnotate(ctx, patch) {
+  try {
+    const body = Object.assign({ account: _emailAccount }, ctx, patch);
+    const r = await fetch(API + '/api/email/annotate', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { showToast(d.error || 'could not save'); return; }
+  } catch (e) { showToast('failed: ' + String(e)); return; }
+  _emailLoad();
+}
+
+async function _emailThemesRefresh(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Learning…'; }
+  try {
+    const r = await fetch(API + '/api/email/themes/refresh', { method: 'POST', headers: _authHeaders() });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { showToast(d.error || 'could not re-learn'); }
+    else if (!d.measured) { showToast('Not enough of your messages yet to infer themes'); }
+    else { showToast('Learned ' + d.themes + ' themes from ' + d.n_considered + ' messages'); }
+  } catch (e) { showToast('failed: ' + String(e)); }
+  if (btn) { btn.disabled = false; btn.textContent = 'Re-learn priorities'; }
+  _emailLoad();
+}
+
 async function _connectorsTabLoad() {
   const host = document.getElementById('connectors-list');
   if (!host) return;
@@ -16467,7 +17995,12 @@ function _connectorsRender(d) {
       html += '<div class="conn-gmail" id="conn-gmail-accounts"><div class="conn-gmail-loading">Loading Gmail accounts…</div></div>';
     }
     // test connection — verify it actually WORKS, not just that a key is present
-    html += '<div class="conn-test"><button class="conn-test-btn" onclick="_connectorTest(\'' + esc(c.id) + '\', this)">Test connection</button> <span class="conn-test-result" id="conn-test-' + esc(c.id) + '"></span></div>';
+    html += '<div class="conn-test"><button class="conn-test-btn" onclick="_connectorTest(\'' + esc(c.id) + '\', this)">Test connection</button> <span class="conn-test-result" id="conn-test-' + esc(c.id) + '"></span>';
+    // Delete is offered ONLY on declared rows. A builtin comes from the const
+    // registry and removing one is a code change, so the server refuses it —
+    // showing the button anyway would be an affordance that always fails.
+    if (c.custom) html += ' <button class="conn-test-btn" onclick="_connDelete(\'' + esc(c.id) + '\')">Forget</button>';
+    html += '</div>';
     // scope control (global / group / worker) — drives /api/scope
     html += '<div class="conn-scope"><span class="conn-slabel">Enable for:</span> '
       + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'global\',true)">Global</button>'
@@ -16916,7 +18449,25 @@ async function _mdaiRun(opts) {
       });
     } finally { clearTimeout(_to); }
     const d = await r.json().catch(() => ({}));
-    if (!r.ok || d.error) {
+    // A LOCALLY-QUEUED RESPONSE IS NOT A RUN (AF-371).
+    //
+    // The outbox interceptor manufactures a 202 `{ok:true,queued:true}` when a
+    // fetch fails, and `r.ok` is TRUE for it with no `d.error`, so the success
+    // branch below took it and reported a completed run that never left the
+    // browser. `_isLocallyQueued` exists for exactly this and was called at one
+    // site out of every place it applies (ethos rule 1: the capability existed
+    // and did not reach the caller that needed it).
+    //
+    // Belt and braces alongside the _OUTBOX_SKIP entry above: that entry stops
+    // THIS url being queued, and this guard means any future path that hands the
+    // panel a synthetic 202 fails loudly instead of silently.
+    if (_isLocallyQueued(r)) {
+      _mdaiRunError = 'The server could not be reached, so this run was never sent. '
+        + 'Nothing was queued for later: an mdai run is a chain of model calls and '
+        + 'replaying it hours later would spend them on a question you are no longer '
+        + 'asking. Retry when amux is back.';
+      _mdaiRunCycle = null;
+    } else if (!r.ok || d.error) {
       _mdaiRunError = d.error || ('HTTP ' + r.status);
       _mdaiRunCycle = d.cycle || null;
     } else {
@@ -18439,6 +19990,26 @@ function _acShowSuggested() {
   el.classList.add('open');
 }
 
+// Render a set of labelled sections into the dropdown, keeping `acItems` index-
+// aligned with what is on screen so arrow keys, Tab and acPick keep working.
+function _acRenderSections(sections) {
+  const el = document.getElementById('ac-list');
+  acItems = [];
+  acSelected = -1;
+  let html = '';
+  for (const [label, items] of sections) {
+    if (!items.length) continue;
+    if (label) html += `<div class="ac-section">${esc(label)}</div>`;
+    for (const item of items) {
+      html += `<div class="ac-item" onmousedown="acPick(${acItems.length})">${esc(item)}</div>`;
+      acItems.push(item);
+    }
+  }
+  if (!acItems.length) { el.classList.remove('open'); return; }
+  el.innerHTML = html;
+  el.classList.add('open');
+}
+
 function acFetch(query) {
   clearTimeout(acTimer);
   const el = document.getElementById('ac-list');
@@ -18452,17 +20023,35 @@ function acFetch(query) {
     _acShowSuggested();
     return;
   }
-  el.classList.remove('open');
+  // A BARE NAME IS A SEARCH, NOT A PATH (AF-501). Typing used to DROP the
+  // suggested list — the one holding every directory amux already knows about —
+  // and replace it with a path completion that only answers if you already knew
+  // the path. Measured in a live onboarding session (2026-09-04): the user knew
+  // the repo's name, not its location, typed the name, got nothing, could not
+  // find it in Finder either, and spent three minutes of a one-hour call on it.
+  //
+  // Known dirs are matched HERE rather than server-side because the client
+  // already holds them: the answer is on screen before the request goes out,
+  // and the disk search fills in underneath it.
+  const bareName = query.indexOf('/') === -1 && query[0] !== '~';
+  let known = [];
+  if (bareName) {
+    const q = query.toLowerCase();
+    known = _buildSuggestedDirs().filter(d => d.toLowerCase().includes(q));
+    if (known.length) _acRenderSections([['Your directories', known]]);
+    else el.classList.remove('open');
+  } else {
+    el.classList.remove('open');
+  }
   acTimer = setTimeout(async () => {
     try {
       const r = await fetch(API + '/api/autocomplete/dir?q=' + encodeURIComponent(query));
-      acItems = await r.json();
-      acSelected = -1;
-      if (!acItems.length) { el.classList.remove('open'); return; }
-      el.innerHTML = acItems.map((item, i) =>
-        `<div class="ac-item" onmousedown="acPick(${i})">${esc(item)}</div>`
-      ).join('');
-      el.classList.add('open');
+      const found = await r.json();
+      // Deduped against what is already shown, so a directory that is both a
+      // worker's and on disk does not appear twice under two headings.
+      const fresh = found.filter(d => !known.includes(d) && !known.includes(d.replace(/\/$/, '')));
+      if (bareName) _acRenderSections([['Your directories', known], ['Found on disk', fresh]]);
+      else _acRenderSections([[null, found]]);
     } catch(e) {}
   }, 150);
 }
@@ -19457,6 +21046,9 @@ function _fmtRelTime(ts) {
 // ═══════ BOARD ═══════
 let activeView = 'sessions';
 let boardItems = [];
+// The exact set the last renderBoard() painted, after every filter. Export uses
+// it so "export" always means "what I am looking at". See renderBoard().
+let _boardLastVisible = [];
 // Archived cards are fetched LAZILY (AMUX-2271). They are 1577 of 1624 rows and
 // 97% of the payload, and the board hides them everywhere unless something asks
 // for them: `_bqWantsArchived` for the global board, the per-session peek panel
@@ -20005,16 +21597,31 @@ function switchView(view) {
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
-  const _svIds = ['session', 'board', 'groups', 'calendar', 'scheduler', 'files', 'mdai', 'proxies', 'logs', 'messages', 'skills', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph', 'connectors'];
-  const _svNames = ['sessions', 'board', 'groups', 'calendar', 'scheduler', 'files', 'mdai', 'proxies', 'logs', 'messages', 'skills', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph', 'connectors'];
-  // MUST stay index-aligned with _svIds/_svNames above (20 entries). It once had
-  // 18 for 19 ids, so 'graph' ran off the end and took the '' fallback by accident.
-  const _svDisplay = ['', '', '', 'flex', '', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', '', 'flex', 'flex', 'flex'];
-  for (let i = 0; i < _svIds.length; i++) {
-    const ve = document.getElementById(_svIds[i] + '-view');
-    if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
-    const te = document.getElementById('tab-' + _svNames[i]);
-    if (te) te.classList.toggle('active', view === _svNames[i]);
+  // ONE ROW PER VIEW: [domIdPrefix, tabName, display]. This was three PARALLEL
+  // ARRAYS that had to stay index-aligned, and the alignment had already failed
+  // once — the old comment recorded 18 display entries for 19 ids, so 'graph'
+  // ran off the end and took the '' fallback by accident.
+  //
+  // It failed again adding 'email' (AMUX-3998): the tab and the view existed,
+  // the click fired, and the body stayed blank because the name was in none of
+  // the three lists. A structure where forgetting one of three edits produces a
+  // silently blank screen is the bug, not the omission. Triples cannot
+  // misalign — a new view is one row or it is absent, never half-present.
+  const _svViews = [
+    ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
+    ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
+    ['files', 'files', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
+    ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
+    ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
+    ['cost', 'cost', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
+    ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
+    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'],
+  ];
+  for (const [domId, name, display] of _svViews) {
+    const ve = document.getElementById(domId + '-view');
+    if (ve) ve.style.display = view === name ? (display || '') : 'none';
+    const te = document.getElementById('tab-' + name);
+    if (te) te.classList.toggle('active', view === name);
   }
   if (view === 'groups') { _renderGroupsTab(); fetchBoard().then(() => _renderGroupsTab()); }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
@@ -20038,6 +21645,7 @@ function switchView(view) {
   if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'mdai') _mdaiTabLoad();
+  if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
@@ -21649,6 +23257,8 @@ function _schedRunToast(d) {
     case 'delivered': return 'Delivered to ' + (d.session || 'the worker') +
       (d.submission === 'unverified' ? ' (submission unverified)' : '') + tail;
     case 'queued':    return 'Queued · lands at the worker’s next turn boundary';
+    case 'running':   return (d.deduped ? 'Already running on the host' : 'Started on the host')
+      + (d.run_id ? ' · run #' + d.run_id : '') + tail;
     case 'refused':   return 'Not delivered' + (tail || ' · refused');
     case 'skipped':   return 'Skipped' + tail;
     case 'error':     return 'Failed' + (tail || ' · delivery failed');
@@ -21671,13 +23281,13 @@ function _schedRunToast(d) {
 // the mechanism (ethos rule 1).
 const _SCHED_RUN_TONE = {
   ok: 'ok', delivered: 'ok', done: 'done', queued: 'queued',
-  refused: 'warn', skipped: 'warn', error: 'err',
+  running: 'running', refused: 'warn', skipped: 'warn', error: 'err',
 };
 function _schedRunTone(status) { return _SCHED_RUN_TONE[String(status || '')] || 'unknown'; }
 function _schedRunDotClass(r) { return _schedRunTone(r.status); }
 function _schedRunColor(status) {
   return {
-    ok: 'var(--green,#4ade80)', done: 'var(--accent)', queued: 'var(--accent)',
+    ok: 'var(--green,#4ade80)', done: 'var(--accent)', queued: 'var(--accent)', running: 'var(--yellow,#fbbf24)',
     warn: 'var(--yellow,#fbbf24)', err: 'var(--red)', unknown: 'var(--dim)',
   }[_schedRunTone(status)];
 }
@@ -21915,7 +23525,7 @@ function renderScheduler(opts) {
     const renderDisabledCard = (s) => {
       const recLabel = s.schedule_expr || (s.sched_type === 'once' ? 'once' : (s.recurrence || 'recurring'));
       const runs = runMap[s.id] || [];
-      const dots = runs.map(r => `<span class="sched-run-dot ${r.status === 'ok' ? 'ok' : 'err'}" title="${esc(r.status)}"></span>`).join('');
+      const dots = runs.map(r => `<span class="sched-run-dot ${_schedRunDotClass(r)}" title="${esc(r.status)}"></span>`).join('');
       return `<div class="card sched-item" data-sched-id="${esc(s.id)}" style="padding:8px 12px;">
         <div style="display:flex;align-items:flex-start;gap:8px;">
           <label class="sched-toggle-label" title="Enable">
@@ -22082,9 +23692,54 @@ const _SYSJOB_STATUS = {
   disabled:    { cls: 'idle',  label: 'off',      hint: 'switched off by configuration' },
   stalled:     { cls: 'bad',   label: 'STALLED',  hint: 'last tick is far older than this job’s interval' },
   hung:        { cls: 'bad',   label: 'HUNG',     hint: 'a tick started and never finished' },
+  slow:        { cls: 'bad',   label: 'SLOW',     hint: 'the last completed tick exceeded this job’s liveness budget' },
   dead:        { cls: 'bad',   label: 'DEAD',     hint: 'the task exited — it panicked or was aborted' },
   not_spawned: { cls: 'bad',   label: 'NOT RUNNING', hint: 'nothing started this job — the failure that cost hours' },
 };
+
+// RUN NOW for a system job (Ethan, 2026-09-02: "system schedulers need a run
+// now btn").
+//
+// This section is deliberately not editable — no edit, no delete, because it is
+// amux's own machinery and the user cannot own it. Running one is a different
+// act: it changes nothing about the job, it only saves waiting up to an hour to
+// find out whether a change works.
+//
+// `triggerable` comes from the SERVER, not a guess here. A `loop` job owns its
+// own sleep and never consults a trigger, so a button on it would do nothing at
+// all — and a control that silently does nothing is the exact failure this view
+// was built to prevent, where a dead job and a quiet one looked alike.
+function _sysJobRunBtn(j) {
+  if (!j.triggerable) {
+    const why = j.status === 'disabled'
+      ? 'This job is disabled, so its loop never started.'
+      : 'This job runs its own sleep loop rather than the shared periodic driver, '
+        + 'so there is nothing to signal.';
+    return '<button class="sysjob-run" disabled title="Cannot be run on demand. ' + esc(why)
+      + '">Run now</button>';
+  }
+  return '<button class="sysjob-run" onclick="event.stopPropagation();_runSystemJob(\''
+    + escJs(j.id) + '\',this)" title="Tick this job now instead of waiting for its interval">'
+    + 'Run now</button>';
+}
+async function _runSystemJob(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  try {
+    const r = await fetch(API + '/api/system-jobs/' + encodeURIComponent(id) + '/run',
+                          { method: 'POST', headers: _authHeaders() });
+    const d = await r.json();
+    if (!r.ok) { showToast(id + ': ' + (d.error || ('HTTP ' + r.status))); return; }
+    // "queued", not "ran": the trigger wakes the loop, and the tick happens on
+    // the job's own task. Claiming it finished would be a guess — the row's own
+    // last-tick age is what actually reports the run, a second or two later.
+    showToast(id + ' triggered — watch its last-tick age');
+    setTimeout(async () => { await fetchSystemJobs(); renderSystemJobs(); }, 1500);
+  } catch (e) {
+    showToast(id + ': ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Run now'; }
+  }
+}
 
 function renderSystemJobs() {
   const el = document.getElementById('system-jobs-list');
@@ -22096,7 +23751,7 @@ function renderSystemJobs() {
     return;
   }
   const jobs = _systemJobs.jobs.slice();
-  const bad = jobs.filter(j => ['stalled', 'hung', 'dead', 'not_spawned'].includes(j.status));
+  const bad = jobs.filter(j => ['stalled', 'hung', 'slow', 'dead', 'not_spawned'].includes(j.status));
   if (head) {
     head.innerHTML = bad.length
       ? `<span class="sysjob-alarm">${bad.length} need${bad.length === 1 ? 's' : ''} attention</span>`
@@ -22104,7 +23759,7 @@ function renderSystemJobs() {
   }
   // Broken first — the whole point of the section is that a dead loop is not
   // something you have to scroll for.
-  const rank = j => (['stalled','hung','dead','not_spawned'].includes(j.status) ? 0
+  const rank = j => (['stalled','hung','slow','dead','not_spawned'].includes(j.status) ? 0
                    : j.status === 'alive' ? 1 : j.status === 'disabled' ? 3 : 2);
   jobs.sort((a, b) => rank(a) - rank(b) || String(a.name).localeCompare(String(b.name)));
 
@@ -22128,14 +23783,14 @@ function renderSystemJobs() {
     const tick = j.last_tick_at
       ? `<span title="last tick">✓ ${_sysAge(j.last_tick_age_s)} ago</span>`
       : (j.spawned ? `<span title="no tick recorded yet">no tick yet</span>` : '');
-    const budget = (j.stale_after_s != null && ['stalled','hung'].includes(j.status))
+    const budget = (j.stale_after_s != null && ['stalled','hung','slow'].includes(j.status))
       ? `<span class="sysjob-budget">budget ${_sysAge(j.stale_after_s)}</span>` : '';
     return `<div class="sysjob ${st.cls}">
       <div class="sysjob-top">
         <span class="sysjob-dot ${st.cls}"></span>
         <span class="sysjob-name">${esc(j.name || j.id)}</span>
         <code class="sysjob-id">${esc(j.id)}</code>
-        <span class="sysjob-status ${st.cls}" title="${esc(st.hint)}">${st.label}</span>
+        ${_sysJobRunBtn(j)}<span class="sysjob-status ${st.cls}" title="${esc(st.hint)}">${st.label}</span>
       </div>
       ${j.purpose ? `<div class="sysjob-purpose">${esc(j.purpose)}</div>`
                   : `<div class="sysjob-purpose dim">Undocumented job — it is running, but no one has written down what it does.</div>`}
@@ -22739,11 +24394,16 @@ function _tagSuggestions(prefix, q) {
 
 function _beTagInputUpdate(prefix) {
   const inp = document.getElementById(prefix + '-tag-input');
-  const q = inp ? inp.value.toLowerCase() : '';
-  _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
-  const suggestions = _tagSuggestions(prefix, q);
   const el = document.getElementById(prefix + '-tag-suggestions');
   if (!el) return;
+  const q = inp ? inp.value.trim().toLowerCase() : '';
+  // Groups are card metadata, not a recommended taxonomy. An empty input used
+  // to dump twelve fleet-wide suggestions into every card and visually bury
+  // its source message, epic, gate and output. Suggestions are autocomplete:
+  // they exist only after the user asks by typing.
+  if (!q) { el.innerHTML = ''; return; }
+  _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
+  const suggestions = _tagSuggestions(prefix, q);
   // Data attributes + a delegated listener, NOT an inline onclick.
   //
   // The inline version was silently dead. `JSON.stringify(t)` emits DOUBLE
@@ -23688,6 +25348,182 @@ function renderBoardFilters() {
   el.innerHTML = html;
 }
 
+// RIGHT-CLICK ACTIONS ON A BOARD ITEM (Ethan, 2026-09-02: "allow me to right
+// click board items and get a dropdown of actions").
+//
+// Every mutation here goes through `_gateConfirm` + `moveBoardItem`, which is
+// the SAME pair `boardColDrop` uses for a drag. That is the point rather than a
+// convenience: the board's gates (evidence on done, WIP, next-action on doing)
+// live in `_gateConfirm`, so a menu that PATCHed the status directly would be a
+// second, ungated way to move a card and would quietly undo AF-321. If a move
+// is refused here it is refused for the same stated reason as a drag.
+//
+// Bound on the shared `_issueRowHTML` as well as the kanban card, because that
+// renderer already exists so the List view and the peek Board tab cannot drift
+// from each other — the same argument its own comment makes.
+// COLUMN ACTIONS (Ethan, 2026-09-02: "add a button on board view at a column
+// make an ellipse button and in that ellipse migrate all then a seperate
+// column, with a confirmation").
+//
+// Only UNGATED targets are offered. `doing`, `review`, `done` and `verified`
+// each carry a checklist a human answers per card; one click that moved 489
+// backlog cards into `verified` would assert all four of its criteria about
+// work nobody opened, which is the claim AF-321 exists to refuse. Gated columns
+// are still LISTED, disabled, with the reason — leaving them out entirely would
+// read as a missing feature rather than a deliberate refusal, and the server
+// enforces the same rule anyway (409, not a silent no-op).
+function _colMenuClose() {
+  const m = document.getElementById('board-col-menu');
+  if (m) m.remove();
+}
+function _colMenu(e, st, lane) {
+  e.preventDefault();
+  e.stopPropagation();
+  _colMenuClose();
+  const from = boardStatuses.find(x => x.id === st);
+  lane = lane || '';
+  const n = _colCardCount(st, lane);
+  // NAME THE SCOPE. "Migrate all" on a worker board means that worker's cards;
+  // on the global board it means every lane's. The header says which, because
+  // the two differ by two orders of magnitude and the menu looks identical.
+  let h = '<div class="card-menu-item" style="cursor:default;opacity:0.75;">'
+    + esc((from && from.label) || st) + ' &middot; ' + n + ' card' + (n === 1 ? '' : 's')
+    + (lane ? ' in ' + esc(lane) : ' (all workers)')
+    + '</div><div class="card-menu-sep"></div>';
+  boardStatuses.forEach(t => {
+    if (t.id === st) return;
+    const gated = Array.isArray(t.gate) && t.gate.length;
+    if (gated) {
+      h += '<div class="card-menu-item" style="cursor:not-allowed;opacity:0.45;" '
+        + 'title="' + esc(t.label) + ' has a ' + t.gate.length + '-item gate. A gate is a '
+        + 'per-card claim, so it cannot be answered once for a whole column. Move these '
+        + 'individually.">&#128274; Migrate all to ' + esc(t.label) + '</div>';
+    } else {
+      h += '<div class="card-menu-item" onclick="event.stopPropagation();_colMigrateAll(\''
+        + escJs(st) + '\',\'' + escJs(t.id) + '\',\'' + escJs(lane) + '\')">&#8594; Migrate all to '
+        + esc(t.label) + '</div>';
+    }
+  });
+  const m = document.createElement('div');
+  m.className = 'card-menu open';
+  m.id = 'board-col-menu';
+  m.innerHTML = h;
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6)) + 'px';
+  m.style.top = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6)) + 'px';
+  return false;
+}
+// The SAME canon `deleteBoardStatus` counts with, so the number in the dialog
+// matches the number on the column header you just clicked.
+function _colCardCount(st, lane) {
+  return (typeof boardItems !== 'undefined' ? boardItems : [])
+    .filter(i => !i.archived && !i.deleted && _statusCanon(i.status) === st
+                 && (!lane || i.session === lane)).length;
+}
+async function _colMigrateAll(from, to, lane) {
+  _colMenuClose();
+  lane = lane || '';
+  const n = _colCardCount(from, lane);
+  const fl = (boardStatuses.find(x => x.id === from) || {}).label || from;
+  const tl = (boardStatuses.find(x => x.id === to) || {}).label || to;
+  if (!n) { showToast('"' + fl + '" has no cards to migrate'); return; }
+  // SAY HOW MANY, and say it is not undoable in one action — the same rule
+  // AMUX-2491 set for the column delete dialog. The count is the decision.
+  if (!confirm('Migrate all ' + n + ' card' + (n === 1 ? '' : 's')
+      + (lane ? ' belonging to ' + lane : ' across ALL workers')
+      + ' from "' + fl + '" to "' + tl + '"?\n\nEach move is recorded on the card, but there '
+      + 'is no single undo; reversing this means migrating them back.')) return;
+  try {
+    const r = await fetch(API + '/api/board/bulk-migrate', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+      body: JSON.stringify(lane ? { from: from, to: to, session: lane }
+                                 : { from: from, to: to }),
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast('Migrate refused: ' + (d.error || ('HTTP ' + r.status))); return; }
+    // REPORT THE REFUSALS, not just the successes. "moved 480" over a column of
+    // 489 leaves nine cards unexplained, and the caller cannot tell which.
+    const ref = (d.refused || []).length;
+    showToast('Moved ' + d.moved + ' of ' + d.considered + ' to "' + tl + '"'
+      + (ref ? ' — ' + ref + ' refused (see console)' : ''));
+    if (ref) console.warn('[bulk-migrate] refused:', d.refused);
+    await fetchBoard();
+    renderBoard();
+  } catch (e) {
+    showToast('Migrate failed: ' + e.message);
+  }
+}
+document.addEventListener('click', () => _colMenuClose());
+
+let _boardCtxId = null;
+function _boardCtxClose() {
+  const m = document.getElementById('board-ctx-menu');
+  if (m) m.remove();
+  _boardCtxId = null;
+}
+function _boardCtxMenu(e, id) {
+  e.preventDefault();
+  e.stopPropagation();
+  _boardCtxClose();
+  const item = (boardItems || []).find(i => i.id === id);
+  if (!item) return false;
+  _boardCtxId = id;
+  const cur = item.status || 'todo';
+  let h = '<div class="card-menu-item" onclick="event.stopPropagation();_boardCtxClose();openBoardDetail(\''
+    + escJs(id) + '\')"><span class="mi">&#x2197;</span> Open ' + esc(id) + '</div>';
+  h += '<div class="card-menu-sep"></div>';
+  (typeof boardStatuses !== 'undefined' ? boardStatuses : []).forEach(st => {
+    if (st.id === cur) return;
+    const sty = statusStyle(st.id);
+    h += '<div class="card-menu-item" onclick="event.stopPropagation();_boardCtxMove(\''
+      + escJs(id) + '\',\'' + escJs(st.id) + '\')">'
+      + '<span class="mi"><span class="board-status-dot" style="background:' + sty.dot + '"></span></span> '
+      + esc(st.label) + '</div>';
+  });
+  h += '<div class="card-menu-sep"></div>';
+  h += '<div class="card-menu-item" onclick="event.stopPropagation();_boardCtxCopy(\''
+    + escJs(id) + '\')"><span class="mi">&#x2398;</span> Copy ID</div>';
+  const m = document.createElement('div');
+  m.className = 'card-menu open';
+  m.id = 'board-ctx-menu';
+  m.innerHTML = h;
+  document.body.appendChild(m);
+  // Clamp INTO the viewport rather than off the bottom-right edge, which is
+  // where a right-click near the last column of a full board lands.
+  const r = m.getBoundingClientRect();
+  const x = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6));
+  const y = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6));
+  m.style.left = x + 'px';
+  m.style.top = y + 'px';
+  return false;
+}
+function _boardCtxMove(id, st) {
+  _boardCtxClose();
+  const item = (boardItems || []).find(i => i.id === id);
+  if (!item || (item.status || 'todo') === st) return;
+  _gateConfirm(item, st).then(ok => {
+    if (ok) moveBoardItem(id, st, undefined, ok);
+    else renderBoard();
+  });
+}
+function _boardCtxCopy(id) {
+  _boardCtxClose();
+  try {
+    navigator.clipboard.writeText(id);
+    showToast('Copied ' + id);
+  } catch (err) {
+    showToast('Could not copy: ' + err.message);
+  }
+}
+document.addEventListener('click', () => { if (_boardCtxId) _boardCtxClose(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _boardCtxId) _boardCtxClose(); });
+// A right-click somewhere ELSE must not leave the old menu floating.
+document.addEventListener('contextmenu', (e) => {
+  if (_boardCtxId && !e.target.closest('.board-card, .peek-issue-item')) _boardCtxClose();
+});
+
 function boardDragStart(e, id) {
   _boardDragId = id;
   e.dataTransfer.effectAllowed = 'move';
@@ -23765,7 +25601,7 @@ function _issueRowHTML(item, opts) {
   const _rq = (typeof _peekIssuesQuery !== 'undefined' && _peekIssuesQuery)
     ? _peekIssuesQuery
     : (typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '');
-  return '<div class="peek-issue-item" style="min-height:44px;" onclick="openBoardDetail(\'' + esc(item.id) + '\')">' +
+  return '<div class="peek-issue-item" style="min-height:44px;" onclick="openBoardDetail(\'' + esc(item.id) + '\')" oncontextmenu="return _boardCtxMenu(event,\'' + escJs(item.id) + '\')">' +
     dot +
     '<span class="peek-issue-key">' + _hlSearch(esc(item.id), _rq) + '</span>' +
     // The PEEK query, not the global board query. This read boardSearchQuery,
@@ -23786,20 +25622,26 @@ function _renderBoardCard(item) {
   const firstLine = (item.desc !== undefined ? item.desc : (item.desc_head || ''))
                       .split('\n')[0].slice(0, 80);
   const pinned = item.pinned ? 1 : 0;
-  // LIVE emphasis: this card is what its owning session is working on right now
-  // (item in doing + that session's terminal is actively generating).
+  // LIVE emphasis: this card is what its owning session explicitly claims it is
+  // working on right now. `active + doing` is not enough: a lane can contain
+  // several doing cards, but only one is the current parent task.
   // `sessions`, not the pre-rename `workers` (b009f6e's FOURTH casualty —
   // the typeof guard made the dead global read as false instead of throwing,
   // so the LIVE emphasis just silently never lit).
-  const _liveNow = item.status === 'doing' && item.session &&
-    (typeof sessions !== 'undefined') && (sessions || []).some(s => s.name === item.session && s.status === 'active');
+  const _liveSession = item.session && (typeof sessions !== 'undefined')
+    ? (sessions || []).find(s => s.name === item.session && s.status === 'active')
+    : null;
+  const _liveCard = _liveSession ? _cardDoingItem(item.session) : null;
+  const _liveNow = !!(_liveCard && _liveCard.id === item.id);
   // item.session, not the pre-rename item.worker — the dead field rendered
   // 'undefined is working on this right now' in the LIVE tooltip.
-  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + (_liveNow ? ' board-card-live' : '') + '" data-id="' + item.id + '"' + (_liveNow ? ' title="' + esc(item.session) + ' is working on this right now"' : '') + ' onclick="openBoardDetail(\'' + item.id + '\')">';
+  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + (_liveNow ? ' board-card-live' : '') + '" data-id="' + item.id + '"' + (_liveNow ? ' title="' + esc(item.session) + ' is working on this right now"' : '') + ' onclick="openBoardDetail(\'' + item.id + '\')" oncontextmenu="return _boardCtxMenu(event,\'' + escJs(item.id) + '\')">';
   h += '<div class="board-drag-handle" onclick="event.stopPropagation()" title="Drag to move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="3.5" cy="2.5" r="1.25"/><circle cx="8.5" cy="2.5" r="1.25"/><circle cx="3.5" cy="6" r="1.25"/><circle cx="8.5" cy="6" r="1.25"/><circle cx="3.5" cy="9.5" r="1.25"/><circle cx="8.5" cy="9.5" r="1.25"/></svg></div>';
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   const _bq = typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '';
-  h += '<div class="board-card-key">' + _hlSearch(esc(item.id), _bq) + '</div>';
+  h += '<div class="board-card-key">' + _hlSearch(esc(item.id), _bq)
+    + (_liveNow ? '<span class="board-card-live-label"><span class="board-live-dot"></span>Working now</span>' : '')
+    + '</div>';
   if (item.doing_rot) h += '<div class="board-card-rot" title="Rotting: ' + item.doing_rot_days + 'd in doing with no board update and no commit/PR evidence. Evidence it forward or demote it.">&#x26A0; ' + Math.round(item.doing_rot_days) + 'd no evidence</div>';
   if (item.no_executor) h += '<div class="board-card-noexec" title="In doing, but nobody is executing it: ' + esc(item.no_executor) + '. Shepherding is not ownership.">&#x1F6A8; no executor</div>';
   // ISOLATED OWNER (AMUX-3728). The server computes owner_isolated and a
@@ -24023,6 +25865,19 @@ function _renderBoardColumnsInto(host, items, scope) {
     if (!isGlobal && scope.session && !stObj.stray) {
       const _sgHas = sessionGates[scope.session] && Array.isArray(sessionGates[scope.session][st]) && sessionGates[scope.session][st].length;
       html += '<button class="col-gate-btn' + (_sgHas ? ' has-gate' : '') + '" onclick="event.stopPropagation();editSessionGate(\'' + escJs(scope.session) + '\',\'' + st + '\')" title="Edit this worker&#39;s gate for ' + esc(stObj.label) + '">&#9745;&#xFE0E; Gate</button>';
+    }
+    // MIGRATE-ALL, on BOTH boards (Ethan: "the board elipse needs to be on the
+    // worker board page"). It sits beside Gate because it is the same class of
+    // control: it acts on the COLUMN, not on a card (AMUX-4044).
+    //
+    // The lane is passed through on a worker board, so "migrate all" there
+    // means THAT WORKER'S cards in the column and not the fleet's. Getting this
+    // wrong would be the worst possible bug in this feature: a click on one
+    // worker's board silently moving 489 cards belonging to 46 other lanes.
+    if (!stObj.stray) {
+      const _mLane = (!isGlobal && scope.session) ? scope.session : '';
+      html += '<button class="col-more-btn" onclick="event.stopPropagation();_colMenu(event,\''
+        + st + '\',\'' + escJs(_mLane) + '\')" title="Column actions">&#x22EF;</button>';
     }
     html += '</span></div>';
     if (isGlobal) {
@@ -24257,13 +26112,97 @@ function _boardStatsHTML(rows) {
     + '</div>';
 }
 
+// ── Board export ────────────────────────────────────────────────────────────
+//
+// Exports WHAT IS ON SCREEN: `_boardLastVisible`, the set renderBoard() last
+// painted, after the owner toggle, the archived rule and the structured query.
+//
+// THE HEADER NAMES THE FILTER, and that is not decoration. An export of a
+// filtered board that does not say it was filtered is indistinguishable from an
+// export of the whole board, and it is the version that gets pasted into a
+// status update. Any output that can read partial has to publish whether it was
+// (.claude/rules/ethos.md rule 4), so the count and the active query travel with
+// the file.
+//
+// DESCRIPTIONS ARE TRUNCATED AT THE SOURCE and the file says so per card.
+// `GET /api/board` returns `desc_head` + `desc_len`, never the full `desc`
+// (AMUX-3861), so this cannot emit complete descriptions no matter how it is
+// written. Marking each cut one beats shipping a file that looks whole.
+function _boardExportName(ext) {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `amux-board-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.${ext}`;
+}
+
+function _boardExportMd(items, query) {
+  const order = ['doing', 'review', 'todo', 'backlog', 'done', 'verified', 'discarded'];
+  const groups = {};
+  items.forEach(i => { const st = _statusCanon(i.status || 'todo'); (groups[st] = groups[st] || []).push(i); });
+  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+  let md = `# amux board\n\n_${items.length} issue(s) · exported ${stamp}_\n`;
+  md += query && query.trim()
+    ? `\n> **Filtered view.** Query: \`${query.trim()}\`. This is not the whole board.\n`
+    : `\n> Unfiltered: every issue currently visible on the board.\n`;
+  // NAME THE WAY OUT, not just the limitation (AMUX-3868). Descriptions here
+  // are heads because the list API sends heads; disclosing that without saying
+  // where the full text lives leaves the reader stuck with a known-partial file
+  // and no next step.
+  md += `>\n> Descriptions are heads. For complete text: \`GET /api/board/export?format=md\` (add \`&worker=NAME\` to scope).\n`;
+  const keys = order.concat(Object.keys(groups).filter(k => !order.includes(k)));
+  keys.forEach(st => {
+    const g = groups[st];
+    if (!g || !g.length) return;
+    md += `\n## ${st} (${g.length})\n\n`;
+    g.forEach(i => {
+      const who = i.session || i.worker || '—';
+      md += `- **${i.id}** ${i.title || ''}\n`;
+      md += `  - worker: ${who} · type: ${i.type || 'code'}`;
+      if (i.gate && i.gate.length) md += ` · gate: ${[].concat(i.gate).join(' / ')}`;
+      md += `\n`;
+      const head = (i.desc_head || '').trim();
+      if (head) {
+        const cut = i.desc_len && i.desc_len > head.length;
+        md += `  - ${head.replace(/\n+/g, ' ')}${cut ? ` … _(truncated: ${i.desc_len} chars total; the board list API returns only a head)_` : ''}\n`;
+      }
+    });
+  });
+  return md;
+}
+
+function exportBoard(fmt) {
+  const items = (_boardLastVisible || []).slice();
+  if (!items.length) { showToast('Nothing to export — no issues match the current filter.'); return; }
+  const q = (typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '') || '';
+  let body, mime, ext;
+  if (fmt === 'json') {
+    body = JSON.stringify({
+      exported_at: new Date().toISOString(),
+      filtered: !!q.trim(),
+      query: q.trim() || null,
+      count: items.length,
+      // Stated in the payload rather than left for the reader to discover.
+      desc_note: 'desc_head is a prefix; desc_len is the true length. The board list API does not return full desc (AMUX-3861).',
+      issues: items,
+    }, null, 2);
+    mime = 'application/json'; ext = 'json';
+  } else {
+    body = _boardExportMd(items, q);
+    mime = 'text/markdown'; ext = 'md';
+  }
+  const url = URL.createObjectURL(new Blob([body], { type: mime + ';charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = _boardExportName(ext);
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast(`Exported ${items.length} issue(s) as ${ext.toUpperCase()}${q.trim() ? ' (filtered)' : ''}`);
+}
+
 function renderBoard() {
   _boardEnsureFull();
   // Skip re-render while a drag is in progress — queue it for when drag ends
   if (document.body.classList.contains('board-dragging')) { _boardRenderPending = true; return; }
   renderBoardFilters();
   const container = document.getElementById('board-columns');
-
   // Update view toggle buttons
   var bvS = document.getElementById('bv-session');
   var bvC = document.getElementById('bv-status');
@@ -24290,6 +26229,13 @@ function renderBoard() {
   // so the old search behaviour is a strict subset of this.
   visible = _bqHideArchived(visible, boardSearchQuery);
   visible = _bqFilter(visible, boardSearchQuery);
+
+  // EXPORT READS THIS, rather than re-deriving the filter pipeline (owner
+  // toggle -> archived rule -> structured query). Two implementations of "what
+  // is on screen" drift the moment either side gains a facet, and the drift is
+  // invisible: the file looks fine, it is just not what you were looking at.
+  // Captured at the one point where `visible` is final for every view mode.
+  _boardLastVisible = visible;
 
   if (boardViewMode === 'list') {
     // Linear-dense List view (AMUX-2152): grouped by status with counts,
@@ -24801,6 +26747,205 @@ function _boardDraftsPersist() {
 // known to have one — see the guard in the save handler (AMUX-2840).
 let _bdHydrated = false;
 
+function _bdConfigureGo(item) {
+  const goBtn = document.getElementById('bd-goto-session');
+  if (!goBtn) return;
+  const sess = item.session || '';
+  goBtn.style.display = sess ? '' : 'none';
+  goBtn.onclick = (e) => {
+    e.stopPropagation();
+    try { closeBoardDetail(); } catch (err) {}
+    openPeek(sess, { query: item.id });
+  };
+}
+
+function _bdArtifactRef(a) {
+  const ref = String((a && a.ref) || '');
+  const target = String((a && a.resolved_ref) || ref);
+  if (/^https?:\/\//i.test(target)) {
+    return '<a href="' + esc(target) + '" target="_blank" rel="noopener noreferrer">' + esc(ref) + '</a>';
+  }
+  const refPath = ref.replace(/#.*$/, '');
+  const targetPath = target.replace(/#.*$/, '');
+  const explicitPath = /^(?:\/|\.\.?\/)/.test(refPath)
+    || (!/\s/.test(refPath) && (refPath.includes('/') || /\.[a-z0-9]{1,12}$/i.test(refPath)));
+  const serverResolvedPath = target !== ref && /^(?:\/|\.\.?\/)/.test(targetPath);
+  if (explicitPath || serverResolvedPath) {
+    return '<button type="button" class="file-link board-artifact-file" onclick="event.stopPropagation();openFilePreview(\''
+      + escJs(targetPath) + '\')" title="Open ' + esc(targetPath) + '">' + esc(ref) + '</button>';
+  }
+  return '<code>' + esc(ref) + '</code>';
+}
+
+function _bdOpenMessage(id) {
+  const displayId = 'MSG-' + String(id || '').replace(/^MSG-/i, '');
+  closeBoardDetail();
+  _msgsKind = 'all';
+  _msgsDeepQ = displayId;
+  _msgsGroup = '';
+  _msgsCounts = null;
+  const search = document.getElementById('msgs-search');
+  if (search) search.value = displayId;
+  const worker = document.getElementById('msgs-session-filter');
+  if (worker) worker.value = '';
+  if (typeof _msgSetMode === 'function') _msgSetMode('messages');
+  switchView('messages');
+}
+
+// One renderer for cached open and authoritative hydration. Keeping relation
+// rendering here prevents the list card and GET detail from growing separate
+// definitions of the task's epic, source message, summary and assets.
+function _bdRenderMeta(item) {
+  const meta = document.getElementById('bd-meta');
+  if (!meta || !item) return;
+  const parts = [];
+  if (item.type) parts.push('Type ' + esc(item.type));
+  if (item.creator) parts.push('From ' + esc(item.creator));
+  if (item.created) parts.push('Created ' + timeAgo(item.created));
+  if (item.updated && item.updated !== item.created) parts.push('Updated ' + timeAgo(item.updated));
+  if (item.reviewer) parts.push('Reviewer ' + esc(item.reviewer));
+  if (item.source_ref) {
+    const lv = item.last_verified_at;
+    const ageH = lv ? Math.round((Date.now()/1000 - lv) / 3600) : null;
+    const stale = !lv || ageH > 24;
+    parts.push('Derived from ' + esc(String(item.source_ref).slice(0,60))
+      + (lv ? (' · source re-checked ' + ageH + 'h ago') : ' · never re-verified')
+      + (stale ? ' <span style="color:var(--red);font-weight:600;">STALE — re-check the source before acting</span>' : ''));
+  }
+  let html = parts.length ? '<div class="bd-card-facts">'
+    + parts.map(p => '<span>' + p + '</span>').join('') + '</div>' : '';
+
+  const messages = Array.isArray(item.messages) ? item.messages : [];
+  if (messages.length) {
+    html += '<section class="bd-card-section"><h4>Source message' + (messages.length === 1 ? '' : 's') + '</h4>'
+      + messages.map(m => {
+        const ts = Number(m.ts || 0); const sec = ts > 100000000000 ? Math.floor(ts / 1000) : ts;
+        return '<div class="board-detail-meta-row"><button class="task-id-chip bd-link-chip" onclick="_bdOpenMessage('
+          + Number(m.id || 0) + ')" title="Open this exact message in Messages">MSG-' + esc(String(m.id)) + '</button> '
+          + '<span>' + (m.session ? esc(m.session) + ' · ' : '') + (sec ? timeAgo(sec) + ' · ' : '')
+          + esc(String(m.text || '').slice(0,220)) + '</span></div>';
+      }).join('') + '</section>';
+  }
+
+  if (item.requested_by || item.callback) {
+    let requestHtml = '';
+    if (item.requested_by) {
+      requestHtml += '<div class="board-detail-meta-row"><b>Requested by</b> '
+        + '<button class="task-id-chip bd-link-chip" onclick="event.stopPropagation();openPeek(\''
+        + escJs(item.requested_by) + '\')" title="Open requester">' + esc(item.requested_by) + '</button></div>';
+    }
+    if (item.callback) {
+      const cb = item.callback || {};
+      const state = String(cb.state || 'armed');
+      const stateColor = state === 'queued' ? 'var(--green)' : (state === 'refused' ? 'var(--red)' : 'var(--accent)');
+      requestHtml += '<div class="board-detail-meta-row"><b>Terminal callback</b> '
+        + '<button class="task-id-chip bd-link-chip" onclick="event.stopPropagation();openPeek(\''
+        + escJs(cb.session || '') + '\')">' + esc(cb.session || '') + '</button> '
+        + '<span style="color:' + stateColor + '">' + esc(state) + '</span>'
+        + (cb.fired_at ? ' · ' + timeAgo(Number(cb.fired_at)) : '') + '</div>';
+      if (cb.prompt) requestHtml += '<div class="board-detail-meta-row"><span style="color:var(--dim)">Then:</span> '
+        + _linkifyUrls(_linkifyCardIds(esc(String(cb.prompt)))) + '</div>';
+      if (cb.message_id) requestHtml += '<div class="board-detail-meta-row"><span style="color:var(--dim)">Delivery:</span> <code>'
+        + esc(String(cb.message_id)) + '</code></div>';
+      if (cb.error) requestHtml += '<div class="board-detail-meta-row" style="color:var(--red)">Callback not delivered: '
+        + esc(String(cb.error)) + '</div>';
+    }
+    html += '<section class="bd-card-section"><h4>Worker request</h4>' + requestHtml + '</section>';
+  }
+  if (item.ask_actor || item.ask_question || item.ask_unblocks) {
+    html += '<section class="bd-card-section"><h4>Human request</h4>'
+      + '<div class="board-detail-meta-row"><b>Waiting on</b> ' + esc(item.ask_actor || 'unspecified')
+      + (item.ask_type ? ' · ' + esc(item.ask_type) : '') + '</div>'
+      + (item.ask_question ? '<div class="board-detail-meta-row"><span style="color:var(--dim)">Question:</span> '
+          + _linkifyUrls(esc(String(item.ask_question))) + '</div>' : '')
+      + (item.ask_unblocks ? '<div class="board-detail-meta-row"><span style="color:var(--dim)">Unblocks when:</span> '
+          + esc(String(item.ask_unblocks)) + '</div>' : '') + '</section>';
+  }
+
+  let relationHtml = '';
+  if (item.epic) {
+    relationHtml += '<div class="board-detail-meta-row"><b>Epic</b> <span class="task-id-chip" onclick="_openIssue(\''
+      + escJs(item.epic) + '\')">' + esc(item.epic) + '</span></div>';
+  }
+  const deps = Array.isArray(item.depends_on) ? item.depends_on : [];
+  if (deps.length) relationHtml += '<div class="board-detail-meta-row"><b>Blocked by</b> ' + deps.map(d =>
+    '<span class="task-id-chip" onclick="_openIssue(\'' + escJs(d) + '\')">' + esc(d) + '</span>').join(' ') + '</div>';
+
+  const children = Array.isArray(item.children) ? item.children : [];
+  if (children.length) {
+    relationHtml += '<div class="board-detail-meta-row"><b>Child tasks (' + children.length + ')</b></div>'
+      + children.map(c => {
+        const sty = statusStyle(c.status || 'todo');
+        const pri = c.priority ? ' · ' + esc(c.priority) : '';
+        return '<div class="board-detail-meta-row" style="display:flex;gap:6px;align-items:center;">'
+          + '<span class="task-id-chip" onclick="_openIssue(\'' + escJs(c.id) + '\')">' + esc(c.id) + '</span>'
+          + '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + '">' + esc(c.status || 'todo') + '</span>'
+          + '<span>' + esc(c.title || '') + pri + '</span></div>';
+      }).join('');
+  }
+  if (relationHtml) html += '<section class="bd-card-section"><h4>Task relationships</h4>' + relationHtml + '</section>';
+
+  const gates = (Array.isArray(item.gate_requirements) ? item.gate_requirements : [])
+    .filter(g => Array.isArray(g.criteria) && g.criteria.length);
+  if (gates.length) {
+    html += '<section class="bd-card-section"><h4>Column gate requirements</h4>'
+      + gates.map(g => {
+        const src = String(g.source || 'type') + (g.scope ? ' · ' + String(g.scope) : '');
+        return '<div class="bd-gate"><div class="bd-gate-head"><span class="status-badge">'
+          + esc(String(g.status || '')) + '</span><span>' + esc(src) + '</span></div><ul>'
+          + g.criteria.map(c => '<li>' + esc(String(c)) + '</li>').join('') + '</ul></div>';
+      }).join('') + '</section>';
+  }
+
+  const summary = [
+    ['Next action', item.next_action],
+    ['Last result', item.last_result],
+    ['Unresolved', item.unresolved]
+  ].filter(x => x[1]);
+  if (summary.length) {
+    html += '<section class="bd-card-section"><h4>Work summary</h4>'
+      + summary.map(x => '<div class="board-detail-meta-row"><span style="color:var(--dim)">'
+        + esc(x[0]) + ':</span> ' + _linkifyUrls(_linkifyCardIds(esc(String(x[1])))) + '</div>').join('')
+      + '</section>';
+  }
+
+  const artifacts = [];
+  const artifactSeen = new Set();
+  (Array.isArray(item.artifacts) ? item.artifacts : [])
+    .concat(Array.isArray(item.asset_links) ? item.asset_links : [])
+    .forEach(a => {
+      const key = String((a && a.ref) || '');
+      if (key && !artifactSeen.has(key)) { artifactSeen.add(key); artifacts.push(a); }
+    });
+  if (artifacts.length) {
+    html += '<section class="bd-card-section"><h4>Produced assets (' + artifacts.length + ')</h4>'
+      + artifacts.map(a => {
+        const availability = a && a.availability || {};
+        const availabilityText = availability.state === 'missing' ? ' · missing'
+          : availability.state === 'available' ? ' · available'
+          : availability.state === 'external' && availability.measured === false ? ' · reachability not checked'
+          : '';
+        return '<div class="board-detail-meta-row">' + _bdArtifactRef(a)
+        + ' <span style="color:var(--dim)">· ' + esc(a.kind || a.source || 'artifact')
+        + (a.state ? ' · ' + esc(a.state) : '') + esc(availabilityText) + '</span>'
+        + (a.description ? '<div style="color:var(--dim)">' + esc(a.description) + '</div>' : '') + '</div>';
+      }).join('');
+    html += '</section>';
+  }
+
+  const activity = _bdWorkerActivity(item);
+  if (activity.length) {
+    html += '<section class="bd-card-section"><h4>Worker actions</h4>'
+      + activity.slice(-8).reverse().map(e => '<div class="board-detail-meta-row"><span class="bd-hist-ic" style="color:'
+        + (_BD_KIND_COL[e.kind] || 'var(--dim)') + '">' + (_BD_KIND_ICON[e.kind] || '\u00B7') + '</span><span>'
+        + _linkifyUrls(_linkifyCardIds(esc(e.body))) + '</span>'
+        + (e.ts ? '<span class="bd-hist-ts">' + esc(e.ts) + '</span>' : '') + '</div>').join('')
+      + (activity.length > 8 ? '<button class="bd-activity-all" onclick="boardDetailTab(\'history\')">View all '
+        + activity.length + ' worker actions</button>' : '') + '</section>';
+  }
+  meta.innerHTML = html;
+}
+
 /// Fetch the authoritative card and fill desc/log, WITHOUT clobbering anything
 /// the user has typed.
 ///
@@ -24816,30 +26961,70 @@ async function _bdHydrate(id) {
     const full = await r.json();
     if (!full || full.id !== id || boardDetailId !== id) return;  // modal moved on
     const idx = boardItems.findIndex(i => i.id === id);
+    const cached = idx >= 0 ? { ...boardItems[idx] } : {};
     if (idx >= 0) boardItems[idx] = Object.assign({}, boardItems[idx], full);
+    const merged = idx >= 0 ? boardItems[idx] : full;
+    _bdRenderHistory(merged);
+    if (typeof _bdRenderStatusBanner === 'function') _bdRenderStatusBanner(merged);
+    _bdRenderMeta(merged);
     if (_boardDrafts[id]) { _bdHydrated = true; return; }  // user's draft wins
+    const title = document.getElementById('bd-title');
+    if (title && title.value === (cached.title || '')) {
+      title.value = full.title || '';
+      title.style.height = 'auto'; title.style.height = title.scrollHeight + 'px';
+    }
     const d = document.getElementById('bd-desc');
     // Only fill if the user has not started typing into it.
-    if (d && (d.value === '' || d.value === (full.desc || ''))) d.value = full.desc || '';
-    const l = document.getElementById('bd-log');
-    if (l && full.log !== undefined) l.textContent = full.log || '';
-    // RE-RENDER THE HISTORY TAB with the hydrated record. It was rendered at
-    // open time from the LIST item, and under slim that item carries no `log`
-    // — so the tab would show an empty history and a 0 count for every card,
-    // which reads as "nothing ever happened here" rather than as still
-    // loading. Same class as the blank desc, one surface over.
-    if (boardDetailId === id) {
-      const merged = idx >= 0 ? boardItems[idx] : full;
-      _bdRenderHistory(merged);
-      if (typeof _bdRenderStatusBanner === 'function') _bdRenderStatusBanner(merged);
+    if (d && d.value === (cached.desc || '')) {
+      d.value = full.desc || '';
+      // The board list is intentionally slim, so Details first opens without
+      // `desc`. Hydration must repaint the VISIBLE rendered copy as well as the
+      // hidden edit textarea; otherwise the task context stays blank until the
+      // user switches tabs even though the authoritative response arrived.
+      const previewTab = document.getElementById('bd-tab-preview');
+      const preview = document.getElementById('bd-preview');
+      if (previewTab && previewTab.classList.contains('active') && preview) {
+        preview.innerHTML = d.value.trim() ? renderMarkdown(d.value) : '';
+      }
+    }
+    if (boardDetailStatus === (cached.status || 'todo')) {
+      boardDetailStatus = full.status || 'todo';
+      _renderDetailStatusBtns();
+    }
+    const sess = document.getElementById('bd-session');
+    if (sess && sess.value === (cached.session || '')) _populateSessionSelect('bd-session', full.session || '');
+    _bdConfigureGo(full);
+    const due = document.getElementById('bd-due');
+    if (due && due.value === (cached.due || '')) { due.value = full.due || ''; try { _dpSyncLabel(due); } catch (e) {} }
+    const dueTime = document.getElementById('bd-due-time');
+    if (dueTime && dueTime.value === (cached.due_time || '')) dueTime.value = full.due_time || '';
+    const gate = document.getElementById('bd-gate');
+    const oldGate = (Array.isArray(cached.gate) ? cached.gate : []).join('\n');
+    if (gate && gate.value === oldGate) gate.value = (Array.isArray(full.gate) ? full.gate : []).join('\n');
+    if (JSON.stringify(_tagState['bd'] || []) === JSON.stringify(cached.tags || [])) {
+      _tagState['bd'] = [...(full.tags || [])]; _beTagRenderChips('bd'); _beTagInputUpdate('bd');
     }
     _bdHydrated = true;
   } catch (e) { /* leave unhydrated; the save guard covers it */ }
 }
 
-function openBoardDetail(id) {
-  const item = boardItems.find(i => i.id === id);
-  if (!item) return;
+async function openBoardDetail(id) {
+  let item = boardItems.find(i => i.id === id);
+  if (!item) {
+    // Message history, lineage, and deep links can point at an older terminal
+    // card that is intentionally absent from the board's capped working set.
+    // Resolve that ID authoritatively instead of turning a valid clickable
+    // link into a silent navigation to an unrelated board overview.
+    try {
+      const fetched = await apiCall(API + '/api/board/' + encodeURIComponent(id));
+      if (!fetched || !fetched.id) throw new Error('Task not found');
+      item = fetched;
+      boardItems.push(fetched);
+    } catch (e) {
+      showToast('Could not open ' + id + ': ' + (e.message || e), true);
+      return;
+    }
+  }
   boardDetailId = id;
   // Render instantly from cache, then correct it from the server. Blocking the
   // modal on a fetch would make every card open feel slow for a field most
@@ -24865,19 +27050,7 @@ function openBoardDetail(id) {
   const keyEl = document.getElementById('bd-key');
   if (keyEl) keyEl.textContent = item.id || '';
   _populateSessionSelect('bd-session', draft ? draft.session : (item.session || ''));
-  // One-tap jump from a card to the owning session's live progress
-  // (Ethan 07:19): opens the peek on the terminal, prefilled to search for
-  // this card id so the jump lands where the session last touched it.
-  const goBtn = document.getElementById('bd-goto-session');
-  if (goBtn) {
-    const _sess = (draft ? draft.session : item.session) || '';
-    goBtn.style.display = _sess ? '' : 'none';
-    goBtn.onclick = (e) => {
-      e.stopPropagation();
-      try { closeBoardDetail(); } catch (err) {}
-      openPeek(_sess, { query: item.id });
-    };
-  }
+  _bdConfigureGo({ ...item, session: draft ? draft.session : item.session });
   const dueEl = document.getElementById('bd-due');
   if (dueEl) { dueEl.value = draft ? (draft.due || '') : (item.due || ''); try { _dpSyncLabel(dueEl); } catch (e) {} }
   const dueTimeEl = document.getElementById('bd-due-time');
@@ -24888,38 +27061,30 @@ function openBoardDetail(id) {
   _tagState['bd'] = [...(item.tags || [])];
   _beTagRenderChips('bd');
   _beTagInputUpdate('bd');
-  const meta = document.getElementById('bd-meta');
-  const parts = [];
-  if (item.type) parts.push('Type ' + esc(item.type));
-  if (item.creator) parts.push('From ' + esc(item.creator));
-  if (item.created) parts.push('Created ' + timeAgo(item.created));
-  if (item.updated && item.updated !== item.created) parts.push('Updated ' + timeAgo(item.updated));
-  if (item.reviewer) parts.push('Reviewer ' + esc(item.reviewer));
-  if (item.source_ref) {
-    const lv = item.last_verified_at;
-    const ageH = lv ? Math.round((Date.now()/1000 - lv) / 3600) : null;
-    const stale = !lv || ageH > 24;
-    parts.push('Derived from ' + esc(String(item.source_ref).slice(0,60))
-      + (lv ? (' · source re-checked ' + ageH + 'h ago') : ' · never re-verified')
-      + (stale ? ' <span style="color:var(--red);font-weight:600;">STALE — re-check the source before acting</span>' : ''));
-  }
-  const deps = Array.isArray(item.depends_on) ? item.depends_on : [];
-  let depHtml = '';
-  if (deps.length) depHtml = '<div class="board-detail-meta-row">Blocked by ' + deps.map(d =>
-    '<span class="task-id-chip" onclick="_openIssue(\'' + escJs(d) + '\')" style="cursor:pointer;">' + esc(d) + '</span>').join(' ') + '</div>';
-  meta.innerHTML = parts.map(p => '<div class="board-detail-meta-row">' + p + '</div>').join('') + depHtml;
+  _bdRenderMeta(item);
   document.getElementById('bd-save-status').textContent = '';
   document.getElementById('board-detail-overlay').classList.add('active');
-  setTimeout(() => document.getElementById('bd-title').focus(), 100);
 }
 
 // ── Improved detail: status banner, typed History, permalink (AMUX-2178) ───
 function _bdParseHistory(log) {
-  // Each backtick-timestamped line becomes a typed event for styled rendering.
-  return (log || '').split('\n').filter(l => l.trim()).map(line => {
+  // A timestamp STARTS an event; wrapped/continued prose belongs to it until
+  // the next timestamp. Treating every physical line as an action turned one
+  // worker update into 115 sentence fragments on MR-137.
+  const grouped = [];
+  for (const line of (log || '').split('\n').filter(l => l.trim())) {
     const m = line.match(/^`(\d{1,2}:\d{2})`\s*(.*)$/);
     const ts = m ? m[1] : '';
     const body = m ? m[2] : line;
+    if (!m && grouped.length && grouped[grouped.length - 1].ts) {
+      grouped[grouped.length - 1].body += '\n' + body.trim();
+    } else {
+      grouped.push({ ts, body });
+    }
+  }
+  return grouped.map(e => {
+    const ts = e.ts;
+    const body = e.body;
     let kind = 'note';
     if (/^STATUS\s*\(/i.test(body)) kind = 'status';
     else if (/^status:\s/i.test(body)) kind = 'transition';
@@ -24931,6 +27096,20 @@ function _bdParseHistory(log) {
     return { ts, body, kind };
   });
 }
+function _bdWorkerActivity(item) {
+  return _bdParseHistory((item && item.log) || '').filter(e => {
+    const body = String(e.body || '').trim();
+    // The complete mutation/audit trail remains on the server. This card view
+    // is the worker record, so suppress storage plumbing that buried every
+    // useful action in the old History screenshot.
+    if (/^authz:/i.test(body)) return false;
+    if (/^[^:]+:\s*(?:backlog|todo|doing|review|done|verified|discarded)\s*->/i.test(body)) return false;
+    if (/gate satisfied via|gate_checked/i.test(body)) return false;
+    if (/^[^:]+:\s*(?:desc\s+[+-]\d+\s+chars|evidence|last_result|next_action|unresolved)$/i.test(body)) return false;
+    if (/^capture:\s/i.test(body)) return false;
+    return true;
+  });
+}
 const _BD_KIND_ICON = { status:'\uD83D\uDCCD', transition:'\u2192', commit:'\u2318', claim:'\u270B',
   request:'\uD83D\uDCAC', decision:'\u2713', warn:'\u26A0', note:'\u00B7' };
 const _BD_KIND_COL = { status:'var(--accent)', transition:'var(--fg)', commit:'var(--green)',
@@ -24938,7 +27117,7 @@ const _BD_KIND_COL = { status:'var(--accent)', transition:'var(--fg)', commit:'v
 function _bdRenderHistory(item) {
   const el = document.getElementById('bd-log');
   const nb = document.getElementById('bd-hist-n');
-  const evs = _bdParseHistory(item.log);
+  const evs = _bdWorkerActivity(item);
   if (nb) nb.textContent = evs.length ? ' ' + evs.length : '';
   if (!el) return;
   el.innerHTML = evs.length
@@ -24948,7 +27127,7 @@ function _bdRenderHistory(item) {
         + '<div class="bd-hist-b"><span class="bd-hist-txt">' + _linkifyUrls(_linkifyCardIds(esc(e.body))) + '</span>'
         + (e.ts ? '<span class="bd-hist-ts">' + esc(e.ts) + '</span>' : '') + '</div></div>').join('')
       + '</div>'
-    : '<div style="color:var(--dim);font-size:0.85rem;padding:18px;text-align:center;">No activity recorded yet.</div>';
+    : '<div style="color:var(--dim);font-size:0.85rem;padding:18px;text-align:center;">No worker actions recorded yet.</div>';
 }
 function _bdRenderStatusBanner(item) {
   const el = document.getElementById('bd-status-banner');
@@ -24962,7 +27141,7 @@ function _bdRenderStatusBanner(item) {
       + (last.ts ? ' \u00B7 ' + esc(last.ts) : '') + '</div>'
       + '<div class="bd-sb-text">' + _linkifyUrls(_linkifyCardIds(esc(last.body.replace(/^STATUS\s*\([^)]*\):\s*/i, '')))) + '</div>'
       + (sess ? '<button class="btn" style="margin-top:8px;font-size:0.74rem;min-height:36px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDD04 Refresh from ' + esc(sess) + '</button>' : '');
-  } else if (sess) {
+  } else if (sess && !/^(done|verified|discarded)$/i.test(String(item.status || ''))) {
     el.style.display = '';
     el.innerHTML = '<div class="bd-sb-empty">No status posted yet.'
       + ' <button class="btn" style="font-size:0.74rem;min-height:36px;margin-left:6px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDCAC Ask ' + esc(sess) + '</button></div>';
@@ -24979,21 +27158,22 @@ function boardDetailTab(tab) {
   const editBtn = document.getElementById('bd-tab-edit');
   const previewBtn = document.getElementById('bd-tab-preview');
   const histBtn = document.getElementById('bd-tab-history');
-  const linBtn = document.getElementById('bd-tab-lineage');
   const desc = document.getElementById('bd-desc');
   const preview = document.getElementById('bd-preview');
   const log = document.getElementById('bd-log');
-  const lin = document.getElementById('bd-lineage');
+  const meta = document.getElementById('bd-meta');
+  const editFields = document.getElementById('bd-edit-fields');
+  const editFooter = document.getElementById('bd-edit-footer');
+  const deleteBtn = document.getElementById('bd-delete');
+  const title = document.getElementById('bd-title');
   if (!editBtn || !previewBtn || !desc || !preview) return;
-  [editBtn, previewBtn, histBtn, linBtn].forEach(bt => bt && bt.classList.remove('active'));
-  if (lin) lin.style.display = 'none';
-  if (tab === 'lineage') {
-    if (linBtn) linBtn.classList.add('active');
-    desc.style.display = 'none'; preview.style.display = 'none';
-    if (log) log.style.display = 'none';
-    if (lin) { lin.style.display = ''; _bdRenderLineage(boardDetailId); }
-    return;
-  }
+  [editBtn, previewBtn, histBtn].forEach(bt => bt && bt.classList.remove('active'));
+  const editing = tab === 'edit';
+  if (editFields) editFields.style.display = editing ? '' : 'none';
+  if (editFooter) editFooter.style.display = editing ? '' : 'none';
+  if (deleteBtn) deleteBtn.style.display = editing ? '' : 'none';
+  if (title) title.readOnly = !editing;
+  if (meta) meta.style.display = tab === 'preview' ? '' : 'none';
   if (tab === 'history') {
     if (histBtn) histBtn.classList.add('active');
     desc.style.display = 'none'; preview.style.display = 'none';
@@ -25006,180 +27186,13 @@ function boardDetailTab(tab) {
     previewBtn.classList.add('active');
     desc.style.display = 'none';
     preview.style.display = '';
-    preview.innerHTML = renderMarkdown(desc.value);
+    preview.innerHTML = desc.value.trim() ? renderMarkdown(desc.value) : '';
   } else {
     editBtn.classList.add('active');
     previewBtn.classList.remove('active');
     desc.style.display = '';
     preview.style.display = 'none';
   }
-}
-
-// ── LINEAGE TAB (AMUX-2393) ────────────────────────────────────────────────
-//
-// Ethan: "we need more robust history so we have a full lineage trail — note it
-// should all come from logs which have request responses with the granular
-// control level based on action."
-//
-// The trail itself was already BUILT and unreachable. `GET /api/why/{kind}/{id}`
-// (RR-0109) correlates the durable trails — issues, issues.log, the state-event
-// journal, the structured request log, the turn ledger, interaction_log — and it
-// is good: it cites a table and row for every line and refuses to narrate when
-// the evidence does not support a story. It had 4 requests in 168 hours from one
-// client, its only consumer being `amux-rs why`, and ZERO call sites in this SPA.
-// So the work here is surfacing, not building: ethos rule 1, the mcp.json shape.
-// Nothing below re-implements any correlation — one place to be wrong is enough,
-// which the endpoint's own docstring says about its CLI printer.
-//
-// THIS RENDERER'S ONE JOB IS NOT TO UPGRADE A WEAK ANSWER. An explainer's
-// failure mode is confident narration from whatever it happened to find, and a
-// printer is exactly where that gets reintroduced after the API carefully avoided
-// it. So three things are non-negotiable here, each mirroring a guarantee the
-// endpoint makes:
-//
-//   - `verdict` and `verdict_reason` lead, never the timeline. `partial` and
-//     `cannot_tell` are answers, not degraded successes.
-//   - `gaps` are rendered in full. Dropping them turns "no turn ledger covers
-//     this card" into an apparently complete story with a quiet hole.
-//   - Sources that returned ZERO are shown WITH their predicate, because a zero
-//     from a probe that could have matched and a zero from a probe that never
-//     could look identical otherwise — and only the second is a gap.
-//
-// Truncation is surfaced too: the payload carries `rows` vs `rows_total` per
-// source and a `per_source_cap`, so a capped source says so rather than reading
-// as complete coverage.
-let _bdLineageFor = null;
-
-function _bdRenderLineage(id) {
-  const el = document.getElementById('bd-lineage');
-  if (!el || !id) return;
-  // Re-fetch per open: a card's trail changes as work happens, and this tab is
-  // opened deliberately rather than on every card open, so it is never on the
-  // hot path.
-  el.innerHTML = '<div class="bd-lin-note">Loading lineage for ' + esc(id) + '…</div>';
-  _bdLineageFor = id;
-  const path = '/api/why/task/' + encodeURIComponent(id);
-  // Plain fetch, NOT apiCall: apiCall is the MUTATION path — it returns null on
-  // failure after a toast, and queues to the offline outbox. Both are wrong
-  // here. A toast vanishes, and this panel's entire purpose is to state what it
-  // could and could not establish, so a failure has to render INTO the panel
-  // where the answer would have been. Returning null would have left the
-  // loading line up forever, which reads as a hang rather than an error.
-  fetch(API + path, { headers: _authHeaders({}) })
-    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error('HTTP ' + r.status + (t ? ': ' + t.slice(0, 200) : '')); }))
-    .then(d => {
-      if (_bdLineageFor !== id) return;   // a different card was opened meanwhile
-      el.innerHTML = _bdLineageHtml(d, id);
-    })
-    .catch(e => {
-      if (_bdLineageFor !== id) return;
-      // Name the endpoint. "Could not load" sends the next person grepping the
-      // SPA for a view that was never the problem.
-      el.innerHTML = '<div class="bd-lin-note bd-lin-bad">Could not read the lineage trail: '
-        + esc(String(e && e.message ? e.message : e))
-        + '<br><span class="bd-lin-dim">GET ' + esc(path) + '</span></div>';
-    });
-}
-
-function _bdLineageHtml(d, id) {
-  if (!d || typeof d !== 'object') return '<div class="bd-lin-note bd-lin-bad">Empty response.</div>';
-  const verdict = d.verdict || 'unknown';
-  const cls = verdict === 'ok' ? 'ok' : (verdict === 'partial' ? 'warn' : 'bad');
-  let h = '';
-
-  // 1. THE VERDICT LEADS. Not the timeline — a reader who scrolls a plausible
-  //    timeline and never reaches a caveat has been misled by layout alone.
-  h += '<div class="bd-lin-verdict bd-lin-' + cls + '">'
-    + '<span class="bd-lin-vlabel">' + esc(verdict) + '</span>'
-    + (d.verdict_reason ? '<span class="bd-lin-vwhy">' + esc(d.verdict_reason) + '</span>' : '')
-    + '</div>';
-
-  // 2. GAPS, IN FULL, ABOVE the trail. What the trail cannot tell you outranks
-  //    what it can.
-  const gaps = Array.isArray(d.gaps) ? d.gaps : [];
-  if (gaps.length) {
-    h += '<div class="bd-lin-gaps"><div class="bd-lin-h">What this trail cannot tell you ('
-      + gaps.length + ')</div><ul>'
-      + gaps.map(g => '<li>' + esc(String(g)) + '</li>').join('')
-      + '</ul></div>';
-  }
-
-  // 3. SOURCES, INCLUDING THE ZEROS, each with the predicate it ran.
-  const srcs = Array.isArray(d.sources) ? d.sources : [];
-  if (srcs.length) {
-    h += '<div class="bd-lin-h">Sources consulted (' + srcs.length + ')</div><div class="bd-lin-srcs">';
-    srcs.forEach(s => {
-      const rows = Number(s.rows || 0);
-      const total = (s.rows_total === undefined || s.rows_total === null) ? rows : Number(s.rows_total);
-      const capped = total > rows;
-      h += '<div class="bd-lin-src' + (rows === 0 ? ' bd-lin-zero' : '') + '">'
-        + '<code>' + esc(String(s.table || '?')) + '</code>'
-        + '<span class="bd-lin-rows">' + rows + (capped ? ' of ' + total + ' shown' : ' row' + (rows === 1 ? '' : 's')) + '</span>'
-        + (capped ? '<span class="bd-lin-cap">capped'
-            + (d.per_source_cap ? ' at ' + esc(String(d.per_source_cap)) : '') + '</span>' : '')
-        + (s.query ? '<span class="bd-lin-dim">' + esc(String(s.query)) + '</span>' : '')
-        // The endpoint attaches a `note` to a source whenever the row count
-        // alone would mislead — a reaped journal whose floor postdates the card,
-        // events that record THAT something changed but not into what, or the
-        // receipt that says a trail really is complete. Dropping it recreated
-        // the exact defect one layer up that the note exists to prevent: the
-        // panel looked careful and printed a number with no caveat attached.
-        + (s.note ? '<div class="bd-lin-srcnote">' + esc(String(s.note)) + '</div>' : '')
-        + '</div>';
-    });
-    h += '</div>';
-  }
-
-  // 4. THE TRAIL. Every line carries where it came from, so any claim here is
-  //    one SELECT away from being re-checked.
-  const tl = Array.isArray(d.timeline) ? d.timeline : [];
-  h += '<div class="bd-lin-h">Trail (' + tl.length + ')</div>';
-  if (!tl.length) {
-    h += '<div class="bd-lin-note">No trail lines. The sources above name what was searched'
-      + ' and with which predicate.</div>';
-  } else {
-    h += '<div class="bd-lin-tl">' + tl.map(t => {
-      const src = t.source || {};
-      const where = [src.table, src.column].filter(Boolean).join('.');
-      // `ordering` distinguishes a line PLACED BY TIME from one appended in
-      // source order because its record carries no date (issues.log is HH:MM
-      // only). Rendering them identically would invent a chronology.
-      const untimed = t.ordering && t.ordering !== 'timestamped';
-      return '<div class="bd-lin-line' + (untimed ? ' bd-lin-untimed' : '') + '">'
-        + '<div class="bd-lin-when">' + esc(t.at ? String(t.at).replace('T', ' ').replace(/\+.*$/, '') : '—')
-        + (untimed ? '<span class="bd-lin-badge" title="This record carries no date; placed in source order, not by time">order</span>' : '')
-        + '</div>'
-        + '<div class="bd-lin-what">'
-        + '<span class="bd-lin-sum">' + esc(String(t.summary || t.kind || '(no summary)')) + '</span>'
-        + (t.actor ? '<span class="bd-lin-actor">' + esc(String(t.actor)) + '</span>' : '')
-        + (where ? '<span class="bd-lin-dim">' + esc(where) + '</span>' : '')
-        + '</div></div>';
-    }).join('') + '</div>';
-  }
-
-  // 5. PART 3 OF THE REQUIREMENT IS NOT BUILT, AND SAYS SO HERE.
-  //    "granular control level based on action" — which permission scope
-  //    authorised each action, with global/worker/group layers individually
-  //    logged. The per-layer resolution exists at READ time (_gate_layers and
-  //    the scope/env/memory resolvers all return every layer with an `applied`
-  //    flag) but is not PERSISTED with the action, so no trail can answer it
-  //    yet. Stating that in the view is the point: a lineage panel that simply
-  //    omitted authorisation would read as though authorisation were covered.
-  // AMUX-3607 landed the board-transition half of part 3, so this notice no
-  // longer says "not covered" — it says WHAT is covered. Deleting it outright
-  // would have been the over-claim: the directive is "every action a worker
-  // takes" and only board transitions carry a trail today, so a reader seeing
-  // authz lines on a card would reasonably assume the same holds for scope
-  // writes and messages. Naming the boundary is the honest version, and it is
-  // worded to name the card so it cannot outlive the remaining gap.
-  h += '<div class="bd-lin-note bd-lin-todo">Authorisation trail: board status'
-    + ' transitions record which permission layer allowed them, every tier, on'
-    + ' the card log (look for <code>authz:</code> lines above &mdash;'
-    + ' <code>outranked</code> means a rule existed at that tier and lost).'
-    + ' Other actions a worker takes (scope writes, messages, session starts) do'
-    + ' NOT carry one yet, so their absence here is unrecorded rather than'
-    + ' unrestricted (AMUX-3607).</div>';
-  return h;
 }
 
 function _renderDetailStatusBtns() {
@@ -25307,7 +27320,7 @@ async function boardDetailSave() {
   document.getElementById('bd-save-status').textContent = 'Saving...';
   const dueInput = document.getElementById('bd-due');
   const dueTimeInput = document.getElementById('bd-due-time');
-  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', due_time: dueTimeInput ? dueTimeInput.value : '', groups: [..._tagState['bd']], gate };
+  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', due_time: dueTimeInput ? dueTimeInput.value : '', tags: [..._tagState['bd']], gate };
   if (worker !== undefined) changes.session = worker;
   // The server enforces status gates: forward acknowledgement from _gateConfirm.
   if (_gateAck) { changes.gate_ack = true; if (Array.isArray(_gateAck)) changes.gate_checked = _gateAck; }
@@ -25346,13 +27359,13 @@ async function addBoardItem(title, desc, status, worker, groups, due, ownerType,
   gate = gate || [];
   const tempId = Math.random().toString(16).slice(2, 8);
   const now = Math.floor(Date.now() / 1000);
-  const tempItem = { id: tempId, title, desc, status, worker: worker || '', groups: groups || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
+  const tempItem = { id: tempId, title, desc, status, session: worker || '', tags: groups || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
   boardItems.push(tempItem);
   saveBoardCache();
   renderBoard();
   const r = await apiCall(API + '/api/board', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ title, desc, status, worker: worker || '', groups: groups || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType })
+    body: JSON.stringify({ title, desc, status, session: worker || '', tags: groups || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType })
   });
   if (r) {
     const item = await r.json();
@@ -27382,6 +29395,7 @@ let _pollTimer = null;
 
 let _invBoardTimer = null;
 let _invSessTimer = null;
+let _invMessagesTimer = null;
 function connectSSE() {
   if (_sseFallback || _sse) return;
   _sse = new EventSource(_authUrl(API + '/api/events'));
@@ -27495,6 +29509,23 @@ function connectSSE() {
           if (key === 'sessions') {
             clearTimeout(_invSessTimer);
             _invSessTimer = setTimeout(fetchSessions, 400);
+          }
+          if (key === 'messages') {
+            clearTimeout(_invMessagesTimer);
+            _invMessagesTimer = setTimeout(() => {
+              // Refresh only visible message surfaces. The event is fleet-wide;
+              // fetching history in every background tab on every scheduler or
+              // worker send would turn correctness into avoidable load.
+              if (activeView === 'messages') _messagesLoad(true);
+              if (typeof peekSession !== 'undefined' && peekSession
+                  && typeof _peekTab !== 'undefined' && _peekTab === 'messages') {
+                _peekMessagesLoad();
+              }
+              const hist = document.getElementById('cmd-history-modal');
+              if (hist && hist.classList.contains('active')) {
+                _loadCmdHistoryFromServer().then(() => _renderCmdHistoryList());
+              }
+            }, 400);
           }
         }
       } else if (msg.type === 'ping') {
@@ -29506,21 +31537,18 @@ async function _handleDeeplink(hash) {
   // #issue=<id> — open a board card directly from anywhere (AMUX-2165), the
   // shareable twin of the task-label id chip.
   if (hash && hash.startsWith('#issue=')) {
-    // Optional `:<tab>` suffix — `#issue=AMUX-1:lineage` opens the card ON that
-    // tab. Two reasons, and the second is why it is here rather than in a
-    // backlog: a card's lineage is the thing you want to SEND someone ("look at
-    // how this card got here"), and a tab reachable only by tapping cannot be
-    // linked, screenshotted by the simulator rig, or deep-linked from a nudge.
-    // The rig drives UI states by deeplink because simctl has no tap primitive,
-    // so an untargetable tab is also an unverifiable one.
+    // Optional `:<tab>` suffix opens the card on Details, Worker actions or
+    // Edit. `lineage` used to be a fourth tab; keep it as an alias for Details
+    // so links already pasted into messages still open the card instead of
+    // treating the suffix as part of its id.
     const raw = decodeURIComponent(hash.slice(7));
     const cut = raw.lastIndexOf(':');
     // Card ids contain no colon, so a colon can only be the tab separator — but
     // validate against the known tabs anyway rather than trusting position, or a
     // future id format silently loses everything after its last colon.
-    const TABS = ['edit', 'preview', 'history', 'lineage'];
+    const TABS = ['edit', 'preview', 'history'];
     const maybeTab = cut > 0 ? raw.slice(cut + 1) : '';
-    const tab = TABS.includes(maybeTab) ? maybeTab : '';
+    const tab = TABS.includes(maybeTab) ? maybeTab : (maybeTab === 'lineage' ? 'preview' : '');
     const id = tab ? raw.slice(0, cut) : raw;
     const tryOpen = (attempt) => {
       if (typeof boardItems !== 'undefined' && boardItems.some(i => i.id === id)) {
@@ -30364,7 +32392,7 @@ function _costBars(rows, labelKey, opts) {
 function _costRender(d, opts) {
   opts = opts || {};
   const cards = `<div class="cost-cards">
-    <div class="cost-card"><div class="cost-card-v">${_fmtUsd(d.total_cost)}</div><div class="cost-card-l">est. cost${opts.perSession?'':' \u00B7 on Max'}</div></div>
+    <div class="cost-card" title="What these tokens would cost at LIST PRICE with no plan. On a Claude plan this is not money you spend, it is the value of the usage. Doron read &quot;est. cost&quot; as a bill and changed what plan he was going to buy on the strength of it (AF-494)."><div class="cost-card-v">${_fmtUsd(d.total_cost)}</div><div class="cost-card-l">est. list price${opts.perSession?'':' \u00B7 on Max'}</div></div>
     <div class="cost-card"><div class="cost-card-v">${_fmtTok(d.total_tokens)}</div><div class="cost-card-l">tokens</div></div>
     <div class="cost-card"><div class="cost-card-v">${(d.total_turns||0).toLocaleString()}</div><div class="cost-card-l">turns</div></div>
     <div class="cost-card"><div class="cost-card-v">${d.cache_hit_pct||0}%</div><div class="cost-card-l">cache hit</div></div>
@@ -32351,7 +34379,9 @@ function _messagesRender() {
   // is 500 rows OF THAT KIND rather than 500 mixed rows filtered down to a
   // handful — the same crowding that showed 48 human messages out of 6547.
   if (_msgsKind !== 'all') rows = rows.filter(m => _msgKind(m) === _msgsKind);
-  if (q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q) || (m.session || '').toLowerCase().includes(q));
+  if (q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q)
+    || (m.session || '').toLowerCase().includes(q)
+    || ('msg-' + String(m.id || '')).toLowerCase() === q);
   // Selection toolbar (AMUX-2318). Only rendered when something is selected,
   // so the default view is unchanged - a persistent bar for a rare action is
   // clutter, and this list is read far more often than it is acted on.
@@ -32923,7 +34953,18 @@ function _gmailFmtDate(ts) {
 }
 
 // ── Notifications ────────────────────────────────────────────────────────────
-async function _emailLoad() {
+// ORPHANED (AMUX-3998). This is the entry point of an older Gmail client that
+// is UNREACHABLE: every DOM id it renders into — gmail-messages-list,
+// gmail-sidebar, gmail-thread-view, gmail-accounts-list, the compose fields —
+// is absent from index.html, so no markup has ever existed for it.
+//
+// Renamed rather than deleted: it is somebody's work and it may be the basis of
+// a fuller client later. But it could not keep the name, because function
+// declarations HOIST — this later definition silently replaced the live one
+// above and every call site would have run this body instead.
+// `no_two_top_level_functions_in_app_js_share_a_name` caught it, which is the
+// ethos rule 7 check ("every name you DEFINE must not already") earning its keep.
+async function _gmailLegacyLoad_UNREACHABLE() {
   // Load connected accounts, then render inbox
   const r = await fetch(API + '/api/gmail/accounts').catch(() => null);
   if (!r || !r.ok) { _gmailRenderEmpty('Could not connect to server'); return; }
@@ -34018,9 +36059,12 @@ async function _bwLoadProfiles() {
       sel.appendChild(sep);
     }
     scratch.forEach(p => sel.appendChild(opt(p, '🔓')));
-    (d.chrome_profiles || []).forEach(p => {
+    const isolatedNames = new Set(all.map(p => p.name));
+    (d.chrome_profiles || []).filter(p => !isolatedNames.has(p)).forEach(p => {
       const o = document.createElement('option');
-      o.value = p; o.textContent = '🌐 ' + p;
+      o.value = p;
+      o.textContent = '🌐 ' + p + ' — import on first use';
+      o.title = 'Copies login state into an isolated amux profile; your normal Chrome can stay open';
       sel.appendChild(o);
     });
     if (cur) sel.value = cur;
@@ -34102,7 +36146,9 @@ async function _bwGo() {
     const _landed = d.launch_url || (d.data && d.data.url) || '';
     _bwCurrentUrl = _landed || url;
     _bwShowProfile(d.profile, d.auto_profile);
-    let _msg = 'Navigated' + (d.profile_fallback ? ' (no profile — Chrome busy)' : '');
+    let _msg = d.profile_imported_from
+      ? 'Imported the Chrome login into an isolated profile and navigated'
+      : 'Navigated' + (d.profile_fallback ? ' (no profile — Chrome busy)' : '');
     if (_landed && !/^about:/.test(_landed)) {
       const _host = u => { try { return new URL(u).host.replace(/^www\./, ''); } catch (e) { return ''; } };
       const _want = _host(url), _got = _host(_landed);
@@ -34403,6 +36449,30 @@ async function _bwClearInspect() {
 // reCAPTCHA — many sites do. A human completing the challenge once in a real
 // window is the only thing that works, and closing the window is what flushes
 // the session to the profile for the API to reuse.
+// AF-496. amux launches Chrome into its own --user-data-dir, so the window it
+// opens sits beside the human's own Chrome and looks identical: same icon, same
+// frame, no badge. Measured in a live onboarding session (2026-09-04) — the user
+// signed into the wrong window and was corrected three times, and asked "should
+// I trust it, it does look like two different browsers?".
+//
+// amux held the answer the whole time (pid, port, profile, starting lane) and
+// had no way to SHOW it. This button puts it where the person is looking: it
+// raises the amux window and draws a bar across it. A Chrome window WITHOUT a
+// bar is their own, which is what makes the multi-window case answerable.
+async function _bwIdentify() {
+  _bwStatus('identifying the amux window\u2026');
+  try {
+    const r = await fetch('/api/browser/identify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    const d = await r.json();
+    if (d.error) { _bwStatus(d.error + (d.running_profiles ? ' (running: ' + d.running_profiles.join(', ') + ')' : '')); return; }
+    // Report the OUTCOME, not the request. `labeled/pages` is the pair that
+    // says whether a 0 means "no tabs" or "every tab refused" (ethos rule 4).
+    const names = (d.identified || []).map(b => b.profile).join(', ');
+    if (!d.identified || !d.identified.length) { _bwStatus(d.verdict || 'no amux browser is running'); return; }
+    _bwStatus(d.verdict + ' \u2014 ' + names + ' (' + d.labeled + '/' + d.pages + ' tab(s) labelled)');
+  } catch (e) { _bwStatus('identify failed: ' + e); }
+}
+
 async function _bwNewProfile() {
   const url = (document.getElementById('bw-url').value || '').trim();
   const suggested = (() => {

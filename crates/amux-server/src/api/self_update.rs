@@ -10,12 +10,11 @@
 //! (2026-08-03), and the repo's standing rule is "staleness announces itself;
 //! nothing auto-pulls... the hook reports, the human decides."
 //!
-//! `--ff-only` is already the safe mode: with local commits ahead it REFUSES
-//! rather than rewriting anything. But it refuses with git's own wording
-//! ("Not possible to fast-forward, aborting"), which says nothing about the 97
-//! unpushed commits or the peer editing a file right now. So the pre-flight
-//! checks here are not new safety — they are the SAME safety, made legible:
-//! refuse first, and say which condition and whose work.
+//! `--ff-only` is already the safe mode: it allows both an ordinary remote
+//! fast-forward and the harmless "local branch is ahead, remote unchanged"
+//! no-op. It refuses only when the histories have diverged. Pre-flight retains
+//! the shared-checkout protections that git cannot express: never move files
+//! under an uncommitted edit or a half-finished operation.
 //!
 //! What this endpoint must never become: a scheduled or background pull. It is
 //! a button a human presses, and every refusal below names what the human has
@@ -151,22 +150,11 @@ pub(crate) async fn preflight(dir: &Path) -> Option<serde_json::Value> {
         }
     }
 
-    // Local commits not on the remote. `--ff-only` refuses these anyway, but
-    // with git's own wording, which never mentions that the commits exist or
-    // how many — and on this checkout the answer has been 100.
-    if let Some(o) = git(dir, &["rev-list", "--count", "@{u}..HEAD"], GIT_TIMEOUT).await {
-        if o.status.success() {
-            let ahead: i64 = out_of(&o).trim().parse().unwrap_or(0);
-            if ahead > 0 {
-                return Some(json!({"ok": false, "blocked": "unpushed_commits", "ahead": ahead,
-                    "output": format!(
-                        "Refusing to pull: {ahead} local commit(s) are not on the remote.\n\
-                         --ff-only would abort anyway; refusing here so the reason is legible.\n\
-                         On a shared checkout these commits may not all be yours — check the \
-                         Amux-Session trailers on `git log @{{u}}..HEAD` before pushing them.")}));
-            }
-        }
-    }
+    // Do NOT reject an ahead-only branch here. `git pull --ff-only` correctly
+    // treats it as "Already up to date"; the old preflight turned the most
+    // common shared-checkout state into a permanently broken Pull button.
+    // If the remote is also ahead, the pull below fetches it and refuses the
+    // divergence without rebasing, merging, or rewriting either side.
     None
 }
 
@@ -313,7 +301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpushed_commits_are_refused_with_their_count() {
+    async fn an_ahead_only_branch_does_not_break_the_pull_button() {
         let d = repo();
         let work = d.path().join("work");
         std::fs::write(work.join("b.txt"), "two\n").unwrap();
@@ -323,9 +311,22 @@ mod tests {
                 .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
                 .output().unwrap();
         }
-        let r = preflight(&work).await.expect("unpushed commits must be refused");
-        assert_eq!(r["blocked"], "unpushed_commits");
-        assert_eq!(r["ahead"], 1);
+        assert!(
+            preflight(&work).await.is_none(),
+            "local commits are compatible with pull --ff-only when the remote is unchanged"
+        );
+
+        let pulled = std::process::Command::new("git")
+            .args(["pull", "--ff-only"])
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(
+            pulled.status.success(),
+            "the exact command behind the button must remain a safe no-op: {}{}",
+            String::from_utf8_lossy(&pulled.stdout),
+            String::from_utf8_lossy(&pulled.stderr)
+        );
     }
 
     #[tokio::test]

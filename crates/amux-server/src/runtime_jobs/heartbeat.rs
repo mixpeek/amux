@@ -50,7 +50,7 @@ pub const JOB: &str = crate::runtime_jobs::registry::ids::HEARTBEAT;
 /// How often the live server stamps the heartbeat row.
 pub fn beat_interval() -> Duration {
     Duration::from_secs(
-        std::env::var("AMUX_HEARTBEAT_SECS")
+        std::env::var(super::per_job_disable_var(JOB))
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(15)

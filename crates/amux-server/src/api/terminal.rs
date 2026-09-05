@@ -142,6 +142,15 @@ fn spawn_pty(cols: u16, rows: u16) -> Result<String, String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env("TERM", "xterm-256color");
+    // `/api/settings/env` is a runtime file update; it intentionally does not
+    // mutate Rust's process-global environment. Resolve the current file-backed
+    // values for every new terminal so a key the UI just saved is usable from
+    // the official shell as well as from a newly launched worker.
+    for (key, value) in
+        super::settings::runtime_provider_env(&super::settings::amux_home())
+    {
+        cmd.env(key, value);
+    }
     if let Ok(home) = std::env::var("HOME") {
         cmd.cwd(home);
     }

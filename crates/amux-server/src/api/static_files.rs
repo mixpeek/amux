@@ -261,6 +261,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: token.map(String::from),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 

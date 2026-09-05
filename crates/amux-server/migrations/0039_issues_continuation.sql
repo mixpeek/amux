@@ -1,0 +1,33 @@
+-- AMUX-3946: the continuation contract.
+--
+-- `ask_type` / `ask_question` / `ask_unblocks` (0037) cover the WAITING case:
+-- a card parked on a human names who is asked what, and what ends the block. A
+-- card that is being WORKED has no equivalent, so what happened and what to do
+-- next live only in the author's context, and the next reader either
+-- reconstructs them from `desc` or cannot proceed.
+--
+-- MEASURED IN ONE SESSION, eight cards picked up cold with no prior context:
+-- AMUX-3932 and AMUX-3927 each carried a reproduction, a rejected hypothesis
+-- and a stated next step, and both closed in a single pass. AMUX-3854 reads
+-- "make it so this is all automatic" and points at a screenshot the uploads
+-- reaper had deleted; it cannot be worked by anyone, including its author, and
+-- is parked on the owner for that reason. Same board, same lane, and the only
+-- variable was whether the card could tell a stranger what to do next.
+--
+-- The failure is not rare. 20 open cards across 7 lanes point at attachments
+-- that no longer exist (AMUX-3937); 281 cards sit stranded behind 14 lanes at
+-- the WIP cap (AMUX-3758).
+--
+-- THREE COLUMNS, NOT ONE BLOB, for the same reason 0037 used three: the
+-- questions come apart and are checked separately. What was produced
+-- (`last_result`) is evidence about the past and may legitimately be empty on a
+-- first claim. What to do next (`next_action`) is the one a gate can require.
+-- What is still open (`unresolved`) must NOT gate anything, or every card grows
+-- a fake question to satisfy it.
+--
+-- DELIBERATELY NOT A TRANSCRIPT. Budget 300-800 tokens. The gate refuses an
+-- EMPTY `next_action`, never a short one: a length floor would be satisfied by
+-- padding, which is worse than absence because it reads as content.
+ALTER TABLE issues ADD COLUMN next_action TEXT;
+ALTER TABLE issues ADD COLUMN last_result TEXT;
+ALTER TABLE issues ADD COLUMN unresolved TEXT;

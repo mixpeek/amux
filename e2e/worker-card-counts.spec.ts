@@ -12,7 +12,7 @@ async function appToken(page: Page): Promise<string> {
   return tok;
 }
 
-test('worker card shows total board items on the sched row', async ({ page, request }, testInfo) => {
+test('worker card shows the truthful board status breakdown on the sched row', async ({ page, request }, testInfo) => {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
   const token = await appToken(page);
@@ -30,7 +30,8 @@ test('worker card shows total board items on the sched row', async ({ page, requ
     data: { name: worker, dir: '/tmp', desc: 'e2e count fixture' },
   });
 
-  // 3 items for this worker: 1 doing, 2 not. Total must read 3, doing 1.
+  // One item in each actionable pre-terminal state. The card must preserve
+  // those distinctions: parked work is not evidence that a worker is active.
   for (const st of ['doing', 'todo', 'backlog']) {
     const res = await request.post('/api/board', {
       headers: auth,
@@ -52,24 +53,13 @@ test('worker card shows total board items on the sched row', async ({ page, requ
   // The ASSERTION IS THE NUMBER, not merely that a badge is present: a counter
   // that renders the wrong figure is worse than none.
   //
-  // Asserted against what the renderer actually emits (ffa00e4's predicate):
-  // "N doing · M active[ · T total]", where active counts ALL non-terminal
-  // cards and the total segment is HIDDEN when total === active. The previous
-  // assertions wanted "3 items" and an .mc-total element — text this renderer
-  // has never produced (that was an earlier badge's shape) — so the spec
-  // failed on its first real CI run while the feature worked. With 3
-  // non-terminal seeds (1 doing) and nothing terminal, the badge must read
-  // "1 doing · 3 active" and mc-total must be absent.
-  expect(text).toContain('1 doing');
-  expect(text).toContain('3 active');
+  // This used to flatten todo/backlog into "active", which made idle workers
+  // look busy. Assert the complete text and semantic hooks so that misleading
+  // aggregation cannot return unnoticed.
+  expect(text).toContain('1 doing · 1 todo · 1 backlog');
   await expect(card.locator('.mc-doing')).toHaveText('1');
-  await expect(card.locator('.mc-active')).toHaveText('3');
-  expect(await card.locator('.mc-total').count()).toBe(0);
-
-  // active >= doing must hold by construction (shared predicate).
-  const active = Number(await card.locator('.mc-active').textContent());
-  const doing = Number(await card.locator('.mc-doing').textContent());
-  expect(active).toBeGreaterThanOrEqual(doing);
+  await expect(card.locator('.mc-todo')).toHaveText('1');
+  await expect(card.locator('.mc-backlog')).toHaveText('1');
 
   // cleanup
   await request.delete(`/api/sessions/${worker}`, { headers: auth });

@@ -38,6 +38,7 @@ cleanup() {
     rm -rf "$WORK"
   fi
   [ -n "${BUILD_OUT:-}" ] && rm -f "$BUILD_OUT"
+  [ -n "${INSTALL_TMP:-}" ] && rm -f "$INSTALL_TMP"
   [ -n "${LOCK_HELD:-}" ] && rm -rf "$LOCK"
   return 0   # a falsey last test must not make the trap itself fail under set -e
 }
@@ -244,6 +245,93 @@ fi
   #
   # Between the two, reclaim the idle caches and let the build stay warm. Below
   # the lower one, the shared cache genuinely is worth a cold build.
+  # DEBUG ARTIFACT CLEANUP (2026-08-29). This script ONLY builds --release, but
+  # cargo check/test runs from fleet sessions land in debug/ using the same
+  # CARGO_TARGET_DIR. Debug artifacts are never reused by this script and can
+  # accumulate without bound — 229 GB was observed on 2026-08-29. The threshold
+  # is generous (10 GB) to avoid thrashing on a small accumulation; the floor is
+  # measured BEFORE clearing so the log line is honest.
+  #
+  # AF-303: THIS ARM USED TO SAY "always safe to remove", AND IT IS NOT. Two
+  # lines above, the same comment states that fleet sessions' cargo check/test
+  # land in debug/ — those artifacts are precisely what every lane's build is
+  # using while this runs. "No value to THIS BUILDER" is true; "safe to remove"
+  # does not follow from it, and the gap between those two sentences is ~50
+  # lanes' in-flight compilation. Deleting it mid-build is the vanished-rlib /
+  # ETXTBSY class already in the ledger (8 phantom failures in a module nobody
+  # touched, 15/15 green on an immediate re-run).
+  #
+  # Measured before the fix, from this log: 13 debug clears against 1 clear of
+  # the shared release cache. The DESTRUCTIVE arm ran 13x more often than the
+  # careful one, because the release cache is gated behind severe disk pressure
+  # (< 8 GB free) while this fired on SIZE alone, every 60s cycle. Six fired on
+  # 2026-08-30 alone.
+  #
+  # So gate it on what the clear is actually FOR. Unbounded growth is only
+  # harmful because it ends in ENOSPC, so while free disk is healthy there is no
+  # urgency worth a peer's build: defer to the next cycle, 60s away. When disk
+  # IS low the override is automatic and needs no counter, because ENOSPC breaks
+  # every lane including the ones being protected. That ties the exception to
+  # the harm rather than to a timeout someone would have to tune.
+  #
+  # Detecting a lane's build: any rustc/cargo process at THIS moment is a peer's.
+  # The builder holds the single-instance lock and has not started its own cargo
+  # yet — the guard runs before the build, deliberately (see the ordering note
+  # above), which is what makes this check unambiguous rather than a heuristic.
+  DEBUG_DIR="$HOME/.amux/rust-build-target/debug"
+  if [ -d "$DEBUG_DIR" ]; then
+    DEBUG_GB=$(du -sk "$DEBUG_DIR" 2>/dev/null | awk '{print int($1/1048576)}')
+    if [ "${DEBUG_GB:-0}" -gt "${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-10}" ]; then
+      # WHY THIS IS AN if/else AND NOT `${VAR-$(...)}`, and why every pgrep
+      # carries `|| true`: this script runs under `set -euo pipefail`, `pgrep`
+      # exits 1 when nothing matches, and with pipefail a single failing element
+      # fails the whole pipeline. The one-line version therefore made the
+      # ASSIGNMENT return non-zero on an idle host and `set -e` killed the
+      # builder right here — before the build, on every cycle, for the whole
+      # fleet. Caught by running the real script against the real HOME rather
+      # than by any test; `bash -n` was clean and the unit cases were green,
+      # because they exercise the branch and not the shell's error discipline.
+      #
+      # `+set` rather than a value test: an explicitly EMPTY override means "no
+      # peers are building", a state the real detector reaches constantly and a
+      # test must be able to force. Treating empty as unset would fall through
+      # to pgrep and make the no-peer case host-dependent, green on an idle CI
+      # runner and red here whenever any lane compiles.
+      # `pgrep -x`, matching the EXECUTABLE NAME, never `pgrep -f` over the whole
+      # command line. Measured while writing this: `-f '(^|/)(rustc|cargo)( |$)'`
+      # matched the very shell that ran it, because that command line CONTAINED
+      # the word cargo inside the pattern. On this box, where lanes discuss and
+      # grep for cargo constantly, an `-f` detector would report a peer build
+      # almost every cycle, defer forever, and hand back the unbounded growth
+      # this clear exists to stop (229 GB, 2026-08-29). A guard that never fires
+      # is the same outcome as no guard, arrived at more expensively.
+      if [ -n "${AMUX_BUILD_PEER_PIDS_OVERRIDE+set}" ]; then
+        PEER_BUILDS="$AMUX_BUILD_PEER_PIDS_OVERRIDE"
+      else
+        PEER_BUILDS="$( { pgrep -x rustc || true; pgrep -x cargo || true; } 2>/dev/null \
+          | sort -un | tr '\n' ' ' | sed 's/ *$//' )"
+      fi
+      FREE_NOW_GB=$(df -Pk "$HOME" | awk 'NR==2{print int($4/1048576)}')
+      if [ -n "$PEER_BUILDS" ] && [ "${FREE_NOW_GB:-0}" -ge "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
+        # DEFERRED, and said out loud: a skip with no trace is indistinguishable
+        # from a cycle that found nothing to clear, which is the same ambiguity
+        # the single-instance lock above had to learn to report (AMUX-2927).
+        # If this line runs every cycle for hours, debug/ is growing while the
+        # fleet never idles, and the answer is per-lane target dirs (AF-336),
+        # not a shorter fuse here.
+        echo "== DEBUG ARTIFACTS: ${DEBUG_GB:-?}GB in $DEBUG_DIR (> ${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-10}GB threshold), but DEFERRED — peer build(s) in flight (pid $PEER_BUILDS) and ${FREE_NOW_GB}GB free is above the ${AMUX_BUILD_MIN_FREE_GB:-25}GB fleet floor. Their artifacts live in debug/; clearing now is the vanished-rlib class (AF-303). Retrying next cycle."
+      else
+        if [ -n "$PEER_BUILDS" ]; then
+          why="disk at ${FREE_NOW_GB}GB free is BELOW the ${AMUX_BUILD_MIN_FREE_GB:-25}GB fleet floor, so ENOSPC outranks the peer build(s) in flight (pid $PEER_BUILDS)"
+        else
+          why="no peer build in flight"
+        fi
+        echo "== DEBUG ARTIFACTS: ${DEBUG_GB:-?}GB in $DEBUG_DIR (> ${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-10}GB threshold). Clearing — $why. Release build is unaffected."
+        [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" = "1" ] || rm -rf "$DEBUG_DIR"
+      fi
+    fi
+  fi
+
   FREE_GB=$(df -Pk "$HOME" | awk 'NR==2{print int($4/1048576)}')
   if [ "${FREE_GB:-999}" -lt "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
     for cand in "$HOME/.amux/rust-build-target-e2e-head" "$HOME/.amux/rust-build-target"; do
@@ -258,7 +346,28 @@ fi
       fi
       CAND_GB=$(du -sk "$cand" 2>/dev/null | awk '{print int($1/1048576)}')
       if [ "$cand" = "$HOME/.amux/rust-build-target" ]; then
-        echo "== DISK LOW: ${FREE_GB}GB free (< ${AMUX_BUILD_SACRIFICE_CACHE_BELOW_GB:-8}GB). Clearing the ${CAND_GB:-?}GB SHARED target dir — this build goes cold."
+        # AF-415: THIS ARM HAS NO PEER-BUILD GATE, AND THAT IS DELIBERATE.
+        #
+        # The debug-SIZE arm above defers while any rustc/cargo is running
+        # (AF-303, the vanished-rlib class). This one does not, and the
+        # asymmetry is easy to read as an oversight, so: AF-303's own reasoning
+        # covers it. "When disk IS low the override is automatic and needs no
+        # counter, because ENOSPC breaks every lane including the ones being
+        # protected." A peer build dies either way below this threshold; the
+        # difference is whether it dies with a diagnosable error or with the
+        # disk full.
+        #
+        # Do NOT add a peer check here without changing that argument. The
+        # ordering already does the cheap part — the idle e2e dir is cleared
+        # first, and the shared one only survives to this line when that was not
+        # enough.
+        #
+        # WHOSE BUILD GOES COLD: every lane's, not this builder's. That is worth
+        # saying in the log because the sentence used to read as if the cost
+        # landed on the process doing the clearing, and it was 11 firings of the
+        # 25GB-era version of this arm that produced the three mid-build failures
+        # in AMUX-2936 (see AF-416 for the full diagnosis).
+        echo "== DISK LOW: ${FREE_GB}GB free (< ${AMUX_BUILD_SACRIFICE_CACHE_BELOW_GB:-8}GB). Clearing the ${CAND_GB:-?}GB SHARED target dir — EVERY lane's next build goes cold, not just this one. No peer-build gate here on purpose: below this floor ENOSPC breaks them anyway (AF-415)."
       else
         echo "== DISK LOW: ${FREE_GB}GB free. Clearing the ${CAND_GB:-?}GB idle e2e target dir first (this build does not need it)."
       fi
@@ -298,16 +407,60 @@ fi
   # runs every 60s. Only the failing path pays for detail, which is the path
   # that needs it.
   BUILD_OUT=$(mktemp /tmp/amux-rs-buildout.XXXXXX)
-  if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" cargo build --release -p amux-server) > "$BUILD_OUT" 2>&1; then
+  # REMOTE BUILD, opt-in via AMUX_REMOTE_BUILD_HOST (~/.amux/server.env,
+  # private — never a hostname in this public script). Same output contract
+  # as the local branch below: on success the binary lands at the SAME
+  # conventional path ($HOME/.amux/rust-build-target/release/amux-server),
+  # so the `install` line after this block is unchanged for either path.
+  #
+  # Falls back to LOCAL on any remote failure (host unreachable, context
+  # misconfigured, remote build itself failed) rather than treating remote
+  # unavailability as a hard stop — this machine's own remote link has
+  # measured real, if infrequent, outages (a site-to-site netbird flake,
+  # not this script's problem to fix), and a fleet with no live deploy at
+  # all is worse than one that occasionally pays the local-build memory
+  # cost it was built to avoid. The fallback is LOGGED, never silent — see
+  # AMUX-48's frustrations.md entry for why a silent wrong-path here would
+  # cost exactly what it already cost once.
+  BUILD_OK=0
+  if [ -n "${AMUX_REMOTE_BUILD_HOST:-}" ]; then
+    if "$REPO/scripts/rust-remote-build.sh" "$WORK" \
+        "$HOME/.amux/rust-build-target/release/amux-server" > "$BUILD_OUT" 2>&1; then
+      BUILD_OK=1
+    else
+      { echo "== remote build on '$AMUX_REMOTE_BUILD_HOST' failed, falling back to local:"; \
+        cat "$BUILD_OUT"; } > "${BUILD_OUT}.remote" 2>&1
+      mv "${BUILD_OUT}.remote" "$BUILD_OUT"
+      # AMUX-70: run the local fallback through its own systemd scope, not
+      # this script's — this unit already gets one via systemd (defense in
+      # depth for the case where rust-auto-build.sh is invoked directly
+      # from an interactive pane instead of via the timer).
+      if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" "$REPO/scripts/safe-cargo.sh" build --release -p amux-server) >> "$BUILD_OUT" 2>&1; then
+        BUILD_OK=1
+      fi
+    fi
+  else
+    if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" "$REPO/scripts/safe-cargo.sh" build --release -p amux-server) > "$BUILD_OUT" 2>&1; then
+      BUILD_OK=1
+    fi
+  fi
+  # Explicit exit-code-derived flag, NOT a file-existence check: a stale
+  # binary from an earlier successful build sitting at this same path would
+  # make `[ -x ... ]` true even after a genuine failure, silently
+  # re-installing old code and reporting success — the exact "wrong answer,
+  # not wrong-looking" shape ethos rule 4 exists to catch.
+  if [ "$BUILD_OK" = 1 ]; then
     tail -3 "$BUILD_OUT"
-    install -m 0755 "$HOME/.amux/rust-build-target/release/amux-server" "$INSTALL"
-    echo "$head" > "$STAMP"
-    # AEAB-50: only NOW is this true. Written after the install so the file means
-    # "what is installed" rather than "what was attempted". On the failure branch
-    # below it is left alone, so it keeps naming the last good build — which is
-    # exactly what that branch says is still running.
-    printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
-    echo "== installed; running server will self-adopt within 5s"
+    # Build the complete replacement beside the live executable, including its
+    # final signature, and expose it with ONE atomic rename. `install` used to
+    # truncate the executable that the running server was watching and then
+    # `codesign` changed it a second time. On macOS that creates a real interval
+    # where the path names an invalid/partially-signed program. The self-adopter
+    # can observe that interval, fail its exec, exit, and leave launchd stuck at
+    # EX_CONFIG until somebody manually re-registers the agent. From a phone the
+    # symptom is simply that the canonical Tailscale URL stays offline.
+    INSTALL_TMP="${INSTALL}.new.$$"
+    install -m 0755 "$HOME/.amux/rust-build-target/release/amux-server" "$INSTALL_TMP"
     # STABLE CODE IDENTITY, or say why there is not one (AMUX-3527).
     #
     # cargo/rustc emit a LINKER-SIGNED ADHOC binary: `Signature=adhoc`,
@@ -330,11 +483,9 @@ fi
     #
     # Signing is OPT-IN and silent-by-absence on purpose: this script is the
     # deploy path for the whole fleet, so the change must be incapable of
-    # stopping an install. Every command below is guarded, it runs AFTER the
-    # stamp is written and the success line is printed, and with no identity
-    # present the behaviour is byte-for-byte what it was — plus one line saying
-    # so, because "adhoc, and that is why the prompt is back" is precisely the
-    # fact that was nowhere in any log while the prompt fired daily for weeks.
+    # stopping an install. Every signing command below is guarded; with no
+    # identity present the completed temp binary is atomically installed
+    # unchanged, plus one line saying why it remains ad-hoc signed.
     #
     # Creating the identity is a KEYCHAIN action and therefore the human's:
     #   Keychain Access ▸ Certificate Assistant ▸ Create a Certificate…
@@ -353,7 +504,7 @@ fi
         # signing would look like it was working. Pinned, both copies came back
         # `com.amux.server-rs` regardless of filename or content.
         if codesign --force --sign "$CS_ID" --identifier com.amux.server-rs \
-                    --timestamp=none "$INSTALL" 2>&1; then
+                    --timestamp=none "$INSTALL_TMP" 2>&1; then
           echo "== signed as '$CS_ID' — TCC approvals survive this rebuild"
         else
           echo "== WARN codesign as '$CS_ID' FAILED; binary stays adhoc and macOS will re-prompt"
@@ -364,6 +515,15 @@ fi
              "Create the identity (see AMUX-3527) or set AMUX_CODESIGN_IDENTITY."
       fi
     fi
+    mv -f "$INSTALL_TMP" "$INSTALL"
+    INSTALL_TMP=""
+    echo "$head" > "$STAMP"
+    # AEAB-50: only NOW is this true. Written after the atomic install so the
+    # file means "what is installed" rather than "what was attempted". On the
+    # failure branch below it is left alone, so it keeps naming the last good
+    # build — which is exactly what that branch says is still running.
+    printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
+    echo "== installed atomically; running server will self-adopt within 5s"
   else
     echo "== BUILD FAILED for $head — running server keeps the last good build"
     echo "-- diagnostics (every error, with context) ---------------------------"

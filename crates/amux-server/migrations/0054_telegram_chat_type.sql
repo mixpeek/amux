@@ -1,0 +1,21 @@
+-- Group-chat support (Ethan, 2026-09-02: "have the bot write and read to
+-- groups he's in"). `/link` and message routing never checked chat type --
+-- Telegram hands out a chat_id identically for a private chat and a group,
+-- and the existing code trusted whichever chat_id sent the update. That
+-- meant a group could already be `/link`'d today, with every message from
+-- every member in it forwarded to the linked session -- unusable noise, and
+-- no gate on who could point a group at somebody's session.
+--
+-- `chat_type` records what Telegram told us at link time ('private',
+-- 'group', 'supergroup') so the app layer can: (a) require mention-only
+-- delivery in a group (skip anything that isn't an @lane mention, instead
+-- of relaying every message), and (b) require the SESSION already have an
+-- existing private link before a group link to it is accepted -- proves
+-- whoever is linking a group already controls a private line to that
+-- session, before it becomes reachable from everyone else in the group.
+--
+-- Backfill: every row that exists today predates group linking entirely
+-- (nothing before this migration could distinguish a group from a private
+-- chat, so nothing could deliberately have linked one) -- 'private' is not
+-- a guess, it is what every existing row actually is.
+ALTER TABLE telegram_mappings ADD COLUMN chat_type TEXT NOT NULL DEFAULT 'private';

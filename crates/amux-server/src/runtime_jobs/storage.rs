@@ -483,13 +483,64 @@ pub fn rotate_server_log(logs_dir: &Path) -> Option<u64> {
 /// Delete files in `dir` whose mtime is older than `max_age_secs`. Returns
 /// (files removed, bytes freed). Non-recursive and never removes directories:
 /// a holding area's SHAPE is somebody's, only its age is ours.
-pub fn prune_dir_by_age(dir: &Path, max_age_secs: u64, label: &str) -> (usize, u64) {
+/// Upload filenames a LIVE board card points at.
+///
+/// A card is durable and `uploads` is reaped by age, so the reference in a card
+/// outlives the thing it references. That is not hypothetical: of 113 board
+/// references into `~/.amux/uploads`, 109 pointed at a deleted file, and 20 of
+/// those sat on cards still OPEN across 7 lanes (AMUX-3937). "Make it so this is
+/// all automatic @<screenshot>" with the screenshot gone cannot be worked by
+/// anyone, and nothing in the card says the path is dead.
+///
+/// `settings::is_ephemeral_path` already refuses durable CONFIG pointed into
+/// `AGE_PRUNED_DIRS`. Nothing refused a durable CARD, which is the same mistake
+/// one layer up. This is the missing half: the reaper asks the board first.
+///
+/// `discarded` and archived cards are deliberately NOT protected -- `discarded`
+/// is the honest "this was never a unit of work", so holding its attachment
+/// forever would make the protection a leak that never frees anything. That
+/// asymmetry is what the control cell pins.
+pub fn card_referenced_uploads(conn: &Connection) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    // Filter in SQL so a 13k-card board does not get fully deserialised every
+    // sweep tick; the regex then only runs over rows that mention the directory.
+    let sql = "SELECT COALESCE(title,'') || ' ' || COALESCE(desc,'') || ' ' \
+               || COALESCE(evidence,'') || ' ' || COALESCE(log,'') AS t \
+               FROM issues \
+               WHERE COALESCE(archived,0) = 0 AND COALESCE(status,'') != 'discarded' \
+                 AND (COALESCE(title,'') LIKE '%/uploads/%' \
+                   OR COALESCE(desc,'') LIKE '%/uploads/%' \
+                   OR COALESCE(evidence,'') LIKE '%/uploads/%' \
+                   OR COALESCE(log,'') LIKE '%/uploads/%')";
+    let Ok(mut st) = conn.prepare(sql) else { return out };
+    let re = match regex::Regex::new(r"/uploads/([A-Za-z0-9._-]+)") {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+        for text in rows.flatten() {
+            for c in re.captures_iter(&text) {
+                out.insert(c[1].to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Reap files in `dir` older than `max_age_secs`, EXCEPT any whose filename is
+/// in `keep`. Returns (removed, bytes_freed, skipped_as_referenced).
+pub fn prune_dir_by_age_keeping(
+    dir: &Path,
+    max_age_secs: u64,
+    label: &str,
+    keep: &std::collections::HashSet<String>,
+) -> (usize, u64, usize) {
     if max_age_secs == 0 {
-        return (0, 0);
+        return (0, 0, 0);
     }
     let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(dir) else { return (0, 0) };
-    let (mut n, mut bytes) = (0usize, 0u64);
+    let Ok(rd) = std::fs::read_dir(dir) else { return (0, 0, 0) };
+    let (mut n, mut bytes, mut kept) = (0usize, 0u64, 0usize);
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
         if !md.is_file() {
@@ -501,21 +552,43 @@ pub fn prune_dir_by_age(dir: &Path, max_age_secs: u64, label: &str) -> (usize, u
             .and_then(|t| now.duration_since(t).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        if age > max_age_secs && std::fs::remove_file(e.path()).is_ok() {
+        if age <= max_age_secs {
+            continue;
+        }
+        // Aged out, but a live card is about it. Count the save separately from
+        // the eviction: a protection that only ever shows up as a MISSING
+        // deletion is one nobody can tell has stopped firing (two-fix rule).
+        if keep.contains(&e.file_name().to_string_lossy().to_string()) {
+            kept += 1;
+            continue;
+        }
+        if std::fs::remove_file(e.path()).is_ok() {
             n += 1;
             bytes += md.len();
         }
     }
-    if n > 0 {
+    // `kept > 0` is on the same line as the eviction, not a separate quiet path,
+    // so a sweep that deleted nothing BECAUSE everything was referenced is
+    // distinguishable from a sweep that found nothing to do (ethos rule 4).
+    if n > 0 || kept > 0 {
         tracing::info!(
             dir = %dir.display(),
             removed = n,
             freed_bytes = bytes,
+            kept_card_referenced = kept,
             max_age_secs,
             knob = label,
             "storage sweep evicted files"
         );
     }
+    (n, bytes, kept)
+}
+
+/// Age-prune with no card protection. Kept for dirs the board never references
+/// (`media-cache`, `spin-dumps`); `uploads` must go through the keeping form.
+pub fn prune_dir_by_age(dir: &Path, max_age_secs: u64, label: &str) -> (usize, u64) {
+    let (n, bytes, _) =
+        prune_dir_by_age_keeping(dir, max_age_secs, label, &std::collections::HashSet::new());
     (n, bytes)
 }
 
@@ -542,6 +615,10 @@ pub struct StorageReport {
     pub rotated_bytes: u64,
     pub files_removed: usize,
     pub bytes_freed: u64,
+    /// Aged-out uploads NOT deleted because a live card points at them. Reported
+    /// beside `files_removed` so "deleted nothing" and "deleted nothing because
+    /// everything was still referenced" are different readings (ethos rule 4).
+    pub kept_card_referenced: usize,
     pub free_bytes: Option<u64>,
     pub took_ms: f64,
 }
@@ -609,15 +686,34 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     // prune logic was correct but only fired while GROWING; spin-dumps are
     // incident holding areas nothing had ever removed. Running them on a timer is
     // the whole fix.
-    let (mut files, mut bytes) = (0usize, 0u64);
+    //
+    // `uploads` additionally consults the BOARD: a card is durable and this
+    // directory is reaped by age, so without this the reaper deletes the very
+    // screenshot a card is about (AMUX-3937 — 109 of 113 references were already
+    // dead when this was found). The other dirs are not referenced by cards and
+    // pass an empty keep-set, which is also the positive control: if the keep-set
+    // silently came back empty for `uploads` too, `kept_card_referenced` would
+    // read 0 and say so rather than looking like a clean sweep.
+    let keep = state
+        .store
+        .read()
+        .ok()
+        .map(|conn| card_referenced_uploads(&conn))
+        .unwrap_or_default();
+    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let (mut files, mut bytes, mut kept) = (0usize, 0u64, 0usize);
     for (name, env_key, default_days) in AGE_PRUNED_DIRS {
         let days = env_u64(env_key, *default_days);
-        let (n, b) = prune_dir_by_age(&home.join(name), days * 86_400, env_key);
+        let keeping = if *name == "uploads" { &keep } else { &empty };
+        let (n, b, k) =
+            prune_dir_by_age_keeping(&home.join(name), days * 86_400, env_key, keeping);
         files += n;
         bytes += b;
+        kept += k;
     }
     rep.files_removed = files;
     rep.bytes_freed = bytes;
+    rep.kept_card_referenced = kept;
     rep.free_bytes = disk_free_bytes(home);
     rep.took_ms = t0.elapsed().as_secs_f64() * 1000.0;
     *last_report_cell().write().unwrap() = Some(rep.clone());
@@ -636,11 +732,15 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
         let home = home.clone();
         async move {
             let r = storage_tick(&state, &home).await;
-            if r.rotated_bytes > 0 || r.files_removed > 0 {
+            // `kept_card_referenced` is in the guard as well as the payload:
+            // a tick whose only action was DECLINING to delete a card's
+            // attachment is an action, and it was previously silent.
+            if r.rotated_bytes > 0 || r.files_removed > 0 || r.kept_card_referenced > 0 {
                 tracing::info!(
                     rotated_bytes = r.rotated_bytes,
                     files_removed = r.files_removed,
                     bytes_freed = r.bytes_freed,
+                    kept_card_referenced = r.kept_card_referenced,
                     "storage sweep tick"
                 );
             }
@@ -654,7 +754,10 @@ pub async fn debug_storage() -> axum::Json<Value> {
     let home = amux_home();
     let free = disk_free_bytes(&home);
     let r = last_report();
-    axum::Json(json!({
+    // AF-320: `free_bytes: null` is the interesting case — the disk could not be
+    // read, and every consumer of this endpoint is asking about disk pressure.
+    // `SPECS.len()` is the retention population the report describes.
+    let body = json!({
         "free_bytes": free,
         "free_gb": free.map(|b| (b as f64 / 1e9 * 10.0).round() / 10.0),
         "knobs": SPECS.iter().map(|s| json!({
@@ -666,9 +769,21 @@ pub async fn debug_storage() -> axum::Json<Value> {
         "last": r.map(|r| json!({
             "at": r.at, "tables": r.tables, "rotated_bytes": r.rotated_bytes,
             "files_removed": r.files_removed, "bytes_freed": r.bytes_freed,
+            // Beside files_removed, never instead of it: "freed nothing" and
+            // "freed nothing because a live card still points at all of it" are
+            // different answers and the endpoint has to be able to say which.
+            "kept_card_referenced": r.kept_card_referenced,
             "took_ms": r.took_ms,
         })),
-    }))
+    });
+    axum::Json(match free {
+        Some(_) => crate::api::measured::measured(body, SPECS.len()),
+        None => crate::api::measured::unmeasured(
+            body,
+            "free space could not be read for the amux home, so no disk verdict here is \
+             founded (`df -Pk` failed or returned nothing parseable)",
+        ),
+    })
 }
 
 /// Typed `Router<AppState>` to match the app router it merges into — the
@@ -683,6 +798,102 @@ mod tests {
 
     fn mem() -> Connection {
         Connection::open_in_memory().unwrap()
+    }
+
+    /// A board built FROM THE MIGRATION CHAIN, never hand-rolled.
+    ///
+    /// The first version of this declared its own `issues` table with the seven
+    /// columns `card_referenced_uploads` happens to read, and
+    /// `tests/schema_fixtures.rs` failed it — correctly. A hand-rolled fixture
+    /// that mirrors the real schema silently falls behind the moment a migration
+    /// adds a column, and this query reads four text columns that could each be
+    /// renamed under it. `test_memdb()` applies the real chain, so a rename
+    /// breaks the PREPARE and the cell goes red instead of quietly returning an
+    /// empty keep-set — which looks exactly like "no card references anything",
+    /// the failure mode this whole change exists to remove.
+    fn board(rows: &[(&str, &str, i64)]) -> Connection {
+        let c = crate::db::migrate::test_memdb();
+        for (id, desc, archived) in rows {
+            let status = if id.starts_with("DISC") { "discarded" } else { "todo" };
+            c.execute(
+                // `created` is NOT NULL in the real schema. The hand-rolled
+                // fixture this replaced did not have that column at all, which
+                // is the drift the guard was pointing at, in miniature.
+                "INSERT INTO issues (id,title,desc,status,archived,created,updated)
+                 VALUES (?1,'t',?2,?3,?4,0,0)",
+                rusqlite::params![id, desc, status, archived],
+            )
+            .unwrap();
+        }
+        c
+    }
+
+    fn aged_file(dir: &Path, name: &str, secs_old: u64) {
+        let p = dir.join(name);
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs_old))
+            .unwrap();
+    }
+
+    /// THE CELL THAT WOULD HAVE CAUGHT AMUX-3937. A card is durable and this
+    /// directory is reaped by age, so the reaper was deleting the screenshot the
+    /// card is about — 109 of 113 board references were already dead.
+    ///
+    /// The FIRST assertion is the one that makes the second mean anything: an
+    /// aged file nobody references must still be reaped. Without it a keep-set
+    /// that matched everything would pass, and the protection would be
+    /// indistinguishable from having no reaper at all.
+    #[test]
+    fn an_aged_upload_a_live_card_points_at_is_not_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        aged_file(dir.path(), "referenced.png", 10 * 86_400);
+        aged_file(dir.path(), "orphan.png", 10 * 86_400);
+        let conn = board(&[("AMUX-1", "see /Users/ethan/.amux/uploads/referenced.png", 0)]);
+        let keep = card_referenced_uploads(&conn);
+        assert!(keep.contains("referenced.png"), "keep-set must find the reference: {keep:?}");
+
+        let (removed, _, kept) =
+            prune_dir_by_age_keeping(dir.path(), 7 * 86_400, "TEST", &keep);
+        assert!(dir.path().join("referenced.png").exists(), "a live card's attachment survives");
+        assert!(!dir.path().join("orphan.png").exists(), "an unreferenced aged file is reaped");
+        assert_eq!((removed, kept), (1, 1), "and both outcomes are COUNTED, not just done");
+    }
+
+    /// CONTROL, and the one that keeps this from becoming a leak: `discarded`
+    /// and archived cards do NOT pin their attachments. Without this arm the
+    /// protection would hold every file ever attached to any card forever, which
+    /// is a worse bug than the one it fixes and would never show up as a failure.
+    #[test]
+    fn a_discarded_or_archived_card_does_not_pin_its_upload() {
+        let conn = board(&[
+            ("DISC-1", "/Users/ethan/.amux/uploads/discarded.png", 0),
+            ("AMUX-2", "/Users/ethan/.amux/uploads/archived.png", 1),
+            ("AMUX-3", "/Users/ethan/.amux/uploads/live.png", 0),
+        ]);
+        let keep = card_referenced_uploads(&conn);
+        assert!(keep.contains("live.png"), "positive control: a live card still pins");
+        assert!(!keep.contains("discarded.png"), "a discarded card must not pin its upload");
+        assert!(!keep.contains("archived.png"), "an archived card must not pin its upload");
+    }
+
+    /// The reference is matched by FILENAME, so it has to survive the forms a
+    /// card actually carries it in: the `@`-prefixed capture form, a bare URL
+    /// path, and markdown. A regex that only matched one of these would leave
+    /// most cards unprotected while the cells above still passed.
+    #[test]
+    fn the_reference_is_found_in_every_form_a_card_carries_it() {
+        let conn = board(&[
+            ("A", "make it automatic @/Users/ethan/.amux/uploads/at-form.png", 0),
+            ("B", "screenshot: /api/uploads/url-form.png", 0),
+            ("C", "![shot](/api/uploads/md-form.png) and text after", 0),
+        ]);
+        let keep = card_referenced_uploads(&conn);
+        for want in ["at-form.png", "url-form.png", "md-form.png"] {
+            assert!(keep.contains(want), "{want} not found in {keep:?}");
+        }
+        // Trailing punctuation must not become part of the filename, or the
+        // keep-set silently misses and the file is reaped anyway.
+        assert!(!keep.iter().any(|k| k.ends_with(')') || k.ends_with(',')));
     }
 
     #[test]
