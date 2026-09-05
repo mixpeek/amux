@@ -7,6 +7,12 @@ node_modules/
 package-lock.json
 scratch/
 
+# Per-lane session handoff notes (e.g. ahead of a host migration) — real
+# internal infra detail (IPs, secrets paths, unit names) belongs here, not
+# in a public repo. Filesystem-level backups can still cover this path;
+# it just never goes through git.
+RESUME.md
+
 # Compiled app binary (rebuild via ./desktop/build-desktop.sh)
 Amux.app/Contents/MacOS/amux
 
