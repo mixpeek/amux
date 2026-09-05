@@ -164,7 +164,7 @@ impl ProviderRegistry {
     }
 }
 
-/// The registry every deployment starts from: all four known providers,
+/// The registry every deployment starts from: all known providers,
 /// registered by default. Opt-OUT, not opt-in — a capability nobody is
 /// enrolled in is decoration (ethos rule 1; the `CC_MCP` incident).
 pub fn default_registry() -> ProviderRegistry {
@@ -173,6 +173,7 @@ pub fn default_registry() -> ProviderRegistry {
     reg.register(Arc::new(static_providers::GeminiAdapter));
     reg.register(Arc::new(static_providers::CodexAdapter));
     reg.register(Arc::new(static_providers::OllamaAdapter::default()));
+    reg.register(Arc::new(static_providers::GrokAdapter));
     reg
 }
 
@@ -284,10 +285,10 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_registers_all_four() {
+    fn default_registry_registers_all_known() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 4);
-        for id in ["claude-code", "gemini", "codex", "ollama"] {
+        assert_eq!(reg.len(), 5);
+        for id in ["claude-code", "gemini", "codex", "ollama", "grok"] {
             assert!(
                 reg.get(&ProviderId::new(id)).is_some(),
                 "default registry missing {id}"
@@ -321,7 +322,7 @@ mod tests {
 
         let mut reg = default_registry();
         reg.register(Arc::new(FutureAdapter));
-        assert_eq!(reg.len(), 5);
+        assert_eq!(reg.len(), 6);
         let got = reg.get(&ProviderId::new("a-provider-from-2031")).unwrap();
         assert_eq!(got.id().as_str(), "a-provider-from-2031");
     }
@@ -332,6 +333,7 @@ mod tests {
         // The exact ids all resolve...
         assert_eq!(reg.resolve("claude-code").unwrap().id().as_str(), "claude-code");
         assert_eq!(reg.resolve("gemini").unwrap().id().as_str(), "gemini");
+        assert_eq!(reg.resolve("grok").unwrap().id().as_str(), "grok");
         // ...and the schema-default legacy spelling lands on claude-code.
         assert_eq!(reg.resolve("claude").unwrap().id().as_str(), "claude-code");
         assert!(reg.resolve("not-a-provider").is_none());
@@ -365,6 +367,11 @@ mod tests {
     #[tokio::test]
     async fn conformance_ollama() {
         conformance(&static_providers::OllamaAdapter::default()).await;
+    }
+
+    #[tokio::test]
+    async fn conformance_grok() {
+        conformance(&static_providers::GrokAdapter).await;
     }
 
     #[test]

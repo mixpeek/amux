@@ -3676,6 +3676,17 @@ mod tests {
         assert_eq!(cflags, "--model qwen3.8:27b");
         assert!(cmodel.is_empty(), "agent CLIs have no CC_MODEL");
         assert_eq!(cresolved, "qwen3.8:27b");
+        // Grok is an agent CLI too: model rides in CC_FLAGS, never CC_MODEL.
+        let (gflags, gmodel, gresolved) = worker_model_env("grok", "grok-4.6", "", "opus");
+        assert_eq!(gflags, "--model grok-4.6");
+        assert!(gmodel.is_empty(), "grok must not use the ollama CC_MODEL path");
+        assert_eq!(gresolved, "grok-4.6");
+        // Empty model at create (the SPA path) must not leak the Claude default.
+        let (gflags2, gmodel2, gresolved2) = worker_model_env("grok", "", "", "opus");
+        assert_eq!(gflags2, "--model grok-4.6", "empty grok model must not become --model opus");
+        assert!(gmodel2.is_empty());
+        assert_eq!(gresolved2, "grok-4.6");
+        assert!(!gflags2.contains("opus"));
 
         // Ollama + NO model -> CC_MODEL empty (start uses the ollama default),
         // and the CLAUDE default ("opus") must appear NOWHERE. This is the exact
