@@ -42,13 +42,27 @@ bad() { echo "  FAIL $1"; [ -n "${2:-}" ] && echo "       $2"; FAIL=$((FAIL+1));
 # touching another function's independent declaration.
 SPECIMEN='local AMUX_API="${AMUX_API:-$(cmd_url)}"'
 
+# `substr($0,1,1) == "}"`, NOT /^}/. An unescaped `}` outside an interval is
+# undefined in POSIX ERE: BSD awk (macOS) reads it as a literal and closes the
+# window, the CI runner's awk does not, so `in_cmd_start` never resets and the
+# count runs to EOF. That is not hypothetical -- it is what turned this gate red
+# for every PR from 2026-09-04, when daf17cd5 (AF-496) added a SECOND legitimate
+# `local AMUX_API=...` inside cmd_browser. The window silently swallowed it, the
+# count came back 2 instead of 1, and the failure text below blamed the specimen.
+# Written this way so the two platforms cannot disagree at all.
 count_cmd_start_specimen() {
   awk -v needle="$SPECIMEN" '
     /^cmd_start\(\)[[:space:]]*\{/ { in_cmd_start=1 }
     in_cmd_start && index($0, needle) { count++ }
-    in_cmd_start && /^}/ { in_cmd_start=0 }
+    in_cmd_start && substr($0, 1, 1) == "}" { in_cmd_start=0 }
     END { print count + 0 }
   ' "$1"
+}
+
+# File-wide count, no window. Only used to tell the two failure causes apart in
+# the diagnostic below (ethos rule 4: name what should appear BESIDE the answer).
+count_file_wide_specimen() {
+  awk -v needle="$SPECIMEN" 'index($0, needle) { count++ } END { print count + 0 }' "$1"
 }
 
 # ── Isolated fleet ───────────────────────────────────────────────────────────
@@ -108,7 +122,7 @@ awk -v needle="$SPECIMEN" '
   /^cmd_start\(\)[[:space:]]*\{/ { in_cmd_start=1 }
   in_cmd_start && index($0, needle) { next }
   { print }
-  in_cmd_start && /^}/ { in_cmd_start=0 }
+  in_cmd_start && substr($0, 1, 1) == "}" { in_cmd_start=0 }
 ' "$AMUX_BIN" > "$BROKEN"
 # Prove the fixture is ACTUALLY broken before trusting its failure. A self-check that
 # silently no-ops (the specimen line drifted, so nothing was deleted) is the exact
@@ -118,8 +132,17 @@ n_brk=$(count_cmd_start_specimen "$BROKEN")
 if [ "$n_orig" -eq 1 ] && [ "$n_brk" -eq 0 ]; then
   ok "broken fixture built: cmd_start AMUX_API declaration removed (was $n_orig, now $n_brk)"
 else
-  bad "could not build the broken fixture; has the specimen line drifted?" \
-      "expected exactly 1 cmd_start occurrence in $AMUX_BIN and 0 in the copy; got $n_orig and $n_brk"
+  n_all=$(count_file_wide_specimen "$AMUX_BIN")
+  if [ "$n_orig" -gt 1 ] && [ "$n_orig" -eq "$n_all" ]; then
+    # The in-window count equals the whole-file count, so the window never
+    # closed -- this is the awk, not the CLI. Say which, or the next reader
+    # spends the afternoon in ./amux like the last one did.
+    bad "the cmd_start window never closed; this is awk ($(awk --version 2>&1 | head -1)), not a drifted specimen" \
+        "in-window count $n_orig == file-wide count $n_all, so every later occurrence was swallowed"
+  else
+    bad "could not build the broken fixture; has the specimen line drifted?" \
+        "expected exactly 1 cmd_start occurrence in $AMUX_BIN and 0 in the copy; got $n_orig and $n_brk (file-wide $n_all)"
+  fi
 fi
 run_launch "$BROKEN"; RC=$?; OUT=$(cat "$WORK/out")
 if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "unbound variable"; then
