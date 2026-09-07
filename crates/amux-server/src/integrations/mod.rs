@@ -19,6 +19,7 @@
 pub mod browser;
 pub mod calendar;
 pub mod email;
+pub mod gcal_sync;
 
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;

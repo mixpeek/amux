@@ -17,6 +17,8 @@
 pub mod advance;
 pub mod artifact_store;
 pub mod board_store;
+pub mod calendar;
+pub mod calendar_init;
 pub mod commands;
 pub mod memories;
 pub mod migrate;
@@ -100,6 +102,13 @@ impl Store {
         let mut conn = Connection::open(db_path)?;
         configure_connection(&conn)?;
         migrate::apply_all_guarded(&mut conn, db_path)?;
+
+        // Initialize calendar accounts from configuration file
+        if let Ok(config) = calendar_init::load_config(None) {
+            if let Err(e) = calendar_init::initialize_accounts(&mut conn, &config) {
+                tracing::warn!("Failed to initialize calendar accounts: {}", e);
+            }
+        }
 
         let (write_tx, write_rx) = mpsc::channel::<WriteRequest>();
         let (events_tx, _) = tokio::sync::broadcast::channel(4096);
