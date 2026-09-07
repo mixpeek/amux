@@ -27,6 +27,7 @@ fn app() -> axum::Router {
     let store = Store::open(&dir.path().join("t.db")).unwrap();
     std::mem::forget(dir); // keep the tempdir alive for the test's duration
     router(AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: std::sync::Arc::new(store),
         started: std::time::Instant::now(),
         build_hash: "test".into(),

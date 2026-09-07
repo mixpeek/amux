@@ -160,6 +160,7 @@ mod tests {
         let store = Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         (
             AppState {
+                secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
                 store,
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),

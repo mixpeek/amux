@@ -627,6 +627,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("org-api-test.db")).unwrap();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
@@ -671,6 +672,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: Some("owner-token".into()),
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         (crate::api::router(state), dir)

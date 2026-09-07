@@ -20,7 +20,8 @@ fn app() -> axum::Router {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     })
 }
 

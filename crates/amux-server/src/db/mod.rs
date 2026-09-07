@@ -22,6 +22,7 @@ pub mod memories;
 pub mod migrate;
 pub mod queries;
 pub mod replay;
+pub mod secret_metadata;
 pub mod telegram;
 pub mod verification_store;
 pub mod workflow_store;

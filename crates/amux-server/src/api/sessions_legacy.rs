@@ -2919,6 +2919,17 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
 /// pub(crate): session_verbs' bare GET /api/sessions/{name} serves ONE
 /// record from the SAME array (py:74892 — the natural URL answers the
 /// natural shape).
+/// Does a worker's tmux pane still exist, per a REAL `tmux list-sessions`
+/// enumeration (`signals`, already captured — not a second probe)? Extracted
+/// from [`build_array`] so it is unit-testable without spawning a real tmux
+/// session, which in this shared-checkout fleet would mean touching the SAME
+/// live tmux server every other session in the fleet depends on (AMUX-2960's
+/// class of risk) — a synthetic `BTreeSet` exercises the exact comparison
+/// production uses without that side effect.
+fn pane_is_alive(worker_name: &str, tmux_running: &std::collections::BTreeSet<String>) -> bool {
+    tmux_running.contains(&format!("amux-{worker_name}"))
+}
+
 pub(crate) fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::Value>> {
     let mut signals = FleetSignals::load(conn);
     // Before any status is derived: the pane is the only signal that can
@@ -2941,6 +2952,19 @@ pub(crate) fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<s
         let model: Option<String> = r.get(3)?;
         let cwd: String = r.get(4)?;
         let live: i64 = r.get(5)?;
+        // `running` above answers "does the DB think a session row is open"
+        // (`_amux_sessions.ended_at IS NULL`) — it says nothing about whether
+        // the tmux PANE behind that row still exists. Those two came apart in
+        // practice (FRONT-2/FRONT-3): a pane reaped out from under a session
+        // (OOM kill, `tmux kill-session`, a crashed backend) leaves the DB row
+        // untouched, so `running` stayed true and every consumer — including
+        // this same list's own preview/peek — kept serving a frozen snapshot
+        // with no signal that the thing behind it was gone. `signals.running`
+        // is the REAL tmux `list-sessions` enumeration `FleetSignals::load`
+        // already captured above (with its own all-panes-dead exclusion and
+        // fail-open-on-a-broken-probe handling) — reusing it here is a lookup
+        // in an already-built set, not a second probe.
+        let pane_alive = pane_is_alive(&name, &signals.running);
         Ok(json!({
             // The Python list's load-bearing fields; ones the Rust side
             // cannot honestly fill yet are present-and-empty, NOT omitted —
@@ -2948,6 +2972,7 @@ pub(crate) fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<s
             "name": name,
             "status": python_status(&state_json),
             "running": live > 0,
+            "pane_alive": pane_alive,
             "provider": provider,
             "model": model.unwrap_or_default(),
             "dir": cwd,
@@ -3434,6 +3459,41 @@ pub(crate) fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FRONT-3: `running` (the DB's `_amux_sessions.ended_at IS NULL` flag)
+    /// and `pane_alive` (a real tmux `list-sessions` cross-check) are
+    /// DIFFERENT questions that came apart in practice — a pane reaped by an
+    /// OOM kill or `tmux kill-session` leaves the DB row untouched. This is
+    /// the case the whole fix exists for: the exact name format
+    /// `FleetSignals::load` populates (`#{session_name}`, i.e. `amux-<n>`)
+    /// against the exact lookup `build_array` performs.
+    #[test]
+    fn pane_alive_reflects_real_tmux_not_the_db_flag() {
+        let mut running = std::collections::BTreeSet::new();
+        running.insert("amux-frontstage".to_string());
+        running.insert("amux-backstage".to_string());
+
+        assert!(
+            pane_is_alive("frontstage", &running),
+            "a name whose amux-prefixed tmux session IS in the real enumeration must read alive"
+        );
+        // THE GHOST CASE: this is what a DB `running:true` row looks like once
+        // its pane is gone — `db_running` stays true (nothing in this test
+        // touches the DB), but `pane_alive` must independently say false.
+        assert!(
+            !pane_is_alive("amux", &running),
+            "a name absent from the real tmux enumeration must read NOT alive, \
+             regardless of what the DB's own running flag claims — this is the \
+             ghost-record case FRONT-2/FRONT-3 exist to make visible"
+        );
+        // Case sensitivity / exact-match: a prefix or substring hit must not
+        // count as a match, or an unrelated live session could mask a dead one.
+        running.insert("amux-frontstage-old".to_string());
+        assert!(
+            !pane_is_alive("frontstage-o", &running),
+            "must be an exact amux-<name> match, not a substring/prefix one"
+        );
+    }
 
     #[test]
     fn confirmed_model_must_match_provider_and_current_process_life() {

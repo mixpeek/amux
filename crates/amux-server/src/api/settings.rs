@@ -4,10 +4,14 @@
 //! `/api/settings/env`).
 //!
 //! All four read/write env FILES under the amux home — `server.env` and
-//! `defaults.env` — not the database, so none of them touch AppState. The
-//! home is resolved per-request from `$AMUX_HOME` (legacy `$CC_HOME`), the
-//! same rule `config.rs` uses, which is also how tests point writes at a
-//! temp home instead of the live `~/.amux`.
+//! `defaults.env` — not the database. The home is resolved per-request from
+//! `$AMUX_HOME` (legacy `$CC_HOME`), the same rule `config.rs` uses, which is
+//! also how tests point writes at a temp home instead of the live `~/.amux`.
+//! `get_env` is the one exception that DOES touch `AppState`: after the file
+//! and process-env tiers both miss, it falls back to `state.secrets` (the
+//! encrypted `SecretStore`) for a credential that lives only there — see
+//! `secrets.rs`'s module doc for why that store never mirrors into env
+//! itself, and `known_env_secret_path` for the (small, curated) key mapping.
 //!
 //! Python parity decisions, recorded so they are not "fixed" later:
 //! - Python loads server.env into `os.environ` at boot (non-empty values
@@ -29,6 +33,7 @@
 //!   flags fail loudly with Python's exact 400 message instead of wiping
 //!   the user's other flags.
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -499,11 +504,21 @@ pub(crate) fn mask_secret(v: &str) -> String {
     }
 }
 
-async fn get_env() -> Response {
+async fn get_env(State(state): State<AppState>) -> Response {
     let home = amux_home();
     let mut out = Map::new();
     for k in PROVIDER_ENV_KEYS {
-        let v = effective_env(&home, k).unwrap_or_default();
+        let v = match effective_env(&home, k) {
+            Some(v) => v,
+            // Third tier, after server.env and process env both miss: the
+            // encrypted SecretStore, for a credential that lives ONLY there.
+            // See secrets.rs's module doc — this replaces the removed
+            // `set_var` mirror as the bridge from that store to this read.
+            None => match crate::secrets::known_env_secret_path(k) {
+                Some(path) => state.secrets.get(path).await.unwrap_or_default(),
+                None => String::new(),
+            },
+        };
         out.insert(k.to_string(), Value::String(mask_secret(&v)));
     }
     Json(Value::Object(out)).into_response()
@@ -972,6 +987,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("settings-test.db")).unwrap();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: std::sync::Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
@@ -1246,6 +1262,69 @@ mod tests {
         let (st, _) =
             send(&app, "PATCH", "/api/settings/env", Some(json!({ "OPENAI_API_KEY": 42 }))).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
+    }
+
+    /// PR #163 review item: `get_env`'s third resolution tier, end to end
+    /// through the real handler — not just `SecretStore::get()` directly
+    /// (that half is `tests/secrets_decrypt.rs`). A credential present ONLY
+    /// in the encrypted store (absent from server.env AND process env) must
+    /// still come back masked from `GET /api/settings/env`, via
+    /// `known_env_secret_path("OPENAI_API_KEY")` -> the fixture's
+    /// `external_services.openai.api_key`. Same `age` fixture as
+    /// `tests/secrets_decrypt.rs`; see that file's module doc for why this
+    /// skips (not fails) when the `age` binary isn't on PATH.
+    // `test_env::LOCK` serializes CROSS-THREAD access to process-global env
+    // vars between test functions — each `#[tokio::test]` gets its own
+    // isolated single-test runtime, so holding a std::sync::Mutex across an
+    // .await here never blocks another task on a SHARED runtime the way
+    // clippy's lint is warning about; it just holds the OS thread for this
+    // one test's duration, which is the serialization this lock exists for.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn get_env_falls_back_to_the_encrypted_store_when_unset_elsewhere() {
+        if tokio::process::Command::new("age").arg("--version").output().await.is_err() {
+            eprintln!("skipping: `age` binary not on PATH");
+            return;
+        }
+        let _lock = test_env::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = test_env::set_home(dir.path());
+        // Deliberately blank server.env — nothing here for OPENAI_API_KEY —
+        // and the process env has just been stripped by set_home's leaky-key
+        // guard, so the ONLY place this key can come from is the store below.
+        std::fs::write(dir.path().join("server.env"), "").unwrap();
+
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/secrets");
+        let secrets = crate::secrets::SecretStore::new(
+            fixtures.join("test-key.txt"),
+            fixtures.join("test-secrets.yaml.age"),
+        );
+        secrets.load().await.expect("fixture must decrypt — see tests/secrets_decrypt.rs if this fails");
+
+        let dbdir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dbdir.path().join("settings-test.db")).unwrap();
+        let state = AppState {
+            secrets: std::sync::Arc::new(secrets),
+            store: std::sync::Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let app = Router::new().nest("/api/settings", routes()).with_state(state);
+
+        let (_, v) = send(&app, "GET", "/api/settings/env", None).await;
+        let shown = v["OPENAI_API_KEY"].as_str().unwrap_or_default();
+        assert!(
+            shown.starts_with('*') && shown.ends_with("1234"),
+            "OPENAI_API_KEY must be found via the SecretStore fallback tier and masked \
+             (fixture value is sk-fixture-do-not-use-1234), got {shown:?}"
+        );
+        assert!(!shown.contains("sk-fixture-do-not-use-1234"), "the masked form must never contain the real value");
+        // A key the fixture has no mapping for (no known_env_secret_path
+        // entry) must still read empty, not error — the fallback tier is
+        // additive, never a source of false positives for unmapped keys.
+        assert_eq!(v["GEMINI_API_KEY"], json!(""));
     }
 
     /// AMUX-3386: a config value pointing into ephemeral ~/.amux/uploads/ must be

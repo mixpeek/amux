@@ -40,7 +40,7 @@ use crate::integrations::email::{
     connected_accounts_in, default_amux_home, html_escape, urlencode, HttpTransport,
     ReqwestTransport, DEFAULT_TOKEN_URI, GMAIL_BASE,
 };
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -487,6 +487,7 @@ pub struct CallbackParams {
 }
 
 pub async fn callback(
+    State(app_state): State<AppState>,
     Extension(ctx): Extension<Arc<GmailAuthCtx>>,
     Query(p): Query<CallbackParams>,
 ) -> Response {
@@ -528,6 +529,7 @@ pub async fn callback(
                 &ctx.home,
                 &state,
                 &code,
+                &app_state.secrets,
             )
             .await
             {
@@ -1038,6 +1040,7 @@ mod tests {
         let store = crate::db::Store::open(&dir.path().join("g.db")).unwrap();
         (
             AppState {
+                secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
                 store: Arc::new(store),
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
@@ -1538,6 +1541,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("full.db")).unwrap();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

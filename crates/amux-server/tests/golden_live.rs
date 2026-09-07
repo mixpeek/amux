@@ -125,6 +125,7 @@ fn rig() -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let store: SharedStore = Arc::new(Store::open(&dir.path().join("golden-live.db")).unwrap());
     let state = AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: store.clone(),
         started: std::time::Instant::now(),
         build_hash: "golden-live-test".into(),

@@ -1,0 +1,27 @@
+# SOPS Configuration for amux Central Secrets
+#
+# Encryption: age (https://age-encryption.org/)
+# Private key: ~/.config/sops/age/keys.txt (600 perms) — install.sh
+#   generates one on first run if none exists (age-keygen).
+#
+# This is a PER-INSTALL key, not a project key — review @esteininger, PR
+# #163, 2026-08-28: an earlier version of this file hardcoded one specific
+# public key here as if it were canonical. amux-server's own encrypt/decrypt
+# path (crates/amux-server/src/secrets/persist.rs) does NOT read this file
+# — it derives the recipient from whatever identity file AMUX_AGE_KEY_PATH
+# points at, so it's unaffected by what's written below. But this config is
+# kept for compatibility with real `sops` tooling if anyone runs it
+# directly against secrets/*.yaml, and a fixed recipient there means "sops
+# encrypts to MY key" for anyone who copies this file as-is.
+#
+# To fill in your own: `age-keygen -y ~/.config/sops/age/keys.txt` prints
+# the public half of the key install.sh generated; put it below.
+#
+# NOTE: Secrets are encrypted with age directly (not sops wrapper)
+# To encrypt: age -r <your-public-key> <file> > <encrypted-file>
+# To decrypt: age -d -i ~/.config/sops/age/keys.txt <encrypted-file>
+
+creation_rule:
+  - path_regex: 'secrets/.*\.ya?ml$'
+    key_groups:
+      - age: REPLACE_WITH_YOUR_OWN_AGE_PUBLIC_KEY  # age-keygen -y ~/.config/sops/age/keys.txt

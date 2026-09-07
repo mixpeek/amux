@@ -19338,6 +19338,7 @@ mod tests {
         let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
         (
             AppState {
+                secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
                 store: std::sync::Arc::new(store),
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
@@ -22149,6 +22150,7 @@ mod steer_boundary_tests {
         let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
         (
             AppState {
+                secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
                 store: std::sync::Arc::new(store),
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
@@ -22630,6 +22632,7 @@ mod steer_boundary_tests {
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
                 auth_token: None,
+                secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
                 reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             }
         }
@@ -23057,6 +23060,7 @@ mod hot_model_switch_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: std::sync::Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

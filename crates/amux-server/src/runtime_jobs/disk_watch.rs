@@ -855,6 +855,7 @@ mod tests {
     async fn a_scan_is_reported_at_most_once() {
         let (s, _d) = store();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: s.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

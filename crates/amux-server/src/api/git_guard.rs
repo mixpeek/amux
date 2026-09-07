@@ -5315,6 +5315,7 @@ mod tests {
         let store =
             std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let mk_state = || crate::api::AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
@@ -5390,6 +5391,7 @@ mod tests {
         let store =
             std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let mk_state = || crate::api::AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

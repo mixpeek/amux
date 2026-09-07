@@ -87,6 +87,7 @@ fn app(lanes: &[&str]) -> Rig {
     let db = home.join(format!("db-{}.sqlite", lanes.first().copied().unwrap_or("rig")));
     let store = std::sync::Arc::new(Store::open(&db).unwrap());
     let state = AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: store.clone(),
         started: std::time::Instant::now(),
         build_hash: "test".into(),

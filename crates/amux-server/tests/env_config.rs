@@ -42,6 +42,7 @@ fn app(db_tag: &str) -> (axum::Router, std::sync::Arc<Store>) {
     let store =
         std::sync::Arc::new(Store::open(&home.join(format!("env-config-{db_tag}.db"))).unwrap());
     let state = AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: store.clone(),
         started: std::time::Instant::now(),
         build_hash: "test".into(),
