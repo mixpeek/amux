@@ -16,7 +16,7 @@
 | 8 | Limit auto-resume | reset time parsed → auto-continue at reset | MET | **GAP** | **GAP** | Gemini banner has no parsed reset; card AMUX-2231 |
 | 9 | Token/cost tracking | per-worker tokens + $ in Cost tab | MET | **GAP** | **GAP** | Ledger reads Claude JSONL only; Gemini lanes invisible to Cost — card AMUX-2230 |
 | 10 | Transcript tab | gap-free conversation render in peek | MET | **GAP** | **GAP** | Reads Claude JSONL only — card AMUX-2230 |
-| 11 | Self-report (D1 hooks) | Stop/UserPromptSubmit → /report | MET | **GAP (upstream)** | **PARTIAL** | Gemini CLI has no hook equivalent; scraper (#1) is the sanctioned fallback per D1 |
+| 11 | Self-report (D1 hooks) | Stop/UserPromptSubmit → /report | MET | **GAP (upstream)** | **BLOCKED ON ROW 2** | Gemini CLI has no hook equivalent; scraper (#1) is the sanctioned fallback per D1 |
 | 12 | Model detection | active model shown on card | MET | MET | MET | Flags/default fallback (`--model auto`) |
 | 13 | API-error detection (5xx retryable) | transient errors flagged, continue offered | MET | **GAP** | **GAP** | Patterns are Claude-shaped — card AMUX-2231 |
 | 14 | Subagent/suggestion niceties | running-subagent badge, empty-send suggestion | MET | GAP (minor) | GAP | Claude-UI parsing; cosmetic — card AMUX-2231, low priority |
@@ -59,17 +59,30 @@ individually approved — muse refuses a bundle where two hooks share a source),
   report arriving at amux cannot be attributed to a provider — this machine's own Claude Code
   sessions report against the same lane and produce identical rows, so without a provider-side
   record "muse hooks work" is unfalsifiable.
-- the interactive TUI — what a lane actually runs — fires NOTHING, with plugins enabled and the
-  workspace trusted (`--trust-workspace`).
+- THE INTERACTIVE TUI FIRES THEM TOO. An earlier revision of this row said the TUI fired nothing;
+  that was wrong, and the way it was wrong is worth keeping. The TUI composes `hooks=4` exactly as
+  `exec` does (`mode="tui"` in its own capability snapshot), but SessionStart fires at the FIRST
+  TURN, not at launch. In an amux lane no turn ever happened — `amux send` never submitted (row 2)
+  — so nothing fired, and "no hooks in the TUI" was inferred from a lane that had never been asked
+  anything. Typing the same prompt straight into the pane produced all three hooks in three
+  seconds: session-start, prompt, stop.
+
+  So row 11 is blocked only by row 2, not by anything upstream. Fix the send and muse self-reports.
 
 So the capability is real and the wiring is proven; only TUI delivery is missing. That is why
 `MuseAdapter::capabilities().hooks` is true while this row is PARTIAL: the flag describes the
 CLI, the row describes the lane.
 
-**Row 2 (idle-driven loops) is GAP and blocks more than itself.** `amux send` does not submit to
-muse's TUI: it returns `not submitted — text is sitting in the input box (autocomplete popup ate
-the Enter?)`. Send/receive is the round trip rows 2 and 3 are built on, so no steering, nudging or
-board pickup can work on a muse lane until it does.
+**Row 2 (idle-driven loops) is GAP, blocks more than itself, and now has a measured cause.**
+`amux send` returns `not submitted — text is sitting in the input box (autocomplete popup ate the
+Enter?)`. Send/receive is the round trip rows 2, 3 and 11 are built on.
+
+Measured against the TUI directly: typing the text, waiting 150ms and pressing Enter — the launch
+path's timing — loses it, and the input line stays empty. The same keys with a ~2s gap submit
+cleanly and the turn runs. amux already retries a dropped Enter, so what fails on muse is the
+composer read that decides whether a retry is needed: `Submission::Stuck` is being reached against
+an input box drawn differently from Claude's. The fix is provider-aware composer detection (and a
+longer settle before Enter), not a change to muse.
 
 **Rows 7-10, 13-14 are GAP for the same structural reason they are GAP for Gemini:** the limit
 patterns, the token ledger and the transcript reader are Claude-shaped. Nothing muse-specific was
