@@ -1729,7 +1729,22 @@ cmd_start_all() {
   local files=("$CC_SESSIONS"/*.env)
   shopt -u nullglob
   local f name
-  for f in "${files[@]}"; do
+  # `${files[@]+"${files[@]}"}`, never a bare `"${files[@]}"`. macOS ships bash
+  # 3.2, where expanding an EMPTY array under `set -u` is ITSELF the "unbound
+  # variable" fatal (bash fixed this in 4.4; a `#!/usr/bin/env bash` script on
+  # macOS cannot assume it). With nullglob on and no *.env registered, `files`
+  # is empty, so the bare form killed cmd_start_all before its first iteration:
+  # `line 1794: files[@]: unbound variable`, rc=1, nothing else printed.
+  #
+  # The only caller is the launchd boot agent, so the failure surfaced as a
+  # fleet that had simply never started, with the reason buried in
+  # fleet-boot.log. A machine with zero registered workers is exactly a FRESH
+  # INSTALL — so this fired hardest where there was least context to debug it.
+  #
+  # Falling through to the summary with an empty list is correct, not a special
+  # case: "0 started · 0 archived" is the count beside the zero the block
+  # comment above exists to demand.
+  for f in ${files[@]+"${files[@]}"}; do
     [[ -f "$f" ]] || continue
     name=$(basename "$f" .env)
     # Archived workers are retired on purpose. Read the flag from the env file
