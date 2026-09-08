@@ -3797,6 +3797,23 @@ pub(crate) fn muse_launch_command(
     if !opts.contains("--model") && !opts.contains("-m ") && !default_model.is_empty() {
         opts += &format!(" --model {}", shell_quote_flags(default_model));
     }
+    // --trust-workspace, because A LANE HAS NOBODY TO ANSWER A PROMPT.
+    //
+    // On a workspace it has not seen before, muse stops on an interactive gate before the
+    // model runs — "Trusting allows project-local skills, rules, hooks, and plugin config
+    // to load ... 1 Trust and continue / 2 Quit". In a lane that prompt is answered by no
+    // one: the pane sits on it, and `amux send` then delivers the task to the CHOOSER, not
+    // to an agent. Observed as a muse worker that reported "not submitted — text is sitting
+    // in the input box" while the pane had actually fallen back to a shell and run the
+    // briefing as a command (`zsh: command not found: Reply`).
+    //
+    // Every lane amux starts is on a checkout amux created for it, so the trust decision is
+    // already made by the act of dispatching the work; the prompt is asking a human who is
+    // not there. Skills, rules and hooks load only under trust, so without this a muse lane
+    // also cannot self-report — this is the other half of docs/provider-parity.md row 11.
+    if !opts.contains("--trust-workspace") {
+        opts += " --trust-workspace";
+    }
     // MUSE_EXPERIMENTAL_PLUGINS=on because muse delivers hooks as a PLUGIN capability and
     // plugin loading is gated behind this flag in 1.0.3. Without it a session composes
     // `hooks=0` and self-reports nothing.
@@ -3962,7 +3979,8 @@ mod muse_launch_tests {
     #[test]
     fn muse_first_start_is_bare_with_no_session_id_flag() {
         let cmd = muse_launch_command("", "", "", "muse-spark-1.3-contributor");
-        assert_eq!(cmd, "MUSE_EXPERIMENTAL_PLUGINS=on muse --model muse-spark-1.3-contributor");
+        assert_eq!(cmd,
+            "MUSE_EXPERIMENTAL_PLUGINS=on muse --model muse-spark-1.3-contributor --trust-workspace");
         assert!(!cmd.contains("--session-id"), "muse has no such flag: {cmd}");
         assert!(!cmd.contains("resume"), "a first start has nothing to resume");
     }
@@ -3978,7 +3996,7 @@ mod muse_launch_tests {
         assert_eq!(
             cmd,
             "MUSE_EXPERIMENTAL_PLUGINS=on muse resume 01a081b8-006e-7182-98af-dd0820be4f61 \
-             --model muse-spark-1.2".replace("\\\n             ", " ").as_str()
+             --model muse-spark-1.2 --trust-workspace".replace("\\\n             ", " ").as_str()
         );
         assert!(!cmd.contains("--last"), "--last crosses lanes in a shared CC_DIR");
     }
@@ -4025,6 +4043,18 @@ mod muse_launch_tests {
         ];
         let err = muse_pick_session(&new, "/repo/obrist").unwrap_err();
         assert!(err.contains("refusing to guess"), "{err}");
+    }
+
+    #[test]
+    fn muse_intent_scan_finds_an_accepted_prompt_and_ignores_other_records() {
+        use super::muse_intent_in_tail;
+        // Shape taken from a real muse session.jsonl.
+        let accepted = r#"{"payload_type":"runtime.session.user_intent.accepted","payload":{"semantic_kind":{"kind":"chat"},"refill_blocks":[{"kind":"text","text":"Reply with only the word ok"}]}}"#;
+        assert!(muse_intent_in_tail(accepted, "Reply with only the word ok"));
+        // The same text in a NON-acceptance record is not proof it was submitted.
+        let other = r#"{"payload_type":"runtime.session.task","payload":{"text":"Reply with only the word ok"}}"#;
+        assert!(!muse_intent_in_tail(other, "Reply with only the word ok"));
+        assert!(!muse_intent_in_tail(accepted, "some other message"));
     }
 
     #[test]
@@ -6426,6 +6456,62 @@ fn verb_resp(ok: bool, msg: String) -> Response {
 /// The `since` gate uses the message's OWN timestamp, not file mtime, so an
 /// older identical text — a second "continue" minutes later — cannot count as
 /// this send.
+/// Muse's durable proof that a message was submitted — the analogue of
+/// `jsonl_user_msg_since` for Claude.
+///
+/// Muse writes `runtime.session.user_intent.accepted` into its session transcript at the
+/// moment it accepts a prompt, with the text in `refill_blocks`. That record is the same
+/// class of evidence as Claude's JSONL user message: written by the AGENT on acceptance,
+/// not inferred from the pane.
+///
+/// Without it a muse send that worked was reported "not submitted — text is sitting in the
+/// input box", because every read `verify_submitted` had was Claude-shaped. Measured live:
+/// the pane showed the prompt answered while the API returned ok:false, which makes callers
+/// re-send a message the agent is already working on.
+pub(crate) fn muse_user_intent_since(name: &str, text: &str, since: f64) -> bool {
+    let needle = text.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    let id = meta_str(&load_meta(name), "muse_session_id");
+    if id.is_empty() {
+        return false;
+    }
+    let Some(dir) = muse_scan_sessions(&muse_sessions_root()).get(&id).cloned() else {
+        return false;
+    };
+    let path = dir.join("session.jsonl");
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return false;
+    };
+    // The transcript must have been written since the send. Muse nests records as escaped
+    // JSON strings, so the timestamp beside a given intent is awkward to attribute; the file
+    // mtime is a coarser but honest bound, and the needle is text we sent seconds ago.
+    let fresh = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() >= since - 1.0)
+        .unwrap_or(false);
+    if !fresh {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return false;
+    };
+    let start = bytes.len().saturating_sub(262_144);
+    let tail = String::from_utf8_lossy(&bytes[start..]);
+    muse_intent_in_tail(&tail, needle)
+}
+
+/// Pure scan, so it is testable against a planted transcript rather than a file mock.
+pub(crate) fn muse_intent_in_tail(tail: &str, needle: &str) -> bool {
+    tail.match_indices("user_intent.accepted").any(|(i, _)| {
+        let end = tail.len().min(i + 8192);
+        tail[i..end].contains(needle)
+    })
+}
+
 pub(crate) fn jsonl_user_msg_since(name: &str, text: &str, since: f64) -> bool {
     let needle = text.trim();
     if needle.is_empty() {
@@ -6842,7 +6928,8 @@ async fn verify_submitted(
         // Durable evidence beats the pane: the conversation JSONL gets the user
         // message appended at submission. If it is there stamped after this send
         // began, it submitted and the pane read is a repaint lie.
-        if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
+        if sent_at > 0.0 && (jsonl_user_msg_since(name, text, sent_at)
+            || muse_user_intent_since(name, text, sent_at)) {
             return (Submission::Confirmed, retried);
         }
         if !retry_keys {
@@ -6885,7 +6972,8 @@ async fn verify_submitted(
     // A re-send now happens only when the message is genuinely absent from the
     // durable record, which is precisely when re-sending is the right move; the
     // old path traded that for a silent drop.
-    if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
+    if sent_at > 0.0 && (jsonl_user_msg_since(name, text, sent_at)
+            || muse_user_intent_since(name, text, sent_at)) {
         (Submission::Confirmed, retried)
     } else {
         (Submission::Stuck, retried)
@@ -7892,7 +7980,23 @@ async fn send_text_inner(
     } else if !send_literal(name, &text).await {
         return (false, "send-keys failed".into());
     }
-    sleep_ms(20).await;
+    // HOW LONG THE COMPOSER NEEDS BEFORE Enter MEANS "SUBMIT".
+    //
+    // 20ms is what Claude Code needs and it is far too short for muse: measured on a live
+    // muse lane, paste+20ms+Enter leaves the text resting in the composer every time, while
+    // paste+300ms+Enter submits it. The failure is invisible from here — the keys are
+    // delivered, so send-keys succeeds — and surfaces only as amux's own verdict "not
+    // submitted, text is sitting in the input box", which is exactly what a muse worker
+    // reported on every send.
+    //
+    // Per provider rather than one global raise: 20ms is a real latency budget for Claude,
+    // paid on every send by every lane, and there is no reason to make the common case
+    // slower for a provider-specific composer.
+    let settle_ms = match provider_of(&parse_env(name)).as_str() {
+        "muse" => 350,
+        _ => 20,
+    };
+    sleep_ms(settle_ms).await;
     // Only reachable if picker-shaped text was TYPED, which `use_paste` now
     // prevents. Kept as a belt-and-braces closer rather than deleted: if a
     // future change routes picker text back through send-keys, the Escape that

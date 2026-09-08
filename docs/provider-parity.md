@@ -7,7 +7,7 @@
 | # | Capability | Success criterion | Claude | Gemini | Muse | Evidence / card |
 |---|---|---|---|---|---|---|
 | 1 | Status classification | active/idle/waiting detected from the live pane | MET | **PARTIAL** | UNVERIFIED | idle/active shipped 9f80099, verified live (sherpa-execution `idle`). `waiting` (selector/auth screens) undetected — card AMUX-2231 |
-| 2 | Idle-driven loops (pickup, steering, nudges, sweeps) | lane enters every loop keyed on idle | MET | MET | **GAP** | Full send/receive round trip verified 18:58 (SE-2 status-update via CLI) |
+| 2 | Idle-driven loops (pickup, steering, nudges, sweeps) | lane enters every loop keyed on idle | MET | MET | **MET** | Full send/receive round trip verified 18:58 (SE-2 status-update via CLI) |
 | 3 | amux CLI + board from inside the worker | board writes, sends, whoami work | MET | MET | UNVERIFIED | SE-2 status-update posted by the Gemini lane itself |
 | 4 | Memory injection | amux-composed memory reaches the model at launch | MET | MET (this commit) | **GAP** | Worker-scoped GEMINI.md mirrored into `--include-directories`; no repo GEMINI.md touched |
 | 5 | Launch parity (flags, yolo, model, resume meta) | provider flags normalized, worker id persisted | MET | MET | **MET** | start_session gemini branch (`--yolo`, `--skip-trust`, `--model auto`, gemini_session_id) |
@@ -16,7 +16,7 @@
 | 8 | Limit auto-resume | reset time parsed → auto-continue at reset | MET | **GAP** | **GAP** | Gemini banner has no parsed reset; card AMUX-2231 |
 | 9 | Token/cost tracking | per-worker tokens + $ in Cost tab | MET | **GAP** | **GAP** | Ledger reads Claude JSONL only; Gemini lanes invisible to Cost — card AMUX-2230 |
 | 10 | Transcript tab | gap-free conversation render in peek | MET | **GAP** | **GAP** | Reads Claude JSONL only — card AMUX-2230 |
-| 11 | Self-report (D1 hooks) | Stop/UserPromptSubmit → /report | MET | **GAP (upstream)** | **BLOCKED ON ROW 2** | Gemini CLI has no hook equivalent; scraper (#1) is the sanctioned fallback per D1 |
+| 11 | Self-report (D1 hooks) | Stop/UserPromptSubmit → /report | MET | **GAP (upstream)** | **MET** | Gemini CLI has no hook equivalent; scraper (#1) is the sanctioned fallback per D1 |
 | 12 | Model detection | active model shown on card | MET | MET | MET | Flags/default fallback (`--model auto`) |
 | 13 | API-error detection (5xx retryable) | transient errors flagged, continue offered | MET | **GAP** | **GAP** | Patterns are Claude-shaped — card AMUX-2231 |
 | 14 | Subagent/suggestion niceties | running-subagent badge, empty-send suggestion | MET | GAP (minor) | GAP | Claude-UI parsing; cosmetic — card AMUX-2231, low priority |
@@ -59,30 +59,35 @@ individually approved — muse refuses a bundle where two hooks share a source),
   report arriving at amux cannot be attributed to a provider — this machine's own Claude Code
   sessions report against the same lane and produce identical rows, so without a provider-side
   record "muse hooks work" is unfalsifiable.
-- THE INTERACTIVE TUI FIRES THEM TOO. An earlier revision of this row said the TUI fired nothing;
-  that was wrong, and the way it was wrong is worth keeping. The TUI composes `hooks=4` exactly as
-  `exec` does (`mode="tui"` in its own capability snapshot), but SessionStart fires at the FIRST
-  TURN, not at launch. In an amux lane no turn ever happened — `amux send` never submitted (row 2)
-  — so nothing fired, and "no hooks in the TUI" was inferred from a lane that had never been asked
-  anything. Typing the same prompt straight into the pane produced all three hooks in three
-  seconds: session-start, prompt, stop.
+- THE INTERACTIVE TUI FIRES THEM TOO, and a real lane now proves it. An earlier revision of
+  this row said the TUI fired nothing; that was inferred from a lane that had never been
+  asked anything, because the send was broken (row 2). SessionStart fires at the FIRST TURN
+  rather than at launch, so a lane nobody can talk to looks exactly like a lane without
+  hooks.
 
-  So row 11 is blocked only by row 2, not by anything upstream. Fix the send and muse self-reports.
+  With row 2 fixed, a muse lane self-reports through the D1 path like a Claude lane:
+  `muse-hook prompt` and `muse-hook stop` fired on the turn, and amux logged
+  `/api/sessions/<lane>/report` 200 for each. Muse is the only non-Claude provider that
+  reaches this row — Gemini's GAP is upstream and has no fix on this side.
 
-So the capability is real and the wiring is proven; only TUI delivery is missing. That is why
-`MuseAdapter::capabilities().hooks` is true while this row is PARTIAL: the flag describes the
-CLI, the row describes the lane.
+**Row 2 (idle-driven loops) is MET.** It was a GAP for three stacked reasons, all in amux:
 
-**Row 2 (idle-driven loops) is GAP, blocks more than itself, and now has a measured cause.**
-`amux send` returns `not submitted — text is sitting in the input box (autocomplete popup ate the
-Enter?)`. Send/receive is the round trip rows 2, 3 and 11 are built on.
+1. A muse lane never started. On a workspace it has not seen, muse stops on an interactive
+   gate before the model runs — "Trusting allows project-local skills, rules, hooks and
+   plugin config to load ... 1 Trust and continue / 2 Quit" — and a lane has nobody to
+   answer it. The pane fell back to a shell, so the briefing ran as a command
+   (`zsh: command not found: Reply`). Lanes now launch with `--trust-workspace`.
+2. Enter did not submit. amux waits 20ms between the paste landing and Enter, which is
+   Claude's budget; measured on a live muse lane, paste+20ms+Enter leaves the text in the
+   composer every time and paste+300ms+Enter submits it. The settle is now per provider.
+3. A working send was reported as a failure. Every read `verify_submitted` had was
+   Claude-shaped, so amux answered `not submitted — text is sitting in the input box` while
+   the pane showed the prompt answered — which makes callers re-send a message the agent is
+   already working on. amux now also accepts muse's own durable record,
+   `runtime.session.user_intent.accepted`.
 
-Measured against the TUI directly: typing the text, waiting 150ms and pressing Enter — the launch
-path's timing — loses it, and the input line stays empty. The same keys with a ~2s gap submit
-cleanly and the turn runs. amux already retries a dropped Enter, so what fails on muse is the
-composer read that decides whether a retry is needed: `Submission::Stuck` is being reached against
-an input box drawn differently from Claude's. The fix is provider-aware composer detection (and a
-longer settle before Enter), not a change to muse.
+Verified end to end: `POST /send` returns `submitted: true, submission: confirmed`, the pane
+shows the reply, and the lane's hooks reach `/report` with 200.
 
 **Rows 7-10, 13-14 are GAP for the same structural reason they are GAP for Gemini:** the limit
 patterns, the token ledger and the transcript reader are Claude-shaped. Nothing muse-specific was
