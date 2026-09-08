@@ -3797,10 +3797,25 @@ pub(crate) fn muse_launch_command(
     if !opts.contains("--model") && !opts.contains("-m ") && !default_model.is_empty() {
         opts += &format!(" --model {}", shell_quote_flags(default_model));
     }
+    // MUSE_EXPERIMENTAL_PLUGINS=on because muse delivers hooks as a PLUGIN capability and
+    // plugin loading is gated behind this flag in 1.0.3. Without it a session composes
+    // `hooks=0` and self-reports nothing.
+    //
+    // NECESSARY BUT NOT YET SUFFICIENT, and the honest state is worth writing down rather
+    // than discovering twice. Measured against 1.0.3-R2198.1 with a user-scope plugin
+    // installed and its four hook capabilities approved:
+    //   - `muse exec` (headless) FIRES them: SessionStart, UserPromptSubmit and Stop each ran
+    //     and each reached amux (three HTTP 200s in the matching second).
+    //   - the interactive TUI — which is what a lane actually runs — fires NOTHING, with
+    //     plugins enabled AND the workspace trusted (`--trust-workspace`).
+    // So this flag is the half amux controls, and TUI hook delivery is the half it does not.
+    // Until that lands, a muse lane still falls back to scraping and docs/provider-parity.md
+    // row 11 stays PARTIAL, not MET. Drop the flag when plugins leave experimental.
+    let env = "MUSE_EXPERIMENTAL_PLUGINS=on ";
     if !existing_session_id.is_empty() {
-        format!("muse resume {}{opts}", sh_quote(existing_session_id))
+        format!("{env}muse resume {}{opts}", sh_quote(existing_session_id))
     } else {
-        format!("muse{opts}")
+        format!("{env}muse{opts}")
     }
 }
 
@@ -3947,7 +3962,7 @@ mod muse_launch_tests {
     #[test]
     fn muse_first_start_is_bare_with_no_session_id_flag() {
         let cmd = muse_launch_command("", "", "", "muse-spark-1.3-contributor");
-        assert_eq!(cmd, "muse --model muse-spark-1.3-contributor");
+        assert_eq!(cmd, "MUSE_EXPERIMENTAL_PLUGINS=on muse --model muse-spark-1.3-contributor");
         assert!(!cmd.contains("--session-id"), "muse has no such flag: {cmd}");
         assert!(!cmd.contains("resume"), "a first start has nothing to resume");
     }
@@ -3962,7 +3977,8 @@ mod muse_launch_tests {
         );
         assert_eq!(
             cmd,
-            "muse resume 01a081b8-006e-7182-98af-dd0820be4f61 --model muse-spark-1.2"
+            "MUSE_EXPERIMENTAL_PLUGINS=on muse resume 01a081b8-006e-7182-98af-dd0820be4f61 \
+             --model muse-spark-1.2".replace("\\\n             ", " ").as_str()
         );
         assert!(!cmd.contains("--last"), "--last crosses lanes in a shared CC_DIR");
     }

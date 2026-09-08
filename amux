@@ -779,7 +779,12 @@ cmd_start() {
   # This is D6 (two launch constructions) leaking through the door the server
   # does not own. Delegating means the provider->binary map has one home.
   local _provider="${CC_PROVIDER:-claude}"
-  if [[ "$_provider" == "codex" || "$_provider" == "ollama" || "$_provider" == "gemini" ]]; then
+  # muse belongs in this list for the reason the comment above gives: the server owns the
+  # provider->binary map. Left out, `amux start` on a muse worker fell through to the claude
+  # builder below and launched `claude --model sonnet --continue` -- the WRONG AGENT, silently,
+  # because the fallback is a default rather than a failure. The server-side arm was correct the
+  # whole time; only this door was. Observed live before the fix (muse-hooks-probe).
+  if [[ "$_provider" == "codex" || "$_provider" == "ollama" || "$_provider" == "gemini" || "$_provider" == "muse" ]]; then
     if $dry_run; then
       echo "${BOLD}$name${RESET} ($_provider — started via server API: POST /api/sessions/$name/start; the server owns the provider→binary map and the provider-specific setup)"
       return
