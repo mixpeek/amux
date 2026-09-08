@@ -551,6 +551,22 @@ fn shape_all_providers(
             "measured": true, "n_considered": 0, "metered": false, "local": true,
             "summary": "Local models have no subscription limit", "windows": [],
         }),
+        // Muse Code is the first provider that is METERED but UNREADABLE, and
+        // neither existing spelling tells that truth. `metered: false` renders
+        // "Unlimited" (ollama's row, correct for a local model and a lie for a
+        // hosted one); `metered: true` with no windows renders "No active
+        // limits", which asserts a measurement nobody took. Meta ships no usage
+        // API for muse today, so `usage_unknown` says exactly that and the
+        // dashboard prints "Usage unknown" — Invariant 20's whole point is that
+        // an absent number stays absent instead of resolving to a flattering
+        // default. Delete this field the day muse exposes a quota endpoint.
+        json!({
+            "id": "muse", "label": "Muse Code", "available": true,
+            "measured": false, "n_considered": 0, "metered": true,
+            "local": false, "usage_unknown": true,
+            "summary": "Muse Code exposes no usage API; consumption is unknown",
+            "windows": [],
+        }),
     ];
     if let Some(obj) = body.as_object_mut() {
         let measured = providers.iter()
@@ -1402,13 +1418,21 @@ mod tests {
             },
         );
         let providers = body["providers"].as_array().unwrap();
-        assert_eq!(providers.len(), 4);
+        assert_eq!(providers.len(), 5);
         assert_eq!(providers.iter().filter(|p| p["available"] == false).count(), 3);
         assert_eq!(
             providers.iter().find(|p| p["id"] == "ollama").unwrap()["available"],
             true,
             "local usage remains truthful when every subscription probe is unavailable"
         );
+        // Muse has no probe to fail: it exposes no usage API at all, so a dead
+        // Codex/Gemini probe cannot make it unavailable. "Available with unknown
+        // usage" and "unavailable" are different states and the row must not
+        // collapse them — unavailable would read as "muse is broken".
+        let muse = providers.iter().find(|p| p["id"] == "muse").unwrap();
+        assert_eq!(muse["available"], true);
+        assert_eq!(muse["usage_unknown"], true);
+        assert_eq!(muse["measured"], false, "nothing was measured, so say so");
     }
 
     #[tokio::test]

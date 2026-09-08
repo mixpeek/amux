@@ -3385,7 +3385,8 @@ fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
 // contract).
 // ---------------------------------------------------------------------------
 
-pub const SESSION_PROVIDERS: [&str; 5] = ["claude", "codex", "gemini", "iterm2", "ollama"];
+pub const SESSION_PROVIDERS: [&str; 6] =
+    ["claude", "codex", "gemini", "iterm2", "ollama", "muse"];
 const PROVIDER_YOLO_FLAGS: [&str; 3] = [
     "--dangerously-skip-permissions",
     "--dangerously-bypass-approvals-and-sandbox",
@@ -3737,6 +3738,8 @@ fn default_model_for_provider(provider: &str) -> String {
         // was a fact about one machine compiled into a public server. See
         // `static_providers::ollama_default_model` (DESKT-6).
         "ollama" => crate::provider::static_providers::ollama_default_model(),
+        // The catalog default (is_default/is_current) as of 1.0.3.
+        "muse" => "muse-spark-1.3-contributor".into(),
         _ => get_default_model(),
     }
 }
@@ -3758,10 +3761,259 @@ pub fn launch_base_binary(provider: &str) -> &'static str {
     match provider {
         // ollama runs codex under the hood (`--oss --local-provider ollama`).
         "codex" | "ollama" => "codex",
+        "muse" => "muse",
         "gemini" => "gemini",
         // claude, iterm2, and anything unknown launch via build_claude_cmd,
         // whose default binary is `claude` (overridable by AMUX_CLAUDE_CMD).
         _ => "claude",
+    }
+}
+
+/// Muse Code (`muse`) is the one provider whose session id amux CANNOT mint.
+///
+/// grok takes `--session-id <uuid>` on a new conversation, so the id is chosen
+/// before the process exists and resume is trivial. Muse has no such flag:
+/// `muse resume` accepts `--last` or an existing `<session-uuid>` and nothing
+/// else, so a new run's id is knowable only AFTER it starts. `muse_pick_session`
+/// is how amux learns it.
+///
+/// `--last` is the obvious shortcut and is WRONG here: it resolves to the most
+/// recent session IN THE WORKSPACE, and amux lanes routinely share a CC_DIR, so
+/// two workers on one repo would resume into each other's conversation. Storing
+/// the real uuid is the only spelling that cannot cross lanes.
+pub(crate) fn muse_launch_command(
+    existing_session_id: &str,
+    flags: &str,
+    extra_flags: &str,
+    default_model: &str,
+) -> String {
+    let mut opts = String::new();
+    if !flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(flags));
+    }
+    if !extra_flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(extra_flags));
+    }
+    if !opts.contains("--model") && !opts.contains("-m ") && !default_model.is_empty() {
+        opts += &format!(" --model {}", shell_quote_flags(default_model));
+    }
+    if !existing_session_id.is_empty() {
+        format!("muse resume {}{opts}", sh_quote(existing_session_id))
+    } else {
+        format!("muse{opts}")
+    }
+}
+
+/// Root under which muse writes one directory per session,
+/// `<data>/muse/sessions/YYYY/MM/DD/<uuid>/` (verified against 1.0.3-R2198.1).
+pub(crate) fn muse_sessions_root() -> PathBuf {
+    match std::env::var("XDG_DATA_HOME") {
+        Ok(x) if !x.trim().is_empty() => PathBuf::from(x).join("muse").join("sessions"),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".local")
+            .join("share")
+            .join("muse")
+            .join("sessions"),
+    }
+}
+
+/// Every session id on disk, mapped to its directory. Directory names only —
+/// this never opens a log, so it is cheap enough to run on every start.
+pub(crate) fn muse_scan_sessions(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<String, PathBuf> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(years) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for y in years.flatten() {
+        let Ok(months) = std::fs::read_dir(y.path()) else {
+            continue;
+        };
+        for m in months.flatten() {
+            let Ok(days) = std::fs::read_dir(m.path()) else {
+                continue;
+            };
+            for d in days.flatten() {
+                let Ok(sessions) = std::fs::read_dir(d.path()) else {
+                    continue;
+                };
+                for sd in sessions.flatten() {
+                    let id = sd.file_name().to_string_lossy().into_owned();
+                    if id.starts_with('.') || !sd.path().is_dir() {
+                        continue;
+                    }
+                    out.insert(id, sd.path());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The workspace a muse session recorded, from a BOUNDED prefix of its
+/// `session.jsonl`. Bounded because that file reaches megabytes within a single
+/// turn while `workspace_root` is written in the opening records; reading it
+/// whole to find a value in the first page would make start cost scale with
+/// transcript length. Both the plain and the backslash-escaped spelling are
+/// accepted — the file carries records nested as escaped JSON strings.
+pub(crate) fn muse_session_workspace(dir: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(dir.join("session.jsonl")).ok()?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+    for (key, end) in [
+        ("\"workspace_root\":\"", '"'),
+        ("\\\"workspace_root\\\":\\\"", '\\'),
+    ] {
+        if let Some(i) = head.find(key) {
+            let rest = &head[i + key.len()..];
+            if let Some(j) = rest.find(end) {
+                return Some(rest[..j].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Which of the sessions that appeared during launch belongs to this lane.
+///
+/// `new` is (session id, the workspace that session recorded, if any);
+/// `work_dir` is the worker's CC_DIR.
+///
+/// IDENTITY COMES FROM THE DIFF, NOT FROM THE WORKSPACE. The first version of
+/// this matched `workspace_root` against CC_DIR and rejected everything, which a
+/// live launch caught and the unit tests could not: muse writes `workspace_root`
+/// LAZILY — a freshly started session logs `"workspace_roots":[]` and only
+/// records a root once it engages the workspace. At the instant amux finishes
+/// launching, the field this keyed on does not exist yet. Verified against
+/// 1.0.3-R2198.1, with and without `--workspace`.
+///
+/// So the before/after snapshot IS the identification: a session directory that
+/// did not exist before this start and does now was created by this start. The
+/// workspace only breaks TIES, and it can, because by the time two lanes race
+/// the loser is usually an older session that has already recorded its root.
+///
+/// AMBIGUITY IS STILL REPORTED, NEVER GUESSED. When several sessions appear and
+/// none can be attributed, picking the newest would be a coin flip that reads as
+/// certainty, and a wrong id resumes a lane into another lane's conversation —
+/// the exact failure `--last` was rejected for. `Err` means the caller stores
+/// nothing and the next start opens a fresh conversation: recoverable, logged,
+/// and never silently wrong.
+pub(crate) fn muse_pick_session(
+    new: &[(String, Option<String>)],
+    work_dir: &str,
+) -> Result<String, String> {
+    if new.len() == 1 {
+        return Ok(new[0].0.clone());
+    }
+    if new.is_empty() {
+        return Err("no new muse session directory appeared during launch".into());
+    }
+    // Tie-break on the recorded workspace. Trailing slashes are trimmed on BOTH
+    // sides: CC_DIR carries one (`/Users/x/projects/obrist/`) and muse records
+    // none, so a naive `==` compares unequal strings for the same directory.
+    let want = work_dir.trim_end_matches('/');
+    let hits: Vec<&String> = new
+        .iter()
+        .filter(|(_, ws)| ws.as_deref().map(|w| w.trim_end_matches('/')) == Some(want))
+        .map(|(id, _)| id)
+        .collect();
+    match hits.len() {
+        1 => Ok(hits[0].clone()),
+        0 => Err(format!(
+            "{} new muse sessions appeared and none has recorded workspace_root={want} yet; \
+             refusing to guess which is this lane",
+            new.len()
+        )),
+        n => Err(format!(
+            "{n} new muse sessions claim workspace_root={want}; refusing to guess which is this lane"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod muse_launch_tests {
+    use super::{launch_base_binary, muse_launch_command, muse_pick_session, SESSION_PROVIDERS};
+
+    #[test]
+    fn muse_is_a_session_provider_and_launches_muse() {
+        assert!(SESSION_PROVIDERS.contains(&"muse"));
+        assert_eq!(launch_base_binary("muse"), "muse");
+        assert_ne!(launch_base_binary("muse"), "claude");
+    }
+
+    #[test]
+    fn muse_first_start_is_bare_with_no_session_id_flag() {
+        let cmd = muse_launch_command("", "", "", "muse-spark-1.3-contributor");
+        assert_eq!(cmd, "muse --model muse-spark-1.3-contributor");
+        assert!(!cmd.contains("--session-id"), "muse has no such flag: {cmd}");
+        assert!(!cmd.contains("resume"), "a first start has nothing to resume");
+    }
+
+    #[test]
+    fn muse_resume_uses_the_stored_uuid_never_last() {
+        let cmd = muse_launch_command(
+            "01a081b8-006e-7182-98af-dd0820be4f61",
+            "--model muse-spark-1.2",
+            "",
+            "muse-spark-1.3-contributor",
+        );
+        assert_eq!(
+            cmd,
+            "muse resume 01a081b8-006e-7182-98af-dd0820be4f61 --model muse-spark-1.2"
+        );
+        assert!(!cmd.contains("--last"), "--last crosses lanes in a shared CC_DIR");
+    }
+
+    #[test]
+    fn pick_session_takes_the_one_new_session_even_with_no_workspace_recorded() {
+        // THE CASE A LIVE LAUNCH ACTUALLY PRODUCES: muse has not written
+        // workspace_root yet (it logs `"workspace_roots":[]` at startup). An
+        // earlier version keyed on that field and rejected every real start.
+        let new = vec![("id-1".to_string(), None)];
+        assert_eq!(muse_pick_session(&new, "/repo/obrist/").unwrap(), "id-1");
+    }
+
+    #[test]
+    fn pick_session_trims_the_trailing_slash_cc_dir_carries() {
+        let new = vec![
+            ("id-1".to_string(), Some("/repo/obrist".to_string())),
+            ("id-2".to_string(), Some("/repo/other".to_string())),
+        ];
+        assert_eq!(muse_pick_session(&new, "/repo/obrist/").unwrap(), "id-1");
+    }
+
+    #[test]
+    fn pick_session_ignores_sessions_from_other_workspaces() {
+        let new = vec![
+            ("id-1".to_string(), Some("/repo/other".to_string())),
+            ("id-2".to_string(), Some("/repo/obrist".to_string())),
+        ];
+        assert_eq!(muse_pick_session(&new, "/repo/obrist").unwrap(), "id-2");
+    }
+
+    #[test]
+    fn pick_session_refuses_when_several_appear_and_none_is_attributable() {
+        let new = vec![("id-1".to_string(), None), ("id-2".to_string(), None)];
+        let err = muse_pick_session(&new, "/repo/obrist").unwrap_err();
+        assert!(err.contains("refusing to guess"), "{err}");
+    }
+
+    #[test]
+    fn pick_session_refuses_to_guess_between_two_in_one_workspace() {
+        let new = vec![
+            ("id-1".to_string(), Some("/repo/obrist".to_string())),
+            ("id-2".to_string(), Some("/repo/obrist".to_string())),
+        ];
+        let err = muse_pick_session(&new, "/repo/obrist").unwrap_err();
+        assert!(err.contains("refusing to guess"), "{err}");
+    }
+
+    #[test]
+    fn pick_session_reports_when_nothing_matched() {
+        assert!(muse_pick_session(&[], "/repo/obrist").is_err());
     }
 }
 
@@ -3772,6 +4024,7 @@ fn provider_label(provider: &str) -> &str {
         "gemini" => "Gemini",
         "iterm2" => "iTerm2",
         "ollama" => "Ollama",
+        "muse" => "Muse Code",
         other => {
             if other.is_empty() {
                 "Claude Code"
@@ -8341,6 +8594,19 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
                 format!("{base_bin}{opts} --session-id {}", sh_quote(&new_id))
             }
         }
+        "muse" => {
+            // Muse Code. A NEW run launches bare — there is no `--session-id` to
+            // mint (see muse_launch_command) — and the id is learned from disk
+            // once the process is up, below. A stored id resumes exactly that
+            // conversation. Do NOT fall through to build_claude_cmd; that would
+            // launch `claude`.
+            muse_launch_command(
+                &meta_str(&meta, "muse_session_id"),
+                &flags,
+                extra_flags,
+                &default_model_for_provider("muse"),
+            )
+        }
         "ollama" => {
             // Ollama workers run through `codex --oss --local-provider ollama`
             // so they get a full coding agent (file editing, hooks, structured
@@ -8421,7 +8687,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     // cd, source the global agent credentials.
     let mut has_oauth = false;
     let mut shell_rc = String::new();
-    if provider != "codex" && provider != "gemini" && provider != "ollama" {
+    if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "muse" {
         shell_rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
         if let Ok(t) = std::fs::read_to_string(PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json")) {
             if let Ok(v) = serde_json::from_str::<Value>(&t) {
@@ -8489,7 +8755,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             sh_quote(&f.to_string_lossy())
         ));
     }
-    if provider != "codex" && provider != "gemini" && provider != "ollama" && has_oauth {
+    if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "muse" && has_oauth {
         shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
     }
     // Settings writes provider keys to server.env at runtime. Reading that file
@@ -8715,7 +8981,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
         type_line(name, &shell_rc).await;
         poll_shell_prompt(name, 3000).await;
     }
-    if has_oauth && provider != "codex" && provider != "gemini" {
+    if has_oauth && provider != "codex" && provider != "gemini" && provider != "muse" {
         type_line(name, "unset ANTHROPIC_API_KEY").await;
         poll_shell_prompt(name, 3000).await;
     }
@@ -8725,6 +8991,16 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     let cmd = format!("cd {} && {cmd}", sh_quote(&work_dir));
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
+    // Snapshot muse's session directory BEFORE the process exists, so the set
+    // that appears during launch is exactly the set this start created. Scanning
+    // only afterwards could not tell a session this lane just opened from one a
+    // different lane opened a second earlier.
+    let muse_before = if provider == "muse" && meta_str(&meta, "muse_session_id").is_empty() {
+        muse_scan_sessions(&muse_sessions_root())
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    // Launch the provider command.
     let _ = send_literal(name, &cmd).await;
     sleep_ms(150).await;
     send_key(name, "Enter").await;
@@ -8744,6 +9020,33 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             }
             if i >= 6 && at_resume_picker(&clean) {
                 break;
+            }
+        }
+    }
+    // Learn the muse session id (see muse_pick_session). Only on a FIRST start:
+    // once stored, the id is the resume key and must never be overwritten by a
+    // later scan.
+    if provider == "muse" && meta_str(&meta, "muse_session_id").is_empty() {
+        let after = muse_scan_sessions(&muse_sessions_root());
+        let new: Vec<(String, Option<String>)> = after
+            .iter()
+            .filter(|(id, _)| !muse_before.contains_key(id.as_str()))
+            .map(|(id, dir)| (id.clone(), muse_session_workspace(dir)))
+            .collect();
+        match muse_pick_session(&new, &work_dir) {
+            Ok(id) => {
+                tracing::info!(session = %name, muse_session_id = %id, "muse session id learned");
+                meta.insert("muse_session_id".into(), json!(id));
+                save_meta(name, &meta);
+            }
+            Err(why) => {
+                // Not fatal, and deliberately loud: the lane works, it just will
+                // not RESUME. Silence here would look identical to a stored id
+                // until the next start quietly opened a second conversation.
+                tracing::warn!(
+                    session = %name, why = %why,
+                    "muse session id not stored; the next start will open a FRESH conversation"
+                );
             }
         }
     }
@@ -19345,7 +19648,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         if !SESSION_PROVIDERS.contains(&provider_val.as_str()) {
             return jresp(
                 StatusCode::BAD_REQUEST,
-                json!({"error": "provider must be 'claude', 'codex', or 'gemini'"}),
+                json!({"error": "provider must be 'claude', 'codex', 'gemini', 'iterm2', 'ollama', or 'muse'"}),
             );
         }
         let old_provider = provider_of(&cfg);
