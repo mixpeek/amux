@@ -50,6 +50,7 @@
 pub mod autofix;
 pub mod board_drive;
 pub mod browser_reaper;
+pub mod cdc_poller;
 pub mod commit_mention_notes;
 pub mod commit_nudge;
 pub mod context_health;

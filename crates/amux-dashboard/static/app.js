@@ -9298,7 +9298,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.850';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.851';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24896,6 +24896,11 @@ async function fetchBoard() {
       renderBoard();
       _nudgeWorkersOnBoardChange();
     }
+    // Seed CDC cursor so subsequent invalidations can use granular updates
+    try {
+      const cr = await fetch(API + '/api/board/changes?since_seq=0&limit=1');
+      if (cr.ok) { const cd = await cr.json(); if (cd.cursor) _cdcSeq = cd.cursor; }
+    } catch (e2) {}
   } catch(e) {
     console.error('fetch board:', e);
     consecutiveFailures++;
@@ -30442,6 +30447,51 @@ let _pollTimer = null;
 let _invBoardTimer = null;
 let _invSessTimer = null;
 let _invMessagesTimer = null;
+let _cdcSeq = 0;
+async function _cdcBoardUpdate() {
+  if (!_cdcSeq) { fetchBoard(); return; }
+  try {
+    const r = await fetch(API + '/api/board/changes?since_seq=' + _cdcSeq + '&limit=500');
+    if (!r.ok) { fetchBoard(); return; }
+    const data = await r.json();
+    const changes = data.changes || [];
+    if (data.cursor) _cdcSeq = data.cursor;
+    if (!changes.length) return;
+    // For each changed row_id, refetch that single card and patch boardItems
+    const ids = [...new Set(changes.map(c => c.row_id))];
+    let needsFullFetch = false;
+    for (const id of ids) {
+      const op = changes.filter(c => c.row_id === id).pop();
+      if (op && op.operation === 'DELETE') {
+        boardItems = boardItems.filter(item => item.id !== id);
+        _boardSnapshotEpoch++;
+        continue;
+      }
+      try {
+        const cr = await fetch(API + '/api/board/' + encodeURIComponent(id));
+        if (cr.status === 404) {
+          boardItems = boardItems.filter(item => item.id !== id);
+          _boardSnapshotEpoch++;
+          continue;
+        }
+        if (!cr.ok) { needsFullFetch = true; continue; }
+        const card = await cr.json();
+        if (!card || !card.id) { needsFullFetch = true; continue; }
+        const idx = boardItems.findIndex(item => item.id === card.id);
+        if (idx >= 0) { boardItems[idx] = card; }
+        else { boardItems.push(card); }
+        _boardSnapshotEpoch++;
+      } catch (e) { needsFullFetch = true; }
+    }
+    if (needsFullFetch) { fetchBoard(); return; }
+    lastBoardJSON = JSON.stringify(boardItems);
+    _cacheBoardJSON(lastBoardJSON);
+    if (activeView === 'board') renderBoard();
+    else if (activeView === 'calendar') renderCalendar();
+    _nudgeWorkersOnBoardChange();
+  } catch (e) { fetchBoard(); }
+}
+
 function connectSSE() {
   if (_sseFallback || _sse) return;
   _sse = new EventSource(_authUrl(API + '/api/events'));
@@ -30552,7 +30602,7 @@ function connectSSE() {
           // Coalesced per key so an event burst is one fetch.
           if (key === 'board') {
             clearTimeout(_invBoardTimer);
-            _invBoardTimer = setTimeout(fetchBoard, 400);
+            _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
           }
           if (key === 'sessions') {
             clearTimeout(_invSessTimer);

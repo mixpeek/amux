@@ -108,6 +108,7 @@ pub mod ids {
     // can name them without a bare literal.
     pub const AUTOFIX: &str = "autofix";
     pub const BOARD_DRIVE: &str = "board-drive";
+    pub const CDC_POLLER: &str = "cdc-poller";
     pub const GHOST_RESCUE: &str = "ghost-rescue";
     pub const PANE_SIZE: &str = "pane_size";
     pub const STORAGE: &str = "storage";
@@ -148,6 +149,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::BROWSER_REAPER,
     ids::AUTOFIX,
     ids::BOARD_DRIVE,
+    ids::CDC_POLLER,
     ids::GHOST_RESCUE,
     ids::PANE_SIZE,
     ids::STORAGE,
@@ -259,6 +261,18 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/debug/board-drive"),
+    },
+    Doc {
+        id: ids::CDC_POLLER,
+        name: "Board CDC poller",
+        purpose: "Tails board_change_log every 200ms so the /api/board/changes catch-up endpoint stays current; the SSE invalidate itself comes from write_async, not from here.",
+        env: &[EnvControl {
+            var: "AMUX_CDC_POLLER_SECS",
+            effect: "tick seconds; 0 disables the loop (fleet-isolation opt-out)",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: None,
     },
     Doc {
         id: ids::AUTOFIX,

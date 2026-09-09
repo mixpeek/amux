@@ -57,6 +57,9 @@ pub fn routes() -> Router<AppState> {
         // Static /ready outranks /{id}. The read side of the dependency graph
         // (AMUX-3948) — READY is a query, never a stored status.
         .route("/ready", get(ready_frontier))
+        // CDC catch-up: lets clients replay missed board mutations after a
+        // reconnect, keyed by the seq cursor from board_change_log.
+        .route("/changes", get(board_changes))
         // Static /bulk-migrate outranks /{id}. Moving a whole column at once
         // (AMUX-4044) — a single write transaction, because backlog alone
         // holds 489 live cards and 489 sequential PATCHes is minutes of load.
@@ -584,6 +587,50 @@ async fn ready_frontier(
         },
     });
     Json(crate::api::measured::measured(body, n_considered)).into_response()
+}
+
+/// CDC catch-up: returns board_change_log rows after a given seq.
+/// Clients call this after an SSE reconnect to replay missed mutations.
+async fn board_changes(
+    State(state): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let since_seq: i64 = q
+        .get("since_seq")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let limit: usize = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500)
+        .clamp(1, 5000);
+
+    let conn = match state.store.read() {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "db read failed"})),
+            )
+                .into_response();
+        }
+    };
+
+    match crate::runtime_jobs::cdc_poller::changes_since(&conn, since_seq, limit) {
+        Ok(rows) => {
+            let cursor = crate::runtime_jobs::cdc_poller::last_seq();
+            Json(json!({
+                "changes": rows,
+                "cursor": cursor,
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("query failed: {e}")})),
+        )
+            .into_response(),
+    }
 }
 
 /// (considered, moved, refused) carried out of the bulk-migrate write closure,
