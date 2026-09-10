@@ -9653,7 +9653,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.862';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.863';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -9959,6 +9959,7 @@ function openPeek(name, opts) {
     if (el) { el.textContent = ''; el.classList.remove('has-count', 'has-pending', 'sched-on', 'sched-off'); }
   });
   _peekUpdateTabCounts();
+  _peekLoadKindHints(peekSession);   // fast provenance for prompt classification
   _peekMessagesLoad(false);
   // Every worker opens on its live terminal. A provider-specific default made
   // Codex/Ollama workers jump to Transcript after the reset above, so the
@@ -11041,6 +11042,29 @@ function _peekPromptNormalized(text) {
   return String(text || '').replace(/^[ \t\u00a0]*[❯›][ \t\u00a0]*/, '')
     .replace(/^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*/i, '').replace(/\s+/g, ' ').trim();
 }
+// CLASSIFICATION MUST NOT WAIT ON THE MESSAGES TAB'S FULL PAGE.
+// _peekMessagesLoad fetches 200 rows so the tab can render, and under fleet
+// load that request measured 12-26s against a query that runs in 0.03s — the
+// wait is read-pool contention, not this data. Until it lands, every prompt
+// falls through to marker matching and a human message reads "Unclassified",
+// which is what made a worker with 13 human messages report zero (Ethan,
+// 2026-09-10). This is a small first page fetched on open purely for
+// provenance: 50 rows measured ~3s against the same endpoint, and it is
+// additive — the tab's full page still replaces it.
+let _peekKindHints = [];
+let _peekKindHintsFor = '';
+async function _peekLoadKindHints(sess) {
+  if (_peekKindHintsFor === sess) return;
+  _peekKindHintsFor = sess;
+  _peekKindHints = [];
+  try {
+    const rows = await _peekMsgFetch({ level: 'worker', name: sess }, 0, 50);
+    if (peekSession !== sess) return;
+    _peekKindHints = rows;
+    _peekReclassifyPrompts();
+  } catch (e) { /* markers still classify; the tab's page may still arrive */ }
+}
+
 function _classifyPromptKind(promptText) {
   const clean = _peekPromptNormalized(promptText);
   if (!clean) return 'unknown';
@@ -11050,6 +11074,7 @@ function _classifyPromptKind(promptText) {
   // happened to reload. Merge both provenance sources, scoped to this worker.
   const rows = [];
   if (_peekMsgRowsFor === peekSession && Array.isArray(_peekMsgRows)) rows.push(..._peekMsgRows);
+  if (_peekKindHintsFor === peekSession && Array.isArray(_peekKindHints)) rows.push(..._peekKindHints);
   if (typeof _cmdHistory !== 'undefined' && Array.isArray(_cmdHistory)) rows.push(..._cmdHistory);
   const kinds = new Set();
   let best = 0;
@@ -11785,6 +11810,25 @@ let _peekMsgNavContent = 'any';
 const _PEEK_SOURCE_LABELS = {all:'Everyone', human:'Human', session:'Workers', schedule:'Scheduled', amux:'Harness', unstamped:'Unstamped', unknown:'Unclassified'};
 const _PEEK_CONTENT_LABELS = {any:'Any message', board:'Board references', files:'Files', links:'Links'};
 function _peekFiltersActive() { return _peekMsgNavKind !== 'all' || _peekMsgNavContent !== 'any'; }
+// True when the visible count depends on prompt KIND, which is the only part
+// that needs fetched provenance. A content filter (board/files/links) reads
+// the DOM and is answerable immediately, so it must not be reported unknown.
+function _peekFilterIsKindScoped() { return _peekMsgNavKind !== 'all'; }
+// How many messages of `kind` the FETCHED provenance shows for this worker.
+// `atLeast` is true when that provenance filled its page, because then the
+// number is a floor and not a total — saying "13" when we only looked at 50
+// rows of a longer history would be asserting more than was measured.
+function _peekKnownKindCount(kind) {
+  let rows = null, page = 0;
+  if (_peekMsgRowsFor === peekSession && Array.isArray(_peekMsgRows)) {
+    rows = _peekMsgRows; page = _PEEK_MSG_PAGE;
+  } else if (_peekKindHintsFor === peekSession && Array.isArray(_peekKindHints)) {
+    rows = _peekKindHints; page = 50;
+  }
+  if (!rows) return { n: 0, atLeast: false };
+  const n = rows.filter(r => r && r.session === peekSession && _msgKind(r) === kind).length;
+  return { n, atLeast: rows.length >= page };
+}
 function _peekFilterSummary() {
   const source = _peekMsgNavKind === 'all' ? '' : _PEEK_SOURCE_LABELS[_peekMsgNavKind];
   const content = _peekMsgNavContent === 'any' ? '' : _PEEK_CONTENT_LABELS[_peekMsgNavContent];
@@ -11903,10 +11947,41 @@ function _peekMsgCount(prompts) {
   const label = searching ? selectedKind + ' matches' : selectedKind;
   const count = document.getElementById('peek-msg-count');
   if (count) {
+    // A KIND COUNT BEFORE PROVENANCE HAS LOADED IS NOT ZERO, IT IS UNKNOWN.
+    // Kinds come from matching pane text against fetched message rows. Until
+    // a row set for THIS worker has arrived, every unmarked prompt classifies
+    // as 'unknown', so a kind-scoped filter renders a confident "0" over a
+    // worker with 13 human messages. Printing an em-dash says the measurement
+    // has not run, which is the true statement (ethos rule 4).
+    const ready = (_peekMsgRowsFor === peekSession && Array.isArray(_peekMsgRows))
+      || (_peekKindHintsFor === peekSession && Array.isArray(_peekKindHints) && _peekKindHints.length > 0);
+    const scoped = !searching && _peekFilterIsKindScoped();
     const selected = prompts.findIndex(p => p.classList.contains(searching ? 'current' : 'peek-msg-current'));
-    const value = String(selected < 0 ? prompts.length : (selected + 1) + '/' + prompts.length);
+    let value = (scoped && !ready)
+      ? '\u2026'
+      : String(selected < 0 ? prompts.length : (selected + 1) + '/' + prompts.length);
+    let aria = (scoped && !ready)
+      ? label + ': still loading message provenance for this worker'
+      : label + ': ' + value + ' in loaded output';
+    // ZERO IN THE LOADED WINDOW IS NOT ZERO FOR THE WORKER. This counts
+    // `.peek-prompt` elements in the terminal that is currently loaded, which
+    // is a short window; the worker's history holds far more. Reporting a bare
+    // "0" over a worker whose history has 13 human messages is the report
+    // Ethan filed (2026-09-10). When the loaded window has none but the
+    // fetched provenance says the kind exists, say where they are instead.
+    if (scoped && ready && prompts.length === 0) {
+      const known = _peekKnownKindCount(_peekMsgNavKind);
+      if (known.n > 0) {
+        value = '0';
+        aria = label + ': none in the loaded output; ' + known.n + (known.atLeast ? '+' : '')
+             + ' earlier in this worker\u2019s history — load earlier output to reach them';
+        count.title = known.n + (known.atLeast ? '+' : '') + ' earlier — load earlier output';
+      }
+    } else if (count.title) {
+      count.removeAttribute('title');
+    }
     if (count.textContent !== value) count.textContent = value;
-    count.setAttribute('aria-label', label + ': ' + value + ' in loaded output');
+    count.setAttribute('aria-label', aria);
   }
   _peekFilterSync();
   for (const btn of document.querySelectorAll('#peek-msg-nav .peek-nav-btn')) {
@@ -15786,12 +15861,13 @@ function _mergeUnechoed(serverRows, session) {
 // group or global caller exists — the sequencing amux-cloud called the most
 // valuable paragraph on the original card, and the same order that made the
 // Configurations tab's second caller a one-liner instead of a second renderer.
-async function _peekMsgFetch(scope, offset) {
+async function _peekMsgFetch(scope, offset, pageSize) {
   const sc = (typeof scope === 'string') ? { level: 'worker', name: scope } : (scope || {});
+  const page = pageSize || _PEEK_MSG_PAGE;
   const q = sc.level === 'group'  ? '&group=' + encodeURIComponent(sc.name)
           : sc.level === 'global' ? ''
           : '&session=' + encodeURIComponent(sc.name);
-  const r = await fetch(API + '/api/history?limit=' + _PEEK_MSG_PAGE + '&offset=' + (offset || 0) + q, { headers: _authHeaders() });
+  const r = await fetch(API + '/api/history?limit=' + page + '&offset=' + (offset || 0) + q, { headers: _authHeaders() });
   if (!r.ok) throw new Error('history ' + r.status);
   // Raw server page (newest-first). The pending-unechoed merge and the time sort
   // happen ONCE in _peekMessagesLoad, on the full accumulated set — merging
