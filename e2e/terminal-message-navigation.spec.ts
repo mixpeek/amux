@@ -528,3 +528,71 @@ test('filter popover stays within the phone and supports Escape, outside click a
   await panel.getByRole('button',{name:'Done',exact:true}).click();
   await page.screenshot({path:testInfo.outputPath('worker-message-filter-button.png')});
 });
+
+test('earlier output uses complete conversation pages and a stable cursor', async ({ page }) => {
+  const requests: URL[] = [];
+  await page.route('**/api/sessions/nav-probe/log?*', async route => {
+    const url = new URL(route.request().url());
+    requests.push(url);
+    expect(url.searchParams.get('source')).toBe('conversation');
+    const older = url.searchParams.has('before');
+    await route.fulfill({ status: 200, headers: {
+      'Content-Type': 'text/plain', 'X-Amux-Session': 'nav-probe',
+      'X-Log-Source': 'conversation', 'X-Log-Conversation': 'conversation-one',
+      'X-Log-Remaining': older ? '0' : '4200',
+    }, body: older ? '❯ Earlier complete request\n\n⏺ Earlier complete answer'
+      : '❯ Review the import rails\n\n⏺ Complete TubeScience response without spinner fragments' });
+  });
+  await page.evaluate(() => {
+    eval('_peekHistoryRaw = "⏺ Complete TubeScience response without spinner fragments"; _peekHistoryHTML = _peekHtml(_peekHistoryRaw); _lastLiveHTML = "";');
+  });
+  expect(await page.evaluate(() => (window as any)._peekLoadEarlier())).toBe('loaded');
+  let content = await page.locator('#peek-body').innerText();
+  expect(content.match(/Complete TubeScience response/g)).toHaveLength(1);
+  expect(content).not.toMatch(/\* d i|\+ e n 4/);
+  expect(await page.evaluate(() => (window as any)._peekLoadEarlier())).toBe('loaded');
+  expect(requests[1].searchParams.get('before')).toBe('4200');
+  expect(requests[1].searchParams.get('conversation')).toBe('conversation-one');
+  content = await page.locator('#peek-body').innerText();
+  expect(content.indexOf('Earlier complete request')).toBeLessThan(content.indexOf('Review the import rails'));
+  expect(content).toContain('beginning of saved output');
+  await page.screenshot({ path: test.info().outputPath('readable-conversation-history.png') });
+});
+
+test('conversation overlap removes only the exact shared tail and keeps new output', async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const trim = (window as any)._peekAfterConversation;
+    const saved = '❯ Earlier request\n⏺ Complete response\n  Second line';
+    return [trim(saved, '⏺ Complete response\n  Second line'),
+      trim(saved, '⏺ Complete response\n  Second line\n\n❯ A new request'),
+      trim(saved, '⏺ Complete response\n  A different second line'),
+      trim('❯ Earlier request\n⏺ Complete response\n\x1b[0m\n\n  Second line', '⏺ Complete response\n\n  Second line'),
+      trim('❯ Earlier request\n⏺ Complete response\n\x1b[0m\n\n  Second line', '⏺ Complete response\n\n  Second line\n\n❯ New after blank lines')];
+  });
+  expect(result).toEqual(['', '❯ A new request', '⏺ Complete response\n  A different second line', '', '❯ New after blank lines']);
+});
+
+test('live worker composer is a preserved draft, never a delivered message', async ({ page }) => {
+  const raw = '⏺ Completed response\n\x1b[38;5;114mUpdate installed · Restart to update\x1b[39m\n'
+    + '\x1b[38;5;244m──────────────── tubescience ─\n\x1b[39m❯\u00a0[Pasted text #401 +11 lines][Pasted text #402 +11 lines] A partial message\n'
+    + '  with an internal marker. [AMUX-INJECT-END]\n\n────────────────────────\n⏵⏵ bypass permissions on · 1 shell · 1 feedback draft\n/rc failed';
+  await page.route('**/api/sessions/nav-probe/peek?*', route => route.fulfill({json:{name:'nav-probe',live:raw,history:'❯ Delivered message mentioning [Pasted text #9 +2 lines]\n\n⏺ Saved answer'}}));
+  await page.evaluate(async () => {
+    eval('_lastPeekRaw = ""; _peekScrollLocked = false;');
+    await (window as any).refreshPeek();
+  });
+  const draft = page.locator('.peek-worker-input');
+  await expect(draft).toBeVisible();
+  await expect(page.locator('#peek-overlay')).toHaveCSS('opacity', '1');
+  await expect(draft.locator('summary')).toHaveText('Unsent worker input · 2 pasted blocks');
+  await expect(draft.locator('pre')).toBeHidden();
+  await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
+  await expect(page.locator('#pk-live')).not.toContainText('Unclassified');
+  await page.screenshot({path:test.info().outputPath('worker-input-collapsed.png')});
+  await draft.locator('summary').click();
+  await expect(draft.locator('pre')).toContainText('[Pasted text #401 +11 lines]');
+  await expect(draft.locator('pre')).toContainText('[AMUX-INJECT-END]');
+  await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({path:test.info().outputPath('worker-input-expanded.png')});
+});

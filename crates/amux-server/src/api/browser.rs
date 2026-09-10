@@ -2153,14 +2153,18 @@ async fn profile_combine(
             // Column sets must match or INSERT..SELECT * silently misaligns.
             // Same Chrome build across amux profiles, so this is a guard, not
             // a migration: say so rather than writing scrambled rows.
-            let cols = |t: &str| -> anyhow::Result<Vec<String>> {
-                let mut st = conn.prepare(&format!("PRAGMA table_info({t})"))?;
+            // `PRAGMA main.table_info(cookies)`, NOT `table_info(main.cookies)`.
+            // The schema qualifier goes on the PRAGMA, and the other spelling
+            // is a syntax error rather than a silent wrong answer — which is
+            // the only reason this was caught on the first live run.
+            let cols = |schema: &str| -> anyhow::Result<Vec<String>> {
+                let mut st = conn.prepare(&format!("PRAGMA {schema}.table_info(cookies)"))?;
                 let v = st
                     .query_map([], |r| r.get::<_, String>(1))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(v)
             };
-            let (dc, sc) = (cols("main.cookies")?, cols("src.cookies")?);
+            let (dc, sc) = (cols("main")?, cols("src")?);
             if dc != sc {
                 conn.execute_batch("DETACH DATABASE src").ok();
                 let _ = std::fs::remove_file(&tmp);

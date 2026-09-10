@@ -3215,6 +3215,10 @@ fn last_assistant_message(name: &str, max_chars: usize) -> String {
 fn render_session_transcript(name: &str, max_chars: usize) -> String {
     let Some(path) = session_jsonl_path(name) else { return String::new() };
     let max_read = std::cmp::max(max_chars * 5, 5_000_000) as u64;
+    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars)
+}
+
+fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
     let mut out: Vec<String> = Vec::new();
     let sysrem = cached_re!(r"(?s)<system-reminder>.*?</system-reminder>");
     let tasknote = cached_re!(r"(?s)<task-notification>.*?</task-notification>");
@@ -3222,8 +3226,19 @@ fn render_session_transcript(name: &str, max_chars: usize) -> String {
     let cmd_re = cached_re!(r"(?s)<command-name>(.*?)</command-name>");
     let arg_re = cached_re!(r"(?s)<command-args>(.*?)</command-args>");
     let out_re = cached_re!(r"(?s)<local-command-stdout>(.*?)</local-command-stdout>");
-    for o in iter_jsonl_tail(&path, max_read) {
+    for o in records {
         let t = o["type"].as_str().unwrap_or("");
+        // Claude persists messages consumed mid-turn as queued attachments,
+        // not user records. Queue enqueue/dequeue records are bookkeeping;
+        // only the consumed attachment is a conversation message.
+        if t == "attachment" && o["attachment"]["type"].as_str() == Some("queued_command") {
+            let prompt = o["attachment"]["prompt"].as_str().unwrap_or("").trim();
+            if !prompt.is_empty() {
+                out.push(user_echo_ansi(prompt));
+                out.push(String::new());
+            }
+            continue;
+        }
         if t != "user" && t != "assistant" {
             continue;
         }
@@ -14100,7 +14115,15 @@ async fn get_dispatch(
 }
 
 /// GET log + log/info (py:75187-75250).
+#[path = "transcript_history.rs"]
+mod transcript_history;
+
 fn log_get(name: &str, subid: &str, qs: &[(String, String)]) -> Response {
+    // Conversation readers need complete records, not terminal paint deltas.
+    // Raw downloads keep their existing contract.
+    if subid.is_empty() && qs_first(qs, "source", "") == "conversation" {
+        return transcript_history::response(name, qs);
+    }
     let lp = log_path(name);
     let want_plain = matches!(
         qs_first(qs, "plain", "0").to_lowercase().as_str(),

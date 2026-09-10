@@ -188,7 +188,7 @@ fn idle_ready_work_names_the_queue_and_keeps_real_stalls_distinct() {
     let end = tail.find("function updatePeekStatus()").expect("frontier chip must precede peek status");
     let chip = &tail[..end];
 
-    for required in ["readyCards: d.ready || []", "queued behind", "_openIssue("] {
+    for required in ["readyCards: d.ready", "queued behind", "_openWorkQueue(", "worker-queue", "data-queue-retry"] {
         assert!(app.contains(required), "queued-WIP rendering lost `{required}`");
     }
     assert!(chip.contains("work-queued-chip"), "the holding card must be a semantic control");
@@ -224,8 +224,8 @@ fn worker_card_and_peek_share_actions_and_the_canonical_file_entry() {
     let inventory = &inventory_tail[..inventory_end];
     assert_eq!(
         inventory.matches("{ key: '").count(),
-        26,
-        "the full running Claude worker fixture has 26 shared worker actions"
+        27,
+        "the full running Claude worker fixture has 27 shared worker actions"
     );
 
     let browse_start = app.find("function _browseWorkerFiles(name, source)")
