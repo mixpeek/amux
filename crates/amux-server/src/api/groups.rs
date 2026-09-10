@@ -42,6 +42,7 @@ use axum::{Json, Router};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use rusqlite::Connection;
 
 /// Nested at /api/groups: the list plus the /config sub-resource. ONE
 /// wildcard route dispatching on the sub-path, exactly like Python's
@@ -149,6 +150,46 @@ fn scan_session_tags(home: &Path) -> Vec<(String, Vec<String>)> {
         out.push((name, tags));
     }
     out
+}
+
+/// AF-649 (gh#204). The group primitive is entirely CC_TAGS-derived above
+/// (see the module doc: "not a stored list, so it cannot drift"), which is a
+/// real design choice avoiding two competing stores for the SAME fact about
+/// the SAME worker class. It also means the primitive never reaches a
+/// rust-managed worker at all: that class has no env file, so it can never
+/// carry a CC_TAGS value under any input, and `GET /api/groups` had no other
+/// source to check. Confirmed empirically before writing this: `_amux_workers
+/// .group` (a `grp_`-prefixed id, already settable via `PATCH /api/workers
+/// /<id>` since AF-651/AF-650 landed) was never read by this file.
+///
+/// This does NOT duplicate the fact CC_TAGS already owns — a rust-managed
+/// worker has no env file and therefore no competing CC_TAGS value to drift
+/// against; its `_amux_workers.group` column is the ONLY place its group
+/// lives. Adding this as a second SOURCE for a DIFFERENT population of
+/// workers is not the same shape as the drift bug the docstring warns about.
+///
+/// KNOWN LIMIT, named rather than silently accepted: `grp_<ulid>` has no
+/// mint path and no human name (grep for GroupId::new/generate/create_group
+/// across the crate returns nothing), so a rust-managed worker's group lists
+/// here as the raw id, not a friendly name like "gtm". That is a real UX gap
+/// and a separate piece of work; this fix's job is narrower — make the
+/// primitive REACH this worker class at all (ethos rule 1), which an opaque
+/// id still does: two rust-managed workers sharing the same `grp_` value are
+/// now discoverable as grouped, and PATCH already lets you set that value.
+fn scan_worker_groups(conn: &Connection) -> Vec<(String, Vec<String>)> {
+    let Ok((rows, _total)) = crate::db::queries::list_workers(conn, 0, u64::MAX) else {
+        return vec![];
+    };
+    rows.into_iter()
+        .filter_map(|w| {
+            let g = w.group_id?;
+            if g.trim().is_empty() {
+                return None;
+            }
+            let label = if w.display_name.trim().is_empty() { w.id } else { w.display_name };
+            Some((label, vec![g]))
+        })
+        .collect()
 }
 
 /// `_caller_scope` (py:15208-15224): (scoped, caller_tags_lowercased, name).
@@ -261,8 +302,8 @@ fn build_group_list(
     json!({
         "groups": groups,
         "total": total,
-        "derived_from": "CC_TAGS across workers — not a stored list, so it cannot drift",
-        "set_on_a_worker": "PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}",
+        "derived_from": "CC_TAGS across env-based workers, plus _amux_workers.group for rust-managed ones — neither is a stored COPY of the other, so neither can drift against its own source",
+        "set_on_a_worker": "env-based: PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}. rust-managed (no env file — AF-649/gh#204): PATCH /api/workers/<id> {\"group\": \"grp_...\"}",
         "configure_group": "PATCH /api/groups/<name>/config {\"goal\": \"...\", \"department\": \"sales\", \"kpis\": [...], \"human_cost\": 300000}",
     })
 }
@@ -274,7 +315,12 @@ async fn list_groups(State(state): State<AppState>, method: Method, headers: Hea
         return not_found().await;
     }
     let home = amux_home();
-    let rows = scan_session_tags(&home);
+    let mut rows = scan_session_tags(&home);
+    // AF-649: rust-managed workers carry a `_amux_workers.group` id instead
+    // of CC_TAGS, so they never appeared here at all until this scan ran.
+    if let Ok(conn) = state.store.read() {
+        rows.extend(scan_worker_groups(&conn));
+    }
     let member_scope = super::org::local_member_scope(&headers);
     let scope = match member_scope.as_ref() {
         Some(super::org::MemberScope::Global) | None => caller_scope(&home, &headers),
@@ -505,7 +551,7 @@ mod tests {
         assert_eq!(v["total"], 2);
         assert_eq!(
             v["derived_from"],
-            "CC_TAGS across workers — not a stored list, so it cannot drift"
+            "CC_TAGS across env-based workers, plus _amux_workers.group for rust-managed ones — neither is a stored COPY of the other, so neither can drift against its own source"
         );
 
         // Scoped to a tagged caller: same-tag rows only.
@@ -636,5 +682,86 @@ mod tests {
             assert_eq!(st, StatusCode::NOT_FOUND, "{m} {p}");
             assert_eq!(v, json!({"error": "not found"}), "{m} {p}");
         }
+    }
+
+    // AF-649 (gh#204). `scan_worker_groups` is the pure half: given a DB with
+    // a rust-managed worker's `_amux_workers.group` set, does it produce a
+    // row this file's own `build_group_list` can already consume unchanged.
+
+    fn insert_worker_with_group(store: &crate::db::Store, name: &str, group: Option<&str>) {
+        use amux_core::ids::{GroupId, WorkerId};
+        use amux_core::worker::WorkerConfig;
+        let mut cfg = WorkerConfig {
+            display_name: name.into(),
+            name_aliases: vec![],
+            cwd: "/tmp/w".into(),
+            provider: amux_core::provider::ProviderId::new("claude"),
+            model: None,
+            backend: Default::default(),
+            environment: Default::default(),
+            permissions: vec![],
+            group: None,
+        };
+        if let Some(g) = group {
+            cfg.group = Some(GroupId::parse(g).unwrap());
+        }
+        let id = WorkerId::from_ulid(ulid::Ulid::new());
+        let row = crate::db::queries::WorkerRow::new(&id, &cfg, "2026-01-01T00:00:00Z");
+        store
+            .write(move |conn| {
+                crate::db::queries::insert_worker(conn, &row)?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn scan_worker_groups_finds_only_workers_with_a_group_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
+        insert_worker_with_group(&store, "grouped", Some("grp_01JAAAAAAAAAAAAAAAAAAAAAAA"));
+        insert_worker_with_group(&store, "ungrouped", None);
+        let conn = store.read().unwrap();
+        let rows = scan_worker_groups(&conn);
+        assert_eq!(rows.len(), 1, "the ungrouped worker must not appear: {rows:?}");
+        assert_eq!(rows[0], ("grouped".to_string(), vec!["grp_01JAAAAAAAAAAAAAAAAAAAAAAA".to_string()]));
+    }
+
+    #[test]
+    fn scan_worker_groups_two_workers_sharing_a_group_id_are_grouped_together() {
+        // The concrete gh#204 promise: two rust-managed workers with the
+        // SAME grp_ value must count as one group of two, the same shape
+        // build_group_list already gives CC_TAGS groups.
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
+        insert_worker_with_group(&store, "w1", Some("grp_01JBBBBBBBBBBBBBBBBBBBBBBB"));
+        insert_worker_with_group(&store, "w2", Some("grp_01JBBBBBBBBBBBBBBBBBBBBBBB"));
+        let conn = store.read().unwrap();
+        let rows = scan_worker_groups(&conn);
+        let v = build_group_list(&rows, &(false, Default::default(), String::new()), &Default::default());
+        assert_eq!(
+            v["groups"],
+            json!([{"name": "grp_01JBBBBBBBBBBBBBBBBBBBBBBB", "workers": 2}]),
+        );
+    }
+
+    #[tokio::test]
+    async fn get_groups_end_to_end_lists_a_rust_managed_workers_group() {
+        // The full HTTP path this card actually reports missing: a fresh
+        // temp home with NO env files (so CC_TAGS contributes nothing) and
+        // one rust-managed worker whose group was set the way AF-651/AF-650
+        // already made possible — PATCH /api/workers/<id>.
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(dir.path());
+        let st = state();
+        insert_worker_with_group(&st.store, "rust-worker", Some("grp_01JCCCCCCCCCCCCCCCCCCCCCCC"));
+        let app: Router = Router::new().nest("/api/groups", routes()).with_state(st);
+        let (status, v) = call(&app, "GET", "/api/groups", None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(
+            v["groups"],
+            json!([{"name": "grp_01JCCCCCCCCCCCCCCCCCCCCCCC", "workers": 1}]),
+            "the rust-managed worker's group must be listed even with zero env files present: {v}"
+        );
     }
 }
