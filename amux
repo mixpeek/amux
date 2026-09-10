@@ -2388,6 +2388,8 @@ Usage: amux board request <worker> <title>
 Creates a backlog card on the verified requester's own board and links the named
 worker as its reviewer. Workers cannot place new cards directly on another
 worker's board; use reviewer/shepherd and depends_on links for peer coordination.
+The requester is notified back on THIS card's own resolution — that path is
+separate from anything a --depends-on link does (see below).
 
 Optional:
   --desc <text> | --desc-stdin | --desc-file <path>
@@ -2395,7 +2397,10 @@ Optional:
   --depends-on <ISSUE-ID>                  repeatable cross-board task link. It
                                           blocks the claim until resolved and
                                           does not push by itself when cleared
-                                          (AF-621).
+                                          (AF-621) — not this card's own
+                                          requester notification above, which
+                                          fires on ITS resolution regardless
+                                          of whether any dependency exists.
   --due <YYYY-MM-DD>
   --help
 
