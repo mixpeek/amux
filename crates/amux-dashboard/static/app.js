@@ -9653,7 +9653,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.863';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.867';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -9667,26 +9667,76 @@ _loadModelCatalog().then(() => { if (!_initialLoad) render(); }).catch(() => {})
 // a visible failure toast naming the error. Rate-limited so a render-loop
 // error cannot toast-storm. This is the floor, not the goal — actions should
 // still give their own success feedback (toast / row animation / re-render).
+// SAY WHERE, AND DO NOT DROP IT UNDER LOAD (2026-09-09). The net above reported
+// `ev.message` and nothing else, which leaves a real bug undiagnosable: "Cannot
+// read properties of null (reading 'classList')" is a true statement about 600+
+// call sites in this 1.9MB bundle and names none of them. A user's screenshot of
+// that toast was the only record an error had ever happened, and it was not
+// enough to find the line — `ev.filename`, `ev.lineno`, `ev.colno` and
+// `ev.error.stack` were all on the event and all discarded.
+//
+// Two changes, and the second matters more than it looks:
+//   1. Carry the location and the stack. The toast gains `@ app.js:LINE:COL`
+//      (which is what a person screenshots) and the beacon carries the full
+//      stack plus the route, so `kind=client-action-error` in server-rs.log is
+//      enough to fix from.
+//   2. Beacon BEFORE the rate limit, deduped by SIGNATURE instead of by time.
+//      The 4s window is correct for toasts — a render-loop error must not
+//      toast-storm — but it was also gating the beacon, so during a burst every
+//      error after the first was lost from the record too. Distinct errors now
+//      always beacon; an identical repeat never does. Rate-limiting the evidence
+//      the same way you rate-limit the notification is how a burst erases
+//      exactly the errors that matter most (ethos rule 4).
 (function () {
   let _lastErrToast = 0;
-  function _surface(kind, msg) {
+  let _suppressed = 0;          // distinct errors swallowed by the toast window
+  const _sent = new Set();      // beacon signatures already recorded this load
+
+  // Bare filename keeps the toast readable; the beacon keeps the full picture.
+  // A cross-origin script reports "Script error." with NO location, so '' here
+  // means "the browser refused to say", not "we did not look".
+  function _loc(ev) {
+    if (!ev || !ev.filename) return '';
+    const f = String(ev.filename).replace(/^.*\//, '').split('?')[0];
+    return f + ':' + (ev.lineno || 0) + ':' + (ev.colno || 0);
+  }
+
+  function _beacon(kind, text, where, stack) {
     try {
-      const now = Date.now();
-      if (now - _lastErrToast < 4000) return;
-      _lastErrToast = now;
-      const text = String(msg || 'unknown error').slice(0, 140);
-      if (typeof showToast === 'function') showToast('\u26a0 ' + kind + ': ' + text);
-      console.error('amux ' + kind + ':', msg);
+      const sig = kind + '|' + text + '|' + where;
+      if (_sent.has(sig)) return;
+      if (_sent.size > 200) _sent.clear();   // bounded; distinct sites are few
+      _sent.add(sig);
       fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'},
+        keepalive:true,
         body:JSON.stringify({kind:'client-action-error',verdict:kind,message:text,
+          where: where || null, stack: String(stack || '').slice(0, 2000),
+          route: location.pathname + location.search + location.hash,
           measured:true,n_considered:1,ver:APP_VER})}).catch(() => {});
     } catch (e) {}
   }
+
+  function _surface(kind, msg, where, stack) {
+    try {
+      const text = String(msg || 'unknown error').slice(0, 140);
+      _beacon(kind, text, where, stack);
+      console.error('amux ' + kind + ':', msg, where || '', stack || '');
+      const now = Date.now();
+      if (now - _lastErrToast < 4000) { _suppressed++; return; }
+      _lastErrToast = now;
+      const more = _suppressed ? ' (+' + _suppressed + ' more)' : '';
+      _suppressed = 0;
+      if (typeof showToast === 'function') {
+        showToast('\u26a0 ' + kind + ': ' + text + (where ? ' @ ' + where : '') + more);
+      }
+    } catch (e) {}
+  }
   window.addEventListener('unhandledrejection', function (ev) {
-    _surface('action failed', ev.reason && (ev.reason.message || ev.reason));
+    const r = ev.reason;
+    _surface('action failed', r && (r.message || r), '', r && r.stack);
   });
   window.addEventListener('error', function (ev) {
-    _surface('script error', ev.message);
+    _surface('script error', ev.message, _loc(ev), ev.error && ev.error.stack);
   });
 })();
 let _peekScrollLockY = 0;
@@ -9847,7 +9897,7 @@ function _paintCachedPeek(cached) {
   if (!cached || (!cached.output && !cached.history)) return false;
   _peekHistoryRaw = cached.history || '';
   _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
-  _lastLiveHTML = cached.liveHTML || (cached.output ? _peekHtml(cached.output) : '');
+  _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
   applyPeekSearch();
   const ago = Math.floor((Date.now() - (cached.time || Date.now())) / 60000);
@@ -11033,6 +11083,27 @@ function _linkifyPaths(safeHtml) {
 function _peekHtml(raw) {
   return wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))));
 }
+// Only the current frame has a composer. Its ruled input box is terminal UI,
+// not a delivered message, even when it contains a collapsed paste or a stamp.
+function _peekLiveHtml(raw) {
+  const lines = raw.split('\n');
+  const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
+  const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
+  for (let i = plain.length - 1; i > 0; i--) {
+    if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
+    const end = plain.findIndex((line, n) => n > i && rule(line));
+    if (end < 0 || !plain.slice(end + 1).some(line => /⏵|bypass permissions|\/rc failed|shift\+tab/.test(line))) continue;
+    const input = plain.slice(i, end).join('\n').replace(/^\s*❯\s?/, '').trim();
+    const pastes = input.match(/\[Pasted text #\d+[^\]]*\]/g) || [];
+    const summary = pastes.length ? 'Unsent worker input · ' + pastes.length + ' pasted block' + (pastes.length === 1 ? '' : 's') : 'Worker input';
+    const draft = input ? '<details class="peek-worker-input"><summary>' + esc(summary) + '</summary>'
+      + '<p>This is the worker’s input box, not a delivered chat message. Collapsed paste contents are only available in the worker terminal.</p>'
+      + '<pre>' + esc(input) + '</pre></details>' : '';
+    return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
+      + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
+  }
+  return _peekHtml(raw);
+}
 
 // The MARKERS amux stamps on everything it injects into a pane. Structural, not
 // heuristic: each one is a literal prefix the server writes, so matching it is
@@ -11414,10 +11485,9 @@ function _peekLeaseStart() { /* removed — no more resize-on-peek to lease (AMU
 // the reader scrolls, so a browser resize changes nothing server-side.
 
 // ── "Load earlier output" — scrollback for the alt-screen ──
-// tmux keeps zero history for Claude's alternate screen; the pipe-pane log
-// (~/.amux/logs/<name>.log) is the only record of what scrolled off. The bar
-// sits above the live view; tapping it prepends the log tail (ANSI-stripped,
-// server-sliced via ?tail_kb so a multi-MB log never ships to a phone).
+// Claude history comes from complete conversation records. Terminal pipe logs
+// contain cursor paint deltas: stripping ANSI turns spinners and partial word
+// updates into vertical gibberish (TubeScience). Other providers retain logs.
 let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
@@ -11426,14 +11496,38 @@ function _peekEarlierHTML() {
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
-    ? '<div class="peek-earlier-bar">&mdash; beginning of log &mdash;</div>'
+    ? '<div class="peek-earlier-bar">&mdash; beginning of saved output &mdash;</div>'
     : '<div class="peek-earlier-bar" onclick="_peekLoadEarlier()">&#x25B2; Load earlier output' +
-      (_peekEarlier.chunks.length ? '' : ' (worker log)') + '</div>';
+      (_peekEarlier.chunks.length ? '' : ' (saved output)') + '</div>';
   const blocks = _peekEarlier.chunks.length
     ? '<div class="peek-earlier-block">' + _peekEarlier.chunks.join('') + '</div>' +
-      '<div class="peek-earlier-bar">&mdash; end of log &middot; live view below &mdash;</div>'
+      '<div class="peek-earlier-bar">&mdash; end of saved output &middot; live view below &mdash;</div>'
     : '';
   return bar + blocks;
+}
+// Exact overlap only: repeated words or quoted messages must not erase output.
+// The live renderer may start mid-record after its character cap, so match its
+// first complete line against the saved page's suffix.
+function _peekAfterConversation(saved, current) {
+  if (!saved || !current) return current;
+  // Peek collapses blank lines (including ANSI-only lines) server-side. Match
+  // that representation before comparing the complete record page with it.
+  let blanks = 0;
+  saved = saved.split('\n').flatMap(line => {
+    if (!stripAnsi(line).trim()) return ++blanks <= 1 ? [''] : [];
+    blanks = 0;
+    return [line];
+  }).join('\n');
+  if (saved.includes(current)) return '';
+  const first = current.split('\n').find(line => line.length > 0);
+  if (!first) return current;
+  let at = saved.indexOf(first);
+  while (at >= 0) {
+    const suffix = saved.slice(at);
+    if (current.startsWith(suffix)) return current.slice(suffix.length).replace(/^\n+/, '');
+    at = saved.indexOf(first, at + 1);
+  }
+  return current;
 }
 async function _peekLoadEarlier(options) {
   const quiet = !!(options && options.quiet);
@@ -11446,7 +11540,8 @@ async function _peekLoadEarlier(options) {
   let verdict = 'error';
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) +
-      '/log?plain=1&tail_kb=' + _PEEK_LOG_CHUNK_KB + '&before_kb=' + earlier.loadedKb,
+      '/log?plain=1&source=conversation&tail_kb=' + _PEEK_LOG_CHUNK_KB + '&before_kb=' + earlier.loadedKb +
+      (earlier.conversation ? '&conversation=' + encodeURIComponent(earlier.conversation) + '&before=' + earlier.before : ''),
       { headers: _authHeaders() });
     const responseSession = r.headers.get('X-Amux-Session') || '';
     if (!_peekIdentityCurrent(identity)) {
@@ -11458,7 +11553,7 @@ async function _peekLoadEarlier(options) {
       return 'identity-mismatch';
     }
     if (!r.ok) {
-      if (!quiet) showToast('No saved log for this worker');
+      if (!quiet) showToast(r.status === 409 ? 'Conversation changed. Reopen the worker to load its history.' : 'No saved conversation for this worker');
       if (r.status === 404) earlier.hidden = true;
       verdict = 'missing';
     } else {
@@ -11484,6 +11579,16 @@ async function _peekLoadEarlier(options) {
       // stops a 220-column pane rule forcing a scroller; `_linkifyPaths` and
       // `highlightPrompts` make the earlier text behave like the live text it
       // is continuous with.
+      if (r.headers.get('X-Log-Source') === 'conversation') {
+        if (!earlier.conversation) {
+          // The first record page contains the current transcript tail too.
+          // Replace that tail once, then keep only new records from polls.
+          earlier.tailRaw = text;
+          _peekHistoryHTML = _peekHtml(_peekAfterConversation(text, _peekHistoryRaw));
+        }
+        earlier.conversation = r.headers.get('X-Log-Conversation');
+        earlier.before = remaining;
+      }
       earlier.chunks.unshift('<span class="pe-chunk">' + _peekHtml(text) + '</span>');
       earlier.loadedKb += _PEEK_LOG_CHUNK_KB;
       earlier.done = remaining <= 0;
@@ -11608,7 +11713,8 @@ async function refreshPeek(liveOnly, bypassTrim) {
     let histChanged = false;
     if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
       _peekHistoryRaw = histRaw;
-      _peekHistoryHTML = histRaw ? _peekHtml(histRaw) : '';
+      const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
+      _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
       histChanged = true;
     }
     const atBottom = _isScrolledToBottom(body);
@@ -11616,8 +11722,11 @@ async function refreshPeek(liveOnly, bypassTrim) {
       _peekScrollLocked = false;
       _peekBufferedOutput = false;
     }
-    const newHTML = _peekHtml(output);
+    const newHTML = _peekLiveHtml(output);
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
+    if (newHTML.includes('class="peek-worker-input"') && !_lastLiveHTML.includes('class="peek-worker-input"')) {
+      _peekPollBeacon('worker-input-separated', name, { verdict: 'composer_excluded_from_messages' });
+    }
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     // Claude runs on the terminal's ALT SCREEN: tmux holds only the viewport,
     // so the top of the capture is a hard cutoff mid-conversation. Compose a

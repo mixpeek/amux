@@ -1960,6 +1960,11 @@
   .peek-prompt-schedule { border-left-color: #3fb950; background: rgba(63,185,80,0.08); }
   .peek-prompt-amux     { border-left-color: #8b949e; }
   .peek-prompt-unknown { border-left-color: #d29922; border-left-style: dotted; }
+  .peek-worker-input { display:block; margin:12px 0; padding:10px 12px; border:1px solid #666; border-radius:8px; white-space:normal; font:13px/1.5 system-ui,sans-serif; }
+  .peek-worker-input summary { cursor:pointer; min-height:36px; padding:4px 0; color:#d8b365; }
+  .peek-worker-input p { color:#aaa; margin:8px 0; }
+  .peek-worker-input pre { white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.5 monospace; margin:8px 0 0; }
+  .peek-worker-footer { opacity:.65; margin-top:8px; }
   .peek-prompt::before { content: attr(data-msg-label); display: block; font: 600 10px/1.6 system-ui, sans-serif; color: var(--dim); letter-spacing: 0.03em; }
   /* Reconciled raw-tmux injection (AMUX-2670): delivery UNVERIFIED and the
      origin is the CLI's claim, not a server stamp. Amber and dashed so it

@@ -7466,3 +7466,193 @@ FIX: amux put it in VERIFY.md by name — `--lib` is a partial run whose number 
  they assert `> 0`, mutation-checked, at cc3b4221. What remains open is the general shape:
  a suite-shaped command that silently covers a subset is the same instrument failure as a
  probe reporting zero when it never ran, and `--lib` is not the only such flag.
+
+## A peer asked me a blocking question I cannot answer: they are an isolated worker
+VALIDATED: amux-frustrations | VALIDATED by amux-frustrations 2026-09-10 (originating session). The fix this entry asked
+for is shipped and confirmed live on a real delivered message, not inferred from the code
+alone.
+
+crates/amux-server/src/api/session_verbs.rs:15020 carries `no_reply_path_stamp(origin,
+is_isolated)`, explicitly commented "AF-534 / AF-352, twice in five days" and wired at
+line 15541 into the same send path this entry traced (`if let Some(stamp) =
+no_reply_path_stamp(&send_origin, session_is_isolated(&send_origin)) { text.push_str(&stamp); }`).
+It is STAMPED, not refused, matching the entry's own fix spec exactly: "when an isolated
+worker's message is delivered to a peer, say so in the delivery envelope... one clause".
+
+Live proof, not just code presence: queried cmd_history for the literal stamp text and
+found 5 delivered rows, including one to THIS session (id 49169) from `amux`:
+
+  "[no reply path: `amux` is an isolated (raw-agent) worker. A peer send back to it is
+  REFUSED — it is reachable only by its owner from the dashboard. If this message asks
+  you something, answer via Ethan or relay through a lane that is not isolated; do not
+  write a reply you cannot deliver.]"
+
+That is the exact asymmetry this entry reported hitting blind. A recipient reading that
+message today sees the fact beside the answer, which is what the entry's FIX asked for
+(ethos rule 4). Also confirmed the sanctioned regression tests exist and name this case
+(session_verbs.rs:20619 "an isolated sender must be stamped", :20637/:20640/:20641 the
+negative controls).
+AREA: attribution
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-02
+SESSION: amux-frustrations
+CARD: AF-352
+SYMPTOM: The `amux` lane sent me a push-consent ask — "is all of your unpushed work in
+  a state you are happy to have on origin? One line back is enough" — with two named
+  answers and a stated consequence for each. I wrote the reply and `amux send amux`
+  refused: "'amux' is an isolated (raw-agent) worker with the amux harness stripped. It
+  is not a peer or relay target and is reachable only by the owner from the dashboard."
+  THE SEND WORKS IN ONE DIRECTION ONLY, and nothing said so until I had written the
+  answer. `GET /api/sessions/amux` carries `isolated: true`, so the fact is available;
+  it is just not available at the moment you need it, which is when a message from them
+  arrives asking for a reply. Their message carried a server-verified origin stamp,
+  which reads as a working channel.
+COST: a real ask blocked. They are holding a 34-commit push on an answer they cannot
+  receive, and their own fallback ("wait -> I tell Ethan you are mid-something") will
+  now fire on my silence rather than on my answer, which reports the wrong reason to
+  Ethan. The remaining channel is a board card in their queue for what is a yes/no.
+FIX: `.claude/rules/frustrations.md` already documents this class exactly — "LIVE IS NOT
+  VALIDATABLE ... the session payload already carries `isolated`; read it, or discover
+  it from a refused send after you have written the message". I discovered it the second
+  way, having read that rule earlier the same day. That is the tell that the rule is in
+  the wrong place: it asks a human to remember a lookup before writing, and the moment
+  the lookup matters is the moment a message ARRIVES.
+  CORRECTION, same day, after walking the sanctioned path end to end: THE DOCUMENTED
+  FALLBACK ALSO FAILS, and the advice printed at the first refusal sends you to a
+  mechanism that fails for the same reason. All four channels, in order, all refused:
+      amux send amux              -> "not a peer or relay target"
+      card in their queue         -> blocked by THEIR OWN WIP limit ("close_these_first")
+      amux board progress <card>  -> "progress noted, but OWNER NOT NOTIFIED: target is
+                                     an isolated (raw-agent) worker: amux automation is
+                                     not delivered into it"
+      only the owner, from the dashboard
+  The cross-group send refusal explicitly recommends the board handoff ("use the board on
+  a card owned by <them>: `amux board progress <CARD>` notifies the owner at their next
+  turn"), and neither refusal mentions the other. A lane following the guidance exactly
+  ends up where it started, having written the message twice.
+  The cheap mechanism is at delivery, not in prose: when an isolated worker's message is
+  delivered to a peer, say so in the delivery envelope — one clause, "this sender cannot
+  receive replies; only the owner can reach them" — and stop naming the board path for
+  isolated targets, since it does not work for them. The `isolated` flag is on the record
+  being rendered in both places.
+  Related: AF-352 is the entry for entries whose authors can never sign off, which is
+  the same asymmetry costing something different.
+
+## append-only push guard offered two causes, and the real one was a third
+VALIDATED: amux-frustrations | VALIDATED by amux-frustrations 2026-09-10 (originating session). Both discriminators
+this entry's FIX asked for are shipped in scripts/git-hooks/append-only-push-guard and
+confirmed green live, not inferred from presence alone.
+
+DISCRIMINATOR 1 (in-place rewrite, adjacent to a changed line in the same entry block):
+scripts/test-append-only-inplace-edit.sh, explicitly commented "AF-528: the append-only
+guard's FOURTH cause", is now wired into the required CI gate (AF-677, c7911c2d/634e5a86).
+Re-run today: "ok: in-place-edit cause — all 4 checks pass". The guard file itself
+(line 318) carries the comment "AF-528: a FOURTH cause the refusal could not express.
+An entry REWRITTEN IN PLACE ... loses its old lines while the entry survives under the
+same heading" and a distinct code path (line 302, "NOTE — N published line(s) of F are
+EDITED in place") separate from the deletion/stale-republish arms.
+
+DISCRIMINATOR 2 (push target is a fork vs origin): scripts/test-push-guard-fork-base.sh,
+re-run just now: 6 passed, 0 failed, including cell D "the refusal documents the fork
+case and how to check it" and cell C confirming shared-checkout behaviour is unchanged
+for the real stale-republish case (so the fix narrows the false-positive without
+weakening the true-positive it exists to catch).
+
+Both tests are independent of and postdate this entry's own filing; neither is a copy
+written to prove the point, both drive the shipped guard file directly.
+AREA: gates
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-06
+SESSION: amux-frustrations
+CARD: AF-528
+SYMPTOM: Pushing a maintainer conflict-resolution to a CONTRIBUTOR'S FORK branch (PR
+  #188), the pre-push guard refused: "frustrations.md as pushed is MISSING 4 line(s)
+  the remote's current copy has", then insisted I decide between RETIREMENT and STALE
+  REPUBLISH before acting, warning that the wrong choice is destructive. Neither was
+  true. main had UPDATED the ATE-17 entry IN PLACE (STATUS: open -> fixed, FIX
+  paragraph rewritten; origin/main:frustrations.md:2342-2365) and the fork branch
+  carried the older copy, so merging main FORWARD replaced their stale text with
+  main's newer text. The archive cross-check cannot help: the lines did not MOVE to
+  frustrations-archive.md, they were rewritten where they stood.
+COST: ~10 minutes ruling out both offered causes against a refusal that says picking
+  wrong is destructive. The direction was the OPPOSITE of the accusation -- I was
+  publishing NEWER content and it read as a revert.
+FIX: Two cheap discriminators the guard already has the inputs for. (1) If the missing
+  lines are ADJACENT to CHANGED lines in the same entry block, that is an in-place
+  rewrite, not a deletion -- name it as a third cause. (2) Report whether the push
+  target is `origin` or a fork branch: merging main forward into a fork can only ever
+  ADD to origin's history, so the stale-republish reading does not apply there at all.
+  A line-set difference cannot see an EDIT any more than it can see a MOVE, which is
+  the failure mode this file's own contract already names one layer up.
+
+## The activation authority rebuilds on a probe that TIMED OUT, and the rebuild is what makes probes time out
+VALIDATED: amux-frustrations | VALIDATED by amux-frustrations 2026-09-10 (originating session). The entry itself said
+the fix was uncommitted, isolated-lane work not mine to land ("only the owner can ask
+it to commit"). Ethan committed it directly two hours later: 451cafb6, "fix(runtime):
+stop health stalls from rebuilding the running revision", Amux-Session: amux.
+
+Confirmed live rather than assumed present. crates/amux-server/src/activation.rs exists
+on origin/main; "ACTIVATION AWAITING ADOPTION" is present in scripts/rust-auto-build.sh.
+
+THE EXACT DEFECT NAMED IS FIXED, not just a file existing. The entry's root cause was
+"the log line prints evidence against the verdict it announces, from a different call
+than the one that decided" (a failed probe decided STAMP DRIFT, a later successful
+re-probe supplied the logged evidence). The old code:
+
+  live=$(live_server_commit 2>/dev/null || true)
+  echo "ACTIVATION STAMP DRIFT ... /api/health reports ${live:-unmeasured}; rebuilding"
+
+is gone, replaced by a single `measure_live_identity` call that owns both the decision
+and its receipt, with the comment "A later successful curl must never be used to
+explain an earlier timeout (AMUX-4225)". A probe that cannot measure now logs
+"ACTIVATION IDENTITY UNMEASURED ... measured=false action=defer — unavailable health is
+not evidence of image drift" and exits without rebuilding, instead of spending the
+timeout as a negative answer.
+
+Live storm check: grep -c "STAMP DRIFT\|OVERLAP GUARD" over the current server log and
+the builder log, both 0. /api/health reports status=ok, commit=634e5a86 (this session's
+own AF-677 push, adopted cleanly with no rebuild storm on any of several pushes made
+today after the fix landed) -- the population the fix would show its absence against.
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-08
+SESSION: amux-frustrations
+CARD: AMUX-4225
+SYMPTOM: Both `--max-time` curls in `scripts/rust-auto-build.sh` (2 of 2) convert a
+  FAILED probe into an adoption verdict. `stamp_matches_live_image` does
+  `live=$(live_server_commit) || return 1` on a `--max-time 4` health call, and
+  `overlap_deploy_permitted` does `curl --max-time 8 ... || { OVERLAP GUARD
+  UNMEASURED; return 1; }`. Neither can say "I could not measure"; a timeout is
+  spent as a negative answer, and the correction is a full `--release` rebuild.
+  That rebuild (rustc measured at 596% CPU, plus a 1268-file worktree checkout and
+  a 14 GB target clear) is a large contributor to the load that makes the next
+  probe time out. Measured on this box at 10:38 EDT: load average 163.55 with
+  `available_parallelism` 28, `/api/health` p95 4731 ms over the trailing hour
+  against a 2 ms baseline, and TLS handshake timeouts on the watchdog.
+  The abbreviated-SHA theory is WRONG and worth recording as dead so nobody
+  re-derives it: `stamp_matches_live_image` compares with a PREFIX pattern
+  (`case "$built_sha" in "$live"*`), so 12-char `a604412b4923` against the 40-char
+  stamp matches correctly. The reason a604412b logged STAMP DRIFT while NAMING a
+  matching commit is that the deciding probe failed and line 195 then RE-PROBED
+  successfully to compose the message. The log line prints evidence against the
+  verdict it announces, from a different call than the one that decided.
+COST: 10 STAMP DRIFT verdicts and 3 OVERLAP GUARD refusals today, each costing a
+  redundant release build of an already-installed revision; watchdog /health
+  timeouts at 10:03, 10:14, 10:15, 10:26 and 10:28; `/api/sessions` returning zero
+  bytes after 20s at 10:34; TubeScience independently blocked registering handoffs
+  on a 20s localhost read timeout. Two lanes spent the morning diagnosing a loop
+  whose trigger is its own remedy.
+FIX: Not mine to write. `amux` (isolated) has the fix already written and
+  UNCOMMITTED in this shared checkout: `crates/amux-server/src/activation.rs`
+  (hash-checked install identity, `same_revision` skip), `runtime_jobs/poll_watch.rs`
+  (WARN naming a job that holds a runtime thread), and an `ACTIVATION AWAITING
+  ADOPTION` skip_rebuild path in the builder. Not live: `origin/main`'s builder has
+  0 occurrences of `ACTIVATION AWAITING ADOPTION`, the worktree has 1, and the
+  launchd authority runs committed bytes from `~/.amux/activation-source`.
+  Deliberately left untouched, per the shared-checkout rule. `amux` is an isolated
+  raw-agent worker: my send was refused, so only the owner can ask it to commit.
+
+---

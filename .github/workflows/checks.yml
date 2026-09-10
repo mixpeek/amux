@@ -225,6 +225,135 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-selector-clauses.sh
+      # AF-677. AF-346's ratchet (above) recorded 31 harnesses as unwired rather
+      # than wiring them blind, because that decision belongs to each one's
+      # owner (ethos rule 8). This is that decision, made for 28 of the 31:
+      # each was run standalone, independently verified as CI-safe (no live
+      # production server, no real cargo compile), and is wired here. The
+      # remaining 3 are NOT wired, each for a checked, specific reason:
+      #   test-target-clause.sh    compiles Rust for real; its cheap half
+      #                            (test-selector-clauses.sh) is already above.
+      #   test-lineage-render.sh   needs a LIVE server with real, aged board
+      #                            history (`/api/why/task/<id>`) to prove the
+      #                            renderer matches a real payload rather than a
+      #                            synthetic fixture — structurally absent on a
+      #                            GitHub-hosted runner, by the script's own
+      #                            documented design ("skipping is deliberate").
+      #   test-unstamped-ledger.sh same shape, against a live `/api/history`.
+      # Their baseline entries now carry that reason instead of "owner to
+      # confirm or wire".
+      - name: alert summary channel counts stay honest (AMUX-owner-alert)
+        run: |
+          set -uo pipefail
+          bash scripts/test-alert-summary.sh
+      - name: an in-place edit of an append-only file is caught
+        run: |
+          set -uo pipefail
+          bash scripts/test-append-only-inplace-edit.sh
+      - name: a deleted-then-readded line in an append-only file is caught
+        run: |
+          set -uo pipefail
+          bash scripts/test-append-only-resurrection.sh
+      - name: the append-only guard scopes by substring correctly
+        run: |
+          set -uo pipefail
+          bash scripts/test-append-only-substring-scope.sh
+      - name: a short sha in --evidence expands to the real artifact
+        run: |
+          set -uo pipefail
+          bash scripts/test-artifact-sha-expand.sh
+      - name: the CLI dispatch path preserves quoting through env/exec
+        run: |
+          set -uo pipefail
+          bash scripts/test-cli-quoting.sh
+      - name: the commit-intent manifest round-trips
+        run: |
+          set -uo pipefail
+          bash scripts/test-commit-intent.sh
+      - name: a cross-group setting composes without a real DOM
+        run: |
+          set -uo pipefail
+          node scripts/test-cross-group-setting.sh
+      - name: an archive move is a MOVE, not a deletion, across both files
+        run: |
+          set -uo pipefail
+          bash scripts/test-frustrations-archive-move.sh
+      - name: the installed hook's version marker matches the source
+        run: |
+          set -uo pipefail
+          bash scripts/test-hook-version-marker.sh
+      - name: install.sh's hook install references the real source path
+        run: |
+          set -uo pipefail
+          bash scripts/test-install-hook-source-ref.sh
+      - name: install advice does not linger after the install actually lands
+        run: |
+          set -uo pipefail
+          bash scripts/test-install-linger.sh
+      - name: a large read is routed to the delegate, an image never is
+        run: |
+          set -uo pipefail
+          bash scripts/test-large-read-delegation.sh
+      - name: scripts/mutate.sh applies one string and reverts even if killed
+        run: |
+          set -uo pipefail
+          bash scripts/test-mutate-seams.sh
+      - name: a mutation survey names which rule a green suite actually covers
+        run: |
+          set -uo pipefail
+          bash scripts/test-mutate-survey.sh
+      - name: mutate.sh's own apply/run/revert contract
+        run: |
+          set -uo pipefail
+          bash scripts/test-mutate.sh
+      - name: a sign-in-shaped needsyou ask gets a resume deep link, once
+        run: |
+          set -uo pipefail
+          bash scripts/test-needsyou-signin-link.sh
+      - name: push-consent names who must be asked and who cannot be
+        run: |
+          set -uo pipefail
+          bash scripts/test-push-consent.sh
+      - name: a register write merges rather than clobbering a peer's
+        run: |
+          set -uo pipefail
+          bash scripts/test-register-merge.sh
+      - name: a second-person resend fires only when it should (positive control)
+        run: |
+          set -uo pipefail
+          bash scripts/test-second-person-resend.sh
+      - name: the raw-tmux send fallback stays fenced off the audited path
+        run: |
+          set -uo pipefail
+          bash scripts/test-send-fallback-fence.sh
+      - name: a retried send is annotated as a retry, not a fresh message
+        run: |
+          set -uo pipefail
+          bash scripts/test-send-retry-annotation.sh
+      - name: the shared-checkout guard attributes a block to the real actor
+        run: |
+          set -uo pipefail
+          bash scripts/test-shared-guard-attribution.sh
+      - name: the shipped status hooks survive real durability regressions
+        run: |
+          set -uo pipefail
+          bash scripts/test-status-hooks.sh
+      - name: the test receipt describes the bytes it actually compiled
+        run: |
+          set -uo pipefail
+          bash scripts/test-test-receipt.sh
+      - name: the tmux backlog probe reports measured/unmeasured honestly
+        run: |
+          set -uo pipefail
+          python3 scripts/test-tmux-backlog.py
+      - name: the tmux start guard refuses an ambiguous live owner
+        run: |
+          set -uo pipefail
+          python3 scripts/test-tmux-start-guard.py
+      - name: the multiplayer browser contract's shape holds
+        run: |
+          set -uo pipefail
+          node scripts/test-multiplayer-browser-contract.mjs
       # AF-356. The contention wrapper measured ONE of the two ways a peer
       # reddens your suite. Its clean verdict ("NOT build contention") read as
       # "therefore your bug", while a peer's uncommitted source in the shared

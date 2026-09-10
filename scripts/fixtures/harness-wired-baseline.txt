@@ -4,38 +4,12 @@
 # harness that is not listed here, so this file is the ratchet's memory: the set
 # may shrink, never grow silently. One reason per line, after the filename.
 #
-# Seeded 2026-09-09 from a measurement of 80 harnesses, 48 wired, 32 not. They
-# are listed rather than wired because turning 32 never-run checks into a
-# required gate for every lane in one afternoon is a sweep, and some of them
-# compile. Whoever owns each one decides (ethos rule 8).
-test-alert-summary.sh                  unwired at baseline; owner to confirm or wire
-test-append-only-inplace-edit.sh       unwired at baseline; owner to confirm or wire
-test-append-only-resurrection.sh       unwired at baseline; owner to confirm or wire
-test-append-only-substring-scope.sh    unwired at baseline; owner to confirm or wire
-test-artifact-sha-expand.sh            unwired at baseline; owner to confirm or wire
-test-cli-quoting.sh                    unwired at baseline; owner to confirm or wire
-test-commit-intent.sh                  unwired at baseline; owner to confirm or wire
-test-cross-group-setting.sh            unwired at baseline; owner to confirm or wire
-test-frustrations-archive-move.sh      unwired at baseline; owner to confirm or wire
-test-hook-version-marker.sh            unwired at baseline; owner to confirm or wire
-test-install-hook-source-ref.sh        unwired at baseline; owner to confirm or wire
-test-install-linger.sh                 unwired at baseline; owner to confirm or wire
-test-large-read-delegation.sh          unwired at baseline; owner to confirm or wire
-test-lineage-render.sh                 unwired at baseline; owner to confirm or wire
-test-mutate-seams.sh                   unwired at baseline; owner to confirm or wire
-test-mutate-survey.sh                  unwired at baseline; owner to confirm or wire
-test-mutate.sh                         unwired at baseline; owner to confirm or wire
-test-needsyou-signin-link.sh           unwired at baseline; owner to confirm or wire
-test-push-consent.sh                   unwired at baseline; owner to confirm or wire
-test-register-merge.sh                 unwired at baseline; owner to confirm or wire
-test-second-person-resend.sh           unwired at baseline; owner to confirm or wire
-test-send-fallback-fence.sh            unwired at baseline; owner to confirm or wire
-test-send-retry-annotation.sh          unwired at baseline; owner to confirm or wire
-test-shared-guard-attribution.sh       unwired at baseline; owner to confirm or wire
-test-status-hooks.sh                   unwired at baseline; owner to confirm or wire
+# Seeded 2026-09-09 from a measurement of 80 harnesses, 48 wired, 32 not.
+# AF-677 (2026-09-10) is the decision this file asked for: each of the 31 named
+# here at the time was run standalone and given a real verdict rather than
+# left as "owner to confirm or wire" (ethos rule 8 — the decision was made,
+# not skipped). 28 were CI-safe and are now wired into checks.yml. The 3 that
+# remain here each have a checked, specific reason, not a placeholder.
 test-target-clause.sh                  AF-346's own harness. Every cell compiles for real, so wiring it into the required `checks` gate adds minutes to every lane's push. Its cheap half is scripts/test-selector-clauses.sh, which IS wired.
-test-test-receipt.sh                   unwired at baseline; owner to confirm or wire
-test-unstamped-ledger.sh               unwired at baseline; owner to confirm or wire
-test-tmux-backlog.py                   unwired at baseline; owner to confirm or wire
-test-tmux-start-guard.py               unwired at baseline; owner to confirm or wire
-test-multiplayer-browser-contract.mjs  unwired at baseline; owner to confirm or wire
+test-lineage-render.sh                 AF-677: needs a LIVE server carrying real, aged board history to prove its renderer against `/api/why/task/<id>`'s ACTUAL payload rather than a synthetic fixture -- the script's own header calls this deliberate ("a synthetic fixture would not prove the renderer matches what the endpoint actually emits"). It self-reports SKIP (exit 2) when unreachable, and a GitHub-hosted runner has nothing at localhost:8824 by construction, so wiring it would either always skip or need CI to stand up production-shaped historical data neither this repo nor any runner has. Stays a local dev-box tool; re-run it by hand against a real box before trusting a Lineage-tab change.
+test-unstamped-ledger.sh               AF-677: same shape as test-lineage-render.sh, against a live `/api/history` instead of `/api/why/task`. Same self-reported SKIP-when-unreachable contract, same reason it cannot run where nothing is listening on :8824.
