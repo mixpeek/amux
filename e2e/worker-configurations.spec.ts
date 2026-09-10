@@ -3,6 +3,7 @@
 // availability, memory, rules, environment, skin, and connectors. This drives
 // the real dashboard and real Rust API against each project's throwaway home.
 import { test, expect } from './fixtures';
+import { getSessionsResilient } from './lifecycle/evidence';
 
 test.setTimeout(60_000);
 
@@ -59,7 +60,7 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     await page.locator('#edit-input').fill('configured entirely from the worker UI');
     await page.locator('#edit-overlay').getByRole('button', { name: 'Save' }).click();
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers: auth });
+      const rows = await getSessionsResilient(request, auth);
       return (await rows.json()).find((s: any) => s.name === name)?.desc;
     }).toBe('configured entirely from the worker UI');
 
@@ -69,7 +70,7 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     await panel.locator('[data-worker-config="mcp"]').getByRole('button', { name: 'Edit' }).click();
     await page.locator('#edit-select').selectOption('chrome');
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers: auth });
+      const rows = await getSessionsResilient(request, auth);
       return (await rows.json()).find((s: any) => s.name === name)?.mcp;
     }).toBe('chrome');
     await panel.locator('[data-worker-config="mcp"]').getByRole('button', { name: 'Edit' }).click();
@@ -81,7 +82,7 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     await page.locator('#edit-input').fill('e2e-destination');
     await page.locator('#edit-overlay').getByRole('button', { name: 'Save' }).click();
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers: auth });
+      const rows = await getSessionsResilient(request, auth);
       return (await rows.json()).find((s: any) => s.name === name)?.spans_groups_value;
     }).toBe('e2e-destination');
     await panel.locator('[data-worker-config="cross_group"]').getByRole('button', { name: 'Edit' }).click();
@@ -111,7 +112,7 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     // Default path: both queue transitions are on for every worker without a
     // redundant per-worker key.
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers: auth });
+      const rows = await getSessionsResilient(request, auth);
       const worker = (await rows.json()).find((s: any) => s.name === name);
       return [worker?.auto_drain_backlog, worker?.auto_drain_backlog_own,
         worker?.auto_pickup, worker?.auto_pickup_own];
@@ -122,7 +123,7 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     let backlogRow = panel.locator('[data-config-section="task-lifecycle"] .worker-config-row', { hasText: 'Backlog → To Do' }).first();
     await backlogRow.getByRole('switch').click();
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers: auth });
+      const rows = await getSessionsResilient(request, auth);
       const worker = (await rows.json()).find((s: any) => s.name === name);
       return [worker?.auto_drain_backlog, worker?.auto_drain_backlog_own];
     }).toEqual([false, true]);
@@ -132,7 +133,7 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     backlogRow = panel.locator('[data-config-section="task-lifecycle"] .worker-config-row', { hasText: 'Backlog → To Do' }).first();
     await backlogRow.getByRole('button', { name: 'Inherit' }).click();
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers: auth });
+      const rows = await getSessionsResilient(request, auth);
       const worker = (await rows.json()).find((s: any) => s.name === name);
       return [worker?.auto_drain_backlog, worker?.auto_drain_backlog_own];
     }).toEqual([true, false]);

@@ -621,3 +621,48 @@ are automatically included. Review uncommitted tests in other checkouts separate
 a stable run of this checkout cannot certify concurrent drafts. The inherited
 Playwright startup banner describes configured browser targets; the report’s
 Selection field and executed test counts are the authoritative scope of this run.
+
+## Two Sonnet workers and uploads
+
+Run the focused real-provider scenario with:
+
+```bash
+python3 scripts/lifecycle/run.py live --grep LC-SONNET-PAIR
+```
+
+It creates exactly two Claude workers using `--model sonnet` in one group. The
+reviewer must reproduce the seeded failure before approval, the author must revise,
+and both must finish their own work. Message origin, ordering, real card IDs,
+terminal search/navigation, final evidence, independent execution of the resulting
+module, and desktop/phone rendering are checked. A final report's boolean about
+outstanding changes does not replace the durable changes-requested message.
+
+Use a dedicated server/home, a private `TMUX_TMPDIR`, and a scratch Git repository.
+Export both `CC_HOME` and `AMUX_HOME` to that home and `AMUX_API` and `AMUX_URL` to
+that server in the worker environment. Before launching workers, run the checkout's
+`amux url --verify` with those variables and verify the printed endpoint. The CLI
+now resolves its configured home's endpoint consistently for every verb. Put this
+checkout's CLI first on the lab PATH; testing an older installed client measures
+that older client instead.
+
+For subscription authentication, retain the provider's existing login. Isolate the
+server's transcript/usage discovery to the scratch project; importing the host's
+entire history can trip the lab's spend circuit. If the user's login shell changes
+cwd, use a lab-only `CLAUDE_ENV_FILE` to restore the scratch directory and lab
+variables before Bash commands. Do not edit the user's shell profile.
+
+`AMUX_LIFECYCLE_PAIR_RUN=<existing run>` and
+`AMUX_LIFECYCLE_PAIR_OBSERVE=1` resume read-only observation after diagnosis. The
+report identifies observation mode; it is not evidence of a clean autonomous run.
+Retain earlier failed runs and record any operator steering separately.
+
+The ordinary browser phase now includes real multi-chunk text upload, Unicode and
+long filenames, image preview, SHA-256 verification of downloaded bytes, attachment
+removal and worker switching. Controlled delivery tests separately exercise text
+and attachment retention until acceptance, permanent refusals, durable offline
+queuing, duplicate-tap protection, and typing the next draft while a send is pending.
+These controlled transport tests do not substitute for live model execution.
+
+Browser discovery uses a private tmux socket. Focused invocations start only the
+selected project's server. `AMUX_LIFECYCLE_PORT` changes the base port when running
+separate projects concurrently; each invocation still needs its own output directory.

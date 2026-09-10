@@ -26,7 +26,7 @@ check() { # label expected actual
 TMP=$(mktemp -d); mkdir -p "$TMP/.amux"
 # Quiet + isolate the stale-URL warning (it probes a dead port for 2s otherwise).
 export AMUX_SESSION="urltest"; export TMPDIR="$TMP"; touch "$TMP/amux-url-warn-urltest"
-run() { HOME="$TMP" AMUX_URL="$1" "$AMUX_BIN" url 2>/dev/null; }
+run() { CC_HOME="$TMP/.amux" HOME="$TMP" AMUX_URL="$1" "$AMUX_BIN" url 2>/dev/null; }
 write_ep() { printf '{"canonical_port":%s,"canonical_url":"%s","retired_ports":[8822]}\n' "$2" "$1" > "$TMP/.amux/endpoint.json"; }
 
 # (a) file MISSING + env=retired  -> the :8824 literal (unconditional fallback).
@@ -49,6 +49,14 @@ check "(e) missing file + empty env -> literal 8824" "https://localhost:8824" "$
 
 # (f) file MISSING + env live + NOT retired -> env honoured (proves it isn't `echo :8824`).
 check "(f) missing file + live non-retired env -> env honoured" "https://localhost:9001" "$(run 'https://localhost:9001')"
+
+# A dedicated home must never consult the production endpoint in HOME.
+write_ep "https://localhost:8824" 8824
+mkdir -p "$TMP/lab"
+printf '{"canonical_url":"https://localhost:19973"}\n' > "$TMP/lab/endpoint.json"
+check "(g) explicit CC_HOME isolates endpoint discovery" "https://localhost:19973" "$(CC_HOME="$TMP/lab" HOME="$TMP" AMUX_URL=https://localhost:9001 "$AMUX_BIN" url 2>/dev/null)"
+rm "$TMP/lab/endpoint.json"
+check "(h) empty isolated home uses its env, not production" "https://localhost:19973" "$(CC_HOME="$TMP/lab" HOME="$TMP" AMUX_URL=https://localhost:19973 "$AMUX_BIN" url 2>/dev/null)"
 
 rm -rf "$TMP"
 echo "amux url resolver: $PASS passed, $FAIL failed"

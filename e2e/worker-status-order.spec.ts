@@ -11,8 +11,9 @@ const workers = [
   { name: 'unattributed', status: 'unattributed', last_activity: 8000 },
   { name: 'stopped', status: 'active', running: false, pinned: true, last_activity: 90000 },
 ].map(w => ({ running: true, pinned: false, dir: '/tmp/', provider: 'codex', tags: [], ...w }));
-const ordered = ['worker-a', 'worker-b', 'waiting-one', 'unattributed', 'api-error',
-  'rate-limit', 'pinned-idle', 'mixpeek-general', 'stopped'];
+// Pin to top remains above every status bucket, including stopped workers.
+const ordered = ['pinned-idle', 'stopped', 'worker-a', 'worker-b', 'waiting-one', 'unattributed', 'api-error',
+  'rate-limit', 'mixpeek-general'];
 
 async function prepare(page: Page, savedSort: string | null = null) {
   await page.addInitScript(({ workers, savedSort }) => {
@@ -40,7 +41,7 @@ test('default status order keeps mixpeek-general with idle workers and updates o
   await page.evaluate(() => {
     eval("sessions.find(s => s.name === 'mixpeek-general').status = 'active'; render();");
   });
-  expect((await names(page)).slice(0, 3)).toEqual(['mixpeek-general', 'worker-a', 'worker-b']);
+  expect((await names(page)).slice(0, 5)).toEqual(['pinned-idle', 'stopped', 'mixpeek-general', 'worker-a', 'worker-b']);
 });
 
 test('grouped order, a single remaining group, and freeze use the same status buckets', async ({ page }) => {
@@ -69,7 +70,7 @@ test('explicit name sorting remains available and a broken status order announce
   await page.evaluate(() => (window as any).setSortMode('status'));
   expect(await names(page)).toEqual(ordered);
   await expect.poll(() => beacons.find(b => b.kind === 'worker-status-order')).toMatchObject({
-    verdict: 'status-order-ok', measured: true, n_considered: workers.length,
+    verdict: 'status-order-ok', measured: true, n_considered: workers.filter(w => !w.pinned).length,
   });
   // Exercise the actual DOM checker independently of the sort implementation.
   await page.evaluate(() => {
@@ -78,7 +79,7 @@ test('explicit name sorting remains available and a broken status order announce
     (window as any)._checkWorkerStatusOrder();
   });
   await expect.poll(() => beacons.find(b => b.verdict === 'status-order-violation')).toMatchObject({
-    measured: true, n_considered: workers.length,
+    measured: true, n_considered: workers.filter(w => !w.pinned).length,
     violation: { before: 'mixpeek-general', after: 'worker-a' },
   });
 });

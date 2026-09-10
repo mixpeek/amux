@@ -2,7 +2,7 @@
 // the real Team UI, a second isolated browser accepts it, then both browsers
 // converge on one board and the member's mutation is visible in Amux logs.
 import { test, expect } from './fixtures';
-import type { Page } from '@playwright/test';
+import { request as playwrightRequest, type Page } from '@playwright/test';
 
 async function settle(page: Page): Promise<void> {
   await expect(page.locator('#conn-status').first()).toBeAttached();
@@ -24,7 +24,7 @@ async function openTeam(page: Page): Promise<void> {
     await page.click('#settings-btn');
   }
   await expect(menu).toHaveClass(/open/);
-  await page.addStyleTag({ content: '#settings-menu .settings-tab-panel{display:block !important}' });
+  await page.locator('#settings-tabs [data-stab=account]').click();
   await expect(page.locator('#settings-team-section')).toBeVisible();
 }
 
@@ -69,6 +69,7 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
   });
   const guest = await guestContext.newPage();
   const createdWorkers: string[] = [];
+  const createdTeams: string[] = [];
   const createdCards: string[] = [];
   let memberWorker: string | undefined;
   try {
@@ -188,6 +189,24 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
       createdWorkers.push(name);
     }
 
+    const createTeam = async (label: string, level: string, target: string) => {
+      await openTeam(owner);
+      await owner.locator('#settings-team-create').click();
+      await owner.locator('#team-name').fill(label);
+      await owner.locator('#team-scope-level').selectOption(level);
+      await owner.locator('#team-scope-name').selectOption(target);
+      const saved = owner.waitForResponse(r => r.url().endsWith('/api/org/teams') && r.request().method() === 'POST');
+      await owner.locator('#team-scope-submit').click();
+      const response = await saved;
+      expect(response.status()).toBe(201);
+      const team = await response.json();
+      createdTeams.push(team.id);
+      await expect(owner.locator('#team-scope-modal')).toHaveCount(0);
+      return team.id;
+    };
+    await owner.evaluate(() => (window as any).fetchSessions());
+    const groupTeam = await createTeam('Lifecycle group access', 'group', 'e2e-multiplayer');
+    const workerTeam = await createTeam('Lifecycle worker access', 'worker', memberWorker);
     // The owner can grant a non-global scope at invite creation, not only
     // rescope an existing member later. Exercise the actual Team dialog and
     // verify the persisted API response before revoking this unused link.
@@ -195,8 +214,7 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
     await openTeam(owner);
     await owner.locator('#settings-team-invite').click();
     await owner.locator('#team-invite-email').fill('group-invite@example.com');
-    await owner.locator('#team-scope-level').selectOption('group');
-    await owner.locator('#team-scope-name').selectOption('e2e-multiplayer');
+    await owner.locator('#invite-team-id').selectOption(groupTeam);
     const [scopedInviteResponse] = await Promise.all([
       owner.waitForResponse(
         (response) =>
@@ -323,7 +341,7 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
       `/api/org/members/${encodeURIComponent(member.id)}`,
       {
         headers: ownerHeaders,
-        data: { scope_level: 'group', scope_name: 'e2e-multiplayer' },
+        data: { team_id: groupTeam },
       },
     );
     expect(groupRescope.status()).toBe(200);
@@ -353,7 +371,7 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
       `/api/org/members/${encodeURIComponent(member.id)}`,
       {
         headers: ownerHeaders,
-        data: { scope_level: 'worker', scope_name: memberWorker },
+        data: { team_id: workerTeam },
       },
     );
     expect(workerRescope.status()).toBe(200);
@@ -413,19 +431,11 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
     expect(revoked.status()).toBe(200);
     const afterRevoke = await guest.evaluate(async () => (await fetch('/api/org/members')).status);
     expect(afterRevoke).toBe(401);
-    expect(
-      await guest.evaluate(
-        async (workerName) =>
-          (
-            await fetch(`/api/sessions/${encodeURIComponent(workerName)}/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ text: 'must remain revoked' }),
-            })
-          ).status,
-        memberWorker,
-      ),
-    ).toBe(401);
+    // Inspect the server response with the guest's same HttpOnly cookie.
+    // Page fetch intentionally retains 401 mutations in the durable outbox.
+    expect((await guestContext.request.post(`/api/sessions/${encodeURIComponent(memberWorker)}/send`, {
+      data: { text: 'must remain revoked' },
+    })).status()).toBe(401);
 
     // The cookie is HttpOnly and survives member deletion. A full reload must
     // remain revoked; it must never fall through to the public owner shell and
@@ -436,33 +446,24 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
     const afterReload = await guest.evaluate(async () => (await fetch('/api/org/members')).status);
     expect(afterReload).toBe(401);
   } finally {
-    for (const card of createdCards) {
-      await request.delete(`/api/board/${encodeURIComponent(card)}`, { headers: ownerHeaders });
-    }
-    for (const worker of createdWorkers) {
-      await request.delete(`/api/sessions/${encodeURIComponent(worker)}`, {
-        headers: { ...ownerHeaders, 'X-Amux-UI-Token': ownerUiToken },
-      });
-    }
-    // The deliberate mid-test revoke (above) never runs if an earlier
-    // assertion throws, which leaves guest@example.com a permanent member —
-    // every later spec sharing this project's server/home then finds a
-    // non-empty member list where it expects a fresh install. Revoke by
-    // email here too so a failure anywhere above this point still leaves the
-    // server clean for whichever spec runs next.
+    // The test's request fixture is already disposed after a timeout. Cleanup
+    // needs its own context so a failed UI assertion cannot poison later specs.
+    const cleanup = await playwrightRequest.newContext({ baseURL: new URL(owner.url()).origin, ignoreHTTPSErrors: true });
+    const failures: string[] = [];
+    const remove = async (url: string, headers = ownerHeaders) => {
+      try { const r = await cleanup.delete(url, { headers }); if (!r.ok() && r.status() !== 404) failures.push(`${url}: ${r.status()}`); }
+      catch (e) { failures.push(`${url}: ${String(e)}`); }
+    };
     try {
-      const remaining = await (
-        await request.get('/api/org/members', { headers: ownerHeaders })
-      ).json();
-      const leftover = (remaining || []).find((entry: any) => entry.email === 'guest@example.com');
-      if (leftover) {
-        await request.delete(`/api/org/members/${encodeURIComponent(leftover.id)}`, {
-          headers: ownerHeaders,
-        });
-      }
-    } catch (e) {
-      // Best-effort: do not let cleanup itself mask the real test failure.
+      for (const card of createdCards) await remove(`/api/board/${encodeURIComponent(card)}`);
+      for (const worker of createdWorkers) await remove(`/api/sessions/${encodeURIComponent(worker)}`, { ...ownerHeaders, 'X-Amux-UI-Token': ownerUiToken });
+      const remaining = await (await cleanup.get('/api/org/members', { headers: ownerHeaders })).json();
+      for (const member of remaining.filter((entry: any) => entry.email === 'guest@example.com')) await remove(`/api/org/members/${encodeURIComponent(member.id)}`);
+      for (const team of createdTeams) await remove(`/api/org/teams/${encodeURIComponent(team)}`);
+    } finally {
+      await cleanup.dispose();
+      await guestContext.close();
     }
-    await guestContext.close();
+    expect(failures, 'run-owned multiplayer fixtures must be removed').toEqual([]);
   }
 });

@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { getSessionsResilient } from './lifecycle/evidence';
 
 test('one active worker marks exactly its claimed card as Working now', async ({ page, request }, testInfo) => {
   await page.goto('/');
@@ -51,7 +52,7 @@ test('one active worker marks exactly its claimed card as Working now', async ({
     // Keep the real session and board projections, changing only the one field
     // this renderer consumes to reproduce an active hook while avoiding a real
     // model launch in CI.
-    const sessionResponse = await request.get('/api/sessions', { headers: auth });
+    const sessionResponse = await getSessionsResilient(request, auth);
     const sessionRows = await sessionResponse.json();
     const row = sessionRows.find((s: any) => s.name === worker);
     expect(row?.runtime_board?.verdict).toBe('not-running');
@@ -62,6 +63,7 @@ test('one active worker marks exactly its claimed card as Working now', async ({
     // model process would turn a deterministic browser golden into an external
     // side effect; a stopped registered worker is correctly `not-running`.
     row.status = 'active';
+    row.running = true;
     row.task_board_id = claimed;
     row.runtime_board = {
       measured: true,
@@ -72,7 +74,7 @@ test('one active worker marks exactly its claimed card as Working now', async ({
       card_live: true,
       violation: false,
     };
-    await page.route('**/api/sessions', route => route.fulfill({
+    await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify(sessionRows),

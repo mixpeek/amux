@@ -4814,7 +4814,7 @@ print(d.get('message','ok') + (' (was %s generations deep)' % d['generations'] i
 cmd_url() {
   local literal="https://localhost:8824"   # last-resort floor; appended, never an else-branch
   local retired_floor="8822"                # only consulted when endpoint.json is unreadable
-  local ep="$HOME/.amux/endpoint.json"
+  local ep="$CC_HOME/endpoint.json"
   local resolved="" src=""
 
   # 1. endpoint.json is authoritative and self-updating (the server rewrites it
@@ -4822,7 +4822,7 @@ cmd_url() {
   #    env is ignored whenever the file is present.
   if [ -r "$ep" ]; then
     resolved=$(sed -n 's/.*"canonical_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ep" | head -1)
-    [ -n "$resolved" ] && src="endpoint.json"
+    [ -n "$resolved" ] && src="endpoint.json:$ep"
   fi
 
   # 2. File missing/garbled: trust $AMUX_URL only if its port is not the retired
@@ -4912,6 +4912,9 @@ _warn_stale_amux_url() {
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
   ensure_dirs
+  # Every verb must resolve the same installation as `amux url`; most legacy
+  # verbs otherwise fall back to the production port even with a custom home.
+  AMUX_API="${AMUX_API:-$(cmd_url)}"
   _warn_stale_amux_url
   # Ship any transport failures the PREVIOUS invocations could not report,
   # before doing this one's work. No-op (one file test) when there are none.

@@ -1733,6 +1733,24 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
 /// durable answer is the lane's own reported state, which `steer_lane_at_boundary`
 /// already prefers. This narrows the fallback's blast radius; it does not make
 /// the fallback good.
+#[derive(Debug, PartialEq, Eq)]
+enum IdleHookFrame {
+    Selector,
+    Active,
+    Idle,
+}
+
+// A hook controls queue admission; this fresh frame controls destructive keys.
+fn idle_hook_frame(raw: &str) -> IdleHookFrame {
+    if detect_claude_status(raw) == "waiting" {
+        IdleHookFrame::Selector
+    } else if pane_bar_says_generating(raw) {
+        IdleHookFrame::Active
+    } else {
+        IdleHookFrame::Idle
+    }
+}
+
 pub(crate) fn pane_bar_says_generating(raw_output: &str) -> bool {
     let clean = strip_ansi(raw_output);
     let nonblank: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -7391,6 +7409,27 @@ async fn send_text_inner(
     // `sent_at` bounds the JSONL evidence window: an OLDER identical message
     // (a second "continue" minutes later) must not count as this send.
     let sent_at = now_f64();
+    // A Stop hook authorizes draining the queue, not pressing Escape forever.
+    // Another turn/tool can start between that hook and this send lock. Preserve
+    // hook-based admission (background agents must not strand the queue), but
+    // use the live footer to choose non-interrupting paste and verification.
+    // The Sonnet pair lifecycle reproduced rejected tool calls on callbacks
+    // whose hook still said idle while the footer said "esc to interrupt".
+    if hook_confirmed_idle {
+        let live = tmux_capture(name, 30).await;
+        if idle_hook_frame(&live) == IdleHookFrame::Selector {
+            tracing::warn!(session = %name, verdict = "idle_hook_live_selector_wait",
+                "idle hook became stale before a live selector — preserving the pending question");
+            return (false, "session at a selector — retry at next idle boundary".into());
+        }
+        if idle_hook_frame(&live) == IdleHookFrame::Active {
+            generating = true;
+            tracing::warn!(
+                session = %name, verdict = "idle_hook_live_activity_paste", from_steering,
+                "idle hook disagrees with live activity — delivering without Escape"
+            );
+        }
+    }
     if !generating {
         // Fresh re-check right before the Escape (py:25597): "esc to interrupt"
         // in the STATUS BAR is the reliable generating signal. Scoped to the
@@ -26911,6 +26950,21 @@ mod steer_freeze_tests {
 › Ask Codex to do anything
 
   gpt-5.6-sol xhigh · ~/Dev/amux";
+
+    #[test]
+    fn stale_idle_hook_preserves_sonnet_tools_and_pending_questions() {
+        // Captured in the two-Sonnet lifecycle: an automated callback rejected
+        // an in-flight tool, then the resulting AskUserQuestion was vulnerable
+        // to the next callback. Both must keep Escape out of delivery.
+        let busy = "Running 1 shell command…\n────────────────────\n❯ \n────────────────────\n  ⏵⏵ auto mode on · esc to interrupt · ← 2 agents\n";
+        let question = "☐ Capture shells\nHow should I handle these?\n❯ 1. Discard both now (Recommended)\n  2. Leave them open\n  3. Explain why\n  4. Type something.\n────────────────────\nEnter to select · ↑/↓ to navigate · Esc to cancel\n";
+        assert_eq!(idle_hook_frame(busy), IdleHookFrame::Active);
+        assert_eq!(idle_hook_frame(question), IdleHookFrame::Selector);
+        // Mentioning interruption in ordinary transcript prose must still let
+        // an idle queue drain; otherwise this fix recreates the old freeze.
+        assert_eq!(idle_hook_frame(FROZEN_IDLE_PANE), IdleHookFrame::Idle);
+        assert_eq!(idle_hook_frame(IDLE_WITH_AGENTS_PANE), IdleHookFrame::Active);
+    }
 
     #[test]
     fn prose_about_esc_to_interrupt_is_not_a_generating_lane() {

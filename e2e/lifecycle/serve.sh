@@ -8,6 +8,7 @@ for key in ${!AMUX_@}; do
     *) unset "$key" ;;
   esac
 done
+unset TMUX TMUX_PANE
 export AMUX_ISOLATED=1 AMUX_NO_SELF_ADOPT=1
 export AMUX_FILES_ROOT="$AMUX_HOME/workspace"
 mkdir -p "$AMUX_FILES_ROOT"

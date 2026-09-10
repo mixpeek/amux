@@ -4355,7 +4355,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onpaste="handleCardPaste('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
-          <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_sendMode === 'queue' ? 'Queue' : 'Send'}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
+          <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" ${_composerPendingSends.has(s.name) ? 'disabled' : ''} onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_composerPendingSends.has(s.name) ? 'Sending…' : (_sendMode === 'queue' ? 'Queue' : 'Send')}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
         </div>` : ''}
       </div>
     </div>`;
@@ -7007,11 +7007,12 @@ async function doSend(name, text) {
         const start = await showConfirm(
           `Worker "${name}" is not running.\n\nStart it and resend?`, 'Start & Send', false);
         if (start) {
-          await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/start', { method: 'POST' });
+          const started = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/start', { method: 'POST' });
+          if (!started.ok || _isLocallyQueued(started)) return 'failed';
           showToast('Starting ' + name + '...');
           // Wait for session to be ready, then retry send
-          setTimeout(() => doSend(name, text), 3000);
-          return 'starting';
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          return doSend(name, text);
         }
         return 'declined';        // user said no — nothing sent, nothing queued
       } else {
@@ -7198,66 +7199,36 @@ async function sendFromInput(name) {
     channelOpen(name, routed.target, routed.message);
     return;
   }
-  // Honour the SAME send/queue mode the peek composer uses — the card now has
-  // the same split control, and a button labelled Queue that sends anyway would
-  // be the AMUX-2140 shape: a control you can read correctly and still be lied
-  // to by. Direct-send when the worker is at a selector, matching sendPeekCmd:
-  // a waiting session needs the keystroke to land now, not at a turn boundary.
-  const _atSel = (sessions.find(s => s.name === name) || {}).status === 'waiting';
-  if (_sendMode === 'queue' && !_atSel) {
-    cmdHistoryAdd(text || msg, { type: 'steering', session: name });
-    inp.value = '';
-    _draftClear(name);
-    inp.style.height = 'auto';
-    const _nf = _files.length;
-    _clearCardFiles(name);
-    const splitMain = inp.closest('.panel, .card')?.querySelector('.send-split-main');
-    if (splitMain) { splitMain.dataset.prevText = splitMain.textContent; splitMain.textContent = 'Queuing…'; splitMain.disabled = true; splitMain.style.opacity = '0.6'; }
-    await steerSession(name, _expandAtMentions(msg));
-    if (splitMain) { splitMain.textContent = splitMain.dataset.prevText || 'Queue'; splitMain.disabled = false; splitMain.style.opacity = ''; }
-    inp.style.borderColor = '#a371f7';
-    setTimeout(() => { inp.style.borderColor = ''; }, 600);
-    const sess = sessions.find(s => s.name === name);
-    const cnt = _steerHumanCount(sess);
-    if (typeof showToast === 'function') showToast('Queued for ' + name + (cnt > 1 ? ' (' + cnt + ' in queue)' : '') + (_nf ? ' · ' + _nf + ' file' + (_nf === 1 ? '' : 's') : ''));
-    return;
+  const original = inp.value;
+  const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
+  if (_composerPendingSends.has(name)) return;
+  _draftSave(name, original);
+  _composerPendingSends.add(name);
+  _syncComposerPending();
+  try {
+    const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
+      : await doSend(name, _expandAtMentions(msg));
+    if (!['sent', 'queued'].includes(result)) {
+      _composerUnconfirmed(name, result, _files.length);
+      showToast('Message not confirmed — draft and attachments kept');
+      return;
+    }
+    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
+    if (_liveComposerValue(name) === original) _draftClear(name);
+    const sent = new Set(_files);
+    for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
+    renderCardFiles(name);
+    if (result === 'queued') showToast('Queued for ' + name);
+    else showToast('Sent to ' + name);
+    _cardQueuedBadge(name);
+  } catch (e) {
+    _composerUnconfirmed(name, 'exception', _files.length);
+    showToast('Message not confirmed — draft and attachments kept');
+  } finally {
+    _composerPendingSends.delete(name);
+    _syncComposerPending();
   }
-  cmdHistoryAdd(text || msg, { session: name });
-  inp.value = '';
-  _draftClear(name);          // it left the composer — a restored copy would be a ghost
-  inp.style.height = 'auto';
-  _clearCardFiles(name);
-  // OUTCOME FROM doSend, NOT FROM A FLAG SAMPLED BEFORE THE ATTEMPT (amux-cloud,
-  // reviewing this card). `online` and "what the send actually did" are two different
-  // facts and they diverge in reachable ways: an online fetch that THROWS gets queued
-  // while the toast said "Sent" — false success in exactly the case this card exists to
-  // report; a 500 produced two contradictory toasts with the wrong one last; and a
-  // declined start prompt sent nothing while claiming it had (62 of 105 lanes are not
-  // running, so that path is live).
-  //
-  // Same defect as AMUX-2363 six commits earlier, inverted onto the client: there the
-  // endpoint reported that it was REACHED rather than what it DID. doSend knows the
-  // outcome; it was throwing it away and the caller was guessing.
-  const _outcome = await doSend(name, _expandAtMentions(msg));
-  // Same queue/send semantics as the peek composer. doSend() has always queued
-  // correctly when offline; the worker list just never SAID which happened — a
-  // 400ms green border reads identically for "delivered" and "sitting in a local
-  // queue until the server comes back". Those are different facts and the second
-  // one is the one you need.
-  const _colour = { sent: 'var(--green)', queued: '#d29922', starting: '#d29922',
-                    failed: 'var(--red, #f85149)', declined: '' };
-  inp.style.borderColor = _colour[_outcome] !== undefined ? _colour[_outcome] : 'var(--green)';
-  setTimeout(() => { inp.style.borderColor = ''; }, 600);
-  if (typeof showToast === 'function') {
-    // Silent when doSend already spoke — that double-toast was case 2 in the review,
-    // where the WRONG message was the one left on screen.
-    const _msg = { sent: 'Sent to ' + name,
-                   queued: 'Offline \u2014 queued for ' + name,
-                   starting: 'Starting ' + name + ' \u2014 will resend',
-                   declined: 'Not sent \u2014 ' + name + ' is not running' }[_outcome];
-    if (_msg) showToast(_msg);
-  }
-  _cardQueuedBadge(name);
 }
 
 // Mirror the peek's "queued" pill onto the card, so a worker with locally-queued
@@ -10006,6 +9977,7 @@ function openPeek(name, opts) {
     _peekFilesRestore(name);
   }
   peekSession = name;
+  _syncComposerPending();
   const identityOverlay = document.getElementById('peek-overlay');
   if (identityOverlay) {
     identityOverlay.dataset.session = name;
@@ -13103,98 +13075,97 @@ function _updateSendSplit() {
     const main = split.querySelector('.send-split-main');
     if (main) main.textContent = _sendMode === 'queue' ? 'Queue' : 'Send';
   });
+  _syncComposerPending();
 }
 setTimeout(_updateSendSplit, 0);
 
+const _composerPendingSends = new Set();
+function _composerUnconfirmed(session, result, attachments) {
+  // The local log is available even with analytics disabled. Never send message
+  // contents, upload paths or credentials in a failure beacon.
+  fetch(API + '/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: 'composer-delivery', verdict: 'unconfirmed', session,
+      result, attachments, draft_retained: true, measured: true, n_considered: 1, ver: APP_VER})
+  }).catch(() => {});
+}
+
+function _syncComposerPending() {
+  const sync = (btn, session) => {
+    if (!btn) return;
+    const pending = _composerPendingSends.has(session);
+    btn.disabled = pending;
+    btn.textContent = pending ? 'Sending…' : (_sendMode === 'queue' ? 'Queue' : 'Send');
+  };
+  sync(document.querySelector('#peek-overlay .send-split-main'), peekSession);
+  document.querySelectorAll('.card[data-session]').forEach(card =>
+    sync(card.querySelector('.send-split-main'), card.dataset.session));
+}
+
 async function sendPeekCmd() {
-  if (!peekSession) return;
+  const session = peekSession;
+  if (!session || _composerPendingSends.has(session)) return;
   if (_blockedByAttachment(peekFiles)) return;
   const inp = document.getElementById('peek-cmd-input');
-  const text = inp.value.trim();
+  const original = inp.value;
+  const text = original.trim();
   const files = peekFiles.filter(f => f.path);
-  if (!text && files.length === 0) {
-    // Empty send = extract + submit the suggested prompt from the session
-    _submitSuggestion(peekSession, true);
-    return;
-  }
-  // Queue mode: enqueue to the steering queue — no status check. The client's
-  // status is a snapshot, and racing it was exactly how queued messages fell
-  // through to direct sends. The server delivers at the next turn boundary; an
-  // idle session picks it up within seconds via the fast steering tick.
-  //
-  // ATTACHMENTS QUEUE TOO (Ethan 2026-08-13: "why are queue messages not queued
-  // here — with a file it sent in the box?"). This used to require
-  // `files.length === 0`, so ANY attached file fell through to the immediate
-  // direct send below — attaching a file silently bypassed the queue. But the
-  // uploaded files persist at their paths and the message that carries them is
-  // just `text @path1 @path2`, which is plain text — exactly what the steering
-  // queue delivers. So build the @path refs (same as the direct path does) and
-  // queue that. "steering carries text only" is true and irrelevant: @path IS
-  // text.
-  //
-  // EXCEPTION: when the session is at a selector (status 'waiting' = NEEDS
-  // INPUT), it is explicitly parked ON your answer. The steering queue only
-  // delivers at an IDLE boundary, never at a picker — so a queued reply would
-  // sit undelivered forever (you "keep sending commands and they don't go
-  // through"). Send those DIRECT so they land immediately.
-  const _atSelector = (sessions.find(s => s.name === peekSession) || {}).status === 'waiting';
-  if (_sendMode === 'queue' && !_atSelector) {
-    let queuedMsg = text;
-    if (files.length > 0) {
-      const refs = files.map(f => '@' + f.path).join(' ');
-      queuedMsg = text ? `${text} ${refs}` : refs;
-    }
-    cmdHistoryAdd(text || queuedMsg, {type:'steering', session: peekSession});
-    inp.value = '';
-    inp.style.height = 'auto';
-    _draftClear(peekSession);
-    clearPeekFiles();
-    const peekSendBtn = document.querySelector('.peek-cmd-bar .send-split-main, .peek-cmd-bar .btn.primary');
-    if (peekSendBtn) { peekSendBtn.dataset.prevText = peekSendBtn.textContent; peekSendBtn.textContent = 'Queuing…'; peekSendBtn.disabled = true; peekSendBtn.style.opacity = '0.6'; }
-    await steerSession(peekSession, queuedMsg);
-    if (peekSendBtn) { peekSendBtn.textContent = peekSendBtn.dataset.prevText || 'Queue'; peekSendBtn.disabled = false; peekSendBtn.style.opacity = ''; }
-    const sess = sessions.find(s => s.name === peekSession);
-    const cnt = _steerHumanCount(sess);
-    showToast('Queued for ' + peekSession + (cnt > 1 ? ' (' + cnt + ' in queue)' : '')
-              + (files.length ? ' · ' + files.length + ' file' + (files.length === 1 ? '' : 's') : ''));
-    return;
-  }
-  // 'send' mode + active session sends immediately. The old confirmation dialog
-  // here required a second Enter (or click) to confirm — that was the real
-  // "press enter twice" bug. The safe default is 'queue' mode (handled just
-  // above), which reliably delivers at the next turn boundary; use the send-mode
-  // toggle to switch between queue and send.
-  cmdHistoryAdd(text, {session: peekSession});
-
-  // Build message: inline @path references (no newlines — tmux treats \n as Enter,
-  // which would split the message and send the path as a separate submit)
+  if (!text && !files.length) { _submitSuggestion(session, true); return; }
   let message = text;
-  if (files.length > 0) {
-    const refs = files.map(f => '@' + f.path).join(' ');
-    message = text ? `${text} ${refs}` : refs;
+  if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
+  const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
+  const queued = _sendMode === 'queue' && !atSelector;
+  if (!queued) {
+    const routed = _atRoute(message);
+    if (routed && routed.target !== session) {
+      // The channel drawer now owns this draft; opening it is the explicit handoff.
+      inp.value = ''; inp.style.height = 'auto'; _draftClear(session); clearPeekFiles();
+      channelOpen(session, routed.target, routed.message);
+      return;
+    }
+    message = _expandAtMentions(message);
   }
-  // @-route at start of message → open channel drawer prefilled
-  const routed = _atRoute(message);
-  if (routed && routed.target !== peekSession) {
-    inp.value = '';
-    inp.style.height = 'auto';
-    _draftClear(peekSession);
-    clearPeekFiles();
-    channelOpen(peekSession, routed.target, routed.message);
-    return;
+  // A cleared field is not a delivery receipt. Keep text and uploads recoverable
+  // through refusal, a reload, or switching workers while the request is in flight.
+  _draftSave(session, original);
+  _composerPendingSends.add(session);
+  _syncComposerPending();
+  let result = 'failed';
+  try {
+    result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
+      : await doSend(session, message);
+    if (!['sent', 'queued'].includes(result)) {
+      _composerUnconfirmed(session, result, files.length);
+      showToast('Message not confirmed — draft and attachments kept');
+      return;
+    }
+    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
+    if (peekSession === session && inp.value === original) {
+      inp.value = ''; inp.style.height = 'auto'; _draftClear(session);
+    } else if (peekSession !== session && _draftGet(session) === original) {
+      _draftClear(session);
+    }
+    // Remove only the acknowledged files, never a new attachment added while
+    // waiting, or attachments belonging to a different worker's composer.
+    const sent = new Set(files);
+    for (const f of files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    if (peekSession === session) {
+      peekFiles = peekFiles.filter(f => !sent.has(f));
+      _peekFilesStash(session);
+      renderPeekFiles();
+      inp.style.borderColor = 'var(--green)';
+      setTimeout(() => { inp.style.borderColor = ''; }, 400);
+      _refreshPeekSoon();
+    } else if (_peekFilesBySession[session]) {
+      _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
+    }
+    if (result === 'queued') showToast('Queued for ' + session);
+  } catch (e) {
+    _composerUnconfirmed(session, 'exception', files.length);
+    showToast('Message not confirmed — draft and attachments kept');
+  } finally {
+    _composerPendingSends.delete(session);
+    _syncComposerPending();
   }
-
-  inp.value = '';
-  inp.style.height = 'auto';
-  _draftClear(peekSession);
-  clearPeekFiles();
-
-  // @mentions in the middle of a message stay as text + API hints (Claude can reach them).
-  message = _expandAtMentions(message);
-  await doSend(peekSession, message);
-  inp.style.borderColor = 'var(--green)';
-  setTimeout(() => { inp.style.borderColor = ''; }, 400);
-  _refreshPeekSoon();
 }
 // Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
 // Claude repaints a picker/selection in <50ms and the peek endpoint serves in
@@ -13284,11 +13255,12 @@ function _showSteerPrompt(text) {
 async function steerSession(name, text) {
   if (!text) return;
   const msgId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
+  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ text, record_history: true, msg_id: msgId })
   });
-  if (r) {
+  if (_isLocallyQueued(r)) return true;
+  if (r && r.ok) {
     const d = await r.json().catch(() => ({}));
     const newEntry = { id: d.id || ('steer-' + Date.now()), text, queued_at: Date.now() / 1000, guard: '' };
     const sess = sessions.find(s => s.name === name);
@@ -13299,7 +13271,9 @@ async function steerSession(name, text) {
     if (peekSession === name && _peekTab === 'steering') _steeringRender();
     _steeringUpdateBadge();
     render();
+    return true;
   }
+  return false;
 }
 function peekDownloadLog() {
   if (!peekSession) return;
@@ -22273,19 +22247,16 @@ function toggleFreeze() {
     cardOrder = [];
     localStorage.removeItem('amux_card_order');
   } else {
-    // Compute order using the SAME logic as render() — works even for collapsed groups
-    const visible = sessions.filter(s => !s.archived);
-    let ordered;
-    if (layoutMode === 'group') {
-      const buckets = Object.fromEntries(_WORKER_STATUS_GROUPS.map(g => [g.key, []]));
-      visible.forEach(s => buckets[_sessStatusKey(s)].push(s));
-      const sortFn = _sortFnFor(sortMode);
-      for (const k of Object.keys(buckets)) buckets[k].sort(sortFn);
-      ordered = _WORKER_STATUS_GROUPS.flatMap(g => buckets[g.key]);
-    } else {
-      ordered = [...visible].sort(_sortFnFor(sortMode));
-    }
-    cardOrder = ordered.map(s => s.name);
+    // Freeze what the user actually sees. Rebuilding status buckets here put
+    // pinned workers back below active workers in group view on the same tap.
+    const rendered = [...document.querySelectorAll('#cards .card[data-session]')]
+      .map(card => card.dataset.session);
+    const remaining = sessions.filter(s => !s.archived && !rendered.includes(s.name))
+      .sort(_sortFnFor(sortMode)).map(s => s.name);
+    cardOrder = [...new Set([...rendered, ...remaining])];
+    fetch(API + '/api/client-debug', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ kind: 'worker-freeze-order', verdict: 'captured-rendered-order',
+        measured: true, n_considered: rendered.length, layout: layoutMode, ver: APP_VER }) }).catch(() => {});
     localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
     _frozen = true;
     localStorage.setItem('amux_frozen', '1');

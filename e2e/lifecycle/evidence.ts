@@ -56,6 +56,10 @@ export async function deleteOwnedWorkers(page: Page, request: APIRequestContext,
     const response = await getSessionsResilient(request, headers);
     expect(response.ok(), 'sessions listing must recover from a transient race').toBeTruthy();
     if (!(await response.json()).some((row: any) => row.name === name)) continue;
+    const closeDetail = page.locator('#board-detail-overlay.active > .overlay-header').getByRole('button', { name: 'Back', exact: false });
+    if (await closeDetail.isVisible()) await closeDetail.click();
+    const closePeek = page.locator('#peek-overlay.active').getByRole('button', { name: 'Close worker', exact: true });
+    if (await closePeek.isVisible()) await closePeek.click();
     await page.goto('/');
     await page.locator('#tab-sessions').click();
     const card = page.locator(`.card[data-session="${name}"]`).locator('visible=true').first();
