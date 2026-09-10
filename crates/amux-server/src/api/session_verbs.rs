@@ -3814,6 +3814,9 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
             ts INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT '');
          CREATE TABLE IF NOT EXISTS prefs (key TEXT PRIMARY KEY, value TEXT);",
     )?;
+    // A reservation is not acceptance. Older rows have no receipt and remain
+    // uncertain rather than being upgraded into a fabricated delivery receipt.
+    let _ = conn.execute("ALTER TABLE send_dedup ADD COLUMN receipt_id TEXT", []);
     // Python's steering_queue predates `guard` and gained it via ALTER; a DB
     // created by Python's schema block lacks it. Add-if-missing, ignore
     // "duplicate column".
@@ -5393,31 +5396,68 @@ async fn steer_enqueue_precond_with_id(
     })
 }
 
-/// py:25236 _send_dedup_seen — idempotency across client retries, persisted
-/// because the loss window IS a server restart.
-async fn send_dedup_seen(state: &AppState, name: &str, msg_id: &str) -> bool {
-    let session = name.to_string();
-    let msg_id = msg_id.to_string();
-    let reply = state
-        .store
-        .write_async(move |conn| {
-            ensure_fleet_tables(conn)?;
-            conn.execute("DELETE FROM send_dedup WHERE ts < ?", [now_i64() - 600])?;
-            let dup = conn
-                .execute(
-                    "INSERT INTO send_dedup (session, msg_id, ts) VALUES (?,?,?)",
-                    rusqlite::params![session, msg_id, now_i64()],
-                )
-                .is_err();
-            Ok(crate::db::WriteOutcome {
-                applied: !dup,
-                events: vec![],
-            })
-        })
-        .await;
-    match reply {
-        Ok(r) => !r.applied,
-        Err(_) => false, // dedup is best-effort; never block a send on it
+/// Reserve one transport identity before acting, then acknowledge it only once
+/// the terminal accepted it or the server queue durably stored it. A concurrent
+/// retry must never turn the first request's reservation into "already sent".
+async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<Response> {
+    if msg_id.is_empty() { return None; }
+    let (session, identity) = (name.to_string(), msg_id.to_string());
+    let reply = state.store.write_async(move |conn| {
+        ensure_fleet_tables(conn)?;
+        // Keep confirmed receipts across long offline periods. An interrupted
+        // reservation never expires into permission to inject the text again.
+        conn.execute("DELETE FROM send_dedup WHERE receipt_id IS NOT NULL AND ts < ?", [now_i64() - 30 * 86400])?;
+        let inserted = conn.execute(
+            "INSERT INTO send_dedup (session,msg_id,ts) VALUES (?,?,?) ON CONFLICT(session,msg_id) DO NOTHING",
+            rusqlite::params![session,identity,now_i64()],
+        )?;
+        Ok(crate::db::WriteOutcome {applied:inserted > 0,events:vec![]})
+    }).await;
+    let error = match reply {
+        Ok(reply) if reply.applied => return None,
+        Ok(_) => {
+            let row = (|| -> anyhow::Result<(Option<String>,i64)> {
+                let conn=state.store.read()?;
+                Ok(conn.query_row("SELECT receipt_id,ts FROM send_dedup WHERE session=? AND msg_id=?",
+                    rusqlite::params![name,msg_id],|r| Ok((r.get(0)?,r.get(1)?)))?)
+            })();
+            match row {
+                Ok((Some(id),_)) => return Some(j200(json!({"ok":true,"deduped":true,"id":id,
+                    "message":"duplicate retry ignored (previous acceptance confirmed)"}))),
+                Ok((None,ts)) => {
+                    let uncertain=now_i64().saturating_sub(ts)>120;
+                    tracing::warn!(target:"amux::message_acceptance",session=name,uncertain,
+                        measured=true,n_considered=1,"duplicate message has no acceptance receipt");
+                    return Some(jresp(if uncertain {StatusCode::CONFLICT} else {StatusCode::SERVICE_UNAVAILABLE},
+                        json!({"ok":false,"submission":if uncertain {"uncertain"} else {"pending"},
+                            "error":if uncertain {"previous message acceptance is uncertain; inspect the worker terminal before sending a new message"}
+                                else {"previous message acceptance is still pending; retry the same message ID"},
+                            "retryable":!uncertain})));
+                }
+                Err(error) => error.to_string(),
+            }
+        }
+        Err(error) => error.to_string(),
+    };
+    tracing::warn!(target:"amux::message_acceptance",session=name,%error,measured=false,n_considered=1,
+        "message identity could not be reserved; no send attempted");
+    Some(jresp(StatusCode::SERVICE_UNAVAILABLE,json!({"ok":false,"error":"message identity storage unavailable; retry the same message ID"})))
+}
+
+async fn send_dedup_accept(state: &AppState, name: &str, msg_id: &str, receipt_id: &str) {
+    if msg_id.is_empty() { return; }
+    let (session,identity,receipt)=(name.to_string(),msg_id.to_string(),receipt_id.to_string());
+    let result=state.store.write_async(move |conn| {
+        let changed=conn.execute("UPDATE send_dedup SET receipt_id=? WHERE session=? AND msg_id=?",
+            rusqlite::params![receipt,session,identity])?;
+        if changed != 1 { return Err(rusqlite::Error::QueryReturnedNoRows); }
+        Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+    }).await;
+    if let Err(error)=result {
+        // The effect happened, so do not retry it automatically. A lost HTTP
+        // response leaves an uncertain reservation for explicit terminal review.
+        tracing::warn!(target:"amux::message_acceptance",session=name,%error,measured=false,n_considered=1,
+            "message accepted but durable receipt write failed");
     }
 }
 
@@ -14887,9 +14927,6 @@ pub(crate) async fn steer_mutate(
             return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'text'"}));
         }
         let client_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
-        if !client_id.is_empty() && send_dedup_seen(state, name, &format!("steer:{client_id}")).await {
-            return j200(json!({"ok": true, "deduped": true, "message": "duplicate retry ignored (already queued)"}));
-        }
         // Strip [no-board] before ENQUEUE (AC-183): decide, then strip.
         let _skip_board = body.get("no_board").map(py_truthy).unwrap_or(false) || no_board_re().is_match(&text);
         if no_board_re().is_match(&text) {
@@ -14937,6 +14974,8 @@ pub(crate) async fn steer_mutate(
                 }),
             );
         }
+        let dedup_id=if client_id.is_empty() {String::new()} else {format!("steer:{client_id}")};
+        if let Some(response)=send_dedup_gate(state,name,&dedup_id).await {return response;}
         // IS THIS A PICKER ANSWER? Decide NOW, while the picker is still on
         // screen — intent is only knowable at the moment it existed (AMUX-2823).
         // The `selector-answer` guard also dedupes: at most one pending menu
@@ -14958,6 +14997,7 @@ pub(crate) async fn steer_mutate(
         let msg_id = match steer_enqueue(state, name, &text, guard, &hdr_worker(headers)).await {
             Ok(id) => id,
             Err(reason) => {
+                send_dedup_forget(state,name,&dedup_id).await;
                 return jresp(
                     StatusCode::CONFLICT,
                     json!({
@@ -14969,6 +15009,7 @@ pub(crate) async fn steer_mutate(
                 )
             }
         };
+        send_dedup_accept(state,name,&dedup_id,&msg_id).await;
         if body.get("record_history").map(py_truthy).unwrap_or(false) {
             let email = headers.get("x-amux-user-email").and_then(|v| v.to_str().ok()).unwrap_or("");
             // QUEUED, not direct (AF-159). `steer_enqueue` above put this on the
@@ -15798,16 +15839,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         text.push_str(&stamp);
     }
     let msg_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
-    if !msg_id.is_empty() && send_dedup_seen(state, name, &msg_id).await {
-        // Same `id` as the original response — see send_response_id. A retry
-        // that answers with a DIFFERENT id (or none, as this arm did until
-        // 2026-08-11) breaks the caller's correlation exactly when it is
-        // retrying, which is the one moment idempotency is for.
-        return j200(json!({
-            "ok": true, "deduped": true, "id": send_response_id(name, &msg_id),
-            "message": "duplicate retry ignored (already delivered)"
-        }));
-    }
+    if let Some(response)=send_dedup_gate(state,name,&msg_id).await {return response;}
     if text.trim().starts_with("/compact") {
         let n = name.to_string();
         tokio::task::spawn_blocking(move || backup_session_jsonl(&n, "pre_compact"));
@@ -15900,6 +15932,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             send_dedup_forget(state, name, &msg_id).await;
         }
     } else if ok {
+        send_dedup_accept(state,name,&msg_id,&send_response_id(name,&msg_id)).await;
         update_meta(
             name,
             &[
@@ -18318,7 +18351,7 @@ async fn restart_for_swap(state: &AppState, name: &str, provider: &str) -> bool 
 // and the plain-log mirror. Deliberately NOT migrated, named here rather
 // than silently inherited: session_events rows (append-only audit — history
 // keeps the name it happened under; the rename journal entry links the two)
-// and send_dedup rows (600s TTL, self-expiring).
+// and send_dedup receipt retention (30 days; interrupted reservations remain explicit).
 // ---------------------------------------------------------------------------
 
 static RENAME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -21788,6 +21821,68 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn message_acceptance_reservation_is_not_a_delivery_receipt() {
+        let (state,_dir)=state();
+        assert!(send_dedup_gate(&state,"probe","retry-1").await.is_none());
+        let (a,b)=tokio::join!(send_dedup_gate(&state,"probe","retry-1"),send_dedup_gate(&state,"probe","retry-1"));
+        assert_eq!(a.unwrap().status(),StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(b.unwrap().status(),StatusCode::SERVICE_UNAVAILABLE);
+        send_dedup_accept(&state,"probe","retry-1","original-receipt").await;
+        let response=send_dedup_gate(&state,"probe","retry-1").await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),65536).await.unwrap();
+        let receipt:Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(receipt["id"],"original-receipt");
+        assert_eq!(receipt["deduped"],true);
+        // A lost acknowledgement retried after the former ten-minute TTL
+        // cannot inject again. Interrupted attempts also never age into New.
+        assert!(send_dedup_gate(&state,"probe","interrupted").await.is_none());
+        state.store.write_async(|conn| {
+            conn.execute("UPDATE send_dedup SET ts=?",[now_i64()-3600])?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await.unwrap();
+        assert_eq!(send_dedup_gate(&state,"probe","retry-1").await.unwrap().status(),StatusCode::OK);
+        assert_eq!(send_dedup_gate(&state,"probe","interrupted").await.unwrap().status(),StatusCode::CONFLICT);
+        send_dedup_forget(&state,"probe","interrupted").await;
+        assert!(send_dedup_gate(&state,"probe","interrupted").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_legacy_reservations_are_uncertain_not_confirmed() {
+        let (state,_dir)=state();
+        state.store.write_async(|conn| {
+            conn.execute_batch("DROP TABLE IF EXISTS send_dedup; CREATE TABLE send_dedup(session TEXT NOT NULL,msg_id TEXT NOT NULL,ts INTEGER NOT NULL,PRIMARY KEY(session,msg_id)); INSERT INTO send_dedup VALUES ('probe','legacy',1);")?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await.unwrap();
+        assert_eq!(send_dedup_gate(&state,"probe","legacy").await.unwrap().status(),StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_storage_failure_refuses_untracked_delivery() {
+        let (state,_dir)=state();
+        state.store.write_async(|conn| {
+            ensure_fleet_tables(conn)?;
+            conn.execute_batch("CREATE TRIGGER refuse_identity BEFORE INSERT ON send_dedup BEGIN SELECT RAISE(ABORT,'test identity storage unavailable'); END;")?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await.unwrap();
+        assert_eq!(send_dedup_gate(&state,"probe","not-tracked").await.unwrap().status(),StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_repeated_steer_refusal_never_becomes_success() {
+        let home=tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"),"CC_DIR=\"/tmp\"\nCC_ARCHIVED=\"1\"\n").unwrap();
+        let _home=crate::api::settings::test_env::set_home(home.path());
+        let (state,_dir)=state();let app:Router=routes().with_state(state);
+        for _ in 0..2 {
+            let (status,body)=call(&app,"POST","/api/sessions/probe/steer",Some(json!({"text":"preserve this refused request","msg_id":"archived-retry"}))).await;
+            assert_eq!(status,StatusCode::CONFLICT,"{body}");
+            assert_ne!(body["deduped"],true,"a refusal is not an acceptance receipt");
+        }
+    }
+
     // The column ALIGNMENT, which submit_verdict_of's unit tests cannot catch:
     // the INSERT lists 9 columns and 9 placeholders, and getting that pairing
     // wrong writes the verdict into the wrong column silently. Round-trip a
@@ -24576,11 +24671,15 @@ CLAUDE-POSTFIX-COMPLETE
             &app,
             "POST",
             "/api/sessions/probe/steer",
-            Some(json!({"text": "queued message"})),
+            Some(json!({"text": "queued message", "msg_id":"hermetic-steer-retry"})),
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         let id = v["id"].as_str().unwrap().to_string();
+        let (retry_status,retry)=call(&app,"POST","/api/sessions/probe/steer",Some(json!({"text":"queued message","msg_id":"hermetic-steer-retry"}))).await;
+        assert_eq!(retry_status,StatusCode::OK,"{retry}");
+        assert_eq!(retry["deduped"],true);
+        assert_eq!(retry["id"],id,"the durable queue receipt keeps its identity");
         let (_, v) = call(&app, "GET", "/api/sessions/probe/steer", None).await;
         assert_eq!(v[0]["text"], json!("queued message"));
         assert_eq!(v[0]["id"], json!(id));

@@ -802,3 +802,12 @@ or steered run as uninterrupted.
 Semantic intake currently considers up to 80 recent open candidates within the
 same worker/human ownership scope; receipts expose both considered and available
 counts. It does not merge across owners or reopen completed tasks automatically.
+
+Message retries must also distinguish a server reservation from an acceptance
+receipt. `message_acceptance_` server tests cover simultaneous retries, refused
+steering, unavailable identity storage, old rows without receipts, and long
+response-loss windows. A pending attempt returns a retryable failure; after two
+minutes an unresolved reservation requires terminal review. It cannot become
+"already delivered" merely by existing or aging out. Confirmed receipts retain
+the original response ID for 30 days. Logs use `amux::message_acceptance` to
+identify pending, uncertain, or unrecorded acceptance.
