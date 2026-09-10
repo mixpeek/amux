@@ -9705,7 +9705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.878';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.879';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -36197,10 +36197,10 @@ function _torrentRender() {
     const isPaused = t.status === 'paused' || t.status === 'waiting';
     const isDone = t.status === 'complete';
     const ctrlBtns = isDone
-      ? `<button onclick="_torrentRemove('${t.gid}')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.78rem;" title="Remove" aria-label="Remove">&#x2716;</button>`
-      : `${isActive ? `<button onclick="_torrentAction('${t.gid}','pause')" style="background:none;border:none;color:var(--yellow);cursor:pointer;font-size:0.85rem;" title="Pause" aria-label="Pause">&#x23F8;</button>` : ''}
-         ${isPaused ? `<button onclick="_torrentAction('${t.gid}','resume')" style="background:none;border:none;color:var(--green);cursor:pointer;font-size:0.85rem;" title="Resume" aria-label="Resume">&#x25B6;</button>` : ''}
-         <button onclick="_torrentAction('${t.gid}','remove')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:0.85rem;" title="Stop &amp; remove" aria-label="Stop &amp; remove">&#x23F9;</button>`;
+      ? `<button onclick="_torrentRemove('${t.gid}')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Remove" aria-label="Remove">&#x2716;</button>`
+      : `${isActive ? `<button onclick="_torrentAction('${t.gid}','pause')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Pause" aria-label="Pause">&#x23F8;</button>` : ''}
+         ${isPaused ? `<button onclick="_torrentAction('${t.gid}','resume')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Resume" aria-label="Resume">&#x25B6;</button>` : ''}
+         <button onclick="_torrentAction('${t.gid}','remove')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Stop &amp; remove" aria-label="Stop &amp; remove">&#x23F9;</button>`;
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
         <strong style="flex:1;font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.name || t.gid)}</strong>

@@ -30,6 +30,15 @@ test('LC-TORRENT: populated progress, pause, resume and removal render at each v
   await expect(list).toContainText('Lifecycle sample archive.zip');
   await expect(list).toContainText('25%');
   await expect(list).toContainText('1.0 KB / 4.0 KB');
+  const targets = await list.getByRole('button').evaluateAll(buttons => buttons.map(button => {
+    const { width, height } = button.getBoundingClientRect();
+    return { name: button.getAttribute('aria-label'), width, height };
+  }));
+  await info.attach('torrent-touch-targets', { body: JSON.stringify(targets), contentType: 'application/json' });
+  for (const target of targets) {
+    expect(target.width, `${target.name}: touch target width`).toBeGreaterThanOrEqual(44);
+    expect(target.height, `${target.name}: touch target height`).toBeGreaterThanOrEqual(44);
+  }
   await checkpoint(page, info, 'torrent-active-fixture');
   await list.getByRole('button', { name: 'Pause', exact: true }).click();
   await expect(list).toContainText('paused');
