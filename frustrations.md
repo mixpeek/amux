@@ -3492,9 +3492,9 @@ STATUS: fixed
 DATE: 2026-09-10
 SESSION: codex-amux-lifecycle
 CARD: AMUX-4362
-SYMPTOM: The route-table integration test received 404 for OPTIONS /api/metrics/host even though the catalog advertised GET. The real metrics router implements /api/metrics, /fleet and /replay; no caller used /host.
+SYMPTOM: The route-table integration test received 404 for OPTIONS /api/metrics/host even though the catalog advertised GET. At the tested revision, the real metrics router implemented /api/metrics, /fleet and /replay, while the host panel was not yet exposed.
 COST: The merged lifecycle verification failed its route-table consistency gate.
-FIX: Removed the stale /host catalog entry. The existing bidirectional route-table check names this mismatch, and request logs continue to record obsolete /host requests as 404 rather than advertising support.
+FIX: Initially removed the unsupported catalog entry. Incoming main commit 1b22fd21 subsequently implemented /host and exposed its UI, so the integrated change preserves that implementation and restores its catalog entry. The bidirectional route-table check verifies agreement; the consolidated browser suite now opens Host, checks a real measured response, refreshes, and follows Disk Cleanup and System navigation. Host measurement failures retain the existing measured=false diagnostic.
 
 
 ## Find did not land when its first match arrived with terminal history
