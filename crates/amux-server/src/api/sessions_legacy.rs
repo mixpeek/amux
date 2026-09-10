@@ -3307,6 +3307,21 @@ fn blocked_names(home: &std::path::Path) -> std::collections::BTreeSet<String> {
 pub(crate) static SUPPRESS_FLEET_FOR_TEST: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// AMUX-2820 / last_human_ts. The rows are already ordered `ts ASC` by the
+/// caller's own query (they double as the source for `task_markers`), so an
+/// unconditional overwrite per session is the max: the LAST row seen for a
+/// session is its most recent human message. Pure and DB-free specifically so
+/// this property is unit-testable without standing up a connection.
+fn last_human_ts_from_user_messages(
+    rows: &[(String, String, Option<String>, i64)],
+) -> BTreeMap<String, i64> {
+    let mut out = BTreeMap::new();
+    for (session, _text, _card_id, ts_ms) in rows {
+        out.insert(session.clone(), *ts_ms);
+    }
+    out
+}
+
 fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
     #[cfg(test)]
     if SUPPRESS_FLEET_FOR_TEST.load(std::sync::atomic::Ordering::Relaxed) {
@@ -3693,11 +3708,21 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         // task.claimed. Keep the whole causal timeline: a newer cardless
         // control prompt is not a release of a still-live claimed card.
         let mut task_markers: BTreeMap<String, Vec<TaskMarker>> = BTreeMap::new();
-        if let Ok(mut messages) = conn.prepare(
-            "SELECT session, text, card_id, ts FROM cmd_history \
-             WHERE type='user' AND COALESCE(submit_verdict,'') <> 'stuck' \
-             ORDER BY ts ASC, id ASC",
-        ) {
+
+        // Collected once rather than consumed as a cursor, so the SAME rows
+        // feed both `task_markers` below and `last_human_ts` (AMUX-2820's own
+        // lesson, missed by this field: `last_human_ts` was a literal `0` for
+        // every session, a correct-typed empty that became a lie the moment
+        // nothing filled it). app.js's "messages from a person" sort
+        // (_humanSortSessions) reads it to tell a lane you last messaged an
+        // hour ago from one you have never messaged; a hardcoded 0 made every
+        // session read as the latter.
+        let user_msgs: Vec<(String, String, Option<String>, i64)> = if let Ok(mut messages) =
+            conn.prepare(
+                "SELECT session, text, card_id, ts FROM cmd_history \
+                 WHERE type='user' AND COALESCE(submit_verdict,'') <> 'stuck' \
+                 ORDER BY ts ASC, id ASC",
+            ) {
             let rows = messages.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -3706,8 +3731,13 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                     r.get::<_, i64>(3)?,
                 ))
             })?;
-            for row in rows {
-                let (session, text, card_id, ts_ms) = row?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
+        let last_human_ts = last_human_ts_from_user_messages(&user_msgs);
+        {
+            for (session, text, card_id, ts_ms) in user_msgs {
                 let card_id = card_id.filter(|id| !id.trim().is_empty());
                 let cardless = card_id.is_none()
                     && (amux_core::board::title_from_prompt(&text).is_none()
@@ -3865,6 +3895,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             v["task_override_updated"] = json!(summary_ts);
             v["status"] = json!(truth.status);
             v["task_board_id"] = json!(truth.card_id);
+            v["last_human_ts"] = json!(last_human_ts.get(&name).copied().unwrap_or(0));
             v["runtime_board"] = json!({
                 "measured": truth.measured,
                 // `status` is the compact client contract; retain the
@@ -6443,5 +6474,78 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert_eq!(strip_elapsed_suffix(""), "");
         // Multi-byte final char must not panic (byte-indexed split would).
         assert_eq!(strip_elapsed_suffix("計測  3分"), "計測  3分");
+    }
+
+    // AMUX-2820 / last_human_ts. `"last_human_ts": 0` was a literal, not
+    // computed from anything — the exact "constant wearing a variable's
+    // clothes" shape the comment three lines above it in the source warns
+    // about for a sibling field. Reported live: a session that had just
+    // received several real human messages this turn still showed
+    // `last_human_ts: 0` over the API, silently disabling app.js's
+    // "messages from a person" sort for every session, fleet-wide, since
+    // nothing ever populated it.
+    #[test]
+    fn last_human_ts_takes_the_latest_row_per_session_pure() {
+        let rows = vec![
+            ("a".to_string(), "first".to_string(), None, 1_000),
+            ("b".to_string(), "only".to_string(), None, 5_000),
+            ("a".to_string(), "second, later".to_string(), None, 2_000),
+        ];
+        let out = last_human_ts_from_user_messages(&rows);
+        assert_eq!(out.get("a"), Some(&2_000), "the LATER row for session a must win, not the first");
+        assert_eq!(out.get("b"), Some(&5_000));
+        assert_eq!(out.get("c"), None, "a session with no rows must be absent, not zero");
+    }
+
+    #[test]
+    fn last_human_ts_query_counts_a_typed_message_and_excludes_a_peer_relay() {
+        // The REAL migration chain (AF-436/AMUX-3504's own lesson, walked into
+        // here): ensure_fleet_tables's base cmd_history predates `card_id`,
+        // `delivery`, `submit_verdict` — those arrive via migrations/0014 and
+        // 0016. A hand-rolled ALTER would test a schema production never runs.
+        let mut conn = crate::db::migrate::test_memdb();
+        crate::db::migrate::apply_all(&mut conn).expect("schema");
+        // A real human send: type='user' (session_verbs.rs's own distinction —
+        // `record_history` true -> ctype="user"; a peer's `amux send` instead
+        // stamps ctype="session", origin=<sender>). The LATER row here is the
+        // peer relay, which is the exact case that must NOT count: a lane
+        // fielding nothing but inter-session traffic must not look freshly
+        // human-messaged.
+        conn.execute(
+            "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+            rusqlite::params!["hi from a person", "user", "amux-frustrations", 1_000_i64, "ethan"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+            rusqlite::params!["peer relay, not a person", "session", "amux-frustrations", 9_000_i64, "amux-homepage"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+            rusqlite::params!["cron fire, not a person", "schedule", "amux-frustrations", 9_500_i64, ""],
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT session, text, card_id, ts FROM cmd_history \
+                 WHERE type='user' AND COALESCE(submit_verdict,'') <> 'stuck' \
+                 ORDER BY ts ASC, id ASC",
+            )
+            .unwrap();
+        let rows: Vec<(String, String, Option<String>, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let out = last_human_ts_from_user_messages(&rows);
+        assert_eq!(
+            out.get("amux-frustrations"),
+            Some(&1_000),
+            "the peer relay (ts=9000) and the schedule fire (ts=9500) are both LATER \
+             than the real human message (ts=1000) but must not win: the query's own \
+             type='user' filter, not the aggregation, is what excludes them"
+        );
     }
 }
