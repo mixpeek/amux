@@ -347,13 +347,31 @@ fn orphaned_playwright_chromes(grace_s: u64) -> (Vec<(u32, u64)>, usize) {
 }
 
 /// Count running `claude` processes and warn if over threshold.
-fn check_claude_count(max: usize) -> usize {
-    let count = std::process::Command::new("pgrep")
-        .args(["-c", "-x", "claude"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<usize>().ok())
-        .unwrap_or(0);
+///
+/// `None` means the count could not be taken — which is NOT zero, and the two
+/// must not share a rendering (ethos rule 4).
+///
+/// THIS RETURNED 0 FOREVER. It ran `pgrep -c -x claude`, and macOS pgrep has
+/// no `-c`: the command printed its usage to stderr, exited non-zero, and
+/// `.unwrap_or(0)` turned that into a count of zero. So the ceiling below could
+/// never be crossed and the warning could never fire. Measured 2026-09-10 with
+/// 78 real claude processes against a max of 60: the tick logged
+/// `claude_count=0 max_claude=60` while the host sat at 95% swap and macOS was
+/// killing workers. A check that cannot fail is not a check (ethos rule 7).
+fn check_claude_count(max: usize) -> Option<usize> {
+    let out = std::process::Command::new("pgrep").args(["-x", "claude"]).output().ok()?;
+    // pgrep exits 1 with no output when nothing matches, which IS a real zero.
+    // Any other failure is an un-measured count and must stay None.
+    let code = out.status.code().unwrap_or(-1);
+    if code > 1 {
+        tracing::warn!(
+            job = JOB, code, stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "mac-health: could not count claude processes — the ceiling is UNENFORCED \
+             until this is fixed, and a zero here would be a lie"
+        );
+        return None;
+    }
+    let count = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).count();
     if count > max {
         tracing::warn!(
             job = JOB,
@@ -364,7 +382,7 @@ fn check_claude_count(max: usize) -> usize {
              Check for ghost lanes with `amux ls` and stop idle ones."
         );
     }
-    count
+    Some(count)
 }
 
 fn one_pass() {
@@ -498,7 +516,11 @@ fn one_pass() {
     let claude_count = check_claude_count(max_claude);
     tracing::info!(
         job = JOB,
-        claude_count,
+        claude_count = claude_count.map(|c| c as i64).unwrap_or(-1),
+        // The discriminator the old line lacked: a real 0 and a failed probe
+        // rendered identically, so nobody could tell a quiet host from a blind
+        // one. -1 is never a process count.
+        claude_count_measured = claude_count.is_some(),
         max_claude,
         ray_alive = raylet_running(),
         playwright_chromes_reaped = pw_orphans.len(),
