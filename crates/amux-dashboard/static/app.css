@@ -1940,7 +1940,13 @@
     .peek-filter-caption { display:none; }
     .peek-filter-btn { justify-content:center; gap:5px; width:auto; padding:0 11px; }
     .peek-msg-filter { flex:0 0 auto; }
-    .peek-msg-nav { flex:0 1 auto; margin-right:auto; }
+    /* SPREAD, DO NOT PARK. The first version of this shrank the nav and gave
+       the reclaimed width to a `margin-right:auto`, which put a dead gap in
+       the middle of the row and read as two disconnected clusters (Ethan,
+       2026-09-10: "the toolbar on the top of the worker is wonky"). Even
+       distribution uses the same width without inventing a void. */
+    .peek-msg-nav { flex:0 1 auto; }
+    .peek-toolbar { justify-content:space-between; }
   }
   .peek-filter-panel { position:absolute; top:calc(100% + 7px); left:0; width:min(320px,calc(100vw - 24px)); box-sizing:border-box; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,0.25); z-index:65; max-height:calc(100dvh - 180px); overflow-y:auto; }
   .peek-filter-panel[hidden] { display:none; }
