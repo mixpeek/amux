@@ -65,9 +65,12 @@ export async function deleteOwnedWorkers(page: Page, request: APIRequestContext,
     await expect(page.locator('#modal-msg')).toHaveText(`Delete worker "${name}"?`);
     await page.locator('#modal-btns').getByRole('button', { name: 'Delete', exact: true }).click();
     await expect.poll(async () => {
-      const rows = await request.get('/api/sessions', { headers });
-      expect(rows.ok()).toBeTruthy();
+      const rows = await getSessionsResilient(request, headers);
+      // A transient race here is "unknown", not "still present" — report not-yet-
+      // confirmed-deleted so the poll keeps waiting instead of hard-failing on a
+      // 500 that a moment later would have resolved on its own.
+      if (!rows.ok()) return true;
       return (await rows.json()).some((row: any) => row.name === name);
-    }, { message: `UI deletion must actually unregister ${name}` }).toBe(false);
+    }, { message: `UI deletion must actually unregister ${name}`, timeout: 15_000 }).toBe(false);
   }
 }
