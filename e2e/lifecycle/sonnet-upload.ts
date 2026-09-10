@@ -73,7 +73,9 @@ export async function runSonnetUpload({ page, request }: { page: Page, request: 
     await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');
     await checkpoint(page, info, `sonnet-upload-terminal-${size.width}`);
     await page.locator('#peek-tab-messages').click();
-    await expect(page.locator('#peek-overlay')).toContainText('fruit-counts.csv');
+    await page.locator('#peek-messages-filter').getByRole('button', { name: /^Human \d+$/ }).click();
+    await page.locator('#peek-messages-search').fill('fruit-counts.csv');
+    await expect(page.locator('#peek-messages-list')).toContainText('fruit-counts.csv');
     await checkpoint(page, info, `sonnet-upload-message-${size.width}`);
   }
   await info.attach('sonnet-upload-proof', { body: JSON.stringify({ run, author, observeOnly, result, cards }, null, 2), contentType: 'application/json' });

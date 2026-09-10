@@ -1,5 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
 import { runSonnetUpload } from './sonnet-upload';
+import { runSonnetCrossgroup } from './sonnet-crossgroup';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
 test.describe.configure({ mode: 'serial' });
@@ -82,7 +83,9 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
     await checkpoint(page, info, `running-sonnet-${name}`);
   }
   const common = `Authorized test ${run}. Work only in ${cwd}, and communicate only with ${names.join(' and ')}.
-Use your normal amux CLI and board workflow. Create your own chore task; discover the peer's actual
+Use the amux CLI and board workflow. Send all peer messages with amux send through Bash;
+Claude's native SendMessage tool bypasses Amux's message history and is not the transport under test.
+Create your own chore task; discover the peer's actual
 board card and preserve ownership. Record real test commands/results and file paths as evidence.
 Do not fake review, bypass gates, close the peer's cards, contact production or external recipients.
 Finish your own cards honestly and then idle. If Amux auto-captures this prompt or FYI messages as
@@ -182,7 +185,10 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
         await checkpoint(page, info, `terminal-${name}-${size.width}`);
         await page.locator('#peek-search').press('Escape');
         await page.locator('#peek-tab-messages').click();
-        await expect(page.locator('#peek-overlay')).toContainText(marker);
+        await page.locator('#peek-messages-filter').getByRole('button', { name: /^Session \d+$/ }).click();
+        await page.locator('#peek-messages-search').fill(marker);
+        await expect(page.locator('#peek-messages-list')).toContainText(marker);
+        await expect(page.locator('#peek-messages-list').getByText(marker, { exact: false }).first()).toBeVisible();
         await checkpoint(page, info, `messages-${name}-${size.width}`);
       }
       for (const card of cards.filter(c => [result.task_id, result.review_task_id].includes(c.id))) {
@@ -200,3 +206,5 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
 });
 
 test('LC-SONNET-UPLOAD: same Sonnet worker reads a real UI upload and finishes its receipt task', runSonnetUpload);
+
+test('LC-SONNET-CROSSGROUP: the same pair discovers peer tasks and exchanges messages across groups', runSonnetCrossgroup);

@@ -3473,3 +3473,25 @@ CARD: AMUX-4362
 SYMPTOM: A real Sonnet worker was still executing its launch shell when Send pasted a long prompt. The send later reported not_submitted. The test had mistaken --model sonnet in the launch command for the ready provider banner.
 COST: The fresh two-worker acceptance run could not begin its review cycle; the retained draft made recovery possible.
 FIX: During the startup window, send waits for a positive provider UI frame before typing and refuses without typing if readiness times out. Local verdicts send_waiting_for_boot_ui and send_boot_ui_not_ready expose both outcomes. The live suite requires the actual Sonnet version/footer, and pair/upload are serial so a failed pair cannot reset the author for upload.
+
+## Settings promised a Notes folder that never loaded
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The settings suite carried a skipped test for a Notes folder section that displayed an ellipsis forever; no client code populated it and no backing endpoint existed.
+COST: The consolidated mobile audit could not verify the advertised feature and reported skipped coverage.
+FIX: Removed the unsupported section and replaced the skip with an assertion that the misleading UI is absent. Settings now run at mobile width on its separate server; failures and screenshots are retained in the lifecycle report. There is no remaining Notes-sync action to emit a runtime event.
+
+## The route catalog advertised a nonexistent host-metrics endpoint
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The route-table integration test received 404 for OPTIONS /api/metrics/host even though the catalog advertised GET. The real metrics router implements /api/metrics, /fleet and /replay; no caller used /host.
+COST: The merged lifecycle verification failed its route-table consistency gate.
+FIX: Removed the stale /host catalog entry. The existing bidirectional route-table check names this mismatch, and request logs continue to record obsolete /host requests as 404 rather than advertising support.

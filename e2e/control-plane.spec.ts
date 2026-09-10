@@ -6,8 +6,6 @@
 // keeps working while the new server takes over underneath.
 import { test, expect } from '@playwright/test';
 
-test.skip(({ viewport }) => (viewport?.width ?? 1280) < 500, 'desktop project only');
-
 test('worker created via API appears in the dashboard session list', async ({ page, request }) => {
   await page.goto('/');
   const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN);

@@ -693,3 +693,22 @@ dependencies: browser revisions can disappear mid-run when that lane upgrades.
 For example, set `PLAYWRIGHT_BROWSERS_PATH` to a task-owned directory and run
 `npx playwright install chromium webkit` before starting the suite. Keep the same
 environment for the suite, and do not replace its pinned executable during a run.
+
+The live pair uses Amux's Bash `amux send` transport explicitly. Claude's native
+`SendMessage` can reach another Claude session while bypassing Amux's history,
+which does not prove Amux routing, verified origins, or policy. The Messages
+check selects the Session filter and searches the visible message list; text in
+an inactive Terminal panel cannot satisfy it.
+
+For a manually provisioned tmux lab, create `TMUX_TMPDIR` before starting the
+server, unset inherited `TMUX`/`TMUX_PANE`, and verify the actual socket before
+creating workers. A nonexistent `TMUX_TMPDIR` can make tmux fall back to its shared
+socket. The bundled browser harness creates its private directory itself.
+
+The final `LC-SONNET-CROSSGROUP` phase reuses those same two workers, moves the
+reviewer into a different group through the UI, and requires each worker to read
+the other's real completed task metadata. Each writes an independently checked
+receipt, sends Amux messages with verified origins, and finishes its own new chore.
+Both terminal search and the visible Session messages are checked at desktop and
+phone widths. `AMUX_LIFECYCLE_CROSSGROUP_OBSERVE=1` observes an existing completed
+phase without changing groups or sending new prompts.
