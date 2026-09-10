@@ -26,8 +26,10 @@ test('terminal arrows cycle actual child output and preserve the parent draft',a
   expect(bounds!.x+bounds!.width).toBeGreaterThan(terminal!.x+terminal!.width-25);
   expect(bounds!.y).toBeLessThan(terminal!.y+15);
   await page.locator('#peek-cmd-input').fill('Keep my draft');
+  await page.evaluate(()=>(window as any).showPeekLoading('Loading latest…'));
   await nav.getByRole('button',{name:'Next agent',exact:true}).click();
   await expect(page.locator('#peek-body')).toContainText('Output from agent-one');
+  await expect(page.locator('#peek-loading-ind')).toBeHidden();
   await page.evaluate(()=>(window as any).refreshPeek());
   await expect(page.locator('#peek-body')).toContainText('Output from agent-one');
   await nav.getByRole('button',{name:'Next agent',exact:true}).click();

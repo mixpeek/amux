@@ -9734,7 +9734,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.871';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.872';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10243,6 +10243,7 @@ async function _peekAgentStep(delta) {
   const index=state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
   const next=(index+delta+state.items.length+1)%(state.items.length+1);
   state.selected=next ? state.items[next-1] : null;
+  hidePeekLoading(); // the parent load indicator does not describe this selected view
   _peekOpenGeneration++; // invalidate pending parent/child replies on every switch
   _peekAgentsPaint();
   _peekAgentsLog('select',{agent:state.selected?.id || 'main'});

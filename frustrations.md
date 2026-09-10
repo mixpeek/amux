@@ -3406,4 +3406,4 @@ SESSION: codex
 CARD: AMUX-4368
 SYMPTOM: The terminal lost its agent arrows; the replacement toolbar button only displayed descriptions, without any way to read a selected subagent's output.
 COST: Owner could not navigate subagent work where they were reading the terminal and had to request the controls again.
-FIX: Two arrows beside Copy cycle current main/subagent output, preserving the main draft and view. Read owned structured child transcripts, never inject navigation keys. Missing outputs and list failures announce themselves through subagent-navigation diagnostics. Desktop/phone navigation, no-child, failure, and parent restoration tests.
+FIX: Two arrows beside Copy cycle current main/subagent output, preserving the main draft and view. Read owned structured child transcripts, never inject navigation keys. Missing outputs and list failures announce themselves through subagent-navigation diagnostics. Desktop/phone navigation, no-child, failure, and parent restoration tests. Live verification also caught a parent loading indicator surviving a quick child switch; clear it on selection and cover that race.
