@@ -9748,7 +9748,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.887';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.888';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -34094,6 +34094,10 @@ async function _handleDeeplink(hash) {
       // silently no-oped — masked until the peekState-restore stand-down
       // removed the fallback that happened to open A peek (the wrong one).
       if (typeof sessions !== 'undefined' && sessions.some(s => s.name === target)) {
+        if (document.getElementById('board-detail-overlay')?.classList.contains('active')) {
+          closeBoardDetail(); // preserves edited fields in the existing board draft
+          amuxTrack('deeplink_surface_changed', {from:'board-detail',to:'worker',session:target,measured:true,n_considered:1});
+        }
         openPeek(target);
         // Let openPeek finish its own async setup before switching tabs.
         if (tab) setTimeout(() => { try { setPeekTab(tab); } catch(e) {} }, 350);
