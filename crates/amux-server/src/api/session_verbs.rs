@@ -6981,12 +6981,56 @@ impl SendMode {
     }
 }
 
+/// One in-flight send per lane.
+///
+/// EVERY send begins `send_key(name, "C-u")` — it clears the composer before
+/// writing its own text. That is right for ONE send and destructive for two:
+/// the second send's C-u wipes text the first has typed but whose submit the
+/// agent has not consumed yet, and the first message is gone with its
+/// `submit_verdict` still reading `confirmed`, because the keystrokes really
+/// were delivered.
+///
+/// Measured on this lane, 2026-09-10 (Ethan: "i just sent a message to this
+/// worker but it disapeared"):
+///   11:53:05  DIRECT-SEND  "recreate the board task details page ..."  LOST
+///   11:53:10  QUEUE-DRAIN  "figure oput why this keeps appearing ..."  LOST
+///   11:54:00  DIRECT-SEND  "i just sent a message ..."                 ARRIVED
+/// Those two are the only writes in the hour that landed within 5s of each
+/// other, and they are exactly the two that vanished. The direct-send path and
+/// the steering drain are separate tasks and nothing serialised them.
+///
+/// The lock is held across the whole C-u → paste → Enter sequence, so a
+/// concurrent send waits rather than cutting into the middle of one.
+static LANE_SEND_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
+
+fn lane_send_lock(name: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let map = LANE_SEND_LOCKS.get_or_init(Default::default);
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard.entry(name.to_string()).or_default().clone()
+}
+
 async fn send_text_inner(
     state: &AppState,
     name: &str,
     text: &str,
     mode: SendMode,
 ) -> (bool, String) {
+    // Serialise per lane. Taken before any pane state is read, because the
+    // decisions below (is it generating? is a picker up?) are read-then-act on
+    // the same composer this is about to clear.
+    let lock = lane_send_lock(name);
+    let waited = std::time::Instant::now();
+    let _send_guard = lock.lock().await;
+    let waited_ms = waited.elapsed().as_millis();
+    if waited_ms > 250 {
+        // Countable: a sweep can see how often two producers aim at one lane.
+        tracing::info!(
+            session = %name, waited_ms = waited_ms as i64, verdict = "lane-send-serialised",
+            "a concurrent send to this lane waited instead of clearing another send's composer"
+        );
+    }
     let SendMode { defer_if_busy, from_steering, allow_mid_turn, hook_confirmed_idle, origin } =
         mode;
     // ZERO AMUX HARNESS INTO AN ISOLATED LANE, AT THE LAYER THAT ACTUALLY TYPES
@@ -27121,6 +27165,50 @@ mod steer_max_age_tests {
         // path refuses a selector even when overdue — answering a pending tool
         // is the user's, not amux's.)
         assert_eq!(steer_decide(Some("waiting"), None, 10.0, MAX), SteerDelivery::Hold);
+    }
+
+    /// Two sends to ONE lane must not overlap. Every send starts by clearing
+    /// the composer with C-u, so an overlap destroys the earlier message while
+    /// its submit_verdict still says `confirmed` — the 2026-09-10 loss.
+    #[tokio::test]
+    async fn two_sends_to_one_lane_are_serialised() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // The same lane hands out the SAME lock; a different lane does not.
+        let a = super::lane_send_lock("lane-x");
+        let b = super::lane_send_lock("lane-x");
+        assert!(Arc::ptr_eq(&a, &b), "one lane must share one lock");
+        let other = super::lane_send_lock("lane-y");
+        assert!(
+            !Arc::ptr_eq(&a, &other),
+            "a per-lane lock must not serialise the whole fleet behind one lane"
+        );
+
+        // Model the C-u -> paste -> Enter sequence: `inside` must never exceed
+        // 1, which is exactly the invariant the composer needs.
+        let inside = Arc::new(AtomicUsize::new(0));
+        let worst = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let (inside, worst) = (inside.clone(), worst.clone());
+            tasks.push(tokio::spawn(async move {
+                let lock = super::lane_send_lock("lane-x");
+                let _g = lock.lock().await;
+                let n = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                worst.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(
+            worst.load(Ordering::SeqCst),
+            1,
+            "two sends were inside the composer sequence at once — that is the message loss"
+        );
     }
 
     /// A lane that yields no boundary signal must not hold its queue forever.
