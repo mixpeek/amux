@@ -11452,9 +11452,41 @@ pub(crate) fn steer_no_signal_max_age_s() -> f64 {
 /// /api/sessions. `queue.has_live_consumer` had been red on it for 22578s and
 /// the STALLED warning fired every two minutes — the condition was fully
 /// observed and nothing acted on it, which is what Ethan asked to change.
+/// When each lane last used the no-signal escape, so it is attempted ONCE per
+/// grace period instead of on every sweep.
+static NO_SIGNAL_LAST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f64>>> =
+    std::sync::OnceLock::new();
+
 fn steer_no_signal(name: &str, age_s: f64, why: &'static str) -> SteerDelivery {
     if age_s < steer_no_signal_max_age_s() {
         return SteerDelivery::Hold;
+    }
+    // ATTEMPT ONCE PER GRACE PERIOD, NOT ONCE PER SWEEP.
+    //
+    // The first version of this returned OverdueMidTurn every time the sweep
+    // ran. On a lane that cannot receive — mixpeek-oss, dead two days — the
+    // delivery fails, the row stays queued, and the next sweep tries again:
+    // measured 59 attempts in 17 minutes with 0 rows reaching
+    // steering_history, each one writing a WARN. That is the fire-forever
+    // nudge this codebase already has a rule against, introduced by the fix
+    // for a queue that held forever. Both are the same mistake in opposite
+    // directions: an action with no bound on how often it repeats.
+    //
+    // The row is deliberately NOT dead-lettered. We cannot read this lane, so
+    // we cannot tell a dead one from an unreachable-but-live one, and
+    // discarding a human's message on that guess is worse than holding it.
+    // Holding is visible: `steering queue STALLED` and the
+    // `queue.has_live_consumer` invariant both already carry it.
+    {
+        let map = NO_SIGNAL_LAST.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_f64();
+        if let Some(last) = guard.get(name) {
+            if now - last < steer_no_signal_max_age_s() {
+                return SteerDelivery::Hold;
+            }
+        }
+        guard.insert(name.to_string(), now);
     }
     // Counted, not just narrated: a sweep grepping for this verdict sees the
     // class recur without reading prose.
@@ -27088,14 +27120,27 @@ mod steer_max_age_tests {
         );
 
         // Past it the row is delivered rather than held with nothing able to
-        // clear it. 1368 minutes is the measured stall.
+        // clear it. 1368 minutes is the measured stall. The lane name differs
+        // per case because the escape is ONCE PER LANE per grace period; using
+        // one name here would make the second assertion test the throttle
+        // rather than the escape, and it would pass either way.
         assert_eq!(
-            super::steer_no_signal("lane", max, "no-boundary-signals"),
+            super::steer_no_signal("lane-a", max, "no-boundary-signals"),
             super::SteerDelivery::OverdueMidTurn
         );
         assert_eq!(
-            super::steer_no_signal("lane", 1368.0 * 60.0, "no-turn-boundary-status"),
+            super::steer_no_signal("lane-b", 1368.0 * 60.0, "no-turn-boundary-status"),
             super::SteerDelivery::OverdueMidTurn
+        );
+
+        // AND IT MUST NOT REPEAT. The first version fired on every sweep: 59
+        // attempts in 17 minutes against a lane that could not receive, 0 rows
+        // delivered, one WARN each. Immediately re-asking for the same lane
+        // holds, so an undeliverable row cannot become a log loop.
+        assert_eq!(
+            super::steer_no_signal("lane-a", max * 2.0, "no-boundary-signals"),
+            super::SteerDelivery::Hold,
+            "a second attempt inside the grace period must hold, not retry"
         );
 
         // NEGATIVE CONTROL. The reaper cannot cover this class, which is why

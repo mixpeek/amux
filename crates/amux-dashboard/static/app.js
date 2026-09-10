@@ -3232,12 +3232,18 @@ function _retrySessionRead() {
 function _sessionReadNotice() {
   if (!_sessionLoadError) return '';
   const auth = _sessionLoadError.status === 401;
+  const pending = offlineQueue.length + drafts.length;
+  const offlineCaps = sessions.length
+    ? ' The workers shown below are the last saved copy.' + (pending
+        ? ' ' + pending + ' queued operation' + (pending === 1 ? '' : 's') + ' will sync automatically when the server returns.'
+        : ' Commands you send will be queued and delivered when the server returns.')
+    : '';
   return '<div class="session-read-notice" role="alert"><strong>'
     + (auth ? 'Access to this workspace needs to be renewed' : 'Worker updates are unavailable')
     + '</strong><p>' + (auth
       ? 'Open your owner access link, or ask the workspace owner for a new invite.'
-      : 'The worker list could not be loaded. Please retry in a moment.')
-    + (sessions.length ? ' The workers shown below are the last saved copy.' : '')
+      : 'The worker list could not be loaded. Retrying automatically.')
+    + offlineCaps
     + '</p><button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
     + '<details><summary>Connection details</summary><code>GET /api/sessions · '
     + (_sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error')
@@ -3361,9 +3367,12 @@ async function _fetchSessionsOnce() {
       lastSessionsJSON = j;
       sessions = data;
       _sessionsSnapshotEpoch++;
-      // Quota-full store: drop the cache rather than let the throw break rendering
+      // Quota-full store: drop the cache rather than let the throw break rendering.
+      // IDB is the durable fallback (no 5MB cap), so a quota eviction here still
+      // leaves sessions recoverable on offline startup.
       try { localStorage.setItem('amux_sessions_cache', j); }
       catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
+      if (typeof _idb !== 'undefined') _idb.set('sessions_cache', data);
       render();
       // Board live-emphasis tracks session activity: re-render the board when the
       // ACTIVE set changes (signature-guarded so this is rare; never mid-drag).
@@ -31124,6 +31133,19 @@ if (!boardItems.length) {
       _cacheBoardJSON(j);
       if (activeView === 'board') renderBoard();
       else if (activeView === 'calendar') renderCalendar();
+    }
+  });
+}
+
+// IDB fallback for sessions: if localStorage was purged (iOS, or board cache
+// blew quota and took sessions with it), restore from the IDB mirror.
+if (!sessions.length) {
+  _idb.get('sessions_cache').then(data => {
+    if (Array.isArray(data) && data.length && !sessions.length) {
+      sessions = data;
+      lastSessionsJSON = JSON.stringify(data);
+      render();
+      updateConnectionStatus();
     }
   });
 }
