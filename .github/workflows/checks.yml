@@ -273,7 +273,7 @@ jobs:
       - name: a cross-group setting composes without a real DOM
         run: |
           set -uo pipefail
-          node scripts/test-cross-group-setting.sh
+          bash scripts/test-cross-group-setting.sh
       - name: an archive move is a MOVE, not a deletion, across both files
         run: |
           set -uo pipefail

@@ -3603,3 +3603,25 @@ CARD: AMUX-4362
 SYMPTOM: Opening the passing populated torrent screenshot showed tiny adjacent pause and stop glyphs with correspondingly small targets at 375px.
 COST: A visual review found friction that successful click assertions missed.
 FIX: Give every torrent action a bordered 44px target and readable theme text. LC-TORRENT records measured dimensions and fails below 44px while retaining viewport-fit and effect checks.
+
+## Verified column metadata truncates its name on a phone
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: A settled 375px screenshot of the real completed board showed VERIF... and TERMI... beside the column controls, obscuring the status name and terminal designation.
+COST: The final visual audit found a readability problem despite successful task and gate assertions.
+FIX: Give the column identity a compact two-row layout on phones so the full status name and terminal badge fit beside the controls. LC-BOARD-HEADER measures both text boxes and verifies all header controls remain inside their column.
+
+## Global history refresh erases a newly accepted local message
+AREA: messages
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The broad browser run still classified a just-sent prompt as Unclassified in all three browsers. A delayed nonempty global-history response replaced the local history array after the composer had appended the accepted message.
+COST: A focused empty-server run passed but missed the populated-server ordering; the second full run exposed three failures after 749 other checks passed.
+FIX: Use the same unechoed-local merge as scoped Messages views when applying global history, then repaint provenance. Scope consecutive history deduplication by worker and type. A delayed nonempty history regression exercises the ordering and identical sends to two peers.

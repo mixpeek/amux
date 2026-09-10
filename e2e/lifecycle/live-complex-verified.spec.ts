@@ -1,10 +1,12 @@
 import { test, expect } from '../fixtures';
 import type { Page } from '@playwright/test';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 async function menu(page: Page, name: string, action: string) {
+  const boardBack=page.locator('#board-detail-overlay.active').getByRole('button',{name:'← Back',exact:true});
+  if(await boardBack.isVisible()) await boardBack.click();
   const close = page.locator('#peek-overlay.active').getByRole('button', {name:'Close worker',exact:true});
   if (await close.isVisible()) await close.click();
   await page.goto('/'); await page.locator('#tab-sessions').click();
@@ -113,7 +115,12 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
       expect(r.ok(),await r.text()).toBe(true);return (await r.json()).content;
     };
     const receipt=JSON.parse(await file('completion.json'));
-    const ids=[receipt.author_epic_id,...receipt.author_task_ids,receipt.reviewer_epic_id,...receipt.reviewer_task_ids];
+    // Phase two may legitimately introduce another epic. Accept the worker's
+    // scalar-or-array epic receipt, then verify every referenced identity.
+    const authorEpics=[receipt.author_epic_id].flat();
+    const reviewerEpics=[receipt.reviewer_epic_id].flat();
+    const ids=[...authorEpics,...receipt.author_task_ids,...reviewerEpics,...receipt.reviewer_task_ids];
+    expect(ids.every(id=>typeof id==='string'&&id.length>0)).toBe(true);
     expect(new Set(ids).size).toBeGreaterThanOrEqual(7);
     for (const id of ids) expect(details.some(c=>c.id===id&&c.status==='verified')).toBe(true);
     for (const card of details.filter(c=>c.status==='verified')) {expect(card.status).toBe('verified');expect(card.verification.state).toBe('current');
@@ -134,7 +141,9 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
     for(const size of [{width:1280,height:800},{width:375,height:812}]) {
       await outputPage.setViewportSize(size);await outputPage.setContent(html);await expect(outputPage.locator('body')).toContainText('Acme');await checkpoint(outputPage,info,`produced-report-${size.width}`);
       await page.setViewportSize(size);
-      await page.goto('/#issue='+receipt.author_epic_id);await expect(page.locator('#bd-key')).toHaveText(receipt.author_epic_id);await checkpoint(page,info,`verified-epic-${size.width}`);
+      for(const epic of [...authorEpics,...reviewerEpics]) {
+        await page.goto('/#issue='+epic);await expect(page.locator('#bd-key')).toHaveText(epic);await checkpoint(page,info,`verified-epic-${epic}-${size.width}`);
+      }
       for(const name of names) {
         await menu(page,name,'peek-terminal');
         await page.getByRole('button',{name:'Filter messages',exact:true}).click();await page.locator('[name="peek-filter-source"][value="session"]').check();
@@ -145,6 +154,6 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
     }
     await outputPage.close();
   } finally {
-    await info.attach('complex-proof',{body:JSON.stringify({run,names,group,cwd,health,observe,resumePhase1,observer_actions:'initial requests and one explicit gate amendment; resumed phase 1 sends continue to existing workers; no worker code/evidence/completion writes',timeline,details,messages},null,2),contentType:'application/json'});
+    await info.attach('complex-proof',{body:JSON.stringify({run,names,group,cwd,health,observe,resumePhase1,observer_actions:'initial requests and one explicit gate amendment; resumed phase 1 sends continue to existing workers; no worker code/evidence/completion writes',operator_interventions:process.env.AMUX_LIFECYCLE_INTERVENTIONS ? JSON.parse(await readFile(process.env.AMUX_LIFECYCLE_INTERVENTIONS,'utf8')) : [],timeline,details,messages},null,2),contentType:'application/json'});
   }
 });

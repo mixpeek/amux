@@ -9750,7 +9750,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.891';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.893';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -15326,8 +15326,11 @@ async function _loadCmdHistoryFromServer() {
       _cmdHistoryServerLoaded = true;
       return;
     }
-    // Server is authoritative — merge and deduplicate
-    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '', card_id: r.card_id || '' }));
+    // A response may have been read before a new local send was accepted.
+    // Preserve unechoed local entries just like the scoped Messages views do.
+    const serverRows = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '', card_id: r.card_id || '' }));
+    _cmdHistory = _mergeUnechoed(serverRows, '').slice(-500);
+    _peekReclassifyPrompts();
     localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
     _cmdHistoryServerLoaded = true;
   } catch(e) {}
@@ -15338,7 +15341,7 @@ function cmdHistoryAdd(text, opts) {
   if (!text.trim()) return;
   const entry = { text, type: (opts && opts.type) || 'direct', session: (opts && opts.session) || peekSession || '', time: Date.now() };
   const prev = _cmdHistory[_cmdHistory.length - 1];
-  if (prev && (typeof prev === 'string' ? prev : prev.text) === text) { _cmdHistoryIdx = -1; return; }
+  if (prev && typeof prev !== 'string' && prev.text === text && prev.session === entry.session && prev.type === entry.type) { _cmdHistoryIdx = -1; return; }
   _cmdHistory.push(entry);
   if (_cmdHistory.length > 500) _cmdHistory = _cmdHistory.slice(-500);
   // localStorage is best-effort bookkeeping — it must NEVER kill the send.
@@ -27745,11 +27748,11 @@ function _renderBoardColumnsInto(host, items, scope) {
     const collapsed = isGlobal && _collapsedCols.has(st);
     html += '<div class="board-col' + (collapsed ? ' col-collapsed' : '') + '" data-col="' + st + '">';
     html += '<div class="board-col-header"' + (isGlobal ? '' : ' style="cursor:default;"') + '>';
-    html += '<span style="display:flex;align-items:center;gap:5px;">';
+    html += '<span class="board-col-identity" style="display:flex;align-items:center;gap:5px;">';
     if (isGlobal) {
       html += '<button class="board-col-collapse" onclick="toggleColCollapse(\'' + st + '\')" title="' + (collapsed ? 'Expand' : 'Collapse') + '">' + (collapsed ? '&#x25B8;' : '&#x25BE;') + '</button>';
     }
-    html += '<span style="color:' + sty.color + '">' + esc(stObj.label) + '</span>';
+    html += '<span class="board-col-label" style="color:' + sty.color + '">' + esc(stObj.label) + '</span>';
     if (stObj.terminal) {
       html += '<span class="col-terminal-chip" title="Terminal state — cards here are finished">terminal</span>';
     }

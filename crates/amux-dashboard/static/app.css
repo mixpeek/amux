@@ -6250,3 +6250,10 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
   .bd-record-properties { margin-bottom:10px; }
   #board-detail-overlay .board-detail-tabs { margin-bottom:10px; }
 }
+
+/* Keep the status name readable beside terminal metadata and column actions. */
+@media (max-width:600px) {
+  #board-view .board-col:not(.col-collapsed) .board-col-identity { display:grid !important; grid-template-columns:24px minmax(0,1fr); row-gap:2px !important; }
+  #board-view .board-col:not(.col-collapsed) .board-col-label { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; line-height:1.3; }
+  #board-view .board-col:not(.col-collapsed) .col-terminal-chip { grid-column:2; justify-self:start; max-width:none; font-size:.58rem; overflow:visible; text-overflow:clip; }
+}
