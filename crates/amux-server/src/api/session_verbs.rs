@@ -4324,7 +4324,9 @@ fn mint_capture_card(
             // Only the first capture may establish the lane's execution claim.
             status: capture_status.into(),
             session: Some(session_name.to_string()),
-            item_type: "code".into(),
+            // AF-699: a peer-relay REPLY carrying no ask is not code work and
+            // cannot close on "implemented and merged".
+            item_type: amux_core::board::item_type_for_capture(body).into(),
             creator: "amux".into(),
             owner_type: "agent".into(),
             due: None,

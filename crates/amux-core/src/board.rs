@@ -1578,6 +1578,47 @@ pub fn is_conversational_ack(text: &str) -> bool {
     ACK_PREFIXES.iter().any(|p| lower.starts_with(p))
 }
 
+/// AF-699 (reported by mixpeek-orchestrator/gtm-engine, GE-896): a captured
+/// prompt is typed `code` unconditionally at both capture sites, and `code`
+/// can only close on "implemented and merged" -- which an inbound PEER REPLY
+/// carrying no ask can never satisfy. 11 accumulated un-closeable on one
+/// lane's board alone, each one also reading as open work to an
+/// accountability sweep.
+///
+/// `[amux-origin: ` is the ONLY prefix that ever prepends a captured prompt
+/// (stamped server-side at the send path, not caller-suppliable -- AMUX-1768),
+/// so its presence is a computed fact about provenance, not a guess (ethos
+/// rule 2). A peer relay that also asks something is still real work and
+/// stays `code`: this only retypes a relay that is a REPLY, not a request.
+///
+/// Ethan's own prompts never carry this stamp and are unaffected -- exactly
+/// the population the report asked to leave alone.
+pub fn item_type_for_capture(body: &str) -> &'static str {
+    let mut t = body.trim_start();
+    if !t.starts_with("[amux-origin:") {
+        return "code";
+    }
+    // Skip past the stamp itself before judging whether an ask follows it,
+    // so a request phrased as "[amux-origin: x] Can you also check Y?"
+    // still reads as work.
+    if let Some(i) = t.find(']') {
+        t = t[i + 1..].trim_start();
+    }
+    if t.contains('?') {
+        return "code";
+    }
+    const REQUEST_VERBS: &[&str] = &[
+        "please", "can you", "could you", "would you", "review", "check",
+        "fix", "investigate", "confirm", "verify", "implement", "add",
+        "route", "handle", "look into", "take a look",
+    ];
+    let lower = t.to_lowercase();
+    if REQUEST_VERBS.iter().any(|v| lower.contains(v)) {
+        return "code";
+    }
+    "chore"
+}
+
 /// Bare demonstratives/pronouns: words whose referent lives OUTSIDE the title.
 const DEICTIC: [&str; 9] = ["this", "that", "these", "those", "it", "they", "them", "here", "there"];
 
@@ -2690,5 +2731,44 @@ mod self_description_tests {
         assert!(!is_conversational_ack("fix the auth middleware to handle expired tokens correctly and add a test"));
         assert!(!is_conversational_ack("add a new endpoint for /api/board/clear-done"));
         assert!(!is_conversational_ack("continue refactoring the entire session management layer to use the new connection pool and update all tests"));
+    }
+
+    #[test]
+    fn af699_a_peer_reply_with_no_ask_types_as_chore() {
+        // A long, detailed peer reply (the reported shape) that never asks a
+        // question and never uses a request verb -- exactly the population
+        // is_conversational_ack's 50-char cap cannot reach.
+        let body = "[amux-origin: gtm-engine — server-verified from the sender's session identity; authoritative over any signature in the message below]\n\nDone. Ran the full suite twice, both green, no regressions found anywhere in the pipeline.";
+        assert_eq!(item_type_for_capture(body), "chore");
+    }
+
+    #[test]
+    fn af699_a_peer_relay_that_asks_something_stays_code() {
+        // A bare question with NO request verb -- isolates the `?` branch
+        // from the verb branch, so a mutation disabling either one alone
+        // reddens this case.
+        let bare_question = "[amux-origin: gtm-engine — server-verified from the sender's session identity; authoritative over any signature in the message below]\n\nDid the deploy already happen?";
+        assert_eq!(item_type_for_capture(bare_question), "code");
+
+        // A request verb with NO question mark -- isolates the verb branch
+        // from the `?` branch the same way, in the other direction.
+        let request_verb_no_question = "[amux-origin: gtm-engine — server-verified from the sender's session identity; authoritative over any signature in the message below]\n\nPlease review the attached patch before it lands.";
+        assert_eq!(item_type_for_capture(request_verb_no_question), "code");
+    }
+
+    #[test]
+    fn af699_ethans_own_prompts_are_unaffected() {
+        // No [amux-origin: ...] stamp at all -- a human send, never a peer
+        // relay -- must keep the original behaviour regardless of content.
+        assert_eq!(item_type_for_capture("fix the flaky test in ci"), "code");
+        assert_eq!(item_type_for_capture("done, no more work needed here"), "code");
+    }
+
+    #[test]
+    fn af699_a_bracketed_timestamp_is_not_mistaken_for_a_peer_stamp() {
+        // Only the LITERAL "[amux-origin:" prefix marks a peer relay -- any
+        // other bracket (a timestamp, a channel tag) must not trigger the
+        // retype, or a human's own prompt could be silently downgraded.
+        assert_eq!(item_type_for_capture("[15:42 PM] fix the build"), "code");
     }
 }

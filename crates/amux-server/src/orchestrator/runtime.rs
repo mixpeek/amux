@@ -1759,7 +1759,11 @@ impl Runtime {
                         // double-running every direct prompt.
                         status: "doing".into(),
                         session: Some(name.clone()),
-                        item_type: "code".into(),
+                        // AF-699: a peer-relay REPLY carrying no ask is not
+                        // code work and cannot close on "implemented and
+                        // merged" -- reported by mixpeek-orchestrator, 11
+                        // accumulated un-closeable on one lane's board alone.
+                        item_type: amux_core::board::item_type_for_capture(&body).into(),
                         creator: "amux".into(),
                         owner_type: "agent".into(),
                         due: None,
