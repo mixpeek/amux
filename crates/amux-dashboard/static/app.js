@@ -9286,6 +9286,17 @@ async function _peekUpdateTabCounts() {
     _dictCount = d.count || 0;
   } catch(e) { _dictCount = 0; }
   _dictPendingBadge();   // reads the outbox, then paints the combined badge
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/subagents',
+                          { headers: _authHeaders() });
+    if (peekSession !== sess) return;
+    const d = await r.json();
+    const btn = document.getElementById('peek-subagents-btn');
+    if (btn) btn.hidden = !((d && d.subagents || []).length);
+  } catch(e) {
+    const btn = document.getElementById('peek-subagents-btn');
+    if (btn) btn.hidden = true;
+  }
 }
 
 let _peekSchedSearch = '';
@@ -9754,7 +9765,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.869';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.870';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -15247,7 +15258,7 @@ async function _loadCmdHistoryFromServer() {
       return;
     }
     // Server is authoritative — merge and deduplicate
-    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '', card_id: r.card_id || '' }));
+    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '', card_id: r.card_id || '', delivery: r.delivery, submit_verdict: r.submit_verdict, queue_wait_ms: r.queue_wait_ms, queued: r.queued }));
     localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
     _cmdHistoryServerLoaded = true;
   } catch(e) {}
@@ -15785,7 +15796,8 @@ function _msgNorm(x) {
   const t = (x.time !== undefined && x.time !== null) ? x.time : x.ts;
   return { id: x.id, text: x.text, type: x.type, session: x.session,
            time: t, ts: t, origin: x.origin || '', kind: x.kind,
-           queued: x.queued, card_id: x.card_id || '',
+           queued: x.queued, delivery: x.delivery, submit_verdict: x.submit_verdict,
+           queue_wait_ms: x.queue_wait_ms, card_id: x.card_id || '',
            card_title: x.card_title, card_status: x.card_status,
            card_archived: x.card_archived, card_deleted: x.card_deleted,
            linked_cards: Array.isArray(x.linked_cards) ? x.linked_cards : [] };
@@ -17334,16 +17346,21 @@ function _fileMenuOutside(e) {
 // localStorage, so it survives across differently-sized screens. Applies to
 // ebooks, HTML, markdown, CSV and plain text; native <embed> PDFs can't be
 // tracked (no access to the built-in viewer's scroll).
+let _readPosCache = null;
+function _readPosAll() {
+  if (_readPosCache) return _readPosCache;
+  try { _readPosCache = JSON.parse(localStorage.getItem('amux_read_pos') || '{}'); }
+  catch(e) { _readPosCache = {}; }
+  return _readPosCache;
+}
 function _readPosGet(path) {
-  try {
-    const e = (JSON.parse(localStorage.getItem('amux_read_pos') || '{}'))[path];
-    return e ? (typeof e === 'number' ? e : (e.f || 0)) : 0;
-  } catch(e) { return 0; }
+  const e = _readPosAll()[path];
+  return e ? (typeof e === 'number' ? e : (e.f || 0)) : 0;
 }
 function _readPosSave(path, frac) {
   if (!path || !isFinite(frac)) return;
   try {
-    const s = JSON.parse(localStorage.getItem('amux_read_pos') || '{}');
+    const s = _readPosAll();
     if (frac <= 0.01 || frac >= 0.985) delete s[path];   // at the very start or basically finished → forget
     else s[path] = { f: frac, ts: Date.now() };
     const keys = Object.keys(s);
@@ -17351,7 +17368,9 @@ function _readPosSave(path, frac) {
       keys.map(k => [k, (s[k] && s[k].ts) || 0]).sort((a, b) => a[1] - b[1])
           .slice(0, keys.length - 300).forEach(([k]) => delete s[k]);
     }
+    _readPosCache = s;
     localStorage.setItem('amux_read_pos', JSON.stringify(s));
+    if (typeof _idb !== 'undefined') _idb.set('read_pos', s);
   } catch(e) {}
 }
 let _readPosCleanup = null;   // detaches the current scroll listener
@@ -31330,6 +31349,16 @@ if (!boardItems.length) {
       _cacheBoardJSON(j);
       if (activeView === 'board') renderBoard();
       else if (activeView === 'calendar') renderCalendar();
+    }
+  });
+}
+
+// IDB fallback for reading positions (iOS localStorage purge).
+if (!localStorage.getItem('amux_read_pos')) {
+  _idb.get('read_pos').then(data => {
+    if (data && typeof data === 'object' && Object.keys(data).length) {
+      _readPosCache = data;
+      try { localStorage.setItem('amux_read_pos', JSON.stringify(data)); } catch(e) {}
     }
   });
 }
