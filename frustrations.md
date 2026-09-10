@@ -3407,3 +3407,69 @@ CARD: AMUX-4368
 SYMPTOM: The terminal lost its agent arrows; the replacement toolbar button only displayed descriptions, without any way to read a selected subagent's output.
 COST: Owner could not navigate subagent work where they were reading the terminal and had to request the controls again.
 FIX: Two arrows beside Copy cycle current main/subagent output, preserving the main draft and view. Read owned structured child transcripts, never inject navigation keys. Missing outputs and list failures announce themselves through subagent-navigation diagnostics. Desktop/phone navigation, no-child, failure, and parent restoration tests. Live verification also caught a parent loading indicator surviving a quick child switch; clear it on selection and cover that race.
+
+## Sending cleared a draft before Amux confirmed delivery
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The worker composer cleared text and attachments before /send returned; permanent refusal lost the visible retry draft. A second send could race the pending request.
+COST: The lifecycle failure-path test reproduced loss of the only visible message draft.
+FIX: 2ba4ec5b retains text and files until server or durable outbox acceptance, disables duplicate sends, preserves concurrent new drafts, and emits composer-delivery/unconfirmed with draft_retained to the local client-debug log.
+
+## A dedicated CC_HOME still routed Bash commands to production
+AREA: cli
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The Sonnet lab workers used their dedicated CC_HOME but the Bash CLI resolved the production endpoint.json and its legacy verbs defaulted to port 8824.
+COST: The live pair queried the wrong board and required an explicit AMUX_API correction before coordination could continue.
+FIX: 2ba4ec5b resolves endpoint.json from CC_HOME and initializes the API base for every legacy verb; the URL diagnostic names the endpoint file. Eight shell routing tests passed.
+
+## An idle hook sent Escape into an active Claude tool turn
+AREA: scheduler
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The live Sonnet pair showed interrupted tools when an idle-hook callback trusted the hook over a fresh active terminal frame and sent a leading Escape.
+COST: The real peer-review cycle needed recovery after callbacks interrupted work.
+FIX: 2ba4ec5b classifies the fresh frame after the send lock: active frames paste without Escape and live selectors wait. Queue admission still trusts the hook so background agents cannot strand delivery. Six steer tests passed; local verdicts idle_hook_live_activity_paste and idle_hook_live_selector_wait identify the paths.
+
+## Freeze reordered pinned workers instead of freezing the displayed list
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The status-order test pinned a worker and then Freeze moved it into a computed status bucket instead of preserving the order on screen.
+COST: The broad visual test exposed a visible jump when enabling Freeze.
+FIX: 2ba4ec5b snapshots rendered card order, appends remaining workers, and emits worker-freeze-order/captured-rendered-order locally. The nine ordering tests passed on all three browser targets.
+
+## Files menu Download failed after a successful upload and rename
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: An actual Files-tab upload/preview/rename succeeded, but Download was canceled. Its direct anchor used the JSON preview endpoint and omitted bearer authentication.
+COST: The new exact-byte roundtrip test could not retrieve the file that the UI had successfully uploaded.
+FIX: The menu now shares the authenticated raw-byte download helper with the preview toolbar. Failures emit file-download/failed locally. Upload, preview, rename, exact-byte download and deletion passed on desktop Chromium, mobile Chromium and WebKit.
+
+## A just-created worker accepted keystrokes in its launch shell
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: A real Sonnet worker was still executing its launch shell when Send pasted a long prompt. The send later reported not_submitted. The test had mistaken --model sonnet in the launch command for the ready provider banner.
+COST: The fresh two-worker acceptance run could not begin its review cycle; the retained draft made recovery possible.
+FIX: During the startup window, send waits for a positive provider UI frame before typing and refuses without typing if readiness times out. Local verdicts send_waiting_for_boot_ui and send_boot_ui_not_ready expose both outcomes. The live suite requires the actual Sonnet version/footer, and pair/upload are serial so a failed pair cannot reset the author for upload.

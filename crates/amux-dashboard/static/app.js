@@ -18110,12 +18110,8 @@ function closeFilePreview() {
   _fileViewMode = 'preview';
 }
 
-async function _fileDownload() {
-  const dlBtn = document.getElementById('file-download-btn');
-  const url = dlBtn.dataset.url;
-  const filename = dlBtn.dataset.filename || 'download';
+async function _downloadFileBytes(url, filename) {
   try {
-    dlBtn.textContent = '⏳ …';
     const r = await fetch(url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const blob = await r.blob();
@@ -18125,6 +18121,19 @@ async function _fileDownload() {
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch (e) {
+    fetch(API + '/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: 'file-download', verdict: 'failed', measured: true,
+        n_considered: 1, ver: APP_VER})}).catch(() => {});
+    throw e;
+  }
+}
+
+async function _fileDownload() {
+  const dlBtn = document.getElementById('file-download-btn');
+  try {
+    dlBtn.textContent = '⏳ …';
+    await _downloadFileBytes(dlBtn.dataset.url, dlBtn.dataset.filename || 'download');
     dlBtn.textContent = '✓ Done';
     setTimeout(() => { dlBtn.textContent = '⬇ Download'; }, 2000);
   } catch(e) {
@@ -20749,14 +20758,13 @@ function _showFilesMenu(path, btn, type) {
     const dlItem = document.createElement('button');
     dlItem.className = 'explore-menu-item';
     dlItem.textContent = 'Download';
-    dlItem.onclick = () => {
+    dlItem.onclick = async () => {
       popup.remove();
-      const a = document.createElement('a');
-      a.href = API + '/api/file?path=' + encodeURIComponent(path);
-      a.download = path.split('/').pop();
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      try {
+        // The viewer endpoint returns JSON, and a direct anchor omits bearer
+        // auth. Use the same authenticated byte download as the preview toolbar.
+        await _downloadFileBytes(API + '/api/file/raw?path=' + encodeURIComponent(path), path.split('/').pop());
+      } catch (e) { showToast('Download failed: ' + e.message); }
     };
     popup.appendChild(dlItem);
   }

@@ -143,7 +143,15 @@ for (const initial of ['', 'obsolete-test-credential']) {
     await expect.poll(() => statuses.some(s => s === 401)).toBe(true);
     await expect.poll(() => statuses.some(s => s === 200)).toBe(true);
     await expect(page.locator('#session-read-notice')).toBeEmpty();
-    await expect(page.locator('#cards')).toContainText('No workers yet');
+    // Recovery must display the server's real roster. This project may already
+    // contain workers created by earlier scenarios; bootstrap is not a reset.
+    const names = await page.evaluate(async () => {
+      const response = await fetch('/api/sessions');
+      if (!response.ok) throw new Error('recovered roster HTTP ' + response.status);
+      return (await response.json()).map((row: any) => row.name);
+    });
+    if (!names.length) await expect(page.locator('#cards')).toContainText('No workers yet');
+    else for (const name of names) await expect(page.locator('#cards')).toContainText(name);
     await expect(page.locator('#conn-status').first()).toHaveText(/Live|Polling/);
   });
 }

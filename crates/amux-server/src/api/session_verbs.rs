@@ -7078,6 +7078,24 @@ async fn send_text_inner(
         now_i64() - last_started < 20
     };
     let mut out_st = tmux_capture(name, 15).await;
+    // A newly-created pane can be running its launch shell without drawing a
+    // shell prompt OR the provider composer. Sending then types the user's
+    // prompt into the startup script. Wait on positive UI evidence, not the
+    // process existence or the model name echoed by the launch command.
+    if boot_in_flight && !claude_ui_visible(&strip_ansi(&out_st)) {
+        tracing::info!(session = %name, verdict = "send_waiting_for_boot_ui",
+            "new worker has not drawn its provider UI — holding message before typing");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline && !claude_ui_visible(&strip_ansi(&out_st)) {
+            sleep_ms(250).await;
+            out_st = tmux_capture(name, 15).await;
+        }
+        if !claude_ui_visible(&strip_ansi(&out_st)) {
+            tracing::warn!(session = %name, verdict = "send_boot_ui_not_ready",
+                "provider UI did not appear — message was not typed into the launch shell");
+            return (false, "worker is still starting — message not sent; retry when its terminal is ready".into());
+        }
+    }
     if !out_st.is_empty() && at_resume_picker(&strip_ansi(&out_st)) {
         return (false, "session is in resume picker".into());
     }
@@ -23357,6 +23375,10 @@ mod tests {
         let shell = "Last login: Sat\nmixpeek$ ";
         assert!(!claude_ui_visible(shell));
         assert!(at_shell_prompt(shell));
+        let launching = "source /tmp/lab/amux.env 2>/dev/null; set +a; unset ANTHROPIC_API_KEY;\nclaude --model sonnet --session-id test-id";
+        assert!(!claude_ui_visible(launching), "the model in a launch command is not a ready provider");
+        let sonnet = "Claude Code v2.1.267\nSonnet 5 with xhigh effort · Claude Max\n❯ \n⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents";
+        assert!(claude_ui_visible(sonnet), "the actual Sonnet footer releases a held startup send");
         // Spinner = active; prompt-glyph lines never count as chrome.
         let active = "\u{273b} Crunching\u{2026} (12s)\n\u{276f} typed text";
         assert_eq!(detect_claude_status(active), "active");

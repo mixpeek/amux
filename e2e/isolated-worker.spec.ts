@@ -3,10 +3,11 @@
 // to discover or target them.  This uses the real HTTP server and its on-disk
 // session registry, but deliberately stops before tmux/LLM delivery: a peer
 // relay must be refused at the API boundary, before it could auto-wake a model.
-import { test, expect, Page } from '@playwright/test';
+import { test, expect, Page } from './fixtures';
+import { boot, deleteOwnedWorkers, getSessionsResilient } from './lifecycle/evidence';
 
 async function appToken(page: Page): Promise<string> {
-  await page.goto('/');
+  await boot(page);
   const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
   expect(token, 'served bootstrap must provide the API token').toBeTruthy();
   return token;
@@ -16,8 +17,8 @@ test('isolated worker stays off the board and out of peer discovery', async ({ p
   const token = await appToken(page);
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const suffix = `${testInfo.project.name}-${Date.now()}`;
-  const isolated = `e2e-raw-${suffix}`;
-  const peer = `e2e-peer-${suffix}`;
+  const isolated = `lc-raw-${suffix}`;
+  const peer = `lc-peer-${suffix}`;
 
   try {
     // Create both in the same group: group policy must not be what hides the
@@ -31,7 +32,7 @@ test('isolated worker stays off the board and out of peer discovery', async ({ p
     }
 
     // The owner dashboard remains able to see the raw lane.
-    const owner = await request.get('/api/sessions', { headers: auth });
+    const owner = await getSessionsResilient(request, auth);
     expect(owner.status()).toBe(200);
     const ownerNames = (await owner.json()).map((row: any) => row.name);
     expect(ownerNames).toContain(isolated);
@@ -67,24 +68,8 @@ test('isolated worker stays off the board and out of peer discovery', async ({ p
     const rawCards = (await board.json()).filter((card: any) => card.session === isolated);
     expect(rawCards, 'a refused peer relay must not create an isolated worker board card').toEqual([]);
   } finally {
-    // Each Playwright project owns a throwaway AMUX_HOME, but clean up anyway
-    // so this test remains isolated when a project later shares a server —
-    // several other specs in this same project assume "No workers yet" on a
-    // fresh load. request.delete() resolves (does not reject) on a non-2xx
-    // status, so a bare .catch(() => {}) here silently accepted a failed
-    // delete with nobody checking the response; a transient 500 (session
-    // registry writes can race, same as the documented /api/sessions list
-    // race) then left this worker behind for the next spec to trip over.
-    // Verify and retry once instead of firing-and-forgetting.
-    for (const name of [isolated, peer]) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const res = await request.delete(`/api/sessions/${name}`, { headers: auth });
-          if (res.ok() || res.status() === 404) break;
-        } catch (e) {
-          // fall through to retry
-        }
-      }
-    }
+    // Exercise and verify the actual dashboard delete path. A resolved HTTP
+    // request is not proof that a worker was unregistered.
+    await deleteOwnedWorkers(page, request, auth, [isolated, peer]);
   }
 });

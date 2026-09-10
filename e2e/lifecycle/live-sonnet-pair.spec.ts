@@ -1,5 +1,8 @@
 import { test, expect, Page } from '@playwright/test';
+import { runSonnetUpload } from './sonnet-upload';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
+
+test.describe.configure({ mode: 'serial' });
 
 async function workerAction(page: Page, name: string, action: string) {
   await page.goto('/');
@@ -75,14 +78,17 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
     expect(row.provider || 'claude').toBe('claude');
     expect(`${row.model} ${row.flags}`).toMatch(/sonnet/i);
     await workerAction(page, name, 'peek-terminal');
-    await expect(page.locator('#peek-body')).toContainText(/Sonnet/i, { timeout: 60_000 });
+    await expect(page.locator('#peek-body')).toContainText(/Sonnet [0-9.]+(?: with [^\n]+)?[·•]/i, { timeout: 90_000 });
     await checkpoint(page, info, `running-sonnet-${name}`);
   }
   const common = `Authorized test ${run}. Work only in ${cwd}, and communicate only with ${names.join(' and ')}.
 Use your normal amux CLI and board workflow. Create your own chore task; discover the peer's actual
 board card and preserve ownership. Record real test commands/results and file paths as evidence.
 Do not fake review, bypass gates, close the peer's cards, contact production or external recipients.
-Finish your own cards honestly and then idle. Every peer message must name the relevant real task ID.`;
+Finish your own cards honestly and then idle. If Amux auto-captures this prompt or FYI messages as
+additional cards, discard your own duplicate captures with a reason pointing to your real work card;
+do not leave them doing/backlog or falsely acknowledge code-merge gates for chore work.
+Every peer message must name the relevant real task ID.`;
   if (!observeOnly) {
   await send(page, reviewer, `${common}
 You are reviewer. Create your review task and send ${author} PEER_READY with your task ID. Wait for
@@ -99,7 +105,8 @@ xs.reduce((a,b)=>a+b,0)/xs.length (the deliberate review defect). Discover ${rev
 task, assign ${reviewer} as your task's reviewer using the normal review flow, and send a review
 request with your task ID and ${source}. Wait for REVIEW_CHANGES before fixing the empty input to
 return 0. Run tests and request re-review. After REVIEW_APPROVED and REVIEW_DONE, render ${run}-result.html
-with the visible text '${run} complete' and the actual test result. Finish your own task with evidence.
+with the visible text '${run} complete' and the actual test result. Use readable typography and
+wrap long titles and preformatted lines so the page fits 375px and 1280px without horizontal overflow. Finish your own task with evidence.
 Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yourself.`);
   await checkpoint(page, info, 'mobile-prompt-sent');
   }
@@ -122,7 +129,7 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
         return false;
       }
       timeline.push({ at: new Date().toISOString(), cards, messages });
-      const sent = (from: string, to: string, marker: string) => messages.some(m => m.origin === from && m.session === to && String(m.text).includes(marker));
+      const sent = (from: string, to: string, marker: string) => messages.some(m => m.origin === from && m.session === to && String(m.text).startsWith(marker));
       return names.every(name => cards.some(c => c.session === name)) && cards.every(c => ['done', 'verified', 'discarded', 'cancelled'].includes(c.status)) &&
         sent(reviewer, author, 'REVIEW_CHANGES') && sent(reviewer, author, 'REVIEW_APPROVED') && sent(author, reviewer, 'PAIR_DONE');
     }, { timeout: 1_500_000, intervals: [5000, 15000, 30000], message: 'both Sonnet workers must finish their real review cycle' }).toBe(true);
@@ -159,8 +166,8 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
       }
       await info.attach('independent-mean-results', { body: JSON.stringify(values), contentType: 'application/json' });
     } finally { await sandbox.close(); }
-    const changes = messages.find(m => m.origin === reviewer && m.session === author && m.text.includes('REVIEW_CHANGES'));
-    const approved = messages.find(m => m.origin === reviewer && m.session === author && m.text.includes('REVIEW_APPROVED'));
+    const changes = messages.find(m => m.origin === reviewer && m.session === author && m.text.startsWith('REVIEW_CHANGES'));
+    const approved = messages.find(m => m.origin === reviewer && m.session === author && m.text.startsWith('REVIEW_APPROVED'));
     expect(Number(approved.ts)).toBeGreaterThan(Number(changes.ts));
     for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 667 }]) {
       await page.setViewportSize(size);
@@ -171,6 +178,7 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
         await expect(page.locator('#peek-body .peek-highlight').first(), 'real delivered message must be findable in terminal').toBeVisible({ timeout: 30_000 });
         await page.getByRole('button', { name: 'Next message', exact: true }).click();
         await page.getByRole('button', { name: 'Previous message', exact: true }).click();
+        await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');
         await checkpoint(page, info, `terminal-${name}-${size.width}`);
         await page.locator('#peek-search').press('Escape');
         await page.locator('#peek-tab-messages').click();
@@ -190,3 +198,5 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
     await info.attach('pair-timeline', { body: JSON.stringify({ run, names, group, health, timeline }, null, 2), contentType: 'application/json' });
   }
 });
+
+test('LC-SONNET-UPLOAD: same Sonnet worker reads a real UI upload and finishes its receipt task', runSonnetUpload);

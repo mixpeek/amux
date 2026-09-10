@@ -627,7 +627,7 @@ Selection field and executed test counts are the authoritative scope of this run
 Run the focused real-provider scenario with:
 
 ```bash
-python3 scripts/lifecycle/run.py live --grep LC-SONNET-PAIR
+python3 scripts/lifecycle/run.py live --grep LC-SONNET
 ```
 
 It creates exactly two Claude workers using `--model sonnet` in one group. The
@@ -666,3 +666,30 @@ These controlled transport tests do not substitute for live model execution.
 Browser discovery uses a private tmux socket. Focused invocations start only the
 selected project's server. `AMUX_LIFECYCLE_PORT` changes the base port when running
 separate projects concurrently; each invocation still needs its own output directory.
+
+
+The Sonnet selection runs the review pair first, then reuses the author in a fresh
+conversation for a real `fruit-counts.csv` upload. It requires the worker to read
+the uploaded path, produce a JSON receipt (two rows, total six), and finish its
+own task with the receipt as evidence. No receipt or peer review is fabricated by
+the observer. The pair's HTML must fit both 375px and 1280px.
+
+`AMUX_LIFECYCLE_PAIR_RUN` is generated once per live invocation and shared by the
+pair and upload cases. To inspect an existing upload without submitting new work,
+set `AMUX_LIFECYCLE_UPLOAD_OBSERVE=1`, the existing pair run, and optionally
+`AMUX_LIFECYCLE_UPLOAD_RECEIPT` to its receipt filename. Observation is recorded
+explicitly and is not a claim that this invocation created or drove the workers.
+Observe the pair before resetting its author for upload: a new conversation does
+not retain the old terminal's searchable content.
+
+`LC-FILES-UPLOAD` also exercises the Files tab's upload, preview, rename, download,
+and delete controls, including the mobile More menu. Downloaded bytes must equal
+the original uploaded bytes. Composer refusal tests cover peek and card Send /
+Queue and the Control+Enter retry shortcut.
+
+On a machine with other active checkouts, use a private `node_modules` installed
+with `npm ci` and a private browser cache. Do not symlink another lane's mutable
+dependencies: browser revisions can disappear mid-run when that lane upgrades.
+For example, set `PLAYWRIGHT_BROWSERS_PATH` to a task-owned directory and run
+`npx playwright install chromium webkit` before starting the suite. Keep the same
+environment for the suite, and do not replace its pinned executable during a run.
