@@ -73,12 +73,12 @@ impl ProviderAdapter for ClaudeAdapter {
         Self::provider_id()
     }
 
-    /// Verified, not assumed: `/compact` is what the auto-compact trigger has
-    /// been typing into Claude lanes all along, and gtm-videos' pane shows it
-    /// executing (`⎿ Compacted (ctrl+o to see full summary)`). This move only
-    /// changes WHERE the string lives, not what Claude receives.
+    /// Claude Code compacts inside its agent loop and continues the task.
+    /// https://code.claude.com/docs/en/how-claude-code-works#when-context-fills-up
+    /// AMUX-4366: pasted /compact reminders accumulated in the native input
+    /// queue while context kept falling. A submitted message is not compaction.
     fn compaction(&self) -> crate::provider::Compaction {
-        crate::provider::Compaction::Command("/compact")
+        crate::provider::Compaction::Automatic
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

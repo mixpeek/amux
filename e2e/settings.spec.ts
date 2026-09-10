@@ -15,7 +15,7 @@
 //  5  Offline scrollback-limit select          POST /api/prefs offline_cache_cap  TESTED
 //  6  Device name input                        localStorage amux_device_name TESTED (client-side by design)
 //  7  Subscription usage meter                 GET /api/usage                TESTED (ported in api/usage.rs)
-//  8  Auto-compact toggle                      POST /api/prefs auto_compact_enabled  TESTED
+//  8  Native context management explanation    provider-owned; no ineffective toggle
 //  9  Auto-resume-dialog toggle                POST /api/prefs auto_resume_summary   TESTED
 // 10  Auto-file-as-task toggle                 POST /api/prefs board_autotask        TESTED
 // 11  Alerts: push cb / SMS cb / phone         GET+PATCH /api/alert/config   FIXME — needs porting (py:65602)
@@ -167,9 +167,8 @@ function waitForPrefWrite(page: Page, key: string) {
 // ============================================================================
 
 const AUTOMATION_TOGGLES = [
-  // All three default ON; the flow is: uncheck → wire 200 → pref '0' →
+  // Both default ON; the flow is: uncheck → wire 200 → pref '0' →
   // reload survives → re-check (restore) → pref '1'.
-  { name: 'auto_compact', input: '#auto-compact-checkbox', key: 'auto_compact_enabled' },
   { name: 'auto_resume_dialog', input: '#auto-resume-checkbox', key: 'auto_resume_summary' },
   { name: 'autotask', input: '#autotask-checkbox', key: 'board_autotask' },
 ] as const;

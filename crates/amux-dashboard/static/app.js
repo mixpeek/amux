@@ -219,16 +219,6 @@ function toggleTheme(checked) {
   _applyTheme(preferLight);
 })();
 
-// ── Auto-compact toggle ──
-async function toggleAutoCompact(checked) {
-  await fetch('/api/prefs', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ key: 'auto_compact_enabled', value: checked ? '1' : '0' })
-  });
-  // No-silent-actions: the checkbox flips natively even when the save fails,
-  // so say the save happened (same idiom as toggleAutotask below).
-  showToast(checked ? 'Auto-compact on' : 'Auto-compact off');
-}
 async function toggleAutotask(checked) {
   await fetch('/api/prefs', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -292,16 +282,6 @@ async function toggleAutofix(checked) {
     // fresh install ships with its own watchdog switched off.
     if (cb) cb.checked = String((d && d.value) ?? '1') !== '0';
   } catch (e) {}
-})();
-
-(async function initAutoCompact() {
-  try {
-    const r = await fetch('/api/prefs?key=auto_compact_enabled');
-    const d = await r.json();
-    const enabled = d.value !== '0';  // default ON
-    const cb = document.getElementById('auto-compact-checkbox');
-    if (cb) cb.checked = enabled;
-  } catch(e) {}
 })();
 
 // ── YOLO by default for new workers (Ethan 2026-08-19) ──
@@ -9754,7 +9734,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.869';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.870';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

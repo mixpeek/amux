@@ -3385,3 +3385,14 @@ CARD: AMUX-4361
 SYMPTOM: mixpeek-general showed MG-1295 +5 queued behind MG-1743; the badge opened only the first holding card, hid the other queued cards, and gave no loading feedback. The existing browser test checked only a changed hash, not usable task controls.
 COST: Ethan could see six waiting tasks but could not act on the queue from the header.
 FIX: v0.9.868 opens a measured queue inspector with every current and ready card, direct access to existing status/worker editing, retryable load failures, and worker-queue loaded/load-failed/open-task beacons. Task queue is also available in Worker actions while the worker is active. Browser regression opens the real card editor and preserves the worker draft on return.
+
+## Low-context automation piles compact reminders into the worker input queue
+AREA: notices
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4366
+SYMPTOM: byo-ray showed repeated /compact plus prose at 12%, 11%, 7%, and 4% remaining while its native input queue grew. The dashboard toggle wrote auto_compact_enabled, but Rust never read it. Queuing a reminder emitted session.auto_compact without evidence of compaction.
+COST: Owner had to intervene over context maintenance that Claude Code already performs automatically; repeated reminders consumed input and obscured the task.
+FIX: Delegate to Claude Code's native compaction, remove duplicate steering and the ineffective toggle, and record measured session.context_low events without claiming completed compaction. Endpoint regression covers falling readings and recovery without adding a message.

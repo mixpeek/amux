@@ -303,14 +303,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="settings-tab-panel" id="stab-workers" data-stab="workers">
         <div class="settings-section">
           <div class="settings-section-label">Automation</div>
-          <div class="settings-row" style="justify-content:space-between;align-items:center;">
-            <span style="font-size:0.85rem;">Auto-compact</span>
-            <label class="theme-toggle">
-              <input type="checkbox" id="auto-compact-checkbox" onchange="toggleAutoCompact(this.checked)" checked>
-              <span class="theme-track"><span class="theme-thumb"></span></span>
-            </label>
-          </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 15% remaining</div>
+          <div id="native-compaction-info" style="font-size:0.85rem;">Automatic context management</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Claude Code compacts context and continues the task automatically. Its auto-compact setting is managed in the worker’s /config menu.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">YOLO by default for new workers</span>
             <label class="theme-toggle">
