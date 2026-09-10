@@ -571,3 +571,28 @@ test('conversation overlap removes only the exact shared tail and keeps new outp
   });
   expect(result).toEqual(['', '❯ A new request', '⏺ Complete response\n  A different second line', '', '❯ New after blank lines']);
 });
+
+test('live worker composer is a preserved draft, never a delivered message', async ({ page }) => {
+  const raw = '⏺ Completed response\n\x1b[38;5;114mUpdate installed · Restart to update\x1b[39m\n'
+    + '\x1b[38;5;244m──────────────── tubescience ─\n\x1b[39m❯\u00a0[Pasted text #401 +11 lines][Pasted text #402 +11 lines] A partial message\n'
+    + '  with an internal marker. [AMUX-INJECT-END]\n\n────────────────────────\n⏵⏵ bypass permissions on · 1 shell · 1 feedback draft\n/rc failed';
+  await page.route('**/api/sessions/nav-probe/peek?*', route => route.fulfill({json:{name:'nav-probe',live:raw,history:'❯ Delivered message mentioning [Pasted text #9 +2 lines]\n\n⏺ Saved answer'}}));
+  await page.evaluate(async () => {
+    eval('_lastPeekRaw = ""; _peekScrollLocked = false;');
+    await (window as any).refreshPeek();
+  });
+  const draft = page.locator('.peek-worker-input');
+  await expect(draft).toBeVisible();
+  await expect(page.locator('#peek-overlay')).toHaveCSS('opacity', '1');
+  await expect(draft.locator('summary')).toHaveText('Unsent worker input · 2 pasted blocks');
+  await expect(draft.locator('pre')).toBeHidden();
+  await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
+  await expect(page.locator('#pk-live')).not.toContainText('Unclassified');
+  await page.screenshot({path:test.info().outputPath('worker-input-collapsed.png')});
+  await draft.locator('summary').click();
+  await expect(draft.locator('pre')).toContainText('[Pasted text #401 +11 lines]');
+  await expect(draft.locator('pre')).toContainText('[AMUX-INJECT-END]');
+  await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({path:test.info().outputPath('worker-input-expanded.png')});
+});

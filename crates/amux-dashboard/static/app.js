@@ -9653,7 +9653,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.866';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.867';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -9897,7 +9897,7 @@ function _paintCachedPeek(cached) {
   if (!cached || (!cached.output && !cached.history)) return false;
   _peekHistoryRaw = cached.history || '';
   _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
-  _lastLiveHTML = cached.liveHTML || (cached.output ? _peekHtml(cached.output) : '');
+  _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
   applyPeekSearch();
   const ago = Math.floor((Date.now() - (cached.time || Date.now())) / 60000);
@@ -11083,6 +11083,27 @@ function _linkifyPaths(safeHtml) {
 function _peekHtml(raw) {
   return wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))));
 }
+// Only the current frame has a composer. Its ruled input box is terminal UI,
+// not a delivered message, even when it contains a collapsed paste or a stamp.
+function _peekLiveHtml(raw) {
+  const lines = raw.split('\n');
+  const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
+  const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
+  for (let i = plain.length - 1; i > 0; i--) {
+    if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
+    const end = plain.findIndex((line, n) => n > i && rule(line));
+    if (end < 0 || !plain.slice(end + 1).some(line => /⏵|bypass permissions|\/rc failed|shift\+tab/.test(line))) continue;
+    const input = plain.slice(i, end).join('\n').replace(/^\s*❯\s?/, '').trim();
+    const pastes = input.match(/\[Pasted text #\d+[^\]]*\]/g) || [];
+    const summary = pastes.length ? 'Unsent worker input · ' + pastes.length + ' pasted block' + (pastes.length === 1 ? '' : 's') : 'Worker input';
+    const draft = input ? '<details class="peek-worker-input"><summary>' + esc(summary) + '</summary>'
+      + '<p>This is the worker’s input box, not a delivered chat message. Collapsed paste contents are only available in the worker terminal.</p>'
+      + '<pre>' + esc(input) + '</pre></details>' : '';
+    return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
+      + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
+  }
+  return _peekHtml(raw);
+}
 
 // The MARKERS amux stamps on everything it injects into a pane. Structural, not
 // heuristic: each one is a literal prefix the server writes, so matching it is
@@ -11701,8 +11722,11 @@ async function refreshPeek(liveOnly, bypassTrim) {
       _peekScrollLocked = false;
       _peekBufferedOutput = false;
     }
-    const newHTML = _peekHtml(output);
+    const newHTML = _peekLiveHtml(output);
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
+    if (newHTML.includes('class="peek-worker-input"') && !_lastLiveHTML.includes('class="peek-worker-input"')) {
+      _peekPollBeacon('worker-input-separated', name, { verdict: 'composer_excluded_from_messages' });
+    }
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     // Claude runs on the terminal's ALT SCREEN: tmux holds only the viewport,
     // so the top of the capture is a hard cutoff mid-conversation. Compose a

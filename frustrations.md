@@ -3363,3 +3363,14 @@ CARD: AMUX-4352
 SYMPTOM: Ethan's screenshot showed rows such as `+ e n 4` and `* d i`, followed by individual spinner glyphs. The same missing-letter text and redraw fragments exist in tubescience.log; the worker's 220x50 live pane and structured transcript are readable. Load earlier output used the lossy pipe-pane log as if it were conversation history.
 COST: Ethan could not read the TubeScience worker's earlier output and had to report a screenshot for diagnosis.
 FIX: Claude earlier output now pages complete structured transcript records using absolute byte cursors and conversation identity. It replaces the initial overlapping history tail and preserves new live output. Live verification exposed different blank-line normalization between peek and record pages; overlap matching now mirrors peek normalization, verified against 119,599 characters of real TubeScience output. Raw log downloads remain available. The server emits conversation_history_page with source, record count, bytes and remaining cursor, and warns on unavailable/read-failed conversation history.
+
+## TubeScience unsent paste fragments appeared as delivered chat
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-adhoc-fixes
+CARD: AMUX-4359
+SYMPTOM: The current Claude composer held adjacent [Pasted text] placeholders and AMUX-INJECT-END tails, and the dashboard classified that unsent input as an Unclassified chat message. CLI transport retries also lacked msg_id and fell back to direct terminal injection after an ambiguous timeout.
+COST: Ethan had to report another screenshot because transport debris still occupied the chat after the history fix.
+FIX: The live renderer separates the framed worker input into a collapsed, inspectable draft excluded from message navigation; raw input remains intact. CLI retries share one msg_id and no longer paste into a terminal after missing acknowledgments. send_delivery_unknown is recorded locally in logs/send-failures.jsonl; the dashboard emits composer_excluded_from_messages when separating the input.
