@@ -13597,51 +13597,63 @@ async fn dispatch(
 /// `subagent_type` and a human-readable `description`. Both are reported when
 /// present and omitted when not — a made-up label is worse than none in a
 /// switcher, because it cannot be told from a real one.
-fn session_subagents(name: &str) -> Value {
-    let projects = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".claude/projects");
+fn session_subagents(name: &str, selected: Option<(&str, &str)>) -> Value {
+    // A terminal follows the current conversation, not every historical fork.
+    // Resolve once instead of scanning the whole fleet on each output poll.
+    let conversations: Vec<PathBuf> = session_jsonl_path(name).into_iter().collect();
+    session_subagents_from(&conversations, name, selected)
+}
+
+fn session_subagents_from(conversations: &[PathBuf], name: &str, selected: Option<(&str, &str)>) -> Value {
     let mut out: Vec<Value> = Vec::new();
-    let Ok(projs) = std::fs::read_dir(&projects) else {
-        return json!({"session": name, "subagents": [], "source": "transcripts"});
-    };
     let claims = conversation_claims();
-    for proj in projs.flatten() {
-        let Ok(convs) = std::fs::read_dir(proj.path()) else { continue };
-        for c in convs.flatten() {
-            let conv = c.path();
-            if conv.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            if conversation_owner(&conv, &claims) != name {
-                continue;
-            }
-            let stem = conv.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let dir = conv.with_extension("").join("subagents");
-            let Ok(agents) = std::fs::read_dir(&dir) else { continue };
-            for a in agents.flatten() {
-                let p = a.path();
-                if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                let meta = p.metadata().ok();
-                let modified = meta
-                    .as_ref()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                let (kind, description, turns) = subagent_head(&p);
-                out.push(json!({
-                    "id": p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
-                    "conversation": stem,
-                    "type": kind,
-                    "description": description,
-                    "turns": turns,
-                    "last_active": modified,
-                    "bytes": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                }));
-            }
+    for conv in conversations {
+        if conversation_owner(conv, &claims) != name {
+            continue;
         }
+        let stem = conv.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let dir = conv.with_extension("").join("subagents");
+        let Ok(agents) = std::fs::read_dir(&dir) else { continue };
+        for a in agents.flatten() {
+            let p = a.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let agent = p.file_stem().and_then(|v| v.to_str()).unwrap_or("");
+            if let Some((wanted_agent, wanted_conversation)) = selected {
+                // Select only among this worker's owned conversations. No
+                // caller-controlled filesystem path, and identical child
+                // names in different conversations cannot cross-link.
+                if agent != wanted_agent || stem != wanted_conversation { continue; }
+                let output = render_transcript_records(iter_jsonl_tail(&p, 5_000_000), 300_000);
+                tracing::debug!(session = name, agent, conversation = %stem,
+                    verdict = "subagent-output", bytes = output.len(), "read subagent transcript");
+                return json!({"session":name,"agent":agent,"conversation":stem,
+                    "output":output,"source":"transcripts"});
+            }
+            let meta = p.metadata().ok();
+            let modified = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let (kind, description, turns) = subagent_head(&p);
+            out.push(json!({
+                "id": p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                "conversation": stem,
+                "type": kind,
+                "description": description,
+                "turns": turns,
+                "last_active": modified,
+                "bytes": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            }));
+        }
+    }
+    if selected.is_some() {
+        tracing::warn!(session = name, verdict = "subagent-output-missing",
+            "selected subagent is not in this worker's owned transcripts");
+        return json!({"session":name,"error":"Subagent transcript not found for this worker"});
     }
     // Most recently active first: a switcher is read to jump to what is moving.
     out.sort_by_key(|v| -(v["last_active"].as_i64().unwrap_or(0)));
@@ -13871,7 +13883,17 @@ async fn get_dispatch(
         // the feature. That is D1's documented exit: a real interface instead of
         // a scrape of rendered output, and it improves as Claude Code does
         // rather than breaking on the next glyph change.
-        "subagents" => j200(session_subagents(name)),
+        "subagents" => {
+            let selected = match (qs_get(qs, "agent"), qs_get(qs, "conversation")) {
+                (Some(agent), Some(conv)) => Some((agent, conv)),
+                (None, None) => None,
+                _ => return jresp(StatusCode::BAD_REQUEST, json!({"error":"agent and conversation are both required"})),
+            };
+            let data = session_subagents(name, selected);
+            if selected.is_some() && data.get("error").is_some() {
+                jresp(StatusCode::NOT_FOUND, data)
+            } else { j200(data) }
+        },
         // Peek "Simple" tab (AMUX-3056): a plain-English summary of what this
         // worker just did, from its last assistant message via the shared
         // fastest/cheapest helper, cached per transcript+prompt. `?prompt=` is
@@ -18088,195 +18110,40 @@ pub(crate) async fn report_post(state: &AppState, name: &str, headers: &HeaderMa
                 });
             }
 
-            // AUTO-COMPACT (AMUX-2829). Ethan: "theres no reason amux should
-            // ever stop." It stopped because this consumer did not exist.
-            //
-            // orchestrator/compaction.rs has held the POLICY since the rust
-            // port — four tiers keyed on percent remaining — and had ZERO
-            // callers outside its own tests. Nothing emitted ContextLow because
-            // nothing knew any lane's context size, because the hooks reported
-            // tokens:None. That half shipped earlier today; this is the other.
-            //
-            // Sent as STEERING rather than typed directly: the queue already
-            // delivers at a turn boundary, which is the only moment /compact is
-            // meaningful, and it already refuses to type at a selector. The
-            // `auto-compact` guard makes it at-most-one-pending per lane — a
-            // second report before the first is consumed replaces it rather
-            // than stacking, which is what stops this becoming the nag that
-            // got the `done` tier removed from the advance loop.
+            // AMUX-4366: context belongs to the provider's agent loop. The
+            // old consumer injected /compact plus prose at every new low
+            // reading, then called a queued message "compacted". Claude already
+            // compacts automatically; those inputs just piled up during work.
+            // Keep an observable low-context signal without sending instructions
+            // or claiming the provider has completed a compaction.
             if let Some(used) = used_tokens {
                 let pct = context_pct_remaining(used, context_window());
-                let action = crate::orchestrator::compaction::compaction_action(pct);
-                use crate::orchestrator::compaction::CompactionAction as CA;
-                if matches!(action, CA::Compact | CA::ForceCompact) {
-                    // THE COMMAND COMES FROM THE PROVIDER, NOT FROM HERE
-                    // (AMUX-3807). This line used to be the literal "/compact",
-                    // a Claude Code slash command sent with no provider check —
-                    // exactly the `if provider == "x"` branch that
-                    // provider/mod.rs's header forbids, written as a constant so
-                    // it did not look like one.
-                    //
-                    // Harmless only by accident so far: `used_tokens` arrives in
-                    // a Claude-shaped hook report, so no Gemini or Codex lane has
-                    // ever reached this code (measured 2026-08-27 — zero
-                    // auto-compacts, ever, across all seven non-Claude lanes).
-                    // The moment amux gains a provider-independent context signal
-                    // (AMUX-3806), every one of them would have started receiving
-                    // `/compact` as literal text.
-                    // ONE COMPACT PER READING (AMUX-3805).
-                    //
-                    // The trigger re-evaluates on EVERY state report, and a
-                    // report can carry a reading amux has already acted on. It
-                    // then queues a second compact against a number that
-                    // predates the first one executing. gtm-videos received
-                    // THREE identical `/compact` messages, all carrying
-                    // used=889866: the first compacted, the other two were typed
-                    // into the prompt for nothing and sat directly above Ethan's
-                    // own message. Fleet-wide the same day: 352 re-queues
-                    // against 98 genuine ones (78%), worst pending age 599s.
-                    //
-                    // AMUX-3557 measured this exact loop ("300 times on backend,
-                    // 78 in one hour") and shipped `pending_age_s` LOGGING. The
-                    // `auto-compact` guard is at-most-one-PENDING, which is a
-                    // different fact: once a pending is DELIVERED it clears and
-                    // the next stale report queues a fresh one. Pending-ness is
-                    // not reading-freshness.
-                    //
-                    // THE DISCRIMINATOR IS THE READING ITSELF, not a clock and
-                    // not a cooldown. `used` DROPS when a compact succeeds, so
-                    // "same number I last acted on" means "no new information
-                    // since I acted". A cooldown would be wrong in the other
-                    // direction: a lane STILL low after a successful compact
-                    // must be able to compact again at once, and it can, because
-                    // its `used` will have changed.
-                    //
-                    // Provider-agnostic by construction: it reasons about the
-                    // measurement's freshness, never about who produced it.
-                    let fresh_reading = {
-                        static LAST_ACTED: std::sync::OnceLock<
-                            std::sync::Mutex<std::collections::HashMap<String, (u64, f64)>>,
-                        > = std::sync::OnceLock::new();
-                        let map = LAST_ACTED.get_or_init(Default::default);
-                        let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
-                        let now = now_f64();
-                        if let Some(&(prev_used, prev_ts)) = g.get(name) {
-                            if prev_used == used {
-                                tracing::debug!(
-                                    target: "compaction",
-                                    session = %name, used, pct,
-                                    "auto-compact SKIPPED — same reading already acted on \
-                                     (AMUX-3805); waiting for a fresh one"
-                                );
-                                false
-                            } else if now - prev_ts < 120.0 {
-                                tracing::debug!(
-                                    target: "compaction",
-                                    session = %name, used, pct,
-                                    elapsed_s = (now - prev_ts).round() as i64,
-                                    "auto-compact SKIPPED — cooldown (120s) not elapsed; \
-                                     previous compact may still be processing"
-                                );
-                                false
-                            } else {
-                                g.insert(name.to_string(), (used, now));
-                                true
-                            }
-                        } else {
-                            g.insert(name.to_string(), (used, now));
-                            true
-                        }
-                    };
-                    if fresh_reading {
+                if pct < crate::orchestrator::compaction::COMPACT_BELOW_PCT_REMAINING {
                     let provider = provider_of(&parse_env(name));
                     let compaction = crate::provider::default_registry()
                         .resolve(&provider)
                         .map(|a| a.compaction())
                         .unwrap_or(crate::provider::Compaction::Unsupported);
-                    let cmd_opt = match compaction {
-                        crate::provider::Compaction::Command(c) => Some(c),
-                        // TYPE NOTHING. A borrowed command lands in the
-                        // conversation as literal text and consumes the context
-                        // it was sent to reclaim, so the lane is left worse off
-                        // AND told nothing. Silence plus a WARN is the honest
-                        // state: amux cannot compact this provider, and that gap
-                        // is now visible instead of being hidden behind a command
-                        // that appears to work.
-                        crate::provider::Compaction::Unsupported => {
-                            tracing::warn!(
-                                target: "compaction",
-                                session = %name, %provider, pct, used,
-                                "context low but amux has NO compaction path for this provider — \
-                                 nothing sent. This lane will run out unassisted (AMUX-3807); \
-                                 give its adapter a Compaction::Command once someone has \
-                                 verified the command, or it needs a different remedy."
-                            );
-                            None
-                        }
+                    let mode = match compaction {
+                        crate::provider::Compaction::Automatic => "provider-managed",
+                        crate::provider::Compaction::Unsupported => "unsupported",
                     };
-                    // Everything below sends. Skipped entirely when the provider
-                    // has no compaction path, so `Unsupported` is a no-op that
-                    // announced itself rather than a message nobody can use.
-                    if let Some(cmd) = cmd_opt {
-                    let msg = format!(
-                        "{cmd}\n\nContext is at {pct}% remaining ({used} tokens of a \
-                         {} window). Compacting now keeps you working — running out is not a \
-                         reason to stop. If you are mid-task, compact and continue where you \
-                         left off.",
-                        context_window()
-                    );
-                    // HOW LONG HAS IT BEEN PENDING? (AMUX-3557) The trigger
-                    // re-evaluates on every state report and the condition
-                    // cannot clear until the lane actually compacts, so a lane
-                    // that is stuck mid-turn re-fires this forever — measured
-                    // 300 times on `backend`, 78 in one hour. Every one of
-                    // those logged an identical line, and the EVENT beside it
-                    // is deduped into 30-minute buckets, so the ledger showed
-                    // 11 where the truth was 300: a 27x under-report, which is
-                    // why nobody saw it.
-                    //
-                    // The age of the already-pending row is the discriminator
-                    // and it costs nothing: it is persistent (unlike a counter,
-                    // which this process's re-exec would reset — the mistake
-                    // the ethos file records against in-memory scan state), and
-                    // it separates "fired once, will deliver at the next
-                    // boundary" from "this lane has not reached a boundary in
-                    // an hour", which are different problems with different
-                    // owners.
-                    let pending_age_s = {
-                        let sess = name.to_string();
-                        state
-                            .store
-                            .read()
-                            .ok()
-                            .and_then(|c| {
-                                c.query_row(
-                                    "SELECT queued_at FROM steering_queue \
-                                     WHERE session=?1 AND guard='auto-compact' LIMIT 1",
-                                    rusqlite::params![sess],
-                                    |r| r.get::<_, f64>(0),
-                                )
-                                .ok()
-                            })
-                            .map(|q| (now_f64() - q).round() as i64)
-                    };
-                    let _ = steer_enqueue(state, name, &msg, "auto-compact", "").await;
-                    tracing::warn!(
-                        session = %name, pct, used, ?action,
-                        pending_age_s = pending_age_s.unwrap_or(0),
-                        already_pending = pending_age_s.is_some(),
-                        "auto-compact queued — context low"
-                    );
-                    }
+                    if compaction == crate::provider::Compaction::Unsupported {
+                        tracing::warn!(target: "compaction", session = %name,
+                            %provider, pct, used, verdict = mode,
+                            "context low; no verified automatic compaction path");
+                    } else {
+                        tracing::debug!(target: "compaction", session = %name,
+                            %provider, pct, used, verdict = mode,
+                            "context low; native provider manages compaction, no reminder sent");
                     }
                     emit_event(
-                        state,
-                        name,
-                        "session.auto_compact",
-                        Some(json!({"pct_remaining": pct, "tokens": used, "action": format!("{action:?}")})),
-                        Some(format!("compact:{name}:{}", now_i64() / 1800)),
+                        state, name, "session.context_low",
+                        Some(json!({"pct_remaining": pct, "tokens": used,
+                            "mode": mode, "provider": provider, "measured": true})),
+                        Some(format!("context-low:{name}:{mode}:{}", now_i64() / 1800)),
                         "compaction",
-                    )
-                    .await;
+                    ).await;
                 }
             }
             j200(json!({"ok": true, "state": st, "conv_id": conv_adopt.as_json()}))
@@ -20669,6 +20536,71 @@ mod tests {
         assert!(worker_deny.explicit_deny);
         assert!(worker_deny.reason.contains("Explicit worker deny"));
         assert!(cross_group_send_ok("roamer", "target").is_err());
+    }
+
+    #[test]
+    fn subagent_output_is_readable_and_scoped_to_its_parent() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        for (conv, owner, text) in [("parent-a", "arrow-lane", "First subagent output"),
+            ("parent-b", "other-lane", "Foreign subagent output")] {
+            std::fs::write(project.join(format!("{conv}.jsonl")),
+                json!({"customTitle":owner}).to_string()).unwrap();
+            let subdir = project.join(conv).join("subagents");
+            std::fs::create_dir_all(&subdir).unwrap();
+            std::fs::write(subdir.join("agent-one.jsonl"),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}).to_string()).unwrap();
+        }
+        let conversations = vec![project.join("parent-a.jsonl"), project.join("parent-b.jsonl")];
+        let listing = session_subagents_from(&conversations, "arrow-lane", None);
+        assert_eq!(listing["subagents"].as_array().unwrap().len(), 1);
+        let output = session_subagents_from(&conversations, "arrow-lane", Some(("agent-one", "parent-a")));
+        assert!(output["output"].as_str().unwrap().contains("First subagent output"));
+        assert_eq!(output["agent"], "agent-one");
+        assert_eq!(output["conversation"], "parent-a");
+        for (agent, conv) in [("agent-one","parent-b"), ("../agent-one","parent-a"), ("missing","parent-a")] {
+            let denied = session_subagents_from(&conversations, "arrow-lane", Some((agent,conv)));
+            assert!(denied.get("output").is_none(), "{denied}");
+            assert!(denied["error"].is_string(), "missing output must be explicit");
+        }
+    }
+
+    #[tokio::test]
+    async fn low_context_reports_leave_native_compaction_in_charge() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state.clone());
+        std::fs::write(env_path("compact-native"), "CC_DIR=\"/tmp\"\n").unwrap();
+        // Real report endpoint, including changing readings and recovery. The
+        // old consumer queued a fresh reminder at every low reading.
+        for remaining in [50, 12, 11, 7, 4, 60, 12] {
+            let used = context_window() * (100 - remaining) / 100;
+            let (status, body) = call(&app, "POST", "/api/sessions/compact-native/report",
+                Some(json!({"state": "active", "source": "prompt-hook", "tokens": used}))).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        let conn = state.store.read().unwrap();
+        let pending: i64 = conn.query_row(
+            "SELECT count(*) FROM steering_queue WHERE session='compact-native'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 0, "low context must not create chat instructions");
+        let claimed: i64 = conn.query_row(
+            "SELECT count(*) FROM session_events WHERE session='compact-native' AND type='session.auto_compact'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(claimed, 0, "a token reading cannot prove completed compaction");
+        let observed: String = conn.query_row(
+            "SELECT data FROM session_events WHERE session='compact-native' AND type='session.context_low' LIMIT 1",
+            [], |r| r.get(0)).unwrap();
+        let observed: Value = serde_json::from_str(&observed).unwrap();
+        assert_eq!(observed["mode"], "provider-managed");
+        assert_eq!(observed["measured"], true);
+        assert_eq!(observed["pct_remaining"], 12);
     }
 
     #[tokio::test]

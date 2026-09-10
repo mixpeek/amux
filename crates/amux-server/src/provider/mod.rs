@@ -42,45 +42,23 @@ pub enum PromptMode {
     HeadlessStructured,
 }
 
-/// One provider's adapter. `Send + Sync` because the registry shares adapters
-/// How amux asks a provider to reclaim context (AMUX-3807).
-///
-/// The auto-compact trigger used to send the literal string `/compact` with no
-/// provider check. That is a Claude Code slash command, and the module rule at
-/// the top of this file says provider-specific logic lives HERE, never as a
-/// branch elsewhere (Invariant 8) — a hardcoded vendor command in
-/// `session_verbs` is that branch, written as a constant.
-///
-/// It has been harmless only by accident: `used_tokens` comes from a
-/// Claude-shaped hook report, so no Gemini or Codex lane has ever crossed the
-/// threshold (measured 2026-08-27: zero auto-compacts, ever, across all seven
-/// non-Claude lanes). The moment amux gains a provider-independent context
-/// signal, every one of them starts receiving `/compact` as literal text typed
-/// into a CLI that has no such command.
+/// Who owns context reclamation for this provider. Native compaction runs
+/// inside the provider's agent loop; injecting a chat command cannot replace it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compaction {
-    /// This provider has an in-session command that reclaims context, and this
-    /// is it. amux types it at a turn boundary.
-    Command(&'static str),
-    /// amux knows of NO compaction path for this provider. It must type
-    /// nothing: a borrowed command is worse than silence, because it lands in
-    /// the conversation as literal text and consumes the context it was sent to
-    /// reclaim.
-    ///
-    /// This is the DEFAULT, deliberately. Guessing a command name is the same
-    /// defect as guessing a model name, which shipped a Gemini worker running
-    /// `--model sonnet` earlier the same day (7add17ec). A provider gains a
-    /// command here when someone has checked, not when someone assumes.
+    /// The provider compacts and continues automatically using its own settings.
+    Automatic,
+    /// No verified automatic path. Report the gap; never borrow another CLI's command.
     Unsupported,
 }
 
-/// across the orchestrator's tasks behind `Arc`.
+/// One provider adapter, shared across orchestrator tasks behind `Arc`.
 #[async_trait]
 pub trait ProviderAdapter: Send + Sync {
     /// Open string identity (`"claude-code"`, `"gemini"`, ... — Invariant 8).
     fn id(&self) -> ProviderId;
 
-    /// What amux may type to make this provider reclaim context.
+    /// Whether this provider reclaims context automatically.
     ///
     /// Defaults to [`Compaction::Unsupported`] so a provider added tomorrow is
     /// silent rather than sent another vendor's command. Overriding it is a
@@ -255,21 +233,16 @@ pub async fn conformance(adapter: &dyn ProviderAdapter) {
 mod tests {
     use super::*;
 
-    /// AMUX-3807: a provider amux has not checked must get NO compaction
-    /// command, and Claude must keep the one that demonstrably works.
-    ///
-    /// The second half is the control and it is the whole point. A change that
-    /// simply removed the hardcoded `/compact` would pass "gemini gets nothing"
-    /// and silently stop compacting the entire Claude fleet — which is most of
-    /// it. The failure this card prevents is a BORROWED command, not a command.
+    /// Both outcomes matter: native support must stay distinguishable from
+    /// an adapter whose context lifecycle has not been verified.
     #[test]
-    fn only_a_checked_provider_gets_a_compaction_command() {
+    fn native_compaction_is_distinct_from_an_unsupported_provider() {
         let reg = default_registry();
         let claude = reg.resolve("claude").expect("claude must resolve");
         assert_eq!(
             claude.compaction(),
-            Compaction::Command("/compact"),
-            "claude keeps the command that is observably working today"
+            Compaction::Automatic,
+            "Claude owns compaction inside its agent loop; amux must not inject reminders"
         );
         for p in ["gemini", "codex"] {
             if let Some(a) = reg.resolve(p) {

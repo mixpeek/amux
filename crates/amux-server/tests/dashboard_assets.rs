@@ -101,7 +101,7 @@ fn the_app_bundle_still_contains_an_app() {
 /// green line from reading as "all good" and say what isolation does NOT cover.
 ///
 /// Pinned here because it is a CLAIM the UI makes, and this file already holds
-/// the auto-compact copy to the threshold the server really uses. Prose in a
+/// context-management copy to the available provider behavior. Prose in a
 /// template is exactly what rots silently.
 #[test]
 fn the_branch_popover_does_not_read_isolation_as_delivery() {
@@ -787,35 +787,16 @@ fn no_two_top_level_functions_in_app_js_share_a_name() {
     );
 }
 
-/// THE AUTO-COMPACT COPY MUST STATE THE REAL THRESHOLD (AMUX-3857).
-///
-/// `COMPACT_BELOW_PCT_REMAINING`'s own doc says it is "named so the policy, its
-/// tests, and any UI copy cannot drift apart". The UI copy was a hardcoded
-/// literal that never read it, so it drifted anyway: the toggle promised
-/// "context < 50%" while the trigger fires below 15% remaining. An operator
-/// watched a lane fall from 50% to 13% with auto-compact ENABLED and correctly
-/// concluded it was broken — it was working, at a number the UI did not say.
-///
-/// A comment asking two files to agree is not a mechanism. This is.
+/// The old toggle wrote a preference no Rust consumer read. Do not offer a
+/// control that claims to disable the provider's native context management.
 #[test]
-fn the_auto_compact_copy_states_the_threshold_the_server_actually_uses() {
+fn context_management_copy_does_not_offer_an_ineffective_toggle() {
     let html = asset("index.html");
-    let pct = amux_server::orchestrator::compaction::COMPACT_BELOW_PCT_REMAINING;
-    let line = html
-        .lines()
-        .find(|l| l.contains("Send /compact when context"))
-        .expect("the auto-compact help copy must exist — if it moved, this check is now blind");
-    assert!(
-        line.contains(&format!("{pct}%")),
-        "the toggle's copy must name the real trigger ({pct}% remaining), got: {line}"
-    );
-    // CONTROL: the old wrong number must not be what satisfies it. Without this
-    // a copy saying "50%" passes the moment somebody sets the constant to 50
-    // for an unrelated reason.
-    assert!(
-        !line.contains("50%") || pct == 50,
-        "copy still names 50% while the constant is {pct}: {line}"
-    );
+    assert!(html.contains("Claude Code compacts context and continues the task automatically."));
+    assert!(html.contains("/config menu"));
+    assert!(!html.contains("auto-compact-checkbox"));
+    let js = asset("app.js");
+    assert!(!js.contains("auto_compact_enabled"));
 }
 
 #[test]
