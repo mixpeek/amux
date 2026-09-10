@@ -4193,10 +4193,36 @@ fn continue_nudge_text(
                 done.len()
             )
         } else {
+            // AF-695: this used to point at `amux board ask <id>`, which does
+            // not do what this sentence claims. `ask`/`status_request` pings
+            // the card's OWNER for a status report and ignores `reviewer`
+            // entirely, and it refuses outright on ANY terminal status
+            // (TERMINAL_STATUSES includes `done`) regardless of who it would
+            // have pinged. Measured by mixpeek-funnel: 8 of 8 done+reviewer
+            // cards refused. The verb that actually notifies the named
+            // reviewer is a transition INTO `review` (reviewer_notify fires
+            // there, board.rs AMUX-3771), which is not terminal and keeps the
+            // already-named reviewer if none is passed.
+            //
+            // NOT UNIVERSAL (mixpeek-funnel, ran this against a real batch):
+            // `review`'s gate is TYPE-SCOPED, and for `code` it asks for
+            // "Implemented and self-tested" + "Diff / PR is up" -- both false
+            // for a card whose work has not actually shipped (blocked on
+            // something else, superseded mid-flight). Moving THAT card to
+            // review would force the same false attestation the sibling nudge
+            // arm above already warns about. 6 of 8 in the real batch moved
+            // cleanly; the other 2 were exactly this case.
             format!(
-                "{done_count} done card(s), each with a reviewer named — ask them to verify \
-                 (`amux board ask <id>`), or verify the ones where YOU are the named \
-                 reviewer. Archive instead if the work was superseded."
+                "{done_count} done card(s), each with a reviewer named — put them back in \
+                 review so the reviewer is actually notified (`amux board review <id>`, the \
+                 named reviewer is preserved), or verify the ones where YOU are the named \
+                 reviewer. Archive instead if the work was superseded. If the card is `code` \
+                 typed and the work genuinely has not shipped, `review`'s gate cannot be \
+                 attested honestly either -- leave it in `done` rather than attest either \
+                 gate falsely. `amux board ask <id>` does NOT reach a reviewer here: it pings \
+                 the card's OWNER for a status report, and it refuses outright on any \
+                 terminal status including `done` (measured by mixpeek-funnel, 2026-09-10: \
+                 8 of 8 refused). AF-695 has detail."
             )
         };
         sections.push(format!("{ask}\n{}", lines.join("\n")));
@@ -8163,6 +8189,42 @@ mod tests {
         let (bc2, dc2, blocked, _, _) = outstanding_work(&conn, "me");
         assert_eq!((bc2, dc2), (1, 229));
         assert_eq!(blocked.len(), 1, "the blocked card is named in the nudge");
+    }
+
+    /// AF-695. `amux board ask` neither reaches a reviewer (it pings the
+    /// card's OWNER) nor works on a terminal card (it refuses `done`
+    /// outright) -- measured live by mixpeek-funnel, 8 of 8 refused. The
+    /// nudge must point at the verb that actually notifies the named
+    /// reviewer (`amux board review`, which fires `reviewer_notify` on entry
+    /// into `review`) and must not recommend `ask` for this population.
+    #[test]
+    fn the_reviewer_named_nudge_recommends_review_not_ask() {
+        let done = vec![("D-1".to_string(), "a done card".to_string(), "peer-lane".to_string())];
+        let text = continue_nudge_text(0, 1, &[], &done, &[]);
+        assert!(
+            text.contains("amux board review"),
+            "must recommend the verb that notifies the named reviewer: {text}"
+        );
+        assert!(
+            !text.contains("ask them to verify"),
+            "must not tell a lane that `ask` reaches the reviewer -- it pings the owner: {text}"
+        );
+    }
+
+    /// Follow-up from mixpeek-funnel's real batch: `review`'s gate is
+    /// type-scoped, and `code`'s asks for shipped work ("Implemented and
+    /// self-tested", "Diff / PR is up"). Recommending `review` unconditionally
+    /// would force the same false attestation a sibling nudge arm already
+    /// warns about, for a done+reviewer card whose code has not shipped.
+    #[test]
+    fn the_reviewer_named_nudge_warns_the_review_gate_is_not_universal() {
+        let done = vec![("D-1".to_string(), "a done card".to_string(), "peer-lane".to_string())];
+        let text = continue_nudge_text(0, 1, &[], &done, &[]);
+        assert!(
+            text.contains("code") && text.contains("has not shipped"),
+            "must warn that a `code`-typed card whose work has not shipped cannot honestly \
+             attest review's gate either: {text}"
+        );
     }
 
     /// AMUX-3775. The walk itself, over a lookup, so every branch has a cell.
