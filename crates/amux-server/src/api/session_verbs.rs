@@ -7902,10 +7902,10 @@ fn session_op_lock(name: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 /// missing / locked / malformed `~/.claude.json` must NEVER block a launch: every
 /// error returns quietly and the worst case is the status quo (the gate is not
 /// bypassed), never a wedged launch. Merge-preserving — the whole document is
-/// read, ONE nested field is set, and it is written back, so `oauthAccount`,
+/// read, folder trust and the diff-sidebar preference are set, so `oauthAccount`,
 /// other projects, and the theme are untouched. A present-but-unparseable file
 /// is left ALONE rather than risk clobbering real state. No-op locally where the
-/// dir is already trusted (the common case), so it is a genuine single-codebase
+/// dir is already trusted and the diff sidebar is off, so this is a single-codebase
 /// no-op there, not an env branch.
 fn seed_dir_trust(work_dir: &str) {
     if work_dir.is_empty() {
@@ -7922,25 +7922,32 @@ fn seed_dir_trust(work_dir: &str) {
         Err(_) => return,
     };
     let Some(updated) = trust_seed_merge(doc, work_dir) else {
-        // None => already trusted (no write) or an unmergeable shape (left alone).
+        // None => preferences already seeded, or an unmergeable shape (left alone).
         return;
     };
     let Ok(body) = serde_json::to_string(&updated) else { return };
     // Atomic write: temp + rename, so a concurrent reader (another worker's
     // claude) never sees a truncated document.
     let tmp = path.with_extension("json.amux-trust-tmp");
-    if std::fs::write(&tmp, body.as_bytes()).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    match std::fs::write(&tmp, body.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path)) {
+        Ok(()) => tracing::info!(verdict = "claude_terminal_preferences_seeded", diff_sidebar_open = false,
+            "Claude launch preferences keep the diff sidebar closed"),
+        Err(error) => tracing::warn!(verdict = "claude_terminal_preferences_failed", %error,
+            "could not persist Claude launch preferences"),
     }
 }
 
 /// Pure merge for [`seed_dir_trust`], split out so the shape handling is tested
 /// without touching `$HOME`. Returns `Some(doc)` with
 /// `projects[dir].hasTrustDialogAccepted=true` folded in, or `None` when it is
-/// already `true` (nothing to write) or the document is not a mergeable object
-/// (leave the real file alone).
+/// already `true` and the diff sidebar is off (nothing to write), or the
+/// document is not mergeable (leave the real file alone). AMUX-4372: Claude
+/// auto-opens its sidebar on wide terminals unless this native preference is
+/// explicitly false. Seed the preference, never automate repeated /diff keys.
 fn trust_seed_merge(mut doc: Value, dir: &str) -> Option<Value> {
     let root = doc.as_object_mut()?;
+    let diff_changed = root.get("diffSidebarOpen") != Some(&Value::Bool(false));
+    root.insert("diffSidebarOpen".into(), Value::Bool(false));
     let projects = root
         .entry("projects")
         .or_insert_with(|| json!({}))
@@ -7950,7 +7957,7 @@ fn trust_seed_merge(mut doc: Value, dir: &str) -> Option<Value> {
         .or_insert_with(|| json!({}))
         .as_object_mut()?;
     if entry.get("hasTrustDialogAccepted") == Some(&Value::Bool(true)) {
-        return None;
+        return diff_changed.then_some(doc);
     }
     entry.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
     Some(doc)
@@ -20366,11 +20373,27 @@ mod tests {
 
         // Already trusted -> None (no pointless rewrite of a large file, and no
         // race window on the common case).
-        let already = json!({"projects": {"/work/dir": {"hasTrustDialogAccepted": true}}});
+        let already = json!({"diffSidebarOpen": false, "projects": {"/work/dir": {"hasTrustDialogAccepted": true}}});
         assert!(trust_seed_merge(already, "/work/dir").is_none(), "no write when already trusted");
 
         // Unmergeable shape (root is not an object) -> None, leave it alone.
         assert!(trust_seed_merge(json!("not an object"), "/work/dir").is_none());
+    }
+
+    #[test]
+    fn claude_diff_sidebar_stays_off_on_trusted_and_new_launches() {
+        for previous in [json!(null), json!(true), json!(false)] {
+            let original = json!({"diffSidebarOpen":previous,"theme":"dark",
+                "projects":{"/work":{"hasTrustDialogAccepted":true,"history":[1]}}});
+            let updated = trust_seed_merge(original.clone(), "/work");
+            assert_eq!(updated.is_some(), previous != json!(false));
+            let result = updated.unwrap_or(original);
+            assert_eq!(result["diffSidebarOpen"], false);
+            assert_eq!(result["theme"], "dark");
+            assert_eq!(result["projects"]["/work"]["history"], json!([1]));
+            assert!(trust_seed_merge(result, "/work").is_none());
+        }
+        assert_eq!(trust_seed_merge(json!({}), "/new").unwrap()["diffSidebarOpen"], false);
     }
 
     /// AMUX-3159 seed direction (codex analog of AC-346): the codex trust seed

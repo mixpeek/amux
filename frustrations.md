@@ -3554,3 +3554,14 @@ CARD: AMUX-4362
 SYMPTOM: The new Host panel passed navigation tests, but the actual phone and desktop screenshots showed near-black CPU/Memory/Disk labels on a hard-coded dark chip background in light mode. The status text also used bright dark-theme colors.
 COST: A user could see colored dots and values without being able to read which host dimension they described.
 FIX: v0.9.874 uses the existing card/text and semantic status theme colors. The real Host lifecycle toggles both themes through Settings and checks computed label/status contrast against 4.5:1. Local host-analysis-contrast diagnostics report readable/low-contrast, actual foreground/background colors, ratios, theme and six considered samples after rendering.
+
+## Claude opens a diff sidebar in the worker terminal
+AREA: terminal
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4372
+SYMPTOM: mixpeek-general displayed Claude's diff sidebar and /diff to hide diff, compressing the conversation and showing empty diff panels.
+COST: Owner had to request removal of a terminal layout they never want.
+FIX: Close observed active sidebars once (89 panes checked, zero left open; native close controls preserve drafts), seed Claude's native diffSidebarOpen=false on worker launches (including already-trusted folders), and remove /diff from amux command suggestions. Log preference persistence success/failure; regression tests cover preference reset, idempotence, unrelated config preservation, and slash-command discovery.
