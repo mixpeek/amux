@@ -246,10 +246,21 @@ for (const modelFamily of ['sonnet', 'haiku']) {
       await expect(page.locator('text=/Unsaved changes/')).toHaveCount(0);
     } finally {
       if (card) await request.delete(`/api/board/${card}`, { headers: auth }).catch(() => {});
-      await page.evaluate(async name => {
-        await fetch(`/api/sessions/${name}/delete`, { method: 'POST',
-          headers: { 'X-Amux-UI-Token': (window as any)._AMUX_UI_TOKEN || '' } });
-      }, worker).catch(() => {});
+      // CLEANUP THAT CANNOT REPORT FAILURE IS NOT CLEANUP.
+      // This swallowed every error with `.catch(() => {})`, so a delete that
+      // never happened looked identical to one that did. Measured 2026-09-10:
+      // 25 `e2e-life-*` tmux panes were still alive on the host from earlier
+      // runs of this very spec, part of 40 orphans holding claude processes on
+      // a box at 95% swap where macOS was killing real workers. The runs went
+      // green the whole time.
+      const gone = await request
+        .delete(`/api/sessions/${worker}`, { headers: auth })
+        .then(() => request.get(`/api/sessions/${worker}`, { headers: auth }))
+        .then(r => r.status() === 404)
+        .catch(() => false);
+      // Fails the test rather than the host: a leaked worker is this spec's
+      // own defect, and the next run inherits it.
+      expect(gone, `left worker ${worker} behind — it holds a tmux pane and a claude process`).toBe(true);
     }
   });
 }
