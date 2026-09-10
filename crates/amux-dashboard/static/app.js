@@ -9653,7 +9653,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.863';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.864';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -9667,26 +9667,76 @@ _loadModelCatalog().then(() => { if (!_initialLoad) render(); }).catch(() => {})
 // a visible failure toast naming the error. Rate-limited so a render-loop
 // error cannot toast-storm. This is the floor, not the goal — actions should
 // still give their own success feedback (toast / row animation / re-render).
+// SAY WHERE, AND DO NOT DROP IT UNDER LOAD (2026-09-09). The net above reported
+// `ev.message` and nothing else, which leaves a real bug undiagnosable: "Cannot
+// read properties of null (reading 'classList')" is a true statement about 600+
+// call sites in this 1.9MB bundle and names none of them. A user's screenshot of
+// that toast was the only record an error had ever happened, and it was not
+// enough to find the line — `ev.filename`, `ev.lineno`, `ev.colno` and
+// `ev.error.stack` were all on the event and all discarded.
+//
+// Two changes, and the second matters more than it looks:
+//   1. Carry the location and the stack. The toast gains `@ app.js:LINE:COL`
+//      (which is what a person screenshots) and the beacon carries the full
+//      stack plus the route, so `kind=client-action-error` in server-rs.log is
+//      enough to fix from.
+//   2. Beacon BEFORE the rate limit, deduped by SIGNATURE instead of by time.
+//      The 4s window is correct for toasts — a render-loop error must not
+//      toast-storm — but it was also gating the beacon, so during a burst every
+//      error after the first was lost from the record too. Distinct errors now
+//      always beacon; an identical repeat never does. Rate-limiting the evidence
+//      the same way you rate-limit the notification is how a burst erases
+//      exactly the errors that matter most (ethos rule 4).
 (function () {
   let _lastErrToast = 0;
-  function _surface(kind, msg) {
+  let _suppressed = 0;          // distinct errors swallowed by the toast window
+  const _sent = new Set();      // beacon signatures already recorded this load
+
+  // Bare filename keeps the toast readable; the beacon keeps the full picture.
+  // A cross-origin script reports "Script error." with NO location, so '' here
+  // means "the browser refused to say", not "we did not look".
+  function _loc(ev) {
+    if (!ev || !ev.filename) return '';
+    const f = String(ev.filename).replace(/^.*\//, '').split('?')[0];
+    return f + ':' + (ev.lineno || 0) + ':' + (ev.colno || 0);
+  }
+
+  function _beacon(kind, text, where, stack) {
     try {
-      const now = Date.now();
-      if (now - _lastErrToast < 4000) return;
-      _lastErrToast = now;
-      const text = String(msg || 'unknown error').slice(0, 140);
-      if (typeof showToast === 'function') showToast('\u26a0 ' + kind + ': ' + text);
-      console.error('amux ' + kind + ':', msg);
+      const sig = kind + '|' + text + '|' + where;
+      if (_sent.has(sig)) return;
+      if (_sent.size > 200) _sent.clear();   // bounded; distinct sites are few
+      _sent.add(sig);
       fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'},
+        keepalive:true,
         body:JSON.stringify({kind:'client-action-error',verdict:kind,message:text,
+          where: where || null, stack: String(stack || '').slice(0, 2000),
+          route: location.pathname + location.search + location.hash,
           measured:true,n_considered:1,ver:APP_VER})}).catch(() => {});
     } catch (e) {}
   }
+
+  function _surface(kind, msg, where, stack) {
+    try {
+      const text = String(msg || 'unknown error').slice(0, 140);
+      _beacon(kind, text, where, stack);
+      console.error('amux ' + kind + ':', msg, where || '', stack || '');
+      const now = Date.now();
+      if (now - _lastErrToast < 4000) { _suppressed++; return; }
+      _lastErrToast = now;
+      const more = _suppressed ? ' (+' + _suppressed + ' more)' : '';
+      _suppressed = 0;
+      if (typeof showToast === 'function') {
+        showToast('\u26a0 ' + kind + ': ' + text + (where ? ' @ ' + where : '') + more);
+      }
+    } catch (e) {}
+  }
   window.addEventListener('unhandledrejection', function (ev) {
-    _surface('action failed', ev.reason && (ev.reason.message || ev.reason));
+    const r = ev.reason;
+    _surface('action failed', r && (r.message || r), '', r && r.stack);
   });
   window.addEventListener('error', function (ev) {
-    _surface('script error', ev.message);
+    _surface('script error', ev.message, _loc(ev), ev.error && ev.error.stack);
   });
 })();
 let _peekScrollLockY = 0;
