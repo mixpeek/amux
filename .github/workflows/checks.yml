@@ -310,6 +310,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-needsyou-signin-link.sh
+      - name: board shepherd verb sets/clears the field, and dies on usage without one
+        run: |
+          set -uo pipefail
+          bash scripts/test-board-shepherd.sh
       - name: push-consent names who must be asked and who cannot be
         run: |
           set -uo pipefail
