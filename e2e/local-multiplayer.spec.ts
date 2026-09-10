@@ -99,9 +99,12 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
     ).toBe('');
 
     // A member sees their own grant, but membership administration remains an
-    // owner capability even for a global member.
+    // owner capability even for a global member. loadTeamSection() (app.js)
+    // renders a member's own access level into #settings-teams-list, not
+    // #settings-members-list — that element holds only the "membership is
+    // managed by the server owner" notice for a member's own view.
     await openTeam(guest);
-    await expect(guest.locator('#settings-members-list')).toContainText('Global workspace access');
+    await expect(guest.locator('#settings-teams-list')).toContainText('Global workspace access');
     await expect(guest.locator('#settings-team-invite')).toBeHidden();
     await owner.locator('#invite-done-button').click();
     await openTeam(owner);
@@ -440,6 +443,25 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
       await request.delete(`/api/sessions/${encodeURIComponent(worker)}`, {
         headers: { ...ownerHeaders, 'X-Amux-UI-Token': ownerUiToken },
       });
+    }
+    // The deliberate mid-test revoke (above) never runs if an earlier
+    // assertion throws, which leaves guest@example.com a permanent member —
+    // every later spec sharing this project's server/home then finds a
+    // non-empty member list where it expects a fresh install. Revoke by
+    // email here too so a failure anywhere above this point still leaves the
+    // server clean for whichever spec runs next.
+    try {
+      const remaining = await (
+        await request.get('/api/org/members', { headers: ownerHeaders })
+      ).json();
+      const leftover = (remaining || []).find((entry: any) => entry.email === 'guest@example.com');
+      if (leftover) {
+        await request.delete(`/api/org/members/${encodeURIComponent(leftover.id)}`, {
+          headers: ownerHeaders,
+        });
+      }
+    } catch (e) {
+      // Best-effort: do not let cleanup itself mask the real test failure.
     }
     await guestContext.close();
   }
