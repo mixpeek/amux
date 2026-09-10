@@ -422,6 +422,34 @@ pub struct CreateWorkerBody {
     pub group: Option<String>,
 }
 
+/// AF-651 (gh#202): `backend` was accepted as any string and answered
+/// `applied:true` with no enum validation, deferring the failure to spawn
+/// time — where `backend_of_cfg` (session_verbs.rs) silently falls through
+/// any value that is not `"herdr"`/`"tmux"` to the `tmux` default. The valid
+/// set is closed and known (that fallthrough IS the closure, empirically:
+/// there is no third arm), so this validates it the same way `group` already
+/// is a few lines below — parsed OUTSIDE the write closure, a clean 400
+/// before anything touches the writer thread, the accepted set named in the
+/// error body. Case-insensitive to match what `backend_of_cfg` itself
+/// normalizes at spawn time, so this never rejects a value that would
+/// actually have worked.
+///
+/// `permissions` is the OTHER half of gh#202 and is deliberately NOT
+/// validated here: AF-650 found the only consumer (api/policy.rs) tests two
+/// exact literals and ignores everything else, so the accepted vocabulary is
+/// a product decision, not a boundary this lint can make on its own.
+fn parse_backend_id(raw: &str) -> Result<BackendId, String> {
+    match raw.trim().to_lowercase().as_str() {
+        BackendId::HERDR => Ok(BackendId::herdr()),
+        BackendId::TMUX => Ok(BackendId::tmux()),
+        _ => Err(format!(
+            "backend must be one of: {}, {} — got {raw:?}",
+            BackendId::HERDR,
+            BackendId::TMUX,
+        )),
+    }
+}
+
 /// Fleet-membership writes drop the legacy session-list cache (AMUX-2957).
 ///
 /// The 2s cache on GET /api/sessions (7ca14b5) is invalidated on CONFIG writes
@@ -469,13 +497,25 @@ async fn create_worker_inner(
         },
         None => None,
     };
+    let backend = match &body.backend {
+        Some(b) => match parse_backend_id(b) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": e, "backend": b }),
+                )
+            }
+        },
+        None => None,
+    };
     let config = WorkerConfig {
         display_name,
         name_aliases: Vec::new(),
         cwd: body.cwd.unwrap_or_default(),
         provider: ProviderId::new(body.provider.unwrap_or_else(|| "claude".into())),
         model: body.model,
-        backend: body.backend.map(BackendId::from).unwrap_or_default(),
+        backend: backend.unwrap_or_default(),
         environment: body.environment.unwrap_or_default(),
         permissions: body.permissions.unwrap_or_default(),
         group,
@@ -593,6 +633,22 @@ pub async fn patch_worker(
         },
         None => None,
     };
+    // Same shape, same reason (AF-651 / gh#202): backend was PATCHable to any
+    // string, stored, and answered `applied:true` — a wrong answer that does
+    // not look wrong (ethos rule 4), since the value nothing will honour is
+    // echoed back exactly as sent.
+    let backend: Option<BackendId> = match &body.backend {
+        Some(b) => match parse_backend_id(b) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": e, "backend": b }),
+                )
+            }
+        },
+        None => None,
+    };
 
     let slot: Arc<Mutex<Option<PatchOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -630,8 +686,8 @@ pub async fn patch_worker(
             if let Some(v) = body.model {
                 new_cfg.model = Some(v);
             }
-            if let Some(v) = body.backend {
-                new_cfg.backend = BackendId::from(v);
+            if let Some(id) = backend.clone() {
+                new_cfg.backend = id;
             }
             if let Some(v) = body.environment {
                 new_cfg.environment = v;
@@ -2942,4 +2998,81 @@ mod tests {
         );
     }
 
+    // AF-651 (gh#202). aicodingND reproduced this on a fresh install: PATCH
+    // /api/workers/<id> {"backend":"__probe__"} answered applied:true and stored
+    // it, deferring the failure to spawn time where it is silently swallowed
+    // (see backend_of_cfg's fallthrough in session_verbs.rs). These pin the
+    // boundary check at the API layer, matching the pattern already proven for
+    // `group` a few lines above it in the source.
+
+    #[tokio::test]
+    async fn create_worker_rejects_an_unknown_backend_string() {
+        let (app, _dir) = app();
+        let (st, _, body) = send(
+            &app,
+            "POST",
+            "/api/workers",
+            Some(json!({ "display_name": "x", "cwd": "/tmp/w", "backend": "__probe__" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "must refuse at creation, not at spawn: {body}");
+        assert_eq!(body["backend"], json!("__probe__"), "the refused value must be named back");
+        let msg = body["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("herdr") && msg.contains("tmux"), "must name the valid set: {msg}");
+    }
+
+    #[tokio::test]
+    async fn create_worker_accepts_both_real_backends_case_insensitively() {
+        let (app, _dir) = app();
+        for raw in ["herdr", "TMUX", " Tmux "] {
+            let (st, _, body) = send(
+                &app,
+                "POST",
+                "/api/workers",
+                Some(json!({ "display_name": raw, "cwd": "/tmp/w", "backend": raw })),
+            )
+            .await;
+            assert_eq!(st, StatusCode::CREATED, "{raw:?} must be accepted: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_worker_rejects_an_unknown_backend_string_before_writing() {
+        let (app, _dir) = app();
+        let id = create(&app, "af651-patch").await;
+        let rev_before = health_rev(&app).await;
+
+        let (st, _, body) = send(
+            &app,
+            "PATCH",
+            &format!("/api/workers/{id}"),
+            Some(json!({ "backend": "__probe__" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["backend"], json!("__probe__"));
+
+        // THE CELL THAT MATTERS: no write happened. A 400 whose refusal is
+        // cosmetic (the closure already ran) is the exact `applied:true`-beside
+        // -a-value-nothing-honours shape this entry is about, one layer deeper.
+        assert_eq!(health_rev(&app).await, rev_before, "a refused PATCH must not bump revision");
+        let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
+        assert_eq!(got["backend"], json!("herdr"), "the stored backend must be untouched");
+    }
+
+    #[tokio::test]
+    async fn patch_worker_accepts_a_real_backend_and_applies_it() {
+        let (app, _dir) = app();
+        let id = create(&app, "af651-patch-ok").await;
+        let (st, _, body) = send(
+            &app,
+            "PATCH",
+            &format!("/api/workers/{id}"),
+            Some(json!({ "backend": "tmux" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
+        assert_eq!(got["backend"], json!("tmux"));
+    }
 }
