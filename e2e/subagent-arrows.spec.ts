@@ -1,5 +1,5 @@
 import {test, expect, Page} from './fixtures';
-const subs=[{id:'agent-one',conversation:'parent-a',description:'Check the imports',last_active:1},{id:'agent-two',conversation:'parent-a',description:'Review the tests',last_active:2}];
+const subs=[{id:'agent-one',conversation:'parent-a',description:'Check the imports',last_active:1,active:true},{id:'agent-two',conversation:'parent-a',description:'Review the tests',last_active:2,active:true}];
 async function setup(page:Page, items=subs, failFirst=false) {
   await page.addInitScript(()=>localStorage.setItem('amux_walkthrough_done','1'));
   await page.route(/\/api\/sessions(?:\?.*)?$/,r=>r.fulfill({json:[{name:'arrows',running:true,status:'idle',dir:'/tmp/arrows'}]}));
@@ -43,7 +43,7 @@ test('terminal arrows cycle actual child output and preserve the parent draft',a
   expect(writes).toEqual([]);
 });
 test('workers without subagents hide the two-arrow control',async({page})=>{
-  await setup(page,[]);
+  await setup(page,[{...subs[0],active:false}]);
   await expect(page.locator('#peek-agent-nav')).toBeHidden();
 });
 test('failed child output is explicit and the arrows still return to the parent',async({page})=>{

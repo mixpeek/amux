@@ -22,6 +22,7 @@ async function boot(page: Page, options?: {
   await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: [{
     name: worker, dir: '/tmp/terminal-contract', running: true, status: 'working',
   }] }));
+  await page.route(`**/api/sessions/${worker}/subagents`, route => route.fulfill({json:{session:worker,subagents:[]}}));
   const tasksRoute = `**/api/sessions/${worker}/tasks`;
   await page.route(tasksRoute, route => route.fulfill({ json: { tasks: [], counts: {}, total: 0 } }));
   allowUnusedRoute(page, tasksRoute); // plan polling is throttled and optional to these terminal contracts
@@ -42,7 +43,7 @@ async function boot(page: Page, options?: {
   await page.route(sendRoute, async (route: Route) => {
     const body = route.request().postDataJSON() as { text?: string };
     live = `\u276f ${body.text || ''}\nAssistant accepted the request\n`;
-    await route.fulfill({ json: { ok: true, sent: true } });
+    await route.fulfill({ json: { ok: true, submitted: true, submission: 'verified' } });
   });
   if (!options?.willSend) allowUnusedRoute(page, sendRoute);
   await page.route(`**/api/sessions/${worker}/peek?*`, async route => {
@@ -146,7 +147,7 @@ test('terminal chrome cannot inject navigation or slash-picker keys', async ({ p
   await boot(page);
 
   const controls = page.locator('.peek-output-controls');
-  await expect(controls.locator('button')).toHaveCount(1);
+  await expect(controls.locator('button:visible')).toHaveCount(1);
   await expect(controls.locator('[onclick*="peekQuickKeys"]')).toHaveCount(0);
   await controls.locator('#peek-copy-btn').click();
   await page.waitForTimeout(100);
