@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Running AI Coding Agents Overnight","item":"https://amux.io/guides/ai-coding-agents-overnight/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Complete Guide to Running AI Coding Agents Overnight","description":"Step-by-step guide to running AI coding agents unattended while you sleep. Task queues, guardrails, monitoring, and morning review workflows.","url":"https://amux.io/guides/ai-coding-agents-overnight/","datePublished":"2026-04-03","dateModified":"2026-08-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Complete Guide to Running AI Coding Agents Overnight","description":"Step-by-step guide to running AI coding agents unattended while you sleep. Task queues, guardrails, monitoring, and morning review workflows.","url":"https://amux.io/guides/ai-coding-agents-overnight/","datePublished":"2026-04-03","dateModified":"2026-09-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Run AI Coding Agents Overnight","description":"Set up a fleet of AI coding agents that work while you sleep, with guardrails and monitoring.","step":[{"@type":"HowToStep","name":"Decompose tasks","text":"Break work into atomic, verifiable tasks that agents can complete independently."},{"@type":"HowToStep","name":"Configure your fleet","text":"Register sessions, assign directories, and set model preferences per task complexity."},{"@type":"HowToStep","name":"Set guardrails","text":"Configure CLAUDE.md rules, git hooks, file permissions, and cost caps."},{"@type":"HowToStep","name":"Set up owner alerts","text":"Configure amux to send push notifications and email when any agent needs attention. Use amux alert or the built-in owner-alert channel."},{"@type":"HowToStep","name":"Launch and monitor","text":"Start all agents, verify initial progress, then let the watchdog handle failures."},{"@type":"HowToStep","name":"Morning review","text":"Triage overnight output, review PRs, and merge completed work."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is it safe to run AI coding agents overnight on production codebases?","acceptedAnswer":{"@type":"Answer","text":"Yes, with proper guardrails. Use separate git branches per agent, restrict file access via CLAUDE.md, enforce pre-commit hooks with linting and tests, and set cost caps. Never give overnight agents access to deployment pipelines, auth systems, or payment code."}},{"@type":"Question","name":"How many AI coding agents can I run overnight?","acceptedAnswer":{"@type":"Answer","text":"On a laptop: 5-7 agents comfortably (constrained by RAM and API rate limits). On a cloud VM (4+ cores, 16GB RAM): 20-50 agents. The bottleneck is usually API rate limits, not local compute. Stagger agent starts by 10-30 seconds to avoid hitting limits simultaneously."}},{"@type":"Question","name":"What tasks should I NOT give to overnight AI agents?","acceptedAnswer":{"@type":"Answer","text":"Avoid tasks that touch authentication, payment processing, infrastructure/deployment, database migrations on production, or anything requiring human judgment about business logic. Also avoid open-ended tasks like 'refactor the codebase' — agents need specific, bounded scope to work unattended."}},{"@type":"Question","name":"How much does it cost to run AI agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code on the Max plan ($200/month), you get unlimited usage — running 10 agents for 8 hours costs the same flat rate. On API pricing, expect $5-15 per agent-hour for Opus, $0.50-2 per agent-hour for Sonnet. A typical 8-hour overnight run with 10 agents on mixed models costs $50-100 on API pricing."}},{"@type":"Question","name":"What happens if an agent gets stuck or crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"With amux's self-healing watchdog, crashed agents are automatically restarted and their last message is replayed. Context overflow triggers auto-compaction. Stuck agents (no output for a configurable timeout) are detected and restarted. You can also set hard time limits per agent."}},{"@type":"Question","name":"How do I get notified when an overnight AI agent needs attention?","acceptedAnswer":{"@type":"Answer","text":"amux has a built-in owner-alert channel that sends push notifications and email when agents page you. Agents call amux alert from their CLAUDE.md instructions for situations that warrant waking you up: a blocker, an unexpected error, or a finished queue. Alerts go to your phone via push and email simultaneously. The health invariant alert.channel_can_deliver verifies delivery works before your next overnight run."}}]}</script>
 </head>
@@ -41,10 +41,10 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Running AI Coding Agents Overnight</span></div>
-    <!-- EXP-041: top-of-page green CTA on overnight guide (stale, 0 GH clicks) -->
-    <div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-      <span style="font-size:.9rem;color:var(--text)">Run your agent fleet overnight — open source, self-hosted, MIT licensed</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp041_overnight_topofpage_cta_click')" style="background:#10b981;color:#fff;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
+    <!-- EXP-086: top-of-page CTA on overnight guide (Sept 2026) -->
+    <div style="background:#0d7c42;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <span style="font-size:.9rem;color:#fff">Open-source control plane for AI agent teams. Run dozens of agents overnight from your phone or browser.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp086_overnight_topofpage_cta_click')" style="background:#fff;color:#0d7c42;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
     </div>
     <h1>The Complete Guide to Running AI Coding Agents Overnight</h1>
     <p class="subtitle">Queue tasks before bed. Wake up to pull requests. The definitive playbook for unattended AI coding with guardrails, monitoring, and failure recovery.</p>
@@ -53,6 +53,7 @@
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
       <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
         <li><a href="#promise" style="color:var(--dim);text-decoration:none;">The Overnight Agent Promise (and Reality)</a></li>
+        <li><a href="#whats-new" style="color:var(--dim);text-decoration:none;">What's New in September 2026</a></li>
         <li><a href="#architecture" style="color:var(--dim);text-decoration:none;">Architecture Overview</a></li>
         <li><a href="#task-decomposition" style="color:var(--dim);text-decoration:none;">Task Decomposition: The Most Important Step</a></li>
         <li><a href="#fleet-setup" style="color:var(--dim);text-decoration:none;">Setting Up Your Agent Fleet</a></li>
@@ -74,6 +75,13 @@
     <p>That has changed. Modern AI models (Claude Opus 4, Sonnet 4) are dramatically more reliable at long-running tasks. And tooling has caught up -- self-healing watchdogs, atomic task boards, and fleet monitoring mean you can set real guardrails instead of crossing your fingers.</p>
     <p>This guide is the missing manual. Not the pitch -- the playbook. You will learn exactly how to decompose work, configure agents, set safety boundaries, and build a morning review workflow that makes overnight coding practical and safe.</p>
     <p><strong>Who this is for:</strong> Developers who are already using AI coding agents (Claude Code, Codex CLI, Gemini CLI) and want to run them unattended at scale. If you have never used an AI coding agent, start with <a href="/guides/getting-started/">Getting Started</a> first.</p>
+
+    <h2 id="whats-new">What's new in September 2026</h2>
+    <p>This guide was updated September 2026 to reflect two significant amux releases that improve overnight reliability:</p>
+    <ul>
+      <li><strong>Board hygiene runtime job:</strong> A new background job automatically ages out stale <code>needsyou</code> cards, deduplicates autofix alerts, and filters conversational acks. Overnight runs generate less noise, and your morning review queue contains real decisions rather than resolved notifications.</li>
+      <li><strong>Mobile terminal streaming:</strong> The mobile dashboard now renders terminal output incrementally, showing diffs as they arrive. If you check your phone at 3am, you see live progress rather than a snapshot.</li>
+    </ul>
 
     <h2 id="architecture">Architecture Overview</h2>
     <p>A reliable overnight agent setup has four layers:</p>
@@ -185,7 +193,7 @@ amux board add "Write OpenAPI docs for /api/users endpoints"
 
     <h3>Install and configure</h3>
     <pre><code># Install amux (one command)
-git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+brew install mixpeek/amux/amux
 
 # Register sessions -- one per task area
 amux register auth-tests --dir ~/Dev/myapp --yolo
@@ -364,11 +372,11 @@ amux serve  # https://localhost:8824 (or your Tailscale address)</code></pre>
     <p>Install the amux PWA on your phone. If you wake up at 3am and want to check status without opening your laptop:</p>
     <ul>
       <li>See which agents are running, idle, or stopped</li>
-      <li>Peek at any agent's latest output</li>
+      <li>Peek at any agent's latest output — terminal diffs stream incrementally on mobile since September 2026</li>
       <li>Send a quick course correction if needed</li>
       <li>Check token spend across all sessions</li>
     </ul>
-    <p>For remote access, use <a href="/guides/remote-access-tailscale/">Tailscale</a> -- amux auto-provisions TLS certs.</p>
+    <p>The mobile terminal view renders output incrementally as it arrives, so you see diffs and new lines in real time rather than waiting for a full refresh. For remote access, use <a href="/guides/remote-access-tailscale/">Tailscale</a> -- amux auto-provisions TLS certs.</p>
 
     <h3 id="alerts">Owner alerts: push, email, and iMessage</h3>
     <p>Mobile monitoring tells you the status when you check. Owner alerts tell you when something needs you, without you having to look.</p>
@@ -560,7 +568,7 @@ gcloud compute instances create amux-overnight \
 
 # SSH in and install
 ssh amux-overnight
-git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+brew install mixpeek/amux/amux
 
 # Start the dashboard (accessible via Tailscale or SSH tunnel)
 amux serve</code></pre>
@@ -598,7 +606,7 @@ amux cron add --schedule "0 23 * * *" \
     <div class="cta-box">
       <h3>Start running agents overnight</h3>
       <p>amux is the orchestration layer that makes unattended AI coding practical. Self-healing watchdog, atomic task board, mobile dashboard, and fleet monitoring.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+      <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve</code></pre>

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Claude Code Web Dashboard: Monitor &amp; Control Agents from Your Browser — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Add a web dashboard to Claude Code. Monitor agent status, review output, manage tasks, and send commands from any browser or phone. No terminal required.">
+  <meta name="keywords" content="claude code web dashboard, web interface for claude code, monitor claude code from browser, claude code ui, claude code dashboard, claude code browser, claude agents web interface">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-web-dashboard/">
+  <meta property="og:title" content="Claude Code Web Dashboard: Monitor &amp; Control Agents from Your Browser — amux">
+  <meta property="og:description" content="Add a web dashboard to Claude Code. Monitor agent status, review output, manage tasks, and send commands from any browser or phone.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-web-dashboard/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Web Dashboard","item":"https://amux.io/guides/claude-code-web-dashboard/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Web Dashboard: Monitor and Control Agents from Your Browser","description":"Add a web dashboard to Claude Code. Monitor agent status, review output, manage tasks, and send commands from any browser or phone.","url":"https://amux.io/guides/claude-code-web-dashboard/","datePublished":"2026-09-10","dateModified":"2026-09-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Add a Web Dashboard to Claude Code","description":"Set up a browser-based dashboard to monitor and control multiple Claude Code agents without a terminal.","step":[{"@type":"HowToStep","name":"Install amux","text":"Run: brew install mixpeek/amux/amux"},{"@type":"HowToStep","name":"Register your Claude Code session","text":"Run: amux register myproject --dir ~/Dev/myproject --yolo"},{"@type":"HowToStep","name":"Start the web server","text":"Run: amux serve (starts the dashboard on localhost:8824)"},{"@type":"HowToStep","name":"Open the dashboard","text":"Navigate to http://localhost:8824 in any browser. On mobile, install as a PWA for full-screen access."},{"@type":"HowToStep","name":"Launch agents","text":"Run: amux start myproject. Claude Code starts in a managed session and appears immediately in the dashboard."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does Claude Code have a built-in web dashboard?","acceptedAnswer":{"@type":"Answer","text":"Claude Code itself is a terminal tool with no built-in web UI. amux adds a web dashboard by running a local server alongside Claude Code sessions. You get a browser UI for monitoring, task management, and control while Claude Code handles the actual coding."}},{"@type":"Question","name":"Can I monitor Claude Code from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes, via the amux PWA. Install amux, run 'amux serve', then open your local amux URL on your phone and install it as a Progressive Web App. You can see agent status, read terminal output (including incremental streaming since September 2026), and send messages to any session."}},{"@type":"Question","name":"What can I do from the Claude Code web dashboard?","acceptedAnswer":{"@type":"Answer","text":"With the amux dashboard, you can: see live status for all running Claude Code sessions; read terminal output with incremental streaming; add, assign, and track tasks on a shared kanban board; send messages or prompts to any agent; view token spend and cost per session; receive owner alerts (push, email) when agents need attention; and review morning output from overnight runs."}},{"@type":"Question","name":"Does the web dashboard work with multiple Claude Code agents?","acceptedAnswer":{"@type":"Answer","text":"Yes, managing multiple agents simultaneously is the primary use case. Each Claude Code session appears as a row in the dashboard with live status, current task, and token spend. You can switch between agent outputs, send commands to specific agents, and assign tasks via the shared kanban board, all from one browser tab."}},{"@type":"Question","name":"Is there a hosted version of the Claude Code web dashboard?","acceptedAnswer":{"@type":"Answer","text":"amux is self-hosted on your own machine. The web server runs locally (port 8824 by default). For remote access from other devices, use Tailscale to reach your local network, or set up a cloud VM with amux installed. There is no hosted cloud version. Your code and agents stay on your infrastructure."}},{"@type":"Question","name":"How is this different from community Claude Code web UIs on GitHub?","acceptedAnswer":{"@type":"Answer","text":"Community repos like claude-code-webui provide read-only terminal mirroring. amux is a full control plane: you can issue commands, manage the task board, route work between agents, configure owner alerts, and use the iOS app alongside the browser dashboard. It is also actively maintained and has a native iOS app in the App Store."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Web Dashboard</span></div>
+    <!-- EXP-087: top-of-page CTA on Claude Code web dashboard guide (Sept 2026) -->
+    <div style="background:#0d7c42;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <span style="font-size:.9rem;color:#fff">amux adds a browser dashboard to Claude Code. Run, monitor, and control your AI agents from anywhere.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp087_cwd_topofpage_cta_click')" style="background:#fff;color:#0d7c42;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
+    </div>
+    <h1>Claude Code Web Dashboard</h1>
+    <p class="subtitle">Monitor status, manage tasks, review output, and control agents from any browser or phone. Claude Code is a terminal tool; amux adds the web layer.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-you-get" style="color:var(--dim);text-decoration:none;">What the Dashboard Shows</a></li>
+        <li><a href="#setup" style="color:var(--dim);text-decoration:none;">How to Set It Up (5 Minutes)</a></li>
+        <li><a href="#task-board" style="color:var(--dim);text-decoration:none;">Task Board: Assigning Work Across Agents</a></li>
+        <li><a href="#terminal-view" style="color:var(--dim);text-decoration:none;">Terminal View: Reading Agent Output</a></li>
+        <li><a href="#mobile" style="color:var(--dim);text-decoration:none;">Mobile Access: iPhone and Android</a></li>
+        <li><a href="#alerts" style="color:var(--dim);text-decoration:none;">Owner Alerts: When Agents Need You</a></li>
+        <li><a href="#remote-access" style="color:var(--dim);text-decoration:none;">Remote Access from Outside Your Network</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="what-you-get">What the Dashboard Shows</h2>
+    <p>Claude Code itself has no web interface. It runs in your terminal and that is where its output lives. When you run multiple Claude Code sessions (which most serious users do), keeping track of them means switching between terminal tabs, running <code>tmux</code> commands, or losing track of what ran where.</p>
+    <p>amux solves this by running a local web server alongside your Claude Code sessions. Open <code>http://localhost:8824</code> in any browser and you see:</p>
+    <ul>
+      <li><strong>Fleet status row:</strong> Every registered Claude Code session on one screen. Running, idle, stopped, or waiting for input, all at a glance.</li>
+      <li><strong>Task board:</strong> A shared kanban for all sessions. Assign tasks to specific agents, watch them claim and complete work, and review results without touching a terminal.</li>
+      <li><strong>Terminal view:</strong> Click any session to see its live output. Output streams incrementally: new lines arrive as they're produced, not on a polling interval.</li>
+      <li><strong>Token spend:</strong> Per-session and total token usage, updated live.</li>
+      <li><strong>Agent messages:</strong> Send a prompt to any agent directly from the browser. No terminal tab switching needed.</li>
+    </ul>
+
+    <h2 id="setup">How to Set It Up (5 Minutes)</h2>
+    <p>amux is a single binary. No Docker, no Python environment, no Node.js runtime required.</p>
+
+    <h3>Step 1: Install amux</h3>
+    <pre><code>brew install mixpeek/amux/amux</code></pre>
+    <p>On Linux or if you prefer manual install:</p>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre>
+
+    <h3>Step 2: Register your Claude Code project</h3>
+    <pre><code># Register a session for your project
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# --yolo means Claude Code auto-accepts tool use (expected for agent runs)
+# Add more sessions for additional projects or parallel work
+amux register frontend --dir ~/Dev/myproject-frontend --yolo
+amux register infra --dir ~/Dev/myproject --yolo</code></pre>
+
+    <h3>Step 3: Start the dashboard server</h3>
+    <pre><code>amux serve</code></pre>
+    <p>The server starts on port 8824 and stays running. Open <code>http://localhost:8824</code> in your browser.</p>
+
+    <h3>Step 4: Launch Claude Code agents</h3>
+    <pre><code># Start an agent for a registered session
+amux start myproject
+
+# Agents appear in the dashboard immediately
+# Send them work via the task board or direct message</code></pre>
+
+    <h3>Step 5 (optional): Add a task to the board</h3>
+    <pre><code># From the terminal
+amux board add "Migrate user schema to UUID primary keys" --session myproject
+
+# From the dashboard: click + New Task, fill in title and session</code></pre>
+
+    <h2 id="task-board">Task Board: Assigning Work Across Agents</h2>
+    <p>The kanban board is shared across all sessions. Every Claude Code agent can see the same board and claim tasks atomically. Two agents will never pick up the same item.</p>
+    <p>Tasks have four states:</p>
+    <ul>
+      <li><strong>backlog:</strong> Queued but not yet dispatched</li>
+      <li><strong>todo:</strong> Ready for an agent to claim</li>
+      <li><strong>doing:</strong> Actively being worked on by a specific agent</li>
+      <li><strong>done:</strong> Completed, with evidence recorded by the agent</li>
+    </ul>
+    <p>From the browser you can drag tasks between columns, filter by session, and read the full description and evidence for any completed card. Agents can also post notes to cards mid-task, which gives you a readable trail for morning review after overnight runs.</p>
+
+    <h2 id="terminal-view">Terminal View: Reading Agent Output</h2>
+    <p>Click any session row in the dashboard to expand its terminal view. Output streams to the browser as the agent produces it. You can scroll back through the full session history, not just the last screenful.</p>
+    <p>The terminal view on desktop and mobile renders output incrementally. You do not wait for a polling interval to see new lines. Since September 2026, mobile rendering also handles incremental diffs, so scrolling through a busy agent's output on your phone works the same as on desktop.</p>
+    <p>If an agent is waiting for input (a tool-approval prompt, a clarifying question), the dashboard shows a visual indicator on that session's row. You can respond directly from the browser without switching to a terminal.</p>
+
+    <h2 id="mobile">Mobile Access: iPhone and Android</h2>
+    <p>The amux dashboard is a Progressive Web App. Open it on your phone's browser and install it to your home screen for a full-screen, app-like experience.</p>
+    <p>On mobile you can:</p>
+    <ul>
+      <li>Check agent status across your entire fleet in one view</li>
+      <li>Read terminal output with incremental streaming (new lines arrive as they're produced)</li>
+      <li>Send a message to any agent with the keyboard</li>
+      <li>Move tasks between board columns</li>
+      <li>Review token spend and cost per session</li>
+    </ul>
+    <p>There is also a native iOS app in the App Store (<a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux: Agent Multiplexer</a>) for users who prefer a native experience over the PWA.</p>
+
+    <h2 id="alerts">Owner Alerts: When Agents Need You</h2>
+    <p>Checking the dashboard is pull. Owner alerts are push. When an agent hits a blocker it cannot resolve, or finishes its queue and wants more work, it can send you a push notification and email directly from its CLAUDE.md instructions:</p>
+    <pre><code># In CLAUDE.md (configure this for any session you run unattended)
+If you encounter a blocker that will stall progress for more than 30 minutes:
+  amux alert "Blocked on auth schema -- need your decision" "30+ min blocker"
+
+If you finish all tasks early:
+  amux alert "Queue empty, ready for more tasks" "queue finished"</code></pre>
+    <p>Configure the alert destination in <code>~/.amux/server.env</code>:</p>
+    <pre><code>AMUX_OWNER_EMAIL=you@example.com</code></pre>
+    <p>The health invariant <code>alert.channel_can_deliver</code> verifies the alert channel is working before your next overnight run. Check it at <code>/api/health/invariants</code>.</p>
+
+    <h2 id="remote-access">Remote Access from Outside Your Network</h2>
+    <p>By default the dashboard is only accessible on your local machine. For access from another device or a remote location, use Tailscale:</p>
+    <pre><code># Install Tailscale, then amux auto-provisions a TLS cert for your Tailscale hostname
+# Your dashboard becomes accessible at https://your-machine.tail1234.ts.net:8824
+# from any device on your Tailscale network</code></pre>
+    <p>Important: the dashboard URL on your Tailscale network is reachable by anyone on that network. The URL is not publicly accessible on the internet. Do not share the URL with people who should not have access to your agent fleet.</p>
+
+    <h2 id="faq">FAQ</h2>
+
+    <h3>Does Claude Code have a built-in web dashboard?</h3>
+    <p>No. Claude Code is a terminal tool. The web dashboard is provided by amux, which runs a local server alongside your Claude Code sessions and connects to them via tmux or the herdr terminal backend.</p>
+
+    <h3>Can I monitor Claude Code from my phone?</h3>
+    <p>Yes. Open the amux dashboard URL on your phone and install it as a PWA. You get a full mobile interface for monitoring agents, reading output, and sending commands. A native iOS app is also available in the App Store.</p>
+
+    <h3>What happens if I close the browser tab?</h3>
+    <p>Agents keep running. The browser tab connects to the local server for display; closing it has no effect on the Claude Code sessions. Reopen the dashboard at any time and your agents will still be there, with their full output history.</p>
+
+    <h3>Does this work with multiple Claude Code agents at the same time?</h3>
+    <p>Yes. Running multiple agents is the primary use case. Each Claude Code session appears as its own row. You can manage 2 agents or 50 from the same dashboard view.</p>
+
+    <h3>Can I use the dashboard to run Claude Code on a remote server?</h3>
+    <p>Yes. Install amux on the remote server, start the agents there, and access the dashboard from your local browser via Tailscale or a VPN. All compute stays on the server; the browser just shows you what's happening.</p>
+
+    <h3>How is this different from community Claude Code web UIs on GitHub?</h3>
+    <p>Community repos (claude-code-webui and similar) provide read-only terminal mirroring for a single session. amux is a full control plane: task board, multi-session management, agent messaging, owner alerts, cost tracking, and a native iOS app, all actively maintained.</p>
+
+    <div class="cta-box">
+      <h3>Add a web dashboard to Claude Code</h3>
+      <p>amux is open-source, self-hosted, and takes about 5 minutes to set up. Single Rust binary, zero external dependencies.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject --yolo
+amux serve</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View amux on GitHub</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/compare/">Compare</a></li>
+            <li><a href="/lists/">Lists</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Product</div>
+          <ul>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/docs/">Docs</a></li>
+            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-langraph/">amux vs LangGraph</a></li>
+            <li><a href="/compare/amux-vs-autogen/">amux vs AutoGen</a></li>
+            <li><a href="/compare/amux-vs-codex/">amux vs Codex</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>amux is open source (MIT+CC). Built for AI engineering teams.</span>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
