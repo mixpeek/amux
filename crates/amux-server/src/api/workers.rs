@@ -434,10 +434,9 @@ pub struct CreateWorkerBody {
 /// normalizes at spawn time, so this never rejects a value that would
 /// actually have worked.
 ///
-/// `permissions` is the OTHER half of gh#202 and is deliberately NOT
-/// validated here: AF-650 found the only consumer (api/policy.rs) tests two
-/// exact literals and ignores everything else, so the accepted vocabulary is
-/// a product decision, not a boundary this lint can make on its own.
+/// `permissions` is the OTHER half of gh#202; see `parse_permission` below,
+/// wired in at the same two call sites once AF-650 settled what the field's
+/// real vocabulary is.
 fn parse_backend_id(raw: &str) -> Result<BackendId, String> {
     match raw.trim().to_lowercase().as_str() {
         BackendId::HERDR => Ok(BackendId::herdr()),
@@ -448,6 +447,46 @@ fn parse_backend_id(raw: &str) -> Result<BackendId, String> {
             BackendId::TMUX,
         )),
     }
+}
+
+/// AF-650 (gh#203). Named backend's sibling ambiguity: aicodingND reported
+/// `permissions` as stored, echoed, and never read at spawn — six hits, all
+/// storage or serialization, so the field reads as an inert security control.
+/// That undersold it. There IS a consumer, and its narrowness is the real
+/// finding: api/policy.rs's `authorize_dispatch` denies task dispatch when an
+/// entry is exactly `"deny:*"` or `"deny:execute_task"`. Re-checked here
+/// rather than trusted from that report, and the re-check found a SECOND
+/// consumer the report missed entirely: backend/bootstrap.rs's spawn-command
+/// builder appends `--dangerously-skip-permissions` to a Claude invocation
+/// when an entry is exactly `"unsafe"` or `"claude:skip_permissions"`. Grepped
+/// the whole crate for all four literals to confirm there is no fifth: there
+/// is not. So the real vocabulary is these four, not the two originally
+/// reported, and getting it wrong in EITHER direction is a real cost —
+/// narrower silently disables a permission an operator is relying on, wider
+/// leaves the exact gh#203 gap open for the one this report missed, which
+/// gates a genuine safety bypass rather than a task-dispatch policy.
+///
+/// This is the smallest change that makes the field's promise equal its
+/// behaviour (its own recommended third option, over "wire into spawn" — a
+/// new permission model — or "remove from the API surface" — a breaking
+/// change to a field with a real, if narrow, consumer). It does not invent
+/// policy; it names the policy that already runs.
+const KNOWN_PERMISSIONS: [&str; 4] =
+    ["deny:*", "deny:execute_task", "unsafe", "claude:skip_permissions"];
+
+fn parse_permission(raw: &str) -> Result<String, String> {
+    if KNOWN_PERMISSIONS.contains(&raw) {
+        Ok(raw.to_string())
+    } else {
+        Err(format!(
+            "permissions entries must be one of: {} — got {raw:?}",
+            KNOWN_PERMISSIONS.join(", "),
+        ))
+    }
+}
+
+fn parse_permissions(raw: &[String]) -> Result<Vec<String>, String> {
+    raw.iter().map(|p| parse_permission(p)).collect()
 }
 
 /// Fleet-membership writes drop the legacy session-list cache (AMUX-2957).
@@ -509,6 +548,18 @@ async fn create_worker_inner(
         },
         None => None,
     };
+    let permissions = match &body.permissions {
+        Some(p) => match parse_permissions(p) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": e, "permissions": p }),
+                )
+            }
+        },
+        None => None,
+    };
     let config = WorkerConfig {
         display_name,
         name_aliases: Vec::new(),
@@ -517,7 +568,7 @@ async fn create_worker_inner(
         model: body.model,
         backend: backend.unwrap_or_default(),
         environment: body.environment.unwrap_or_default(),
-        permissions: body.permissions.unwrap_or_default(),
+        permissions: permissions.unwrap_or_default(),
         group,
     };
 
@@ -649,6 +700,21 @@ pub async fn patch_worker(
         },
         None => None,
     };
+    // AF-650 (gh#203): same boundary, the other half of the field pair.
+    // `permissions` is a Vec, so this validates every entry and reports the
+    // list back on refusal, not just the one that failed first.
+    let permissions: Option<Vec<String>> = match &body.permissions {
+        Some(p) => match parse_permissions(p) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": e, "permissions": p }),
+                )
+            }
+        },
+        None => None,
+    };
 
     let slot: Arc<Mutex<Option<PatchOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -692,7 +758,7 @@ pub async fn patch_worker(
             if let Some(v) = body.environment {
                 new_cfg.environment = v;
             }
-            if let Some(v) = body.permissions {
+            if let Some(v) = permissions.clone() {
                 new_cfg.permissions = v;
             }
             if let Some(g) = group {
@@ -3074,5 +3140,101 @@ mod tests {
         assert_eq!(st, StatusCode::OK, "{body}");
         let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
         assert_eq!(got["backend"], json!("tmux"));
+    }
+
+    // AF-650 (gh#203). `permissions` is a Vec, and the real vocabulary is
+    // FOUR literals across two consumers this crate actually implements
+    // (api/policy.rs's task-dispatch deny, backend/bootstrap.rs's spawn-time
+    // --dangerously-skip-permissions bypass) -- not the two the original
+    // report named, since it missed the second consumer entirely.
+
+    #[tokio::test]
+    async fn create_worker_rejects_an_unknown_permission_string() {
+        let (app, _dir) = app();
+        let (st, _, body) = send(
+            &app,
+            "POST",
+            "/api/workers",
+            Some(json!({ "display_name": "x", "cwd": "/tmp/w", "permissions": ["deny:bash"] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "must refuse at creation, not at spawn: {body}");
+        assert_eq!(body["permissions"], json!(["deny:bash"]), "the refused list must be named back");
+        let msg = body["error"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("deny:*") && msg.contains("deny:execute_task")
+                && msg.contains("unsafe") && msg.contains("claude:skip_permissions"),
+            "must name all four real literals, not just the two the original report found: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_worker_accepts_every_real_permission_literal() {
+        let (app, _dir) = app();
+        for lit in ["deny:*", "deny:execute_task", "unsafe", "claude:skip_permissions"] {
+            let (st, _, body) = send(
+                &app,
+                "POST",
+                "/api/workers",
+                Some(json!({ "display_name": lit, "cwd": "/tmp/w", "permissions": [lit] })),
+            )
+            .await;
+            assert_eq!(st, StatusCode::CREATED, "{lit:?} must be accepted: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn create_worker_rejects_if_any_entry_in_the_list_is_unknown() {
+        // A mix of one real literal and one fake one must still refuse whole —
+        // partial application of a validated list is its own silent-drop bug.
+        let (app, _dir) = app();
+        let (st, _, body) = send(
+            &app,
+            "POST",
+            "/api/workers",
+            Some(json!({ "display_name": "x", "cwd": "/tmp/w",
+                         "permissions": ["deny:*", "__probe__"] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    #[tokio::test]
+    async fn patch_worker_rejects_an_unknown_permission_before_writing() {
+        let (app, _dir) = app();
+        let id = create(&app, "af650-patch").await;
+        let rev_before = health_rev(&app).await;
+
+        let (st, _, body) = send(
+            &app,
+            "PATCH",
+            &format!("/api/workers/{id}"),
+            Some(json!({ "permissions": ["deny:bash"] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+
+        // THE CELL THAT MATTERS, same shape as the backend test: no write
+        // happened. Composes directly with gh#202/AF-651's own finding --
+        // ["deny:bash"] must not become applied:true anywhere in this API.
+        assert_eq!(health_rev(&app).await, rev_before, "a refused PATCH must not bump revision");
+        let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
+        assert_eq!(got["permissions"], json!([]), "the stored permissions must be untouched");
+    }
+
+    #[tokio::test]
+    async fn patch_worker_accepts_a_real_permission_and_applies_it() {
+        let (app, _dir) = app();
+        let id = create(&app, "af650-patch-ok").await;
+        let (st, _, body) = send(
+            &app,
+            "PATCH",
+            &format!("/api/workers/{id}"),
+            Some(json!({ "permissions": ["unsafe"] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
+        assert_eq!(got["permissions"], json!(["unsafe"]));
     }
 }
