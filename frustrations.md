@@ -3352,3 +3352,14 @@ CARD: ATE-136
 SYMPTOM: mixpeek-general measured conflict markers in ~/.local/bin/amux at lines 1527/1535/1563; every subcommand failed parsing. The shared checkout was mid-merge. install.sh installed only the Rust binaries, leaving no supported Bash publication path, while the freshness hook prescribed a worktree symlink. The exact manual copier is not established; this lane did not start or change the shared merge.
 COST: Fleet-wide CLI outage requiring a peer to restore the committed origin/main script; the installer recommendation initially pointed at a path that did not exist. Incident evidence is retained on MG-1716.
 FIX: make install-cli and install.sh now use one publisher: snapshot beside the destination, reject unmerged source/conflict markers/invalid Bash, then atomic rename of those validated bytes. Refusals and publication failures preserve the installed client and emit stage/reason to stderr and logs/cli-install.log. The grid helper is included and validated before either file is published, so replacing a symlink preserves that command. Freshness guidance uses the guarded publisher. Sixteen temporary-fixture tests cover ENOSPC, publication failure, open readers, source races, concurrent installs and installed grid dispatch; syntax and in-place-copy mutations fail named tests. This retires the publication mechanism only; resolving the separate shared merge remains its owner's work.
+
+## TubeScience earlier output rendered terminal redraw fragments as conversation
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-adhoc-fixes
+CARD: AMUX-4352
+SYMPTOM: Ethan's screenshot showed rows such as `+ e n 4` and `* d i`, followed by individual spinner glyphs. The same missing-letter text and redraw fragments exist in tubescience.log; the worker's 220x50 live pane and structured transcript are readable. Load earlier output used the lossy pipe-pane log as if it were conversation history.
+COST: Ethan could not read the TubeScience worker's earlier output and had to report a screenshot for diagnosis.
+FIX: Claude earlier output now pages complete structured transcript records using absolute byte cursors and conversation identity. It replaces the initial overlapping history tail and preserves new live output. Raw log downloads remain available. The server emits conversation_history_page with source, record count, bytes and remaining cursor, and warns on unavailable/read-failed conversation history.

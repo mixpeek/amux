@@ -9653,7 +9653,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.864';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.865';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11464,10 +11464,9 @@ function _peekLeaseStart() { /* removed — no more resize-on-peek to lease (AMU
 // the reader scrolls, so a browser resize changes nothing server-side.
 
 // ── "Load earlier output" — scrollback for the alt-screen ──
-// tmux keeps zero history for Claude's alternate screen; the pipe-pane log
-// (~/.amux/logs/<name>.log) is the only record of what scrolled off. The bar
-// sits above the live view; tapping it prepends the log tail (ANSI-stripped,
-// server-sliced via ?tail_kb so a multi-MB log never ships to a phone).
+// Claude history comes from complete conversation records. Terminal pipe logs
+// contain cursor paint deltas: stripping ANSI turns spinners and partial word
+// updates into vertical gibberish (TubeScience). Other providers retain logs.
 let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
@@ -11476,14 +11475,30 @@ function _peekEarlierHTML() {
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
-    ? '<div class="peek-earlier-bar">&mdash; beginning of log &mdash;</div>'
+    ? '<div class="peek-earlier-bar">&mdash; beginning of saved output &mdash;</div>'
     : '<div class="peek-earlier-bar" onclick="_peekLoadEarlier()">&#x25B2; Load earlier output' +
-      (_peekEarlier.chunks.length ? '' : ' (worker log)') + '</div>';
+      (_peekEarlier.chunks.length ? '' : ' (saved output)') + '</div>';
   const blocks = _peekEarlier.chunks.length
     ? '<div class="peek-earlier-block">' + _peekEarlier.chunks.join('') + '</div>' +
-      '<div class="peek-earlier-bar">&mdash; end of log &middot; live view below &mdash;</div>'
+      '<div class="peek-earlier-bar">&mdash; end of saved output &middot; live view below &mdash;</div>'
     : '';
   return bar + blocks;
+}
+// Exact overlap only: repeated words or quoted messages must not erase output.
+// The live renderer may start mid-record after its character cap, so match its
+// first complete line against the saved page's suffix.
+function _peekAfterConversation(saved, current) {
+  if (!saved || !current) return current;
+  if (saved.includes(current)) return '';
+  const first = current.split('\n').find(line => line.length > 0);
+  if (!first) return current;
+  let at = saved.indexOf(first);
+  while (at >= 0) {
+    const suffix = saved.slice(at);
+    if (current.startsWith(suffix)) return current.slice(suffix.length).replace(/^\n+/, '');
+    at = saved.indexOf(first, at + 1);
+  }
+  return current;
 }
 async function _peekLoadEarlier(options) {
   const quiet = !!(options && options.quiet);
@@ -11496,7 +11511,8 @@ async function _peekLoadEarlier(options) {
   let verdict = 'error';
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) +
-      '/log?plain=1&tail_kb=' + _PEEK_LOG_CHUNK_KB + '&before_kb=' + earlier.loadedKb,
+      '/log?plain=1&source=conversation&tail_kb=' + _PEEK_LOG_CHUNK_KB + '&before_kb=' + earlier.loadedKb +
+      (earlier.conversation ? '&conversation=' + encodeURIComponent(earlier.conversation) + '&before=' + earlier.before : ''),
       { headers: _authHeaders() });
     const responseSession = r.headers.get('X-Amux-Session') || '';
     if (!_peekIdentityCurrent(identity)) {
@@ -11508,7 +11524,7 @@ async function _peekLoadEarlier(options) {
       return 'identity-mismatch';
     }
     if (!r.ok) {
-      if (!quiet) showToast('No saved log for this worker');
+      if (!quiet) showToast(r.status === 409 ? 'Conversation changed. Reopen the worker to load its history.' : 'No saved conversation for this worker');
       if (r.status === 404) earlier.hidden = true;
       verdict = 'missing';
     } else {
@@ -11534,6 +11550,16 @@ async function _peekLoadEarlier(options) {
       // stops a 220-column pane rule forcing a scroller; `_linkifyPaths` and
       // `highlightPrompts` make the earlier text behave like the live text it
       // is continuous with.
+      if (r.headers.get('X-Log-Source') === 'conversation') {
+        if (!earlier.conversation) {
+          // The first record page contains the current transcript tail too.
+          // Replace that tail once, then keep only new records from polls.
+          earlier.tailRaw = text;
+          _peekHistoryHTML = _peekHtml(_peekAfterConversation(text, _peekHistoryRaw));
+        }
+        earlier.conversation = r.headers.get('X-Log-Conversation');
+        earlier.before = remaining;
+      }
       earlier.chunks.unshift('<span class="pe-chunk">' + _peekHtml(text) + '</span>');
       earlier.loadedKb += _PEEK_LOG_CHUNK_KB;
       earlier.done = remaining <= 0;
@@ -11658,7 +11684,8 @@ async function refreshPeek(liveOnly, bypassTrim) {
     let histChanged = false;
     if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
       _peekHistoryRaw = histRaw;
-      _peekHistoryHTML = histRaw ? _peekHtml(histRaw) : '';
+      const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
+      _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
       histChanged = true;
     }
     const atBottom = _isScrolledToBottom(body);

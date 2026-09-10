@@ -528,3 +528,44 @@ test('filter popover stays within the phone and supports Escape, outside click a
   await panel.getByRole('button',{name:'Done',exact:true}).click();
   await page.screenshot({path:testInfo.outputPath('worker-message-filter-button.png')});
 });
+
+test('earlier output uses complete conversation pages and a stable cursor', async ({ page }) => {
+  const requests: URL[] = [];
+  await page.route('**/api/sessions/nav-probe/log?*', async route => {
+    const url = new URL(route.request().url());
+    requests.push(url);
+    expect(url.searchParams.get('source')).toBe('conversation');
+    const older = url.searchParams.has('before');
+    await route.fulfill({ status: 200, headers: {
+      'Content-Type': 'text/plain', 'X-Amux-Session': 'nav-probe',
+      'X-Log-Source': 'conversation', 'X-Log-Conversation': 'conversation-one',
+      'X-Log-Remaining': older ? '0' : '4200',
+    }, body: older ? '❯ Earlier complete request\n\n⏺ Earlier complete answer'
+      : '❯ Review the import rails\n\n⏺ Complete TubeScience response without spinner fragments' });
+  });
+  await page.evaluate(() => {
+    eval('_peekHistoryRaw = "⏺ Complete TubeScience response without spinner fragments"; _peekHistoryHTML = _peekHtml(_peekHistoryRaw); _lastLiveHTML = "";');
+  });
+  expect(await page.evaluate(() => (window as any)._peekLoadEarlier())).toBe('loaded');
+  let content = await page.locator('#peek-body').innerText();
+  expect(content.match(/Complete TubeScience response/g)).toHaveLength(1);
+  expect(content).not.toMatch(/\* d i|\+ e n 4/);
+  expect(await page.evaluate(() => (window as any)._peekLoadEarlier())).toBe('loaded');
+  expect(requests[1].searchParams.get('before')).toBe('4200');
+  expect(requests[1].searchParams.get('conversation')).toBe('conversation-one');
+  content = await page.locator('#peek-body').innerText();
+  expect(content.indexOf('Earlier complete request')).toBeLessThan(content.indexOf('Review the import rails'));
+  expect(content).toContain('beginning of saved output');
+  await page.screenshot({ path: test.info().outputPath('readable-conversation-history.png') });
+});
+
+test('conversation overlap removes only the exact shared tail and keeps new output', async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const trim = (window as any)._peekAfterConversation;
+    const saved = '❯ Earlier request\n⏺ Complete response\n  Second line';
+    return [trim(saved, '⏺ Complete response\n  Second line'),
+      trim(saved, '⏺ Complete response\n  Second line\n\n❯ A new request'),
+      trim(saved, '⏺ Complete response\n  A different second line')];
+  });
+  expect(result).toEqual(['', '❯ A new request', '⏺ Complete response\n  A different second line']);
+});
