@@ -3565,3 +3565,15 @@ CARD: AMUX-4372
 SYMPTOM: mixpeek-general displayed Claude's diff sidebar and /diff to hide diff, compressing the conversation and showing empty diff panels.
 COST: Owner had to request removal of a terminal layout they never want.
 FIX: Close observed active sidebars once (89 panes checked, zero left open; native close controls preserve drafts), seed Claude's native diffSidebarOpen=false on worker launches (including already-trusted folders), and remove /diff from amux command suggestions. Log preference persistence success/failure; regression tests cover preference reset, idempotence, unrelated config preservation, and slash-command discovery.
+
+
+## The send-retry regression existed without a CI invocation
+AREA: tests
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The published lifecycle audit failed GitHub checks because test-send-retry-identity.py, already on main, was not invoked by any workflow or hook.
+COST: Stable retry identity and refusal-without-terminal-injection had a regression file but no continuous coverage, and the required harness-wiring ratchet blocked checks.
+FIX: Invoke the real Python harness in checks.yml next to the existing send-retry tests. Its outage/recovery/refusal cases and the harness-wiring ratchet pass locally. The existing test-harness-wired.sh diagnostic names any future unwired harness in CI and locally; no product runtime path is involved.

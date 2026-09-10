@@ -330,6 +330,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-send-retry-annotation.sh
+      - name: CLI retries retain one identity and never inject an unacknowledged fallback
+        run: |
+          set -uo pipefail
+          python3 scripts/test-send-retry-identity.py
       - name: the shared-checkout guard attributes a block to the real actor
         run: |
           set -uo pipefail
