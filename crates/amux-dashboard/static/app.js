@@ -3572,22 +3572,23 @@ function _reportWorkFrontier(s, w, verdict) {
 // import legitimately held TUBES-2418 while TUBES-2419 waited behind WIP-1.
 // With no holding work, preserve the alarming verdict because nothing in the
 // board explains why an idle lane cannot claim its ready card.
+function _truncTitle(s, n) { return s.length <= n ? s : s.slice(0, n - 1) + '…'; }
 function _stalledChip(s) {
   if (!s.running || s.status !== 'idle') return '';
   const w = _workFrontierFor(s.name);
   if (!w || !w.measured || !(w.ready > 0) || w.claimable !== 0) return '';
   if (w.holding.length) {
-    const first = w.holding[0];
-    const readyCard = ((w.readyCards || [])[0] || {}).id || (w.ready + ' ready');
-    const readyMore = w.ready > 1 ? ' +' + (w.ready - 1) : '';
-    const more = w.holding.length > 1 ? ' +' + (w.holding.length - 1) : '';
+    const firstId = w.holding[0];
+    const firstCard = boardItems.find(b => b.id === firstId);
+    const firstTitle = firstCard ? _truncTitle(firstCard.title, 30) : firstId;
+    const rc = (w.readyCards || [])[0] || {};
+    const readyTitle = rc.title ? _truncTitle(rc.title, 30) : (rc.id || (w.ready + ' ready'));
     _reportWorkFrontier(s, w, 'queued-behind-wip');
     return '<button type="button" class="status-badge waiting work-queued-chip" '
       + 'onclick="event.stopPropagation();_openWorkQueue(\'' + escJs(s.name) + '\')" '
-      + 'title="' + esc(readyCard) + readyMore + ' queued behind current work: '
-      + esc(w.holding.join(', ')) + '. View and manage task queue." '
-      + 'aria-haspopup="dialog" aria-label="Manage task queue: ' + esc(readyCard) + readyMore + ' queued behind ' + esc(first) + '">'
-      + '<span class="work-queued-wide">' + esc(readyCard) + readyMore + ' queued behind ' + esc(first) + more + '</span>'
+      + 'title="Queued: ' + esc(rc.title || rc.id || '') + '\nBehind: ' + esc(firstCard ? firstCard.title : firstId) + '" '
+      + 'aria-haspopup="dialog" aria-label="Manage task queue">'
+      + '<span class="work-queued-wide">' + w.ready + ' queued behind ' + esc(firstTitle) + '</span>'
       + '<span class="work-queued-short">' + w.ready + ' queued ▾</span>'
       + '</button>';
   }
