@@ -368,6 +368,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0062_self_driving_control_plane",
         sql: include_str!("../../migrations/0062_self_driving_control_plane.sql"),
     },
+    Migration {
+        version: 63,
+        name: "0063_schedule_delivery_outcome",
+        sql: include_str!("../../migrations/0063_schedule_delivery_outcome.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
