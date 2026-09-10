@@ -3396,3 +3396,14 @@ CARD: AMUX-4366
 SYMPTOM: byo-ray showed repeated /compact plus prose at 12%, 11%, 7%, and 4% remaining while its native input queue grew. The dashboard toggle wrote auto_compact_enabled, but Rust never read it. Queuing a reminder emitted session.auto_compact without evidence of compaction.
 COST: Owner had to intervene over context maintenance that Claude Code already performs automatically; repeated reminders consumed input and obscured the task.
 FIX: Delegate to Claude Code's native compaction, remove duplicate steering and the ineffective toggle, and record measured session.context_low events without claiming completed compaction. Endpoint regression covers falling readings and recovery without adding a message.
+
+## Subagents have a toolbar list but no terminal navigation
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4368
+SYMPTOM: The terminal lost its agent arrows; the replacement toolbar button only displayed descriptions, without any way to read a selected subagent's output.
+COST: Owner could not navigate subagent work where they were reading the terminal and had to request the controls again.
+FIX: Two arrows beside Copy cycle current main/subagent output, preserving the main draft and view. Read owned structured child transcripts, never inject navigation keys. Missing outputs and list failures announce themselves through subagent-navigation diagnostics. Desktop/phone navigation, no-child, failure, and parent restoration tests.

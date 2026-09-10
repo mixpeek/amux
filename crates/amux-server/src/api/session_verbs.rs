@@ -13553,51 +13553,63 @@ async fn dispatch(
 /// `subagent_type` and a human-readable `description`. Both are reported when
 /// present and omitted when not — a made-up label is worse than none in a
 /// switcher, because it cannot be told from a real one.
-fn session_subagents(name: &str) -> Value {
-    let projects = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".claude/projects");
+fn session_subagents(name: &str, selected: Option<(&str, &str)>) -> Value {
+    // A terminal follows the current conversation, not every historical fork.
+    // Resolve once instead of scanning the whole fleet on each output poll.
+    let conversations: Vec<PathBuf> = session_jsonl_path(name).into_iter().collect();
+    session_subagents_from(&conversations, name, selected)
+}
+
+fn session_subagents_from(conversations: &[PathBuf], name: &str, selected: Option<(&str, &str)>) -> Value {
     let mut out: Vec<Value> = Vec::new();
-    let Ok(projs) = std::fs::read_dir(&projects) else {
-        return json!({"session": name, "subagents": [], "source": "transcripts"});
-    };
     let claims = conversation_claims();
-    for proj in projs.flatten() {
-        let Ok(convs) = std::fs::read_dir(proj.path()) else { continue };
-        for c in convs.flatten() {
-            let conv = c.path();
-            if conv.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            if conversation_owner(&conv, &claims) != name {
-                continue;
-            }
-            let stem = conv.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let dir = conv.with_extension("").join("subagents");
-            let Ok(agents) = std::fs::read_dir(&dir) else { continue };
-            for a in agents.flatten() {
-                let p = a.path();
-                if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                let meta = p.metadata().ok();
-                let modified = meta
-                    .as_ref()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                let (kind, description, turns) = subagent_head(&p);
-                out.push(json!({
-                    "id": p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
-                    "conversation": stem,
-                    "type": kind,
-                    "description": description,
-                    "turns": turns,
-                    "last_active": modified,
-                    "bytes": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                }));
-            }
+    for conv in conversations {
+        if conversation_owner(conv, &claims) != name {
+            continue;
         }
+        let stem = conv.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let dir = conv.with_extension("").join("subagents");
+        let Ok(agents) = std::fs::read_dir(&dir) else { continue };
+        for a in agents.flatten() {
+            let p = a.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let agent = p.file_stem().and_then(|v| v.to_str()).unwrap_or("");
+            if let Some((wanted_agent, wanted_conversation)) = selected {
+                // Select only among this worker's owned conversations. No
+                // caller-controlled filesystem path, and identical child
+                // names in different conversations cannot cross-link.
+                if agent != wanted_agent || stem != wanted_conversation { continue; }
+                let output = render_transcript_records(iter_jsonl_tail(&p, 5_000_000), 300_000);
+                tracing::debug!(session = name, agent, conversation = %stem,
+                    verdict = "subagent-output", bytes = output.len(), "read subagent transcript");
+                return json!({"session":name,"agent":agent,"conversation":stem,
+                    "output":output,"source":"transcripts"});
+            }
+            let meta = p.metadata().ok();
+            let modified = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let (kind, description, turns) = subagent_head(&p);
+            out.push(json!({
+                "id": p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                "conversation": stem,
+                "type": kind,
+                "description": description,
+                "turns": turns,
+                "last_active": modified,
+                "bytes": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            }));
+        }
+    }
+    if selected.is_some() {
+        tracing::warn!(session = name, verdict = "subagent-output-missing",
+            "selected subagent is not in this worker's owned transcripts");
+        return json!({"session":name,"error":"Subagent transcript not found for this worker"});
     }
     // Most recently active first: a switcher is read to jump to what is moving.
     out.sort_by_key(|v| -(v["last_active"].as_i64().unwrap_or(0)));
@@ -13827,7 +13839,17 @@ async fn get_dispatch(
         // the feature. That is D1's documented exit: a real interface instead of
         // a scrape of rendered output, and it improves as Claude Code does
         // rather than breaking on the next glyph change.
-        "subagents" => j200(session_subagents(name)),
+        "subagents" => {
+            let selected = match (qs_get(qs, "agent"), qs_get(qs, "conversation")) {
+                (Some(agent), Some(conv)) => Some((agent, conv)),
+                (None, None) => None,
+                _ => return jresp(StatusCode::BAD_REQUEST, json!({"error":"agent and conversation are both required"})),
+            };
+            let data = session_subagents(name, selected);
+            if selected.is_some() && data.get("error").is_some() {
+                jresp(StatusCode::NOT_FOUND, data)
+            } else { j200(data) }
+        },
         // Peek "Simple" tab (AMUX-3056): a plain-English summary of what this
         // worker just did, from its last assistant message via the shared
         // fastest/cheapest helper, cached per transcript+prompt. `?prompt=` is
@@ -20470,6 +20492,37 @@ mod tests {
         assert!(worker_deny.explicit_deny);
         assert!(worker_deny.reason.contains("Explicit worker deny"));
         assert!(cross_group_send_ok("roamer", "target").is_err());
+    }
+
+    #[test]
+    fn subagent_output_is_readable_and_scoped_to_its_parent() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        for (conv, owner, text) in [("parent-a", "arrow-lane", "First subagent output"),
+            ("parent-b", "other-lane", "Foreign subagent output")] {
+            std::fs::write(project.join(format!("{conv}.jsonl")),
+                json!({"customTitle":owner}).to_string()).unwrap();
+            let subdir = project.join(conv).join("subagents");
+            std::fs::create_dir_all(&subdir).unwrap();
+            std::fs::write(subdir.join("agent-one.jsonl"),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}}).to_string()).unwrap();
+        }
+        let conversations = vec![project.join("parent-a.jsonl"), project.join("parent-b.jsonl")];
+        let listing = session_subagents_from(&conversations, "arrow-lane", None);
+        assert_eq!(listing["subagents"].as_array().unwrap().len(), 1);
+        let output = session_subagents_from(&conversations, "arrow-lane", Some(("agent-one", "parent-a")));
+        assert!(output["output"].as_str().unwrap().contains("First subagent output"));
+        assert_eq!(output["agent"], "agent-one");
+        assert_eq!(output["conversation"], "parent-a");
+        for (agent, conv) in [("agent-one","parent-b"), ("../agent-one","parent-a"), ("missing","parent-a")] {
+            let denied = session_subagents_from(&conversations, "arrow-lane", Some((agent,conv)));
+            assert!(denied.get("output").is_none(), "{denied}");
+            assert!(denied["error"].is_string(), "missing output must be explicit");
+        }
     }
 
     #[tokio::test]

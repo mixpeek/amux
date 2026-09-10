@@ -2118,15 +2118,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <!-- Peek overlay -->
-<div id="subagents-overlay" class="overlay" onclick="if(event.target===this)closeSubagents()">
-      <div class="overlay-card" style="max-width:640px;">
-        <div class="overlay-head">
-          <span id="subagents-title">Subagents</span>
-          <button class="btn" onclick="closeSubagents()">&#x2715;</button>
-        </div>
-        <div id="subagents-list" style="max-height:60vh;overflow:auto;padding:4px 2px;"></div>
-      </div>
-    </div>
 <div id="peek-overlay" class="overlay">
   <div class="overlay-header" style="flex-direction:column;gap:4px;padding-bottom:6px;">
     <div id="peek-title-row" style="display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;width:100%;overflow:hidden;">
@@ -2195,9 +2186,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </button>
         <div class="peek-more-dropdown" id="peek-more-dropdown" role="menu"></div>
       </div>
-      <button class="btn peek-toolbar-btn" id="peek-subagents-btn" onclick="openSubagents()" title="Subagents" aria-label="Subagents">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="12" r="3"/><path d="M8.59 13.51 15.42 17.49"/><path d="M15.41 6.51 8.59 10.49"/></svg>
-      </button>
       <button class="btn peek-toolbar-btn" id="peek-close-btn" onclick="closePeek()" title="Close worker" aria-label="Close worker">&#x2715;</button>
     </div>
     <div class="peek-find-wrap" id="peek-search-wrap" hidden>
@@ -2260,11 +2248,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="peek-output-wrap">
       <div class="peek-output-controls">
       <button class="peek-copy-btn" id="peek-copy-btn" onclick="copyPeekContent()" title="Copy all">&#x2398; Copy</button>
-      <!-- Terminal chrome must never inject navigation keys. The former
-           Left/Up/Down buttons guessed that Claude's agents panel was open; if
-           it was not, the same keys navigated the composer/slash menu and could
-           submit a command. Subagents remain available through their durable
-           transcript UI, but raw terminal keys belong only in the composer. -->
+      <nav class="peek-agent-nav" id="peek-agent-nav" aria-label="Worker and subagent output" hidden>
+        <span id="peek-agent-label" aria-live="polite"></span>
+        <button type="button" onclick="_peekAgentStep(-1)" aria-label="Previous agent" title="Previous agent">&#x2191;</button>
+        <button type="button" onclick="_peekAgentStep(1)" aria-label="Next agent" title="Next agent">&#x2193;</button>
+      </nav>
       </div>
       <div id="peek-body" class="overlay-body"></div>
     </div>

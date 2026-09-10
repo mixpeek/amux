@@ -9734,7 +9734,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.870';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.871';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -9987,6 +9987,7 @@ function _paintCachedPeek(cached) {
   return true;
 }
 function openPeek(name, opts) {
+  _peekAgentsReset();
   _bindPeekScrollAffordance();
   requestAnimationFrame(_peekScrollAffordance);
   _peekOpenGeneration++;
@@ -10184,73 +10185,98 @@ function openPeek(name, opts) {
   _savePeekState();
 }
 
-// The pane-driven agent switcher (_markAgentRows + agentNav + the ⌂/▲/▼
-// strip) was DELETED (ARE-7): it keyed on a "⏺ main" panel row Claude Code no
-// longer renders — 0 of 50 sessions matched, so three layers plus a server
-// verb were wired end-to-end and reached nobody, forever. The subagent list
-// (AMUX-2635, below) is the replacement: durable transcripts, 50 of 50, no
-// visibility gate to rot. Resurrection: git log -S agentNav.
-
-// ── Subagent list (AMUX-2635) ───────────────────────────────────────────────
-// Reads DURABLE transcripts via GET /api/sessions/<n>/subagents rather than
-// inferring from the pane. The predicate this replaces matched 0 of 50 lanes;
-// the transcripts match 50 of 50. Note there is no visibility gate on the
-// button at all — the fix for a predicate that matched nothing is to need no
-// predicate, not to write a better one.
-function closeSubagents() {
-  document.getElementById('subagents-overlay')?.classList.remove('active');
+// Read-only terminal navigation. Never send terminal keys to choose a child:
+// a provider may interpret them as composer edits or commands (AMUX-4368).
+let _peekAgents = {session:null, items:[], selected:null, loadedAt:0, loading:false, error:false};
+function _peekAgentsReset() {
+  _peekAgents = {session:null, items:[], selected:null, loadedAt:0, loading:false, error:false};
+  _peekAgentsPaint();
 }
-
-async function openSubagents() {
-  if (!peekSession) return;
-  const ov = document.getElementById('subagents-overlay');
-  const list = document.getElementById('subagents-list');
-  const title = document.getElementById('subagents-title');
-  if (!ov || !list) return;
-  if (title) title.textContent = 'Subagents \u00B7 ' + peekSession;
-  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:18px;text-align:center;">Loading\u2026</div>';
-  ov.classList.add('active');
-  const sess = peekSession;
-  let d;
+function _peekAgentsLog(action, extra) {
+  fetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({kind:'subagent-navigation',action,session:peekSession,ver:APP_VER,...extra})}).catch(()=>{});
+}
+function _peekAgentsPaint() {
+  const nav = document.getElementById('peek-agent-nav');
+  if (!nav) return;
+  const state = _peekAgents;
+  nav.hidden = !state.items.length && !state.error;
+  const index = state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
+  const label = document.getElementById('peek-agent-label');
+  label.textContent = state.error ? 'Agents unavailable' : (index ? 'Agent '+index : 'Main') + ' · '+(index+1)+'/'+(state.items.length+1);
+  label.title = state.error ? 'Use either arrow to retry' : state.selected?.description || state.selected?.id || 'Main worker';
+  nav.querySelectorAll('button').forEach(b=>b.disabled=state.loading);
+  const input=document.getElementById('peek-cmd-input');
+  if (input) input.placeholder=state.selected ? 'Message the main worker…' : 'Type a message or drop a file...';
+}
+async function _peekAgentsLoad(force=false) {
+  const name = peekSession;
+  const state = _peekAgents;
+  if (!name || state.loading || (!force && Date.now()-state.loadedAt<30000)) return;
+  state.session=name; state.loading=true; _peekAgentsPaint();
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/subagents',
-                          { headers: _authHeaders() });
-    d = await r.json();
-    if (!r.ok) throw new Error(d && d.error ? d.error : ('HTTP ' + r.status));
-  } catch (e) {
-    // Say WHICH failure. The old switcher's one message blamed the panel for
-    // every cause, which is what made this unreachable for months.
-    list.innerHTML = '<div style="color:var(--red);font-size:0.85rem;padding:18px;text-align:center;">'
-      + 'Could not load subagents.<br><span style="color:var(--dim);font-size:0.78rem;">' + esc(e.message) + '</span></div>';
-    return;
+    const r=await fetch(API+'/api/sessions/'+encodeURIComponent(name)+'/subagents', {headers:_authHeaders(),signal:AbortSignal.timeout(15000)});
+    const data=await r.json();
+    if (!r.ok || data.session!==name || !Array.isArray(data.subagents)) throw new Error('Invalid subagent list');
+    if (_peekAgents!==state || peekSession!==name) return;
+    // Keep the navigation order stable while a child's mtime changes.
+    const ids = s=>s.conversation+':'+s.id;
+    const fresh=new Map(data.subagents.map(s=>[ids(s),s]));
+    const ordered=state.items.filter(s=>fresh.has(ids(s))).map(s=>fresh.get(ids(s)));
+    const known=new Set(ordered.map(ids));
+    state.items=ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
+    state.error=false; state.loadedAt=Date.now();
+    _peekAgentsLog('list',{count:state.items.length});
+  } catch(e) {
+    if (_peekAgents!==state || peekSession!==name) return;
+    state.error=true; state.loadedAt=Date.now();
+    _peekAgentsLog('list-failed',{error:String(e)});
+  } finally {
+    state.loading=false;
+    if (_peekAgents===state) _peekAgentsPaint();
   }
-  if (peekSession !== sess) return;   // switched away mid-fetch
-  const subs = (d && d.subagents) || [];
-  if (!subs.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">'
-      + 'No subagents for this worker yet.<br>'
-      + '<span style="font-size:0.78rem;">Forks it spawns will appear here.</span></div>';
-    return;
-  }
-  list.innerHTML = subs.map(s => {
-    const when = s.last_active ? timeAgo(s.last_active) : '';
-    // An ABSENT description renders as the agent id in dim type — never a
-    // guessed label. 11 of 66 real transcripts carry none, and an invented
-    // one cannot be told from a real one.
-    const label = s.description
-      ? '<span style="color:var(--text);">' + esc(s.description) + '</span>'
-      : '<span style="color:var(--dim);font-style:italic;">' + esc(s.id) + '</span>';
-    const kind = s.type ? '<span class="chip" style="font-size:0.68rem;">' + esc(s.type) + '</span>' : '';
-    return '<div style="border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:8px;">'
-      + '<div style="display:flex;gap:8px;align-items:flex-start;justify-content:space-between;">'
-      +   '<div style="min-width:0;font-size:0.86rem;line-height:1.35;">' + label + '</div>' + kind
-      + '</div>'
-      + '<div style="color:var(--dim);font-size:0.72rem;margin-top:5px;">'
-      +   (s.turns || 0) + ' turns' + (when ? ' \u00B7 ' + esc(when) : '')
-      + '</div></div>';
-  }).join('');
 }
-
+async function _peekAgentStep(delta) {
+  if (_peekAgents.error) await _peekAgentsLoad(true);
+  const state=_peekAgents;
+  if (state.loading || !state.items.length || !peekSession) return;
+  const index=state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
+  const next=(index+delta+state.items.length+1)%(state.items.length+1);
+  state.selected=next ? state.items[next-1] : null;
+  _peekOpenGeneration++; // invalidate pending parent/child replies on every switch
+  _peekAgentsPaint();
+  _peekAgentsLog('select',{agent:state.selected?.id || 'main'});
+  if (state.selected) {
+    lastPeekHTML='<span class="peek-agent-heading">Loading subagent output…</span>';
+    applyPeekSearch(true,false);
+    await _peekAgentRefresh();
+  } else {
+    lastPeekHTML=_peekEarlierHTML()+_peekHistoryHTML+_lastLiveHTML;
+    applyPeekSearch(true,false);
+    refreshPeek();
+  }
+}
+async function _peekAgentRefresh() {
+  const name=peekSession, state=_peekAgents, selected=state.selected;
+  if (!name || !selected) return;
+  const identity=_peekIdentity(name);
+  const sequence=state.outputSequence=(state.outputSequence || 0)+1;
+  try {
+    const r=await fetch(API+'/api/sessions/'+encodeURIComponent(name)+'/subagents?agent='+encodeURIComponent(selected.id)+'&conversation='+encodeURIComponent(selected.conversation),
+      {headers:_authHeaders(),signal:AbortSignal.timeout(15000)});
+    const data=await r.json();
+    if (!_peekIdentityCurrent(identity) || state!==_peekAgents || state.selected!==selected || state.outputSequence!==sequence) return;
+    if (!r.ok || data.session!==name || data.agent!==selected.id || data.conversation!==selected.conversation || typeof data.output!=='string') throw new Error(data.error || 'Invalid subagent output');
+    const html='<span class="peek-agent-heading">Subagent: '+esc(selected.description || selected.id)+'</span>\n\n'+(data.output ? _peekHtml(data.output) : '<span class="peek-agent-heading">No output yet.</span>');
+    if (lastPeekHTML!==html) {lastPeekHTML=html; applyPeekSearch(true,false);}
+    document.getElementById('peek-status').textContent='Recent subagent output · Updated '+new Date().toLocaleTimeString()+' · v'+APP_VER;
+  } catch(e) {
+    if (!_peekIdentityCurrent(identity) || state!==_peekAgents || state.selected!==selected || state.outputSequence!==sequence) return;
+    lastPeekHTML='<span class="peek-agent-heading">Could not load subagent output. Retrying automatically; use the arrows to switch.</span>';
+    applyPeekSearch(true,false);
+    _peekAgentsLog('output-failed',{agent:selected.id,error:String(e)});
+  }
+}
 
 function copyPeekContent() {
   const body = document.getElementById('peek-body');
@@ -10265,6 +10291,7 @@ function copyPeekContent() {
 }
 
 function closePeek() {
+  _peekAgentsReset();
   _closePeekFilters();
   _peekLeaseStop();   // AMUX-2634: stop holding the worker's pane at our width
   // Reset peek notes
@@ -11608,6 +11635,7 @@ function _peekAfterConversation(saved, current) {
   return current;
 }
 async function _peekLoadEarlier(options) {
+  if (_peekAgents.selected) return 'subagent-tail';
   const quiet = !!(options && options.quiet);
   const name = peekSession;
   const identity = _peekIdentity(name);
@@ -11706,6 +11734,8 @@ function _fitRules(html) {
 }
 
 async function refreshPeek(liveOnly, bypassTrim) {
+  if (_peekAgents.selected) return _peekAgentRefresh();
+  _peekAgentsLoad();
   const name = peekSession;
   const identity = _peekIdentity(name);
   if (!name) return;
@@ -11884,6 +11914,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
 // re-innerHTML'ing the whole ~100K-char scrollback every 900ms — that wholesale
 // reflow was the visible "janky" churn when watching an active session.
 function _paintPeekRegions(body) {
+  if (_peekAgents.selected) { body.innerHTML=lastPeekHTML; _peekReclassifyPrompts(); return; }
   const hist = _peekEarlierHTML() + _peekHistoryHTML;
   if (!hist && !_lastLiveHTML && lastPeekHTML) { body.innerHTML = lastPeekHTML; _peekReclassifyPrompts(); return; }  // IDB cached open paint
   body.innerHTML = '<div id="pk-hist">' + hist + '</div><div id="pk-live">' + _lastLiveHTML + '</div>';
@@ -12306,7 +12337,7 @@ async function _peekMsgMove(direction, event) {
       _peekNavBeacon('no-targets', prompts, null);
       const label = _peekMsgNavKind === 'all' ? 'messages'
         : ((_MSG_KIND[_peekMsgNavKind] || _MSG_KIND.unknown).label.toLowerCase() + ' messages');
-      const why = earlier === 'beginning' ? 'Reached the beginning of the saved output.'
+      const why = earlier === 'subagent-tail' ? 'Only recent subagent output is loaded.' : earlier === 'beginning' ? 'Reached the beginning of the saved output.'
         : earlier === 'loaded' || earlier === 'empty' ? 'Loaded an earlier output page.'
         : earlier === 'missing' ? 'This worker has no saved earlier output.'
         : 'Earlier output could not be loaded.';

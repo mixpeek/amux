@@ -6118,3 +6118,12 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
   .status-badge.work-queued-chip { min-height: 44px; }
   .work-queue-card { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
+
+/* AMUX-4368: terminal agent controls remain usable on a phone. */
+.peek-agent-nav[hidden] { display:none; }
+.peek-agent-nav { align-items:center; }
+#peek-agent-label { max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.72rem; color:var(--dim); }
+.peek-agent-nav button { min-width:44px; height:44px; }
+.peek-agent-nav button:disabled { opacity:0.5; cursor:wait; }
+.peek-agent-heading { color:var(--dim); font-weight:600; }
+.peek-output-wrap:has(.peek-agent-nav:not([hidden])) #peek-body { padding-top:62px; }
