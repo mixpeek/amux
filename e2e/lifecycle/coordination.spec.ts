@@ -1,5 +1,5 @@
 import { test, expect } from '../fixtures';
-import { boot, auth, checkpoint, deleteOwnedWorkers } from './evidence';
+import { boot, auth, checkpoint, deleteOwnedWorkers, getSessionsResilient } from './evidence';
 
 test('LC-COORD-POLICY: peer task awareness spans groups; explicit deny and isolation refuse delivery', async ({ page, request }, info) => {
   test.setTimeout(90_000);
@@ -24,7 +24,7 @@ test('LC-COORD-POLICY: peer task awareness spans groups; explicit deny and isola
       cards.push(await made.json());
     }
     const workerHeaders = { ...headers, 'X-Amux-Worker': author };
-    const roster = await request.get('/api/sessions', { headers: workerHeaders });
+    const roster = await getSessionsResilient(request, workerHeaders);
     expect(roster.ok()).toBeTruthy();
     const visible = (await roster.json()).map((row: any) => row.name);
     expect(visible).toEqual(expect.arrayContaining([author, peer, outside]));

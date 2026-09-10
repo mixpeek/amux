@@ -68,8 +68,23 @@ test('isolated worker stays off the board and out of peer discovery', async ({ p
     expect(rawCards, 'a refused peer relay must not create an isolated worker board card').toEqual([]);
   } finally {
     // Each Playwright project owns a throwaway AMUX_HOME, but clean up anyway
-    // so this test remains isolated when a project later shares a server.
-    await request.delete(`/api/sessions/${isolated}`, { headers: auth }).catch(() => {});
-    await request.delete(`/api/sessions/${peer}`, { headers: auth }).catch(() => {});
+    // so this test remains isolated when a project later shares a server —
+    // several other specs in this same project assume "No workers yet" on a
+    // fresh load. request.delete() resolves (does not reject) on a non-2xx
+    // status, so a bare .catch(() => {}) here silently accepted a failed
+    // delete with nobody checking the response; a transient 500 (session
+    // registry writes can race, same as the documented /api/sessions list
+    // race) then left this worker behind for the next spec to trip over.
+    // Verify and retry once instead of firing-and-forgetting.
+    for (const name of [isolated, peer]) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await request.delete(`/api/sessions/${name}`, { headers: auth });
+          if (res.ok() || res.status() === 404) break;
+        } catch (e) {
+          // fall through to retry
+        }
+      }
+    }
   }
 });

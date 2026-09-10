@@ -30,12 +30,31 @@ export async function auth(page: Page) {
   return { Authorization: `Bearer ${token}` };
 }
 
+// GET /api/sessions can legitimately 500 once when a concurrent session
+// create/delete races the single-flight list build — the server fails
+// closed rather than serve a stale snapshot and says so in its own error
+// ("sessions list changed during discovery; retry"). These specs create
+// several sessions back-to-back, which is exactly the shape that triggers
+// it, so a single unguarded request.get here reads as a product bug when it
+// is really a documented, retryable race. Retry instead of asserting on the
+// first attempt.
+export async function getSessionsResilient(
+  request: APIRequestContext, headers: Record<string, string>, attempts = 5,
+) {
+  let response = await request.get('/api/sessions', { headers });
+  for (let i = 1; i < attempts && !response.ok(); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250 * i));
+    response = await request.get('/api/sessions', { headers });
+  }
+  return response;
+}
+
 export async function deleteOwnedWorkers(page: Page, request: APIRequestContext,
   headers: Record<string, string>, names: string[]) {
   for (const name of names) {
     expect(name.startsWith('lc-'), 'cleanup must target a run-owned fixture').toBe(true);
-    const response = await request.get('/api/sessions', { headers });
-    expect(response.ok()).toBeTruthy();
+    const response = await getSessionsResilient(request, headers);
+    expect(response.ok(), 'sessions listing must recover from a transient race').toBeTruthy();
     if (!(await response.json()).some((row: any) => row.name === name)) continue;
     await page.goto('/');
     await page.locator('#tab-sessions').click();

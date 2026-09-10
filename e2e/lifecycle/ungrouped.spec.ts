@@ -1,5 +1,5 @@
 import { test, expect } from '../fixtures';
-import { boot, auth, deleteOwnedWorkers } from './evidence';
+import { boot, auth, deleteOwnedWorkers, getSessionsResilient } from './evidence';
 
 test('LC-COORD-UNGROUPED: workers without groups retain peer and task awareness', async ({ page, request }, info) => {
   test.setTimeout(90_000);
@@ -15,7 +15,7 @@ test('LC-COORD-UNGROUPED: workers without groups retain peer and task awareness'
     }
     for (const [origin, target] of [[grouped, ungrouped], [ungrouped, grouped]]) {
       const peerHeaders = { ...headers, 'X-Amux-Worker': origin };
-      const roster = await request.get('/api/sessions', { headers: peerHeaders });
+      const roster = await getSessionsResilient(request, peerHeaders);
       expect(roster.ok()).toBeTruthy();
       expect((await roster.json()).map((row: any) => row.name)).toContain(target);
       const made = await request.post('/api/board', { headers,
