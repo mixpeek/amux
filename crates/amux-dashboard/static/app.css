@@ -2051,9 +2051,9 @@
     .send-input,
     .overlay.vv-compact .peek-cmd-row .send-input { font-size: 16px; }
   }
-  .send-split { display: flex; flex-shrink: 0; }
+  .send-split { display: flex; flex-shrink: 0; align-self: flex-end; height: 44px; }
   .send-split-main { border-radius: 8px 0 0 8px; padding-right: 8px; }
-  .send-split-arrow { border-radius: 0 8px 8px 0; padding: 6px 6px; border-left: 1px solid rgba(255,255,255,0.2); font-size: 0.55rem; min-width: 28px; min-height: 44px; }
+  .send-split-arrow { border-radius: 0 8px 8px 0; padding: 6px 6px; border-left: 1px solid rgba(255,255,255,0.2); font-size: 0.55rem; min-width: 44px; min-height: 44px; }
   .send-split.mode-queue .send-split-main { background: var(--purple, #a371f7); border-color: var(--purple, #a371f7); }
   .send-split.mode-queue .send-split-arrow { background: var(--purple, #a371f7); border-color: var(--purple, #a371f7); }
   /* File attachment bar */
