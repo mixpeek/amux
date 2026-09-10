@@ -1339,6 +1339,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/criteria/{id}", methods: &["GET", "PUT"] },
     // -- metrics / usage / alerts / stats
     RouteEntry { path: "/api/metrics", methods: &["GET"] },
+    RouteEntry { path: "/api/metrics/host", methods: &["GET"] },
     RouteEntry { path: "/api/metrics/fleet", methods: &["GET"] },
     RouteEntry { path: "/api/metrics/replay", methods: &["GET"] },
     RouteEntry { path: "/api/reclaim/scan", methods: &["GET", "POST"] },
@@ -1420,6 +1421,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/browser/pw-profiles", methods: &["GET"] },
     RouteEntry { path: "/api/browser/save-profile", methods: &["POST"] },
     RouteEntry { path: "/api/browser/agent", methods: &["POST"] },
+    RouteEntry { path: "/api/browser/profile/combine", methods: &["POST"] },
     RouteEntry { path: "/api/browser/import/discover", methods: &["GET"] },
     RouteEntry { path: "/api/browser/import", methods: &["POST"] },
     // -- file viewer / files / fs
