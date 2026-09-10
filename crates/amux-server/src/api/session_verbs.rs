@@ -9218,8 +9218,10 @@ async fn stop_session_process(name: &str) -> (bool, String) {
         }
         return (false, "worker is still running; herdr hard-kill is unavailable".into());
     }
-    let tmux_sess = tmux_name(name);
-    if !tmux_sessions_set().await.contains(&tmux_sess) {
+    // A terminated provider can leave its footer below the shell prompt.
+    // Use the process-aware running probe before typing /rename or /exit;
+    // otherwise a repeated Stop sends those commands into a childless shell.
+    if !is_running(name).await {
         return (true, "not running".into());
     }
     let output = tmux_capture(name, 10).await;
