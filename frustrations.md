@@ -3374,3 +3374,14 @@ CARD: AMUX-4359
 SYMPTOM: The current Claude composer held adjacent [Pasted text] placeholders and AMUX-INJECT-END tails, and the dashboard classified that unsent input as an Unclassified chat message. CLI transport retries also lacked msg_id and fell back to direct terminal injection after an ambiguous timeout.
 COST: Ethan had to report another screenshot because transport debris still occupied the chat after the history fix.
 FIX: The live renderer separates the framed worker input into a collapsed, inspectable draft excluded from message navigation; raw input remains intact. CLI retries share one msg_id and no longer paste into a terminal after missing acknowledgments. send_delivery_unknown is recorded locally in logs/send-failures.jsonl; the dashboard emits composer_excluded_from_messages when separating the input.
+
+## Queued-work badge names a blocker but gives no way to manage the queue
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex (Ethan report)
+CARD: AMUX-4361
+SYMPTOM: mixpeek-general showed MG-1295 +5 queued behind MG-1743; the badge opened only the first holding card, hid the other queued cards, and gave no loading feedback. The existing browser test checked only a changed hash, not usable task controls.
+COST: Ethan could see six waiting tasks but could not act on the queue from the header.
+FIX: v0.9.868 opens a measured queue inspector with every current and ready card, direct access to existing status/worker editing, retryable load failures, and worker-queue loaded/load-failed/open-task beacons. Task queue is also available in Worker actions while the worker is active. Browser regression opens the real card editor and preserves the worker draft on return.

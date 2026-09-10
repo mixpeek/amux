@@ -6092,3 +6092,29 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .session-read-notice details { margin-top:14px; color:var(--dim); font-size:0.78rem; }
 .session-read-notice summary { cursor:pointer; }
 .session-read-notice code { display:block; margin-top:8px; overflow-wrap:anywhere; }
+
+/* AMUX-4361: the queue is a touch-friendly inspector over the worker, using
+   board details for all mutations. Native dialog supplies focus containment. */
+.work-queue-dialog { margin: auto; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+  border-radius: 14px; padding: 0; width: min(600px, calc(100vw - 24px)); max-height: calc(100dvh - 32px);
+  box-sizing: border-box; overflow: auto; }
+.work-queue-dialog::backdrop { background: rgba(0,0,0,.5); }
+.work-queue-header { display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  padding: 16px; position: sticky; top: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.work-queue-header h2 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
+.work-queue-dialog .btn { min-height: 44px; }
+.work-queue-body { padding: 0 16px 16px; }
+.work-queue-body p { color: var(--dim); font-size: .85rem; line-height: 1.5; }
+.work-queue-body h3 { font-size: .85rem; margin: 20px 0 8px; }
+.work-queue-card { display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  width: 100%; min-height: 52px; padding: 12px; margin: 8px 0; border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); background: var(--surface); text-align: left; cursor: pointer; font: inherit; }
+.work-queue-card > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.work-queue-card-title { display: block; color: var(--dim); font-size: .8rem; line-height: 1.4; margin-top: 4px; }
+.work-queue-open { color: var(--accent); font-size: .8rem; flex-shrink: 0; }
+.work-queue-card:hover, .work-queue-card:focus-visible { border-color: var(--accent); }
+.status-badge.work-queued-chip { min-height: 32px; text-decoration: underline dotted; text-underline-offset: 3px; }
+@media (max-width: 600px) {
+  .status-badge.work-queued-chip { min-height: 44px; }
+  .work-queue-card { align-items: flex-start; flex-direction: column; gap: 6px; }
+}

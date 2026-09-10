@@ -3425,30 +3425,116 @@ function _agentsChip(s) {
 let _workFrontier = {};
 let _workFrontierBusy = {};
 let _workFrontierReported = {};
+function _loadWorkFrontier(name) {
+  if (_workFrontierBusy[name]) return _workFrontierBusy[name];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  const request = fetch(API + '/api/board/ready?session=' + encodeURIComponent(name),
+    { headers: _authHeaders(), signal: controller.signal })
+    .then(async r => {
+      if (!r.ok) throw new Error('Queue request failed (' + r.status + ')');
+      const d = await r.json();
+      if (d.measured === false || !Array.isArray(d.ready) || !Array.isArray(d.wip?.holding)
+          || (d.session && d.session !== name)) throw new Error('Queue could not be measured');
+      const w = { ready: d.ready.length, readyCards: d.ready, claimable: d.claimable_now,
+        holding: d.wip.holding, cap: d.wip.cap, measured: true, ts: Date.now() };
+      _workFrontier[name] = w;
+      if (peekSession === name) updatePeekStatus();
+      return w;
+    })
+    .finally(() => { clearTimeout(timer); delete _workFrontierBusy[name]; });
+  _workFrontierBusy[name] = request;
+  return request;
+}
 function _workFrontierFor(name) {
   const c = _workFrontier[name];
   if (c && Date.now() - c.ts < 20000) return c;
-  if (!_workFrontierBusy[name]) {
-    _workFrontierBusy[name] = true;
-    fetch(API + '/api/board/ready?session=' + encodeURIComponent(name), { headers: _authHeaders() })
-      .then(r => r.json())
-      .then(d => {
-        _workFrontier[name] = {
-          ready: (d.ready || []).length,
-          readyCards: d.ready || [],
-          claimable: d.claimable_now,
-          holding: (d.wip || {}).holding || [],
-          // `measured` decides whether this may render at all: an unmeasured
-          // frontier reads as 0 ready and would quietly mean "nothing to do".
-          measured: d.measured !== false,
-          ts: Date.now(),
-        };
-        if (peekSession === name) updatePeekStatus();
-      })
-      .catch(() => {})
-      .finally(() => { _workFrontierBusy[name] = false; });
-  }
+  _loadWorkFrontier(name).catch(() => {});
   return c || null;
+}
+
+// The header badge must expose the whole queue, not just silently navigate to
+// its first holding card (AMUX-4361). Use the existing board editor for changes;
+// opening this inspector never changes task status or sends the worker a prompt.
+function _workQueueLog(name, verdict, extra = {}) {
+  fetch(API + '/api/client-debug', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'worker-queue', session: name, verdict, ...extra, ver: APP_VER }),
+  }).catch(() => {});
+}
+async function _openWorkQueue(name) {
+  document.getElementById('work-queue-dialog')?.close();
+  document.getElementById('work-queue-dialog')?.remove();
+  const dialog = document.createElement('dialog');
+  dialog.id = 'work-queue-dialog';
+  dialog.className = 'work-queue-dialog';
+  dialog.setAttribute('aria-labelledby', 'work-queue-title');
+  dialog.innerHTML = '<div class="work-queue-header"><h2 id="work-queue-title">'
+    + esc(name) + ' · Task queue</h2><button type="button" class="btn" data-queue-close aria-label="Close task queue">Close</button></div>'
+    + '<div class="work-queue-body" aria-live="polite">Loading task queue…</div>';
+  document.body.appendChild(dialog);
+  dialog.querySelector('[data-queue-close]').onclick = () => dialog.close();
+  dialog.addEventListener('keydown', e => e.stopPropagation());
+  const escape = e => {
+    if (e.key !== 'Escape' || !dialog.open) return;
+    e.preventDefault(); e.stopPropagation(); dialog.close();
+  };
+  // Refresh removes its focused button. Capture Escape even during that
+  // transition so it cannot close or send keys to the worker underneath.
+  window.addEventListener('keydown', escape, true);
+  dialog.addEventListener('click', e => { if (e.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => {
+    window.removeEventListener('keydown', escape, true); dialog.remove();
+  }, { once: true });
+  dialog.showModal();
+  const body = dialog.querySelector('.work-queue-body');
+  const load = async () => {
+    body.textContent = 'Loading task queue…';
+    try {
+      const w = await _loadWorkFrontier(name);
+      if (!dialog.open) return;
+      const row = (id, title) => '<button type="button" class="work-queue-card" data-queue-card="'
+        + esc(id) + '"><span><strong>' + esc(id) + '</strong>'
+        + (title ? '<span class="work-queue-card-title">' + esc(title) + '</span>' : '')
+        + '</span><span class="work-queue-open">Open task →</span></button>';
+      body.innerHTML = '<p>' + (w.holding.length && w.claimable === 0
+        ? 'Current work is using all available task slots' + (Number.isFinite(w.cap) ? ' (limit: ' + w.cap + ')' : '') + '.'
+        : w.claimable > 0 ? w.claimable + ' task(s) can be picked up now.' : 'No task can be picked up right now.')
+        + ' Open a task to change its status or assigned worker. Move paused work to Backlog to free its slot.</p>'
+        + '<h3>Current work · ' + w.holding.length + '</h3>'
+        + (w.holding.map(id => row(id, (boardItems.find(i => i.id === id) || {}).title)).join('') || '<p>No current tasks.</p>')
+        + '<h3>Ready tasks · ' + w.ready + '</h3>'
+        + (w.readyCards.map(c => row(c.id, c.title)).join('') || '<p>No ready tasks.</p>')
+        + '<button type="button" class="btn" data-queue-refresh>Refresh queue</button>';
+      body.querySelector('[data-queue-refresh]').onclick = load;
+      body.querySelectorAll('[data-queue-card]').forEach(button => {
+        button.onclick = () => {
+          const id = button.dataset.queueCard;
+          _workQueueLog(name, 'open-task', { card_id: id });
+          dialog.close();
+          showToast('Opening ' + id + '…');
+          // Board details sit above peek; preserving peek preserves the worker
+          // draft and provides a useful Back target after managing the card.
+          openBoardDetail(id).then(() => {
+            if (boardDetailId === id && document.getElementById('board-detail-overlay').classList.contains('active')) {
+              boardDetailTab('edit');
+              document.getElementById('bd-tab-edit').focus({ preventScroll: true });
+            }
+          }).catch(() => showToast('Could not open ' + id, true));
+        };
+      });
+      if (!dialog.contains(document.activeElement)) dialog.querySelector('[data-queue-close]').focus();
+      _workQueueLog(name, 'loaded', { measured: true, n_considered: w.ready + w.holding.length,
+        ready: w.ready, holding: w.holding, claimable: w.claimable });
+    } catch (e) {
+      if (!dialog.open) return;
+      body.innerHTML = '<p role="alert">Could not load the task queue. Try again.</p>'
+        + '<button type="button" class="btn" data-queue-retry>Try again</button>';
+      body.querySelector('[data-queue-retry]').onclick = load;
+      _workQueueLog(name, 'load-failed', { measured: false });
+    }
+  };
+  await load();
 }
 // One diagnostic per distinct frontier shape. Both verdicts are useful in a
 // sweep: `queued-behind-wip` explains a healthy wait; `stalled` says there is
@@ -3484,12 +3570,12 @@ function _stalledChip(s) {
     const more = w.holding.length > 1 ? ' +' + (w.holding.length - 1) : '';
     _reportWorkFrontier(s, w, 'queued-behind-wip');
     return '<button type="button" class="status-badge waiting work-queued-chip" '
-      + 'onclick="event.stopPropagation();_openIssue(\'' + escJs(first) + '\')" '
+      + 'onclick="event.stopPropagation();_openWorkQueue(\'' + escJs(s.name) + '\')" '
       + 'title="' + esc(readyCard) + readyMore + ' queued behind current work: '
-      + esc(w.holding.join(', ')) + '. Open ' + esc(first) + '." '
-      + 'aria-label="' + esc(readyCard) + readyMore + ' queued behind current work ' + esc(first) + '">'
+      + esc(w.holding.join(', ')) + '. View and manage task queue." '
+      + 'aria-haspopup="dialog" aria-label="Manage task queue: ' + esc(readyCard) + readyMore + ' queued behind ' + esc(first) + '">'
       + '<span class="work-queued-wide">' + esc(readyCard) + readyMore + ' queued behind ' + esc(first) + more + '</span>'
-      + '<span class="work-queued-short">' + esc(readyCard) + readyMore + ' behind ' + esc(first) + more + '</span>'
+      + '<span class="work-queued-short">' + w.ready + ' queued ▾</span>'
       + '</button>';
   }
   _reportWorkFrontier(s, w, 'stalled');
@@ -3853,6 +3939,8 @@ function _workerActionDefinitions(s) {
     { key: 'task-label', icon: '&#x270F;', label: 'Task label' + (s.task_override ? '' : ' (none)'),
       run: "editField('" + name + "','task','" + escJs(s.task_override || '') + "')" },
     { separator: true },
+    { key: 'task-queue', icon: '&#x2637;', label: 'Task queue',
+      run: "closeAllMenus();_openWorkQueue('" + name + "')" },
     { key: 'peek-terminal', icon: '&#x1F4BB;', label: 'Peek terminal',
       run: "closeAllMenus();openPeek('" + name + "')" },
     { key: 'read-latest', icon: '&#x1F50A;', label: 'Read latest message',
@@ -9653,7 +9741,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.867';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.868';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
