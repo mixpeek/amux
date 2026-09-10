@@ -109,7 +109,6 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/copy", "Copy last response to clipboard"),
     ("/cost", "Show token usage and cost"),
     ("/debug", "Enable debug logging"),
-    ("/diff", "Interactive diff viewer"),
     ("/doctor", "Check installation health"),
     ("/effort", "Set model effort level"),
     ("/export", "Export conversation as text"),
@@ -185,7 +184,9 @@ async fn list_slash_commands() -> Response {
                 continue;
             };
             let name = format!("/{stem}");
-            if !seen.insert(name.clone()) {
+            // AMUX-4372: do not reintroduce Claude's diff sidebar through a
+            // custom command file after removing its builtin suggestion.
+            if name == "/diff" || !seen.insert(name.clone()) {
                 continue;
             }
             // Python reads only the frontmatter `description:` here (first
@@ -218,6 +219,16 @@ async fn get_slash_command(Path(name): Path<String>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn slash_commands_do_not_offer_claude_diff() {
+        let response = list_slash_commands().await;
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let commands: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let commands = commands.as_array().unwrap();
+        assert!(!commands.iter().any(|c| c["cmd"] == "/diff"));
+        assert!(commands.iter().any(|c| c["cmd"] == "/context"));
+    }
 
     #[test]
     fn frontmatter_parses_description_and_hint() {
