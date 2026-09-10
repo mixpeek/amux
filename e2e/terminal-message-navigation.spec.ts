@@ -565,7 +565,9 @@ test('conversation overlap removes only the exact shared tail and keeps new outp
     const saved = '❯ Earlier request\n⏺ Complete response\n  Second line';
     return [trim(saved, '⏺ Complete response\n  Second line'),
       trim(saved, '⏺ Complete response\n  Second line\n\n❯ A new request'),
-      trim(saved, '⏺ Complete response\n  A different second line')];
+      trim(saved, '⏺ Complete response\n  A different second line'),
+      trim('❯ Earlier request\n⏺ Complete response\n\x1b[0m\n\n  Second line', '⏺ Complete response\n\n  Second line'),
+      trim('❯ Earlier request\n⏺ Complete response\n\x1b[0m\n\n  Second line', '⏺ Complete response\n\n  Second line\n\n❯ New after blank lines')];
   });
-  expect(result).toEqual(['', '❯ A new request', '⏺ Complete response\n  A different second line']);
+  expect(result).toEqual(['', '❯ A new request', '⏺ Complete response\n  A different second line', '', '❯ New after blank lines']);
 });
