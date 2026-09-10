@@ -3636,3 +3636,69 @@ CARD: AMUX-4377
 SYMPTOM: A private lab worker configured with the invoice scratch directory showed a different working directory in its Sonnet terminal after shell initialization.
 COST: Halted the lab before sending any implementation instructions and rebuilt the launcher to keep test writes in the requested workspace.
 FIX: The actual provider invocation now performs a quoted cd to the resolved workspace with &&, after shell/profile/environment setup. A provider_launch_workspace_pinned event records the selected directory; the real worker run checks that directory before doing work.
+
+## Returning to Workers can reopen the previous terminal over the menu
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: After reload on iOS Safari, clicking Workers and opening its menu was interrupted by a delayed restoration of the previously open worker terminal. The explicit navigation did not invalidate the saved-screen callback.
+COST: One failed cleanup in the 39-case focused browser run; the old overlay intercepted the requested menu action.
+FIX: Main navigation advances the existing peek generation, explicit task and menu deep links supersede restoration, and a superseded callback emits peek_restore_superseded. A controlled-clock acceptance case reproduces the navigation race.
+
+## Decompose help omits the plan shape when workers explicitly ask for help
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The live Sonnet author searched repository source for DecomposeTask after the command's help path failed to expose the JSON shape. --help before the ID ran ID validation; after an ID it printed only usage. The working sample was available only when the ID was missing.
+COST: The author spent several minutes discovering the schema and encountered an outside-workspace read permission dialog before creating its three linked children.
+FIX: Both help positions return a concrete two-child JSON example with integer priorities, one-based dependencies and acceptance criteria; the existing board contract exposes the same plan shape for API discovery.
+
+## A Doing epic makes its active child look like conflicting work
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: Both real Sonnet workers decomposed a captured Doing task into a Doing epic plus children, then claimed one child. /api/sessions reported active-conflicting-claims with n_considered=2 instead of attributing the one executable child; board-drive already excludes epics from resume and WIP selection.
+COST: Live terminal activity disagreed with the worker status during the complex lifecycle run.
+FIX: Exclude epic containers from runtime execution claims while exposing their measured epic_container_count. Keep unrelated leaf claims conflicting. The real HTTP projection regression covers the epic-plus-child and two-independent-claims cases together.
+
+## Shared build served an older dashboard during acceptance
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: A successful build from the private worktree served embedded APP_VER 0.9.879 while the tested source was 0.9.883. New board controls were absent. The server commit stamp also omitted dirty because build.rs evaluated repository-relative git pathspecs from the crate directory.
+COST: One five-minute browser run was invalidated and stopped; its red UI assertions were against the wrong asset bytes.
+FIX: Watch absolute dashboard asset paths and the manifest directory for shared-cache invalidation. Check the served app.js, app.css and sw.js hashes against source before browser acceptance and persist the process build and every digest. Resolve git status from the repository root and explicitly mark unverified binary provenance until the asset checks succeed.
+
+## Asking for artifact help creates an output named --help
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The Sonnet author ran amux board artifact LSC1A-2 --help to discover the command. The CLI registered --help as an implementation artifact, and the worker had to investigate how to remove that bogus output.
+COST: Several additional API/schema-discovery commands and an accidental artifact in a real acceptance task.
+FIX: Handle help before ID/reference processing; reject unknown reference-position options before any request. scripts/test-board-help.py runs the actual CLI with a recording transport and verifies help and invalid-option paths issue zero requests.
+
+## An already decomposed epic is asked to split again
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The real reviewer's LSC1R-1 had two linked children and type epic, yet board-drive sent MSG45 calling it a capture shell and asking for decomposition. The shell classifier reread the preserved source prompt without considering the completed structural decomposition.
+COST: One redundant prompt while the reviewer was preparing independent tests; the notice contradicted the persisted graph.
+FIX: Capture cleanup excludes epics and ordinary Doing advances target their executable children. Review-stage epics remain reviewable without reclassifying their preserved prompt as a shell. The selector test asserts the actual child ID receives the advance.

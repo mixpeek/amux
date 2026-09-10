@@ -685,6 +685,15 @@
       "e2e/lifecycle/composer.spec.ts",
       "tests/dashboard-outage-recovery.mjs",
       "e2e/lifecycle/live-complex-verified.spec.ts",
+      "e2e/lifecycle/composer-cards.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-FOCUS-NAVIGATION",
+    "surface": "Worker creation focus and explicit navigation",
+    "actions": "Type the worker directory while initial focus is delayed; reload a saved terminal and select the Workers tab before restoration runs.",
+    "expected": "Directory typing stays in its selected field. Explicit navigation cancels a delayed old-terminal restoration, and the requested main page remains usable.",
+    "sources": [
       "e2e/lifecycle/create-focus.spec.ts"
     ]
   }

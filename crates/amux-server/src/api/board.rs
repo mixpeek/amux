@@ -1307,6 +1307,10 @@ async fn get_contract(
         },
         "capture_decomposition": {
             "cli": "amux board decompose <capture-id> --stdin",
+            "plan_shape": {"tasks":[
+                {"title":"Parse invoices", "description":"Parse and validate invoice rows", "type":"chore", "priority":1, "depends_on":[], "next_action":"Implement strict CSV parsing", "acceptance_criteria":["Malformed amounts exit nonzero with an explicit diagnostic"]},
+                {"title":"Produce report", "description":"Generate a report from valid rows", "type":"chore", "priority":1, "depends_on":[1], "next_action":"Generate the customer totals", "acceptance_criteria":["The report totals match the input invoices"]}
+            ]},
             "atomicity": "the root becomes an epic and all 2-50 children are created in one SQLite writer transaction; any invalid child creates zero",
             "required_per_child": ["unique title", "concrete description", "non-epic type", "p0-p3 priority", "earlier-task dependency indexes", "concrete next_action", "1-12 falsifiable acceptance_criteria"],
             "idempotency": "the normalized plan SHA-256 is durable on the root epic; an identical retry returns idempotent=true and a different retry returns 409 decomposition_plan_conflict",

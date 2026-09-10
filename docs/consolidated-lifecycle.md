@@ -763,3 +763,24 @@ run both live cases with `e2e/lifecycle/live.config.ts`. They are automatically
 included by the consolidated runner's existing discovery. Real worker tests
 may take substantially longer than fixture tests; their timeout is a failure,
 not permission to manufacture a terminal state.
+
+The browser runner now checks the **served** `app.js`, `app.css` and `sw.js`
+hashes before executing cases. Each isolated server writes an
+`asset-provenance-<port>.json` receipt with its `/health` build identity and the
+expected/actual hashes. A stale shared-build embed refuses the run immediately;
+a successful cargo exit alone does not establish dashboard provenance.
+
+Install the current Bash client into the dedicated lab with `make install-cli
+BIN_DIR=<lab>/bin` before starting real workers. An old installed client can have
+different retry behavior even when the server is current. Keep that installation
+receipt with the live evidence. `scripts/test-board-help.py` covers read-only
+artifact/decomposition discovery; help must never register an output.
+
+If a provider limit interrupts the complex case before the gate amendment, keep
+its failed run and resume the **same** workers and files using
+`AMUX_LIFECYCLE_COMPLEX_RESUME_PHASE1=1` with the original
+`AMUX_LIFECYCLE_COMPLEX_RUN`. This sends `continue` to each existing worker and
+still requires all phase-one work, the real gate amendment, and independent
+verification. Use `AMUX_LIFECYCLE_COMPLEX_OBSERVE=1` only after the amendment was
+actually delivered. Record any permission-dialog cancellation, environment repair,
+or resume separately; resumed work is not an uninterrupted autonomy result.

@@ -25,20 +25,23 @@ async function send(page: Page, name: string, text: string) {
 // The observer supplies the initial request and one deliberate criteria amendment.
 // All decomposition, code, reviews, task transitions and evidence are worker-produced.
 test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed gates, and independently verify every deliverable', async ({page,request},info) => {
-  test.setTimeout(2_400_000);
+  test.setTimeout(3_900_000);
   page.setDefaultTimeout(30_000);
   expect(process.env.AMUX_LIFECYCLE_LAB_ACK).toBe('dedicated-test-instance');
   const run = process.env.AMUX_LIFECYCLE_COMPLEX_RUN || `lc-sonnet-complex-${Date.now()}`;
   const author = `${run}-author`, reviewer = `${run}-reviewer`, group = `${run}-team`;
   const names = [author,reviewer];
+  const amendedGate=['Independent peer reproduced the invoice totals and malformed-input diagnostics','Duplicate invoice IDs are rejected, including identical repeated rows','Negative invoice amounts are rejected'];
   const cwd = path.join(process.env.AMUX_LIFECYCLE_LAB_WORKSPACE!,run);
   const observe = process.env.AMUX_LIFECYCLE_COMPLEX_OBSERVE === '1';
+  const resumePhase1 = process.env.AMUX_LIFECYCLE_COMPLEX_RESUME_PHASE1 === '1';
+  const fresh = !observe && !resumePhase1;
   await mkdir(cwd,{recursive:true});
-  if (!observe) await writeFile(path.join(cwd,'invoices.csv'),'id,customer,amount,currency\ni1,Acme,12.50,USD\ni2,Acme,7.50,USD\ni3,Bravo,5.00,USD\n');
+  if (fresh) await writeFile(path.join(cwd,'invoices.csv'),'id,customer,amount,currency\ni1,Acme,12.50,USD\ni2,Acme,7.50,USD\ni3,Bravo,5.00,USD\n');
   await boot(page); const headers = await auth(page);
   const health = await (await request.get('/health')).json();
   const timeline:any[]=[]; let details:any[]=[]; let messages:any[]=[];
-  if (!observe) for (const name of names) {
+  if (fresh) for (const name of names) {
     const close = page.locator('#peek-overlay.active').getByRole('button', {name:'Close worker',exact:true});
     if (await close.isVisible()) await close.click();
     await page.goto('/'); await page.locator('#tab-sessions').click();
@@ -63,10 +66,11 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
   const workers = await roster.json();
   for (const name of names) { const w=workers.find((w:any)=>w.name===name); expect(w.tags).toContain(group); expect(`${w.model} ${w.flags}`).toMatch(/sonnet/i); }
   const common = `Authorized complex lifecycle acceptance ${run}. Work only in ${cwd}; contact only ${names.join(' and ')}. Use Claude Sonnet and the existing Amux harness. All peer messages MUST use Bash amux send, never Claude native SendMessage. Read your actual captured source-message card and decompose it with amux board decompose <ID> --stdin into an epic and concrete dependent chore children, each with description, priority, next_action and falsifiable acceptance_criteria. Children start Todo/Backlog and must actually be claimed and worked to completion. Preserve ownership and all source messages. Do not invent cards/results, bypass gates, or contact production. All messages name the real task IDs. Register every produced file and actual git commit using amux board artifact; put actual test commands and results in evidence. Read peer tasks and link cross-board dependencies/reviewer where appropriate. Clean up your own non-work FYI captures with individual truthful reasons, but never discard real unfinished deliverables. Preserve independent review evidence. Initialize a git repository here if needed; commit only these scratch deliverables, do not push it. Phase 1 finishes implementation at Done and waits for an intentional criteria amendment before Verified. Use only current gates read from each card. After phase 2 all real child tasks and epics must reach Verified and no run-owned card may remain open. A peer may independently verify another worker's Done task through POST /api/verify/<ID>, but must not claim its ownership. For that endpoint the peer first authors executable criteria through PUT /api/criteria/<ID>, with authored_by {kind:'worker',id:its actual worker ID}, version:1, and criteria [{id:'cri_'+a valid ULID,description:actual condition,verifier:{kind:'command',cmd:actual independent test command,expected_exit:0},required:true}]. GET returns the server-owned version. POST verify accepts {criteria_version:that version,gate_checked:the CURRENT effective Verified checklist}; send X-Amux-Session as your own name. This runs tests and stores independent evidence. Never claim an unchecked checklist. Use the authenticated local Amux origin and existing auth context, do not expose tokens.`;
-  if (!observe) {
+  if (fresh) {
     await send(page,reviewer,`${common}\nYou are the reviewer. Decompose your source request into two chore children: an independent black-box contract test suite, then a review/evidence receipt depending on that suite. Coordinate with ${author}. Define and execute independent tests for CSV invoice reconciliation, integer cents (avoid floating point), totals USD=2500, Acme=2000, Bravo=500, malformed amount refusal and explicit diagnostics. Test the author's real CLI and output bytes. Ask for changes if any fail and independently rerun after correction. Write independent_check.py and review.json with actual author/epic/child task IDs, your own epic/child IDs, commands, test results and review decision. Send COMPLEX_READY to ${author} only after phase-1 passes. Wait for the author to relay phase-2 criteria. In phase 2 independently test new requirements, include executable negative cases, and perform actual harness verification of the author's Done tasks and epic. The author independently verifies your own tasks. Finish all own work and send COMPLEX_VERIFIED with actual IDs.`);
     await send(page,author,`${common}\nBuild a complete small invoice reconciliation tool from invoices.csv already here. Decompose into at least THREE dependent chore children: (1) strict CSV parsing and integer-cent normalization with tests; (2) CLI generating report.json with total_cents=2500 and customers {Acme:2000,Bravo:500}; (3) a polished responsive report.html and README with usage and actual git commit outputs. The CLI must be python3 reconcile.py <input.csv> <output-directory>, nonzero for invalid input, and write report.json/report.html for valid input. Use standard library only. The dashboard needs a total, customer breakdown, readable errors/empty states, and no horizontal overflow at 375px. Coordinate with ${reviewer}, request real independent review, fix every actual failure, and reach Done in phase 1. Do not transition to Verified until the intentional amendment arrives. Send COMPLEX_PHASE1 with your actual epic and children IDs after the reviewer sends COMPLEX_READY. In phase 2 relay the new gates to the reviewer, implement them, rerun review, and arrange independent harness verification of all your children and epic. Independently verify the reviewer's actual review deliverables too. Write completion.json with author_epic_id,author_task_ids,reviewer_epic_id,reviewer_task_ids,commit and final_gate_criteria. Then send COMPLEX_VERIFIED to the reviewer.`);
   }
+  if (resumePhase1) for (const name of names) await send(page,name,'continue');
   const read = async () => {
     details=[];messages=[];
     for (const name of names) {
@@ -82,11 +86,11 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
   try {
     if (!observe) {
       await expect.poll(async()=>await read() && messages.some(m=>m.origin===author && m.session===reviewer && m.text.startsWith('COMPLEX_PHASE1')),
-        {timeout:1_200_000,intervals:[10000,20000,30000],message:'Sonnet workers must build and review the decomposed phase-1 deliverables'}).toBe(true);
+        {timeout:1_800_000,intervals:[10000,20000,30000],message:'Sonnet workers must build and review the decomposed phase-1 deliverables'}).toBe(true);
       const epics=details.filter(c=>c.type==='epic'); expect(epics).toHaveLength(2);
       const authorEpic=epics.find(c=>c.session===author); expect(authorEpic.children.length).toBeGreaterThanOrEqual(3);
       expect(authorEpic.messages.length).toBeGreaterThan(0);
-      const gate=['Independent peer reproduced the invoice totals and malformed-input diagnostics','Duplicate invoice IDs are rejected, including identical repeated rows','Negative invoice amounts are rejected'];
+      const gate=amendedGate;
       await page.goto('/'); await page.locator('#tab-board').click(); await page.locator('#bv-status').click();
       const edit=page.locator('[onclick*="editStatusGate(\'verified\')"]');
       await edit.click(); await page.locator('#_gate-edit-ta').fill(gate.join('\n')); await page.locator('#_gate-edit-save').click();
@@ -97,13 +101,16 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
     await expect.poll(async()=>await read() && details.filter(c=>c.type==='epic').length===2
       && details.every(c=>['verified','discarded','cancelled'].includes(c.status))
       && names.every(name=>details.some(c=>c.session===name&&c.status==='verified')),
-      {timeout:1_100_000,intervals:[10000,20000,30000],message:'Every real Sonnet deliverable must reach Verified under changed criteria'}).toBe(true);
+      {timeout:1_800_000,intervals:[10000,20000,30000],message:'Every real Sonnet deliverable must reach Verified under changed criteria'}).toBe(true);
     const file=async(name:string)=>{const r=await request.get(`/api/fs/read?path=${encodeURIComponent(path.join(cwd,name))}`,{headers});expect(r.ok(),await r.text()).toBe(true);return (await r.json()).content;};
     const receipt=JSON.parse(await file('completion.json'));
     const ids=[receipt.author_epic_id,...receipt.author_task_ids,receipt.reviewer_epic_id,...receipt.reviewer_task_ids];
     expect(new Set(ids).size).toBeGreaterThanOrEqual(7);
     for (const id of ids) {
       const card=details.find(c=>c.id===id);expect(card.status).toBe('verified');expect(card.verification.state).toBe('current');
+      expect(card.verification.method).toBe('independent_harness');
+      expect(card.verification.actor).toBe(card.session===author?reviewer:author);
+      expect([...card.verification.gate_snapshot].sort()).toEqual([...amendedGate].sort());
       expect(card.messages.length).toBeGreaterThan(0); expect(String(card.evidence||card.last_result)).not.toBe('');
       expect(card.artifacts.length+card.asset_links.length).toBeGreaterThan(0);
     }
@@ -112,7 +119,8 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
     await info.attach('worker-completion',{body:JSON.stringify(receipt),contentType:'application/json'});
     await info.attach('independent-review',{body:await file('review.json'),contentType:'application/json'});
     const graph=await request.get('/api/graph/board/verify',{headers});expect(graph.ok()).toBe(true);
-    await info.attach('board-graph',{body:await graph.text(),contentType:'application/json'});
+    const graphResult=await graph.json();expect(graphResult.measured).toBe(true);expect(graphResult.verification.valid,JSON.stringify(graphResult)).toBe(true);
+    await info.attach('board-graph',{body:JSON.stringify(graphResult),contentType:'application/json'});
     const html=await file('report.html');const outputPage=await page.context().newPage();
     for(const size of [{width:1280,height:800},{width:375,height:812}]) {
       await outputPage.setViewportSize(size);await outputPage.setContent(html);await expect(outputPage.locator('body')).toContainText('Acme');await checkpoint(outputPage,info,`produced-report-${size.width}`);
@@ -128,6 +136,6 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
     }
     await outputPage.close();
   } finally {
-    await info.attach('complex-proof',{body:JSON.stringify({run,names,group,cwd,health,observe,observer_actions:'initial requests and one explicit gate amendment; no worker code/evidence/completion writes',timeline,details,messages},null,2),contentType:'application/json'});
+    await info.attach('complex-proof',{body:JSON.stringify({run,names,group,cwd,health,observe,resumePhase1,observer_actions:'initial requests and one explicit gate amendment; resumed phase 1 sends continue to existing workers; no worker code/evidence/completion writes',timeline,details,messages},null,2),contentType:'application/json'});
   }
 });

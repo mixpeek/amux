@@ -18,8 +18,15 @@ fn main() {
     // right degradation for the no-.git case (cheap, and keeps it "unknown").
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads/main");
+    let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("server manifest directory")).join("../..");
+    println!("cargo:rerun-if-changed={}", root.join("crates").display());
+    println!("cargo:rerun-if-changed={}", root.join("Cargo.toml").display());
+    println!("cargo:rerun-if-changed={}", root.join("Cargo.lock").display());
     let git = |args: &[&str]| -> Option<String> {
-        let o = std::process::Command::new("git").args(args).output().ok()?;
+        // Pathspecs below are repository-relative. Running from this crate's
+        // directory silently inspected nonexistent crates/crates and called
+        // a dirty binary clean.
+        let o = std::process::Command::new("git").arg("-C").arg(&root).args(args).output().ok()?;
         o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
     let mut sha = git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_default();

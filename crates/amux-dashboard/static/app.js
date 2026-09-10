@@ -9741,7 +9741,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.882';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.885';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -23356,6 +23356,8 @@ function _chromeSave() {
 }
 
 function switchView(view) {
+  // Explicit navigation supersedes a pending restore of an older worker.
+  if (typeof _peekOpenGeneration !== 'undefined' && !peekSession) _peekOpenGeneration++;
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
@@ -28135,7 +28137,7 @@ function renderBoard() {
   // is computed over the same unfiltered set, so a chip that says 5 must show
   // 5. The toggle is the browse default; the query is the filter.
   const _qActive = !!(boardSearchQuery || '').trim();
-  let visible = _qActive ? boardItems.slice()
+  let visible = (_qActive || boardOwnerFilter === 'all') ? boardItems.slice()
     : boardItems.filter(i => boardOwnerFilter === 'agent' ? i.owner_type === 'agent' : i.owner_type !== 'agent');
 
   // Structured query: key:value facets, -negation, quoted phrases, and is:
@@ -34202,9 +34204,7 @@ function _restoreScreen() {
   // (#view= / ?view=, the rig entry). The saved-tab restore silently beat the
   // view deeplink on 2026-08-08 — the rig asked for ?view=groups, got last
   // session's Workers tab, and the deeplink looked broken while working fine.
-  const _hasDeeplink = (location.hash && (location.hash.startsWith('#path=')
-                                          || location.hash.startsWith('#view=')
-                                          || location.hash.startsWith('#browser=')))
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -34229,7 +34229,7 @@ function _restoreScreen() {
   //    it made the rig land on whichever session was peeked before (verified
   //    2026-08-08: #peek=amux opened amux-frustrations), and a shared link
   //    would misdirect the same way.
-  if (location.hash && location.hash.startsWith('#peek=')) return;
+  if (/^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) return;
   let _ps = null;
   try { _ps = JSON.parse(sessionStorage.getItem('peekState') || 'null'); } catch(e) {}
   if (!_ps || !_ps.session) {
@@ -34244,7 +34244,10 @@ function _restoreScreen() {
     // draft) over what the human just selected.
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
-      if (peekSession || _peekOpenGeneration !== restoreGeneration) return;
+      if (peekSession || _peekOpenGeneration !== restoreGeneration) {
+        amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
+        return;
+      }
       openPeek(_ps.session);
       // Restore the tab WITHIN the peek — guarded on the button still
       // existing, because localStorage outlives removed tabs (the notes-view
@@ -40298,10 +40301,11 @@ else document.addEventListener('DOMContentLoaded', _dpInit);
 let _bdRecordTab = 'preview';
 const _bdSectionOpen = new Map();
 function _boardQuick(query) {
-  if (query.includes('owner:human')) boardOwnerFilter = 'human';
+  boardOwnerFilter = query.includes('owner:human') ? 'human' : 'all';
   boardSearchQuery = query; _boardActiveView = '';
   document.getElementById('board-search').value = query;
   _bfSyncHash(); renderBoard();
+  amuxTrack('board_quick_filter', {query, owner:boardOwnerFilter, measured:true, n_considered:_boardLastVisible.length});
 }
 function _bdTaskLink(id, label) {
   return '<button type="button" class="bd-related-link" onclick="_openIssue(\'' + escJs(id) + '\')">'

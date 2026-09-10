@@ -26,7 +26,7 @@ async function openCard(page: Page, id: string) {
 async function queue(page: Page) {
   return page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]'));
 }
-const save = (page: Page) => page.locator('#board-detail-overlay button[onclick="boardDetailSave()"]').click();
+const save = (page: Page) => page.locator('#bd-edit-footer button[onclick="boardDetailSave()"]').click();
 
 test('Saved means an exact card was committed and survives reload', async ({page}) => {
   await setup(page);
