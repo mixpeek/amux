@@ -490,6 +490,27 @@ is_running() {
   [[ "$migrate_rc" -eq 124 ]] && return 124
   tmux_has_session_exact "=$(tmux_name "$1")"
 }
+_amux_tmpfile() {
+  # A temp file a SANDBOXED AGENT can actually create.
+  #
+  # Muse Code sandboxes filesystem writes to the workspace and offers no per-directory
+  # grant — no `--add-dir`, only `--disable-sandbox` or a named permission profile — so
+  # $TMPDIR is denied and a bare `mktemp` fails with "Operation not permitted". A muse
+  # worker hit exactly this on `amux board ls`, whose header capture is PURE DIAGNOSTICS,
+  # and the whole board read died on it: the agent could not close its own card and had to
+  # ask a human to do it. Codex is unaffected only because its sandbox grants $TMPDIR.
+  #
+  # Try the normal temp directories, then fall back to the working directory — the one
+  # place a workspace-sandboxed agent can always write. Callers must tolerate failure
+  # rather than die: a diagnostic file is never worth losing the command.
+  local d f
+  for d in "${TMPDIR:-/tmp}" /tmp .; do
+    [ -d "$d" ] || continue
+    f=$(mktemp "${d%/}/.amux.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
 
 # ─── Shell-safe flag quoting ─────────────────────────────────────────────────
 #
@@ -504,8 +525,8 @@ _run_py_safe() {
   shift
   local result err err_file
   local rc=0
-  err_file=$(mktemp) || {
-    echo "amux: error: mktemp failed (cannot create temp file for python3 stderr)" >&2
+  err_file=$(_amux_tmpfile) || {
+    echo "amux: error: no writable temp directory (tried $TMPDIR, /tmp, .)" >&2
     return 1
   }
   # `|| rc=$?` is critical: under set -e (which the source-guard makes
@@ -1240,7 +1261,7 @@ _flush_unstamped_ledger() {
   local f; f=$(_unstamped_ledger)
   [[ -s "$f" ]] || return 0
   local api="${AMUX_API:-https://localhost:8824}"
-  local tmp; tmp=$(mktemp) || return 0
+  local tmp; tmp=$(_amux_tmpfile) || return 0
   local sent=0 kept=0 line
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
@@ -3739,7 +3760,9 @@ for tag in item.get('tags',[]):
       # nobody reads response headers from a pipe, which is ethos rule 4's
       # second layer: a tag in a store the reader never opens. So read them
       # here and print one line, in the place the reader is already looking.
-      local _hdr; _hdr=$(mktemp)
+      # Tolerates failure: under a workspace-only sandbox there may be nowhere to write,
+      # and a diagnostic header is not worth losing the board read (see _amux_tmpfile).
+      local _hdr; _hdr=$(_amux_tmpfile) || _hdr=""
       # MARK THE ARCHIVED ROWS (AF-461). `archived` is a boolean FLAG, not a
       # status, so a card can be archived AND `backlog` at once — and then it is
       # listed as ordinary work while every closing verb refuses it with
@@ -3757,7 +3780,12 @@ for tag in item.get('tags',[]):
       # which could never fire for exactly the flag-vs-status reason above: a
       # dead branch that made the renderer look like it handled this. Keyed off
       # the flag now, where it can actually fire.
-      local _lsout; _lsout=$(_curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq")
+      local _lsout
+      if [ -n "$_hdr" ]; then
+        _lsout=$(_curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq")
+      else
+        _lsout=$(_curl -sk "$AMUX_API/api/board?$_lsq")
+      fi
       printf '%s' "$_lsout" | python3 -c "
 import sys,json
 items=json.load(sys.stdin)
@@ -3838,7 +3866,7 @@ print(', '.join(d) if isinstance(d,list) and d else '')
         echo "    amux board ls --mine        # this session, uncapped"
         echo "    curl -sk \"\$AMUX_API/api/board?session=\$AMUX_SESSION&done_limit=0\"${RESET}"
       fi
-      rm -f "$_hdr"
+      [ -n "$_hdr" ] && rm -f "$_hdr"
       ;;
     help|*)
       # An UNKNOWN verb must not exit 0. `amux board note X "..."` printed this
