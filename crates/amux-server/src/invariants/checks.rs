@@ -6071,6 +6071,42 @@ pub fn schedule_cost_titles_match_kind(rows: &[ScheduleKindRow]) -> Vec<Invarian
         .collect()
 }
 
+/// AF-582. `delivery='unknown'` is the honest discriminator
+/// fail_orphaned_cron_runs already stamps when the server restarted
+/// mid-fire (AF-515) -- the fact was always recorded, and the only reader
+/// was a `tracing::warn!` at startup that a fleet of agents has no reason
+/// to grep for. This surfaces the same fact through the diagnostic
+/// contract every lane already reads.
+///
+/// `rows` is (schedule_id, count) pairs within the window, already grouped
+/// by the caller. A pass is genuinely zero restarts-mid-fire in the
+/// window, not merely zero rows read (that distinction is the caller's
+/// `Unknown` on a failed store read, not this function's problem).
+pub fn unrecorded_schedule_outcomes_are_visible(
+    window_h: i64,
+    rows: &[(String, i64)],
+) -> Vec<InvariantResult> {
+    const ID: &str = "scheduler.unrecorded_delivery_outcomes";
+    let total: i64 = rows.iter().map(|(_, n)| n).sum();
+    if total == 0 {
+        return vec![InvariantResult::pass(ID)];
+    }
+    let mut out = InvariantResult::new(ID, Status::Fail);
+    out.expected = format!("0 schedule_runs with delivery='unknown' in the last {window_h}h");
+    out.observed = format!(
+        "{total} run(s) across {} schedule(s) recorded delivery='unknown' in the last {window_h}h \
+         — the server restarted mid-fire (AF-515); status='error' on these rows is not a job \
+         failure, it is an unrecorded outcome",
+        rows.len()
+    );
+    out.evidence = serde_json::json!({
+        "total": total,
+        "window_h": window_h,
+        "by_schedule": rows.iter().map(|(id, n)| serde_json::json!({"schedule_id": id, "count": n})).collect::<Vec<_>>(),
+    });
+    vec![out]
+}
+
 #[cfg(test)]
 mod schedule_kind_tests {
     use super::*;
@@ -6195,6 +6231,49 @@ mod schedule_kind_tests {
             let out = schedule_cost_titles_match_kind(&[row("S", t, "tmux")]);
             assert_eq!(out[0].status, Status::Fail, "{t} asserts zero cost and runs as tmux");
         }
+    }
+}
+
+#[cfg(test)]
+mod unrecorded_schedule_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn zero_rows_in_the_window_passes() {
+        let out = unrecorded_schedule_outcomes_are_visible(24, &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, Status::Pass);
+    }
+
+    /// AF-582's own measured incident shape: 21 rows, 15 distinct schedules.
+    /// The fix is visibility, so the failure must carry both the total and
+    /// the per-schedule breakdown -- a reader deciding "is this the same
+    /// incident as an hour ago" needs the schedule IDs, not just a count.
+    #[test]
+    fn a_restart_burst_fails_and_names_every_affected_schedule() {
+        let rows = vec![
+            ("SCHED-1".to_string(), 3i64),
+            ("SCHED-2".to_string(), 1i64),
+        ];
+        let out = unrecorded_schedule_outcomes_are_visible(24, &rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, Status::Fail);
+        assert!(out[0].observed.contains("4 run"), "{}", out[0].observed);
+        assert!(out[0].observed.contains("2 schedule"), "{}", out[0].observed);
+        let by_schedule = out[0].evidence["by_schedule"].as_array().expect("evidence carries the breakdown");
+        assert_eq!(by_schedule.len(), 2, "every affected schedule must be named, not just the total");
+        assert_eq!(out[0].evidence["total"], 4);
+    }
+
+    /// The window is part of the CLAIM, not decoration: a reader comparing
+    /// this to a different invocation must be able to tell whether they are
+    /// looking at the same population.
+    #[test]
+    fn the_window_hours_appear_in_both_the_claim_and_the_evidence() {
+        let out = unrecorded_schedule_outcomes_are_visible(6, &[("SCHED-1".to_string(), 1)]);
+        assert!(out[0].expected.contains("6h"), "{}", out[0].expected);
+        assert!(out[0].observed.contains("6h"), "{}", out[0].observed);
+        assert_eq!(out[0].evidence["window_h"], 6);
     }
 }
 
