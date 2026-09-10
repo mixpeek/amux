@@ -7052,17 +7052,31 @@ async function doSend(name, text) {
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
   const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
-  // QUEUE-FIRST: always push to the local outbox, then let the sync flush
-  // deliver it. This gives immediate UI response whether online or offline,
-  // and the queue's own dedup + retry handles delivery. (Ethan, 2026-09-10:
-  // "i want it to just push it to the server and have it put into the queue")
+  // DIRECT-FIRST: try the server immediately; queue only if the direct send
+  // fails. Queueing first showed "Unsaved changes" for 2+ seconds on every
+  // send while the flush timer waited (Ethan, 2026-09-10: "shouldnt be
+  // unsubmitted it should just be sent").
+  const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
+  const sendOpts = { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, _authHeaders()), body: sendBody };
+  try {
+    const r = await fetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
+    if (r.ok) {
+      const d = await r.json().catch(() => ({}));
+      return d.ok ? 'sent' : (d.submission === 'queued' ? 'sent' : 'sent');
+    }
+    if (r.status >= 400 && r.status < 500) {
+      const d = await r.json().catch(() => ({}));
+      showToast('Send failed: ' + (d.error || d.message || 'HTTP ' + r.status));
+      return 'failed';
+    }
+  } catch (e) {}
+  // Network error or server error: queue for retry
   const _outboxId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const queued = await _queueOp(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+  const queued = await _queueOp(sendUrl, {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: sendBody, _outboxId
   });
   if (!queued) return 'failed';
-  // Kick the flush immediately so online delivery is near-instant
   try { _scheduleSyncRetry(); } catch (e) {}
   return 'queued';
 }
@@ -9739,7 +9753,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.892';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.895';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
