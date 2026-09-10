@@ -34,6 +34,7 @@ test passed without running it. Finish with every deliverable task in done or ve
   await page.locator('#create-dir').fill(cwd!);
   const provider = process.env.AMUX_LIFECYCLE_PROVIDER || 'claude';
   await page.locator(`#create-provider-${provider}`).click();
+  if (provider === 'claude') await page.locator('#create-model').selectOption('sonnet');
   await page.locator('#create-prompt').fill(prompt);
   await checkpoint(page, info, 'live-01-worker-and-prompt');
   await page.locator('#create-overlay').getByRole('button', { name: 'Create', exact: true }).click();

@@ -183,6 +183,7 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
         await page.getByRole('button', { name: 'Next message', exact: true }).click();
         await page.getByRole('button', { name: 'Previous message', exact: true }).click();
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');
+        await expect(page.locator('#peek-body .peek-highlight.current').first(), 'selected terminal result must be inside the visible output').toBeInViewport();
         await checkpoint(page, info, `terminal-${name}-${size.width}`);
         await page.locator('#peek-search').press('Escape');
         await page.locator('#peek-tab-messages').click();

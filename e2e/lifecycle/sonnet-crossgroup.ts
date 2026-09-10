@@ -92,6 +92,7 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
         await page.locator('#peek-search').fill(marker);
         await expect(page.locator('#peek-body .peek-highlight').first()).toBeVisible({ timeout: 30_000 });
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');
+        await expect(page.locator('#peek-body .peek-highlight.current').first(), 'selected terminal result must be inside the visible output').toBeInViewport();
         await checkpoint(page, info, `crossgroup-terminal-${name}-${size.width}`);
         await page.locator('#peek-search').press('Escape');
         await page.locator('#peek-tab-messages').click();

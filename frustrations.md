@@ -3495,3 +3495,26 @@ CARD: AMUX-4362
 SYMPTOM: The route-table integration test received 404 for OPTIONS /api/metrics/host even though the catalog advertised GET. The real metrics router implements /api/metrics, /fleet and /replay; no caller used /host.
 COST: The merged lifecycle verification failed its route-table consistency gate.
 FIX: Removed the stale /host catalog entry. The existing bidirectional route-table check names this mismatch, and request logs continue to record obsolete /host requests as 404 rather than advertising support.
+
+
+## Find did not land when its first match arrived with terminal history
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The live Sonnet screenshot showed an unrelated earlier message while Find displayed CROSS_ACK and a match count. The query had been entered before the full history response; only Locate armed a deferred jump. A DOM-visible assertion did not prove the match was inside the scrolling terminal.
+COST: A user could find a message in the count while still being shown unrelated output.
+FIX: Typed Find now arms the same one-shot jump when its current frame has no match; arriving history lands it and emits peek-message-nav/deferred-search-landed with measured target geometry. Existing selected-result buffering and a reader's deliberate scroll remain intact. The regression covers late history and scrolling away; live checks now require the selected match to be in the viewport.
+
+## A saved board title clipped after switching from desktop to phone width
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The phone screenshot of a completed queue task showed only its shared run prefix; the distinguishing task suffix was hidden. The readonly textarea kept its desktop height after its width changed.
+COST: Different completed tasks appeared to have the same title on a resized or rotated display.
+FIX: Observe title width and recalculate its content height without editing the text. The local board-detail-layout/title-resized-after-wrap event names measured corrections. The real board-create/read/export scenario now checks the complete title after desktop-to-phone resizing.

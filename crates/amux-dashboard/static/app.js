@@ -763,7 +763,7 @@ let _lastPeekedSession = '';
 let peekTimer = null;
 let peekSessionDir = '';
 let peekSearchQuery = '';
-let _peekPendingFindScroll = false;   // one-shot scroll-to-match after a ⌖ Locate open
+let _peekPendingFindScroll = false;   // one-shot Locate/Find jump when history supplies a match
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
@@ -11838,6 +11838,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
       if (_peekPendingFindScroll && _peekMatches.length) {
         _peekPendingFindScroll = false;
         _peekScrollTo(peekSearchIndex, true, true);
+        _peekNavBeacon('deferred-search-landed', _peekMsgPrompts(), _peekMatches[peekSearchIndex]);
       }
     } else if (!_peekScrollLocked) {
       const _liveEl = document.getElementById('pk-live');
@@ -11899,6 +11900,7 @@ function applyPeekSearch(keepIndex, doScroll) {
   if (!body) return;
   const q = peekSearchQuery.trim();
   if (!q) {
+    _peekPendingFindScroll = false;
     _paintPeekRegions(body);
     _peekMatches = [];
     peekSearchIndex = 0;
@@ -11944,6 +11946,9 @@ function applyPeekSearch(keepIndex, doScroll) {
   }
   _peekReclassifyPrompts();
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
+  // Typed Find has the same late-history race as Locate: an empty live frame
+  // is not proof that the requested text is absent from the arriving history.
+  if (!keepIndex && doScroll !== false) _peekPendingFindScroll = !_peekMatches.length;
   _peekScrollTo(peekSearchIndex, doScroll);
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'no matches';
 }
@@ -28564,6 +28569,26 @@ async function saveBoardEdit() {
 let boardDetailId = null;
 let boardDetailStatus = 'todo';
 let _boardDetailOpenGeneration = 0;
+// A readonly title still wraps when the device rotates or its pane narrows.
+// The input handler only sizes edits; observe width so saved titles cannot
+// retain a desktop-height textarea and hide their distinguishing final words.
+const _bdTitleForResize = document.getElementById('bd-title');
+if (_bdTitleForResize && window.ResizeObserver) {
+  let width = 0;
+  new ResizeObserver(entries => {
+    const nextWidth = entries[0].contentRect.width;
+    if (!nextWidth || nextWidth === width || !document.getElementById('board-detail-overlay').classList.contains('active')) return;
+    width = nextWidth;
+    const clipped = _bdTitleForResize.scrollHeight > _bdTitleForResize.clientHeight + 1;
+    _bdTitleForResize.style.height = 'auto';
+    _bdTitleForResize.style.height = _bdTitleForResize.scrollHeight + 'px';
+    if (clipped) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'board-detail-layout', verdict: 'title-resized-after-wrap',
+          measured: true, n_considered: 1, card: boardDetailId, width: Math.round(width), ver: APP_VER }) }).catch(() => {});
+    }
+  }).observe(_bdTitleForResize);
+}
 function _boardDetailIdentityDiscard(requestedId, generation, responseId) {
   try {
     fetch(API + '/api/client-debug', {
