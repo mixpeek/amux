@@ -2187,23 +2187,27 @@ function _scheduleSyncRetry() {
     _syncRetryTimer = setTimeout(() => { if (online) runSyncBanner(); else _scheduleSyncRetry(); }, 15000);
   }
 }
-function runSyncBanner() {
+function runSyncBanner(quiet = false) {
   if (_syncFlight) return _syncFlight;
-  const run = async () => { await _mutateQueue(() => {}); return _runSyncBanner(); };
+  const run = async () => { await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
   _syncFlight = (navigator.locks
     ? navigator.locks.request('amux-outbox-replay', run) : run())
     .catch(e => { _writeError = String(e.message || e); showToast('Sync failed: ' + _writeError); })
     .finally(() => { _syncFlight = null; updateConnectionStatus(); _scheduleSyncRetry(); });
   return _syncFlight;
 }
-async function _runSyncBanner() {
+async function _runSyncBanner(quiet = false) {
   const banner = document.getElementById('sync-banner');
   const itemsEl = document.getElementById('sync-items');
   const titleEl = document.getElementById('sync-title-text');
   const draftCount = drafts.length;
   // Keep every operation durable until its individual acknowledgement. A
   // reload, timeout, or second replay must never erase an in-flight write.
-  const queue = offlineQueue.filter(q => q.state !== 'blocked' && !_outboxActive.has(q.id));
+  const blockedResources = new Set();
+  const queue = offlineQueue.filter(q => {
+    if (q.state === 'blocked') blockedResources.add(q.url);
+    return !blockedResources.has(q.url) && !_outboxActive.has(q.id);
+  });
   const skipped = 0;
   const totalOps = draftCount + queue.length;
   if (!totalOps) return;
@@ -2224,7 +2228,7 @@ async function _runSyncBanner() {
   }
 
   renderBanner();
-  banner.classList.add('active');
+  if (!quiet) banner.classList.add('active');
 
   // A draft is a sequence of accepted writes. Keep its completed steps and
   // prompt identity across failure/reload; never call a failed start "synced".
@@ -2274,6 +2278,9 @@ async function _runSyncBanner() {
         const acknowledged = await r.clone().json();
         _validateBoardAcknowledgement(acknowledged, q.url);
         _outboxBoardAcknowledged(acknowledged);
+      }
+      if (/\/(send|steer)$/.test(q.url.split('?')[0])) {
+        _validateMessageAcknowledgement(await r.clone().json(), q.url);
       }
       await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
       item.status = 'done';
@@ -2618,6 +2625,22 @@ function _outboxRequestOptions(url, init) {
     return { ...init, body: JSON.stringify({ ...body, msg_id: crypto.randomUUID() }) };
   } catch (_) { return init; }
 }
+function _validateMessageAcknowledgement(receipt, url) {
+  const steering = /\/steer$/.test(url.split('?')[0]);
+  if (receipt?.ok === true && (receipt.deduped === true ||
+      (steering ? typeof receipt.id === 'string' && !!receipt.id :
+        receipt.submitted === true || receipt.submission === 'deferred'))) return;
+  // An ambiguous HTTP 200 is not a delivery receipt. Keep the intent for
+  // explicit review instead of repeatedly injecting text into a live terminal.
+  throw Object.assign(new Error('Message delivery unconfirmed — review the queued message and terminal before retrying'), {outboxBlocked:true});
+}
+function _localMessageRequest(url, init) {
+  if ((init?.method || '').toUpperCase() !== 'POST' || !/\/api\/sessions\/[^/]+\/(send|steer)$/.test(url.split('?')[0])) return false;
+  try {
+    const text = JSON.parse(init.body).text;
+    return typeof text === 'string' && !!text.trim() && !/^\/[a-z]/.test(text.trim());
+  } catch (_) { return false; }
+}
 function _validateBoardAcknowledgement(card, url) {
   if (card?.id !== decodeURIComponent(url.split('/').pop())) throw Object.assign(new Error('Server did not acknowledge the exact card'), {outboxBlocked:true});
   if (card.ignored_fields?.length) throw Object.assign(new Error('Not saved: server ignored ' + card.ignored_fields.join(', ')), {outboxBlocked:true});
@@ -2644,6 +2667,13 @@ window.fetch = async function(input, init) {
   const url = typeof input === 'string' ? input : (input && input.url) || '';
   if (!_outboxQueueable(url, init)) return _origFetch(input, init);
   init = _outboxRequestOptions(url, init);
+  if (_localMessageRequest(url, init)) {
+    if (!await _queueOp(url, init)) return new Response('Queue unavailable', {status:507});
+    // Return after durable local acceptance. The composer must never wait for
+    // terminal submission verification or the server's model-backed intake.
+    if (online) setTimeout(() => runSyncBanner(true), 0);
+    return _outboxAccepted();
+  }
   if (!online) {
     return Promise.resolve(await _queueOp(url, init || {}) ? _outboxAccepted() : new Response('Queue unavailable', {status: 507}));
   }
@@ -6970,20 +7000,7 @@ function _stampSendTime(text, now, author) {
 }
 
 async function doSend(name, text) {
-  showSendingIndicator();
-  // OPTIMISTIC STATUS (Ethan, 2026-08-16: "very snappy"). Flip to working the
-  // instant a command is sent, before the UserPromptSubmit hook + SSE round-trip
-  // confirms it. The server now pushes a Session SSE event on the hook report, so
-  // this optimism is corrected/confirmed within a beat; if the send is refused
-  // (409 not running) the next fetch resets it.
-  try {
-    const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === name) : null;
-    if (s && s.status !== 'active' && s.status !== 'rate_limited') {
-      s.status = 'active'; s.running = true;
-      if (typeof render === 'function') render();
-      if (typeof updatePeekStatus === 'function' && typeof peekSession !== 'undefined' && peekSession === name) updatePeekStatus();
-    }
-  } catch (e) {}
+  if (/^\/[a-z]/.test(text.trim())) showSendingIndicator();
   // Slash commands (e.g. /clear, /compact) must be sent verbatim — no timestamp prefix
   const isSlashCmd = /^\/[a-z]/.test(text.trim());
   amuxTrack('message_sent', { session: name, is_slash: isSlashCmd, cmd: isSlashCmd ? text.trim().split(/\s+/)[0] : null, length: text.length });
@@ -7134,6 +7151,25 @@ function _draftClear(session) {
   _draftSyncInputs(session, '');
 }
 
+// Consume exactly the accepted draft, including a focused or re-rendered
+// textarea. Draft mirroring deliberately skips focus; submission must not.
+function _composerAcceptLocal(session, original) {
+  const inputs = [document.getElementById('input-' + session)];
+  if (peekSession === session) inputs.push(document.getElementById('peek-cmd-input'));
+  for (const input of inputs) {
+    if (input && input.value === original) {
+      input.value = ''; input.style.height = 'auto';
+      try { autoGrow(input); } catch (_) {}
+    }
+  }
+  if (_draftGet(session) === original) {
+    clearTimeout(_draftTimers[session || '_']);
+    const live = _liveComposerValue(session);
+    _draftSave(session, live == null || live === original ? '' : live);
+  }
+  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: _liveComposerValue(session) !== original, measured:true, n_considered:1}); } catch (_) {}
+}
+
 // Push a session's draft into EVERY composer showing that session right now:
 // the card in the session list and the peek box are two views of one value, so
 // typing in one and opening the other must not lose or duplicate anything.
@@ -7214,7 +7250,7 @@ async function sendFromInput(name) {
       return;
     }
     cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-    if (_liveComposerValue(name) === original) _draftClear(name);
+    _composerAcceptLocal(name, original);
     const sent = new Set(_files);
     for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
     _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
@@ -9705,7 +9741,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.879';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.882';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13147,7 +13183,7 @@ function _syncComposerPending() {
     if (!btn) return;
     const pending = _composerPendingSends.has(session);
     btn.disabled = pending;
-    btn.textContent = pending ? 'Sending…' : (_sendMode === 'queue' ? 'Queue' : 'Send');
+    btn.textContent = pending ? 'Saving…' : (_sendMode === 'queue' ? 'Queue' : 'Send');
   };
   sync(document.querySelector('#peek-overlay .send-split-main'), peekSession);
   document.querySelectorAll('.card[data-session]').forEach(card =>
@@ -13177,8 +13213,8 @@ async function sendPeekCmd() {
     }
     message = _expandAtMentions(message);
   }
-  // A cleared field is not a delivery receipt. Keep text and uploads recoverable
-  // through refusal, a reload, or switching workers while the request is in flight.
+  // Persist text and upload references in the local outbox before clearing.
+  // A network refusal remains reviewable in Sync and pending Messages.
   _draftSave(session, original);
   _composerPendingSends.add(session);
   _syncComposerPending();
@@ -13192,11 +13228,7 @@ async function sendPeekCmd() {
       return;
     }
     cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
-    if (peekSession === session && inp.value === original) {
-      inp.value = ''; inp.style.height = 'auto'; _draftClear(session);
-    } else if (peekSession !== session && _draftGet(session) === original) {
-      _draftClear(session);
-    }
+    _composerAcceptLocal(session, original);
     // Remove only the acknowledged files, never a new attachment added while
     // waiting, or attachments belonging to a different worker's composer.
     const sent = new Set(files);
@@ -21283,7 +21315,15 @@ function openCreate() {
   // Check git for default dir
   const defaultDir = document.getElementById('create-dir').value;
   if (defaultDir) _checkDirGit(defaultDir);
-  setTimeout(() => document.getElementById('create-name').focus({ preventScroll: true }), 100);
+  setTimeout(() => {
+    const overlay = document.getElementById('create-overlay');
+    if (!overlay.classList.contains('active')) return;
+    if (overlay.contains(document.activeElement)) {
+      amuxTrack('create_focus_preserved', {field:document.activeElement.id, measured:true, n_considered:1});
+      return;
+    }
+    document.getElementById('create-name').focus({ preventScroll: true });
+  }, 100);
 }
 function closeCreate() {
   document.getElementById('create-overlay').classList.remove('active');
@@ -27508,7 +27548,16 @@ function _renderBoardCard(item) {
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
   h += '<span class="board-card-time">' + timeAgo(item.updated || item.created) + '</span>';
   if (item.creator) h += '<span class="board-card-time">' + _hlSearch(esc(item.creator), _bq) + '</span>';
-  h += '</div></div>';
+  h += '</div>';
+  // Only an authoritative detail carries the complete child set. A capped
+  // board list cannot supply a truthful progress denominator.
+  const children = Array.isArray(item.children) ? item.children : [];
+  if (children.length) {
+    const complete = children.filter(child => ['done', 'verified'].includes(child.status)).length;
+    h += '<div class="board-card-progress" aria-label="' + complete + ' of ' + children.length + ' linked tasks complete"><progress max="' + children.length + '" value="' + complete + '"></progress><span>' + complete + '/' + children.length + '</span></div>';
+  }
+  if (item.epic) h += '<div class="board-card-epic">↗ Epic ' + esc(item.epic) + '</div>';
+  h += '</div>';
   return h;
 }
 
@@ -28759,9 +28808,21 @@ function _bdArtifactHref(target) {
   return String(target);
 }
 
-function _bdArtifactRef(a) {
+function _bdArtifactRef(a, item) {
   const ref = String((a && a.ref) || '');
   const target = String((a && a.resolved_ref) || ref);
+  if (/^file:\/\//i.test(target)) {
+    try {
+      const url = new URL(target);
+      if (url.hostname && url.hostname !== 'localhost') throw new Error('remote file host');
+      return '<button type="button" class="file-link board-artifact-file" onclick="event.stopPropagation();openFilePreview(\''
+        + escJs(decodeURIComponent(url.pathname)) + '\')">' + esc(ref) + '</button>';
+    } catch (error) { _bdAudit('board-artifact-navigation', { verdict: 'invalid-file-url', ref }); return '<code>' + esc(ref) + '</code>'; }
+  }
+  if (/^[a-f0-9]{7,40}$/i.test(target)) {
+    return '<button type="button" class="board-artifact-commit" onclick="_bdOpenCommit(\'' + escJs(target)
+      + '\',\'' + escJs(item && item.session || '') + '\')" title="Open commit ' + esc(target) + '">' + esc(ref) + '</button>';
+  }
   if (/^https?:\/\//i.test(target)) {
     const href = _bdArtifactHref(target);
     return '<a href="' + esc(href) + '" data-original-ref="' + esc(ref)
@@ -28874,17 +28935,9 @@ function _bdRenderMeta(item) {
     '<span class="task-id-chip" onclick="_openIssue(\'' + escJs(d) + '\')">' + esc(d) + '</span>').join(' ') + '</div>';
 
   const children = Array.isArray(item.children) ? item.children : [];
-  if (children.length) {
-    relationHtml += '<div class="board-detail-meta-row"><b>Child tasks (' + children.length + ')</b></div>'
-      + children.map(c => {
-        const sty = statusStyle(c.status || 'todo');
-        const pri = c.priority ? ' · ' + esc(c.priority) : '';
-        return '<div class="board-detail-meta-row" style="display:flex;gap:6px;align-items:center;">'
-          + '<span class="task-id-chip" onclick="_openIssue(\'' + escJs(c.id) + '\')">' + esc(c.id) + '</span>'
-          + '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + '">' + esc(c.status || 'todo') + '</span>'
-          + '<span>' + esc(c.title || '') + pri + '</span></div>';
-      }).join('');
-  }
+  if (children.length) html += '<section class="bd-card-section"><h4>Subtasks (' + children.length + ')</h4>'
+    + children.map(c => '<div class="board-detail-meta-row">' + _bdTaskLink(c.id, c.title)
+      + '<span class="status-badge">' + esc(c.status || 'todo') + '</span></div>').join('') + '</section>';
   if (relationHtml) html += '<section class="bd-card-section"><h4>Task relationships</h4>' + relationHtml + '</section>';
 
   const gates = (Array.isArray(item.gate_requirements) ? item.gate_requirements : [])
@@ -28929,7 +28982,7 @@ function _bdRenderMeta(item) {
           : availability.state === 'available' ? ' · available'
           : availability.state === 'external' && availability.measured === false ? ' · reachability not checked'
           : '';
-        return '<div class="board-detail-meta-row">' + _bdArtifactRef(a)
+        return '<div class="board-detail-meta-row">' + _bdArtifactRef(a, item)
         + ' <span style="color:var(--dim)">· ' + esc(a.kind || a.source || 'artifact')
         + (a.state ? ' · ' + esc(a.state) : '') + esc(availabilityText) + '</span>'
         + (a.description ? '<div style="color:var(--dim)">' + esc(a.description) + '</div>' : '') + '</div>';
@@ -28957,6 +29010,7 @@ function _bdRenderMeta(item) {
         + activity.length + ' worker actions</button>' : '') + '</section>';
   }
   meta.innerHTML = html;
+  _bdEnhanceRecord(item);
 }
 
 /// Fetch the authoritative card and fill desc/log, WITHOUT clobbering anything
@@ -29189,6 +29243,7 @@ function _bdRenderStatusBanner(item) {
   if (!el) return;
   const terminal = /^(done|verified|discarded)$/i.test(String(item.status || ''));
   const evs = _bdParseHistory(item.log).filter(e => e.kind === 'status');
+  el.classList.toggle('bd-status-empty', !terminal && !evs.length);
   const sess = item.session || '';
   if (terminal) {
     // Terminal cards have one authoritative displayed status: the durable
@@ -29222,6 +29277,10 @@ function _bdCopyLink() {
 }
 
 function boardDetailTab(tab) {
+  _bdRecordTab = tab;
+  const recordTab = ['subtasks', 'files', 'related'].includes(tab);
+  const descriptionCard = document.getElementById('bd-description-card');
+  if (descriptionCard) descriptionCard.style.display = tab === 'preview' ? '' : 'none';
   const editBtn = document.getElementById('bd-tab-edit');
   const previewBtn = document.getElementById('bd-tab-preview');
   const histBtn = document.getElementById('bd-tab-history');
@@ -29234,13 +29293,20 @@ function boardDetailTab(tab) {
   const deleteBtn = document.getElementById('bd-delete');
   const title = document.getElementById('bd-title');
   if (!editBtn || !previewBtn || !desc || !preview) return;
-  [editBtn, previewBtn, histBtn].forEach(bt => bt && bt.classList.remove('active'));
+  document.querySelectorAll('#board-detail-overlay .board-detail-tab').forEach(bt => bt.classList.remove('active'));
   const editing = tab === 'edit';
   if (editFields) editFields.style.display = editing ? '' : 'none';
   if (editFooter) editFooter.style.display = editing ? '' : 'none';
   if (deleteBtn) deleteBtn.style.display = editing ? '' : 'none';
   if (title) title.readOnly = !editing;
-  if (meta) meta.style.display = tab === 'preview' ? '' : 'none';
+  if (meta) meta.style.display = tab === 'preview' || recordTab ? '' : 'none';
+  _bdFilterSections(tab);
+  if (recordTab) {
+    document.getElementById('bd-tab-' + tab).classList.add('active');
+    desc.style.display = 'none'; preview.style.display = 'none';
+    if (log) log.style.display = 'none';
+    return;
+  }
   if (tab === 'history') {
     if (histBtn) histBtn.classList.add('active');
     desc.style.display = 'none'; preview.style.display = 'none';
@@ -29263,12 +29329,10 @@ function boardDetailTab(tab) {
 }
 
 function _renderDetailStatusBtns() {
-  document.getElementById('bd-status-row').innerHTML = boardStatuses.map(s => {
-    const sty = statusStyle(s.id);
-    const isActive = boardDetailStatus === s.id;
-    const activeStyle = isActive ? 'background:' + sty.bg + ';color:' + sty.color + ';border-color:' + sty.border : '';
-    return '<button class="board-detail-status-btn" style="' + activeStyle + '" onclick="boardDetailSetStatus(\'' + s.id + '\')">' + esc(s.label) + '</button>';
-  }).join('');
+  const sty = statusStyle(boardDetailStatus);
+  document.getElementById('bd-status-row').innerHTML = '<label class="bd-status-control">Status <select id="bd-status-select" aria-label="Task status" style="background:' + sty.bg + ';color:' + sty.color + '" onchange="boardDetailSetStatus(this.value)">'
+    + boardStatuses.map(s => '<option value="' + esc(s.id) + '"' + (boardDetailStatus === s.id ? ' selected' : '') + '>' + esc(s.label) + '</option>').join('')
+    + '</select></label><button type="button" class="btn" onclick="boardDetailSave()">Move</button>';
 }
 
 function boardDetailSetStatus(st) {
@@ -29426,8 +29490,9 @@ async function addBoardItem(title, desc, status, worker, groups, due, ownerType,
   });
   if (r) {
     const item = await r.json();
-    const idx = boardItems.findIndex(i => i.id === tempId);
-    if (idx >= 0) boardItems[idx] = item;
+    boardItems = boardItems.filter(i => i.id !== tempId && i.id !== item.id);
+    boardItems.push(item);
+    if (item.intake && item.intake.action !== 'create') showToast('Existing task ' + item.id + (item.intake.action === 'update' ? ' updated' : ' received the additional context'));
     saveBoardCache();
     renderBoard();
   }
@@ -40228,3 +40293,118 @@ function _dpInit() {
 }
 if (document.body) _dpInit();
 else document.addEventListener('DOMContentLoaded', _dpInit);
+
+// Linked work record: projections of existing board/message/artifact primitives.
+let _bdRecordTab = 'preview';
+const _bdSectionOpen = new Map();
+function _boardQuick(query) {
+  if (query.includes('owner:human')) boardOwnerFilter = 'human';
+  boardSearchQuery = query; _boardActiveView = '';
+  document.getElementById('board-search').value = query;
+  _bfSyncHash(); renderBoard();
+}
+function _bdTaskLink(id, label) {
+  return '<button type="button" class="bd-related-link" onclick="_openIssue(\'' + escJs(id) + '\')">'
+    + '<span class="task-id-chip">' + esc(id) + '</span><span>' + esc(label || '') + '</span><span aria-hidden="true">›</span></button>';
+}
+async function _bdOpenCommit(hash, worker) {
+  if (!worker) {
+    _bdAudit('board-artifact-navigation', { verdict: 'missing-repository-context', ref: hash, card: boardDetailId });
+    showToast('This commit needs an owning worker or a full repository URL to open.', true); return;
+  }
+  closeBoardDetail();
+  openPeek(worker);
+  setPeekTab('commits');
+  await _commitsSelect(hash);
+}
+function _bdFilterSections(tab) {
+  document.querySelectorAll('#bd-meta .bd-card-section').forEach(section => {
+    const kind = section.dataset.recordKind || 'details';
+    section.hidden = tab !== 'preview' && kind !== tab;
+    if (tab !== 'preview' && !section.hidden && section.tagName === 'DETAILS') section.open = true;
+  });
+}
+function _bdEnhanceRecord(item) {
+  const meta = document.getElementById('bd-meta');
+  const summary = document.getElementById('bd-record-summary');
+  const owner = item.session || (item.owner_type === 'human' ? 'You' : 'Unassigned');
+  if (summary) summary.innerHTML = '<div class="bd-record-tags">'
+    + (item.type ? '<span class="bd-type-chip">' + esc(item.type) + '</span>' : '')
+    + (item.tags || []).map(tag => '<span class="board-card-tag">' + esc(tag) + '</span>').join('') + '</div>'
+    + '<div class="bd-record-properties"><div><span>Owner</span>'
+    + (item.session ? '<button class="bd-owner-link" onclick="closeBoardDetail();openPeek(\'' + escJs(item.session) + '\')"><span class="bd-avatar">'
+      + esc(owner.slice(0, 2).toUpperCase()) + '</span>' + esc(owner) + '</button>' : '<b>' + esc(owner) + '</b>')
+    + '</div><div><span>Due date</span><b>' + esc(item.due || 'No due date') + '</b></div><div><span>Epic</span>'
+    + (item.epic ? _bdTaskLink(item.epic, '') : '<b>No epic linked</b>') + '</div></div>';
+  if (!meta) return;
+  const evidence = String(item.evidence || '').trim();
+  let ac = item.acceptance_criteria || [];
+  if (typeof ac === 'string') { try { ac = JSON.parse(ac); } catch (_) { ac = [ac]; } }
+  if (!Array.isArray(ac)) ac = [ac];
+  const extra = document.createElement('section'); extra.className = 'bd-card-section bd-evidence-section';
+  extra.innerHTML = '<h4>Evidence & acceptance criteria</h4>'
+    + (ac.length ? '<ul>' + ac.map(c => '<li>' + esc(typeof c === 'string' ? c : JSON.stringify(c)) + '</li>').join('') : '<p class="bd-muted">Transition requirements are listed in the gate section.</p>')
+    + (evidence ? '<div class="bd-evidence-text">' + _linkifyUrls(_linkifyCardIds(esc(evidence))).replace(/\n/g, '<br>') + '</div>' : '<p class="bd-muted">No execution evidence recorded yet.</p>');
+  meta.appendChild(extra);
+  if (item.verification) {
+    const v = item.verification;
+    const record = document.createElement('section'); record.className = 'bd-card-section bd-verification-section';
+    const label = {needs_reverification:'Criteria changed — verification needs a fresh check', current:'Verified against recorded criteria', history_unavailable:'Verified — earlier criteria were not recorded', not_verified:'Not currently verified'}[v.state] || 'Verification';
+    record.innerHTML = '<h4>Verification</h4><p>' + esc(label) + '</p>'
+      + (v.method ? '<p class="bd-muted">' + esc(v.method === 'independent_harness' ? 'Independent harness' : 'Named gate acknowledgement') + ' · ' + esc(v.actor || '') + '</p>' : '')
+      + (v.criteria_version != null ? '<p>Current criteria v' + esc(String(v.criteria_version)) + ' · Last checked v' + esc(String(v.verified_criteria_version ?? '—')) + '</p>' : '')
+      + (v.gate_matches === false ? '<p>The current gate differs from the recorded gate. Earlier evidence is retained.</p>' : '')
+      + (Array.isArray(v.criteria) ? '<ul>' + v.criteria.map(c => '<li>' + esc(c.description) + '</li>').join('') + '</ul>' : '');
+    if (v.state === 'needs_reverification' && v.gate_matches === false) record.innerHTML += '<button class="btn" onclick="_bdRecheckGate()">Recheck current gate</button>';
+    meta.appendChild(record);
+  }
+
+  const sectionKinds = { 'Linked messages': 'related', 'Linked tasks': 'related', 'Subtasks': 'subtasks', 'Produced output': 'files', 'Retired artifacts': 'files', 'Worker actions': 'history' };
+  const titles = { 'Source message': 'Linked messages', 'Source messages': 'Linked messages', 'Task relationships': 'Linked tasks', 'Produced assets': 'Produced output', 'Column gate requirements': 'Gate criteria', 'Work summary': 'Next action & results' };
+  const counts = { subtasks: (item.children || []).length, related: (item.messages || []).length + (item.depends_on || []).length + (item.epic ? 1 : 0), files: 0 };
+  meta.querySelectorAll(':scope > section.bd-card-section').forEach(section => {
+    const heading = section.querySelector('h4');
+    if (!heading) return;
+    const original = heading.textContent;
+    const base = original.replace(/\s*\(\d+\)$/, '');
+    const label = titles[base] || base;
+    const kind = sectionKinds[label] || 'details';
+    if (label === 'Produced output') counts.files = Number((original.match(/\((\d+)\)$/) || [])[1] || 0);
+    const disclosure = document.createElement('details');
+    disclosure.className = section.className; disclosure.dataset.recordKind = kind;
+    const key = item.id + ':' + label;
+    disclosure.open = _bdSectionOpen.has(key) ? _bdSectionOpen.get(key) : !['Gate criteria', 'Next action & results', 'Worker actions', 'Retired artifacts'].includes(label);
+    const head = document.createElement('summary');
+    head.innerHTML = '<span class="bd-section-icon" aria-hidden="true">' + ({related:'↗',subtasks:'☷',files:'◇',history:'◷'}[kind] || '≡') + '</span><h4>' + esc(label + original.slice(base.length)) + '</h4>';
+    heading.remove(); disclosure.appendChild(head);
+    const body = document.createElement('div'); body.className = 'bd-section-body';
+    while (section.firstChild) body.appendChild(section.firstChild);
+    disclosure.appendChild(body); disclosure.addEventListener('toggle', () => _bdSectionOpen.set(key, disclosure.open));
+    section.replaceWith(disclosure);
+  });
+  for (const [tab, title] of Object.entries({subtasks:'Subtasks', files:'Produced output', related:'Linked messages & tasks'})) {
+    if (!meta.querySelector('[data-record-kind="' + tab + '"]')) {
+      const empty = document.createElement('section'); empty.className = 'bd-card-section'; empty.dataset.recordKind = tab;
+      empty.innerHTML = '<div class="bd-section-body"><h4>' + title + '</h4><p class="bd-muted">Nothing linked yet.</p></div>';
+      meta.appendChild(empty);
+    }
+  }
+  for (const [tab, count] of Object.entries(counts)) {
+    const badge = document.getElementById('bd-count-' + tab); if (badge) badge.textContent = String(count);
+  }
+  // Keep every relationship reachable from Related, while Subtasks narrows to
+  // the epic/child/dependency section rather than a separate relation store.
+  _bdFilterSections(_bdRecordTab);
+  _bdAudit('board-linked-record', { verdict: 'rendered', measured: true, n_considered: counts.subtasks + counts.related + counts.files,
+    card: item.id, children: counts.subtasks, related: counts.related, outputs: counts.files, evidence: !!evidence });
+}
+
+async function _bdRecheckGate() {
+  const id = boardDetailId;
+  const current = boardItems.find(item => item.id === id);
+  if (!current || !_bdHydrated) return;
+  const ack = await _gateConfirm(current, 'verified');
+  if (!ack || id !== boardDetailId) return;
+  const saved = await updateBoardItem(id, {status:'verified', reverify:true, gate_checked:Array.isArray(ack) ? ack : [], expect_rev:_bdLoadedIdentity.rev});
+  if (saved && id === boardDetailId) openBoardDetail(id);
+}

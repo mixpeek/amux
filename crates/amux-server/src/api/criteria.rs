@@ -32,12 +32,16 @@ pub fn load(
     task_id: &str,
 ) -> rusqlite::Result<Option<AcceptanceCriteria>> {
     conn.query_row(
-        "SELECT criteria FROM _amux_criteria WHERE task_id = ?1",
+        "SELECT criteria, version FROM _amux_criteria WHERE task_id = ?1",
         [task_id],
         |r| {
             let raw: String = r.get(0)?;
-            serde_json::from_str(&raw)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            let mut criteria: AcceptanceCriteria = serde_json::from_str(&raw)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            // The writer owns this version; older JSON may retain the caller's
+            // value even though the database revision has advanced.
+            criteria.version = r.get(1)?;
+            Ok(criteria)
         },
     )
     .optional()
@@ -137,11 +141,16 @@ async fn put_criteria(
     }
 
     let id2 = id.clone();
-    let criteria_json = serde_json::to_string(&body.criteria).unwrap_or_default();
-    let author_json = serde_json::to_string(&body.criteria.authored_by).unwrap_or_default();
+    let mut criteria = body.criteria;
+    let author_json = serde_json::to_string(&criteria.authored_by).unwrap_or_default();
     let result = state
         .store
         .write_async(move |conn| {
+            criteria.version = load(conn, &id2)?.map(|c| c.version + 1).unwrap_or(1);
+            let criteria_json = serde_json::to_string(&criteria)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            tracing::info!(target: "amux::verification", card = %id2, criteria_version = criteria.version,
+                "acceptance criteria amended; earlier verification does not cover this version");
             conn.execute(
                 "INSERT INTO _amux_criteria (task_id, criteria, authored_by, version, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
@@ -152,7 +161,7 @@ async fn put_criteria(
                     id2,
                     criteria_json,
                     author_json,
-                    1,
+                    criteria.version,
                     chrono::Utc::now().to_rfc3339()
                 ],
             )?;

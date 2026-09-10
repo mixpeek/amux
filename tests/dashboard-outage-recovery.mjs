@@ -37,7 +37,7 @@ function fixture(names = [], shared = {}) {
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
   const ctx = vm.createContext(sandbox);
-  for (const name of ['_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
+  for (const name of ['_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -313,4 +313,46 @@ test("unavailable storage coordination refuses a write instead of risking anothe
   assert.equal(await ctx._queueOp('/api/board/TASK-1', patch), false);
   assert.equal(stored.has('amux_offline_queue'), false);
   assert.match(ctx._writeError, /storage is unavailable/);
+});
+
+
+test('message receipt loss replays the same msg_id after reload; dedup receipt drains it', async () => {
+  const first = fixture();
+  const body = JSON.stringify({text:'one logical message', msg_id:'stable-message-id'});
+  await first.ctx._queueOp('/api/sessions/owned/send', {method:'POST', body});
+  let delivered;
+  first.ctx._origFetch = async (_, opts) => { delivered = opts.body; throw new Error('receipt lost after delivery'); };
+  await first.ctx.runSyncBanner();
+  assert.equal(delivered, body);
+  const second = fixture([], {stored:first.stored});
+  second.ctx._origFetch = async (_, opts) => {
+    assert.equal(opts.body, body);
+    return new Response(JSON.stringify({ok:true,deduped:true}));
+  };
+  await second.ctx.runSyncBanner();
+  assert.equal(JSON.parse(first.stored.get('amux_offline_queue')).length, 0);
+});
+
+test('ambiguous 200 blocks a message and preserves ordering behind it across retries', async () => {
+  const {ctx, stored} = fixture();
+  for (const text of ['first','second']) await ctx._queueOp('/api/sessions/owned/send', {method:'POST',body:JSON.stringify({text,msg_id:text})});
+  let calls = 0;
+  ctx._origFetch = async () => { calls++; return new Response(JSON.stringify({ok:true,submitted:false})); };
+  await ctx.runSyncBanner();
+  const saved = JSON.parse(stored.get('amux_offline_queue'));
+  assert.equal(calls, 1);
+  assert.equal(saved.length, 2);
+  assert.equal(saved[0].state, 'blocked');
+  await ctx.runSyncBanner();
+  assert.equal(calls, 1, 'later messages cannot overtake a blocked predecessor');
+});
+
+test('server deferred and steering receipts acknowledge storage without claiming terminal submission', async () => {
+  for (const [endpoint, receipt] of [['send',{ok:true,submitted:null,submission:'deferred'}], ['steer',{ok:true,id:'steer-123',deliverable:false}]]) {
+    const {ctx,stored} = fixture();
+    await ctx._queueOp('/api/sessions/owned/'+endpoint, {method:'POST',body:JSON.stringify({text:'queued server-side',msg_id:endpoint})});
+    ctx._origFetch = async () => new Response(JSON.stringify(receipt));
+    await ctx.runSyncBanner();
+    assert.equal(JSON.parse(stored.get('amux_offline_queue')).length, 0);
+  }
 });

@@ -4377,6 +4377,22 @@ pub async fn create_item(
         .cloned()
         .collect();
 
+    let _intake_guard = super::board_intake::lock(&session, &owner_type).await;
+    let mut intake = super::board_intake::plan(&state.store, &session, &owner_type, &title,
+        &body_str(&map, "desc").unwrap_or_default()).await;
+    // Reconciliation must not silently drop graph edges, explicit gates,
+    // callbacks or scheduling metadata from a structured create request.
+    if ["depends_on", "gate", "callback", "due", "due_time", "reviewer", "shepherd",
+        "ask_actor", "ask_type", "ask_question", "ask_unblocks", "tags"].iter()
+        .any(|key| map.get(*key).is_some_and(|v| !v.is_null() && v != "" && v != &json!([])))
+        || matches!(item_type.as_str(), "epic" | "watch" | "tripwire") {
+        intake.preserve_structured_request();
+    }
+    let intake_response = intake.clone();
+    // A repeated/refined request should not be refused merely because the
+    // existing queue is full; reconciliation adds no WIP slot.
+    let intake_matches = intake.decision.action != "create";
+
     // AF-317: THE WIP LIMIT HAS TO COVER CREATION, or it is decorative.
     //
     // `amux board add` is how a lane files its own work and it creates directly
@@ -4390,7 +4406,7 @@ pub async fn create_item(
     // queue-disposition job is exempt BY NAME: it is the one card whose whole
     // purpose is to arrive when the queue is too long, so refusing it for queue
     // depth would be the mechanism suppressing its own alarm.
-    if status_raw == "todo" && owner_type == "agent" && !session.is_empty() && creator != QUEUE_DISPOSITION_CREATOR {
+    if !intake_matches && status_raw == "todo" && owner_type == "agent" && !session.is_empty() && creator != QUEUE_DISPOSITION_CREATOR {
         let limit = bs::todo_wip_limit(Some(&session));
         if limit > 0 {
             let held_and_stalest = state.store.read().ok().map(|c| {
@@ -4462,7 +4478,8 @@ pub async fn create_item(
 
     enum Out {
         Cycle(Vec<String>),
-        Created(Box<IssueRow>),
+        WipLimit(String, i64, i64),
+        Created(Box<IssueRow>, bool),
     }
     let slot: Arc<Mutex<Option<Out>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -4473,6 +4490,22 @@ pub async fn create_item(
     let write = state
         .store
         .write_async(move |conn| {
+            if let Some(row) = super::board_intake::apply(conn, &intake, &new.title, &new.desc, now_secs())? {
+                let event = ev_snap(&row, MutationKind::Updated);
+                return finish(&slot_w, Out::Created(Box::new(row), true), WriteOutcome {applied:true,events:vec![event]});
+            }
+            // Recheck in the writer, including a semantic target that changed
+            // while the model ran. A failed merge must not bypass the WIP gate.
+            if new.status == "todo" && new.owner_type == "agent" && new.creator != QUEUE_DISPOSITION_CREATOR {
+                if let Some(session) = new.session.as_deref() {
+                    let limit = bs::todo_wip_limit(Some(session));
+                    let held = bs::todo_wip_count(conn, session, "");
+                    if limit > 0 && held >= limit {
+                        tracing::warn!(session, held, limit, "todo_wip_gate: refused create in writer");
+                        return finish(&slot_w, Out::WipLimit(session.to_string(), held, limit), no_write());
+                    }
+                }
+            }
             // Acyclicity is validated INSIDE the write so no interleaved
             // create can slip a cycle between check and insert. The new id
             // does not exist yet, so a placeholder self id is fine — only
@@ -4502,7 +4535,9 @@ pub async fn create_item(
                 }
             }
             let now = now_secs();
-            let row = bs::create_issue(conn, &new, now)?;
+            let mut row = bs::create_issue(conn, &new, now)?;
+            row.log = Some(bs::append_log(row.log.as_deref(), &hhmm(), &format!("{}; disposition=create", intake.log_line())));
+            bs::save_patched(conn, &mut row)?;
             let mut events = vec![ev_snap(&row, MutationKind::Created)];
             // AMUX-3391: fold the silent auto-capture card into this worker card
             // (see fold_capture_for_worker_card). The window is env-tunable.
@@ -4518,7 +4553,7 @@ pub async fn create_item(
             }
             finish(
                 &slot_w,
-                Out::Created(Box::new(row)),
+                Out::Created(Box::new(row), false),
                 WriteOutcome {
                     applied: true,
                     events,
@@ -4534,10 +4569,14 @@ pub async fn create_item(
     match outcome {
         None => internal("create produced no outcome"),
         Some(Out::Cycle(cycle)) => cycle_response(&cycle),
-        Some(Out::Created(row)) => {
+        Some(Out::WipLimit(session, held, limit)) => err(StatusCode::CONFLICT,
+            json!({"ok":false,"code":"todo_wip_limit_reached","error":"todo queue is at its limit for this lane",
+                "session":session,"holding":held,"limit":limit,"how_to_fix":"create in backlog or finish existing todo work"})),
+        Some(Out::Created(row, reused)) => {
             let mut v = detail_body(&row);
             v["rev"] = json!(row.rev);
             v["global_rev"] = json!(reply.rev.0);
+            v["intake"] = json!({"action":if reused {intake_response.decision.action.as_str()} else {"create"}, "comparison":intake_response});
             if !ignored.is_empty() {
                 v["ignored_fields"] = json!(ignored);
             }
@@ -4580,7 +4619,7 @@ pub async fn create_item(
                 owner_session = %row.session.as_deref().unwrap_or("(none)"),
                 "board card created"
             );
-            (StatusCode::CREATED, Json(v)).into_response()
+            (if reused {StatusCode::OK} else {StatusCode::CREATED}, Json(v)).into_response()
         }
     }
 }
@@ -4589,6 +4628,14 @@ pub async fn create_item(
 
 fn resolve_task_asset(reference: &str, work_dir: &str) -> String {
     let reference = reference.trim();
+    if reference.starts_with("file:") {
+        // File URLs are absolute references, never workspace-relative strings.
+        return reqwest::Url::parse(reference)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| reference.to_string());
+    }
     if let Some(rest) = reference.strip_prefix("~/") {
         return std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
@@ -4710,6 +4757,13 @@ mod task_asset_resolution_tests {
     }
 
     #[test]
+    fn file_urls_decode_without_joining_the_worker_directory() {
+        assert_eq!(resolve_task_asset("file:///tmp/a%20report.md", "/work"), "/tmp/a report.md");
+        assert_eq!(resolve_task_asset("file://localhost/tmp/report.md", "/work"), "/tmp/report.md");
+        assert_eq!(resolve_task_asset("file://remote-host/tmp/report.md", "/work"), "file://remote-host/tmp/report.md");
+    }
+
+    #[test]
     fn file_shaped_assets_resolve_without_doubling_repo_relative_prefixes() {
         let root = tempfile::tempdir().unwrap();
         let repo = root.path().join("mixpeek");
@@ -4806,11 +4860,11 @@ pub async fn get_item(
         let mut messages = Vec::new();
         let mut msg_stmt = conn.prepare(
             "SELECT id,text,type,session,ts,origin,card_id FROM cmd_history \
-             WHERE card_id=?1 ORDER BY ts DESC LIMIT 20",
+             WHERE card_id IN (?1,?2) OR (session=?3 AND instr(text,?2)>0) ORDER BY ts DESC,id DESC LIMIT 100",
         )?;
         messages.extend(
             msg_stmt
-                .query_map(rusqlite::params![message_root], |r| {
+                .query_map(rusqlite::params![message_root, row.id, row.session.as_deref().unwrap_or("")], |r| {
                     Ok(json!({
                         "id": r.get::<_, i64>(0)?,
                         "text": r.get::<_, String>(1)?,
@@ -4821,7 +4875,10 @@ pub async fn get_item(
                         "card_id": r.get::<_, Option<String>>(6)?,
                     }))
                 })?
-                .flatten(),
+                .flatten()
+                .filter(|message| message["card_id"].as_str().is_some_and(|id| id == message_root || id == row.id)
+                    || card_refs(message["text"].as_str().unwrap_or("")).contains(&row.id))
+                .take(20),
         );
         let mut artifacts = crate::db::artifact_store::list_for_task(&conn, &row.id)?
             .into_iter()
@@ -4903,11 +4960,13 @@ pub async fn get_item(
                 "layers": trail.layers,
             })
         }).collect::<Vec<_>>();
-        Ok(Some((row, children, messages, artifacts, asset_links, gate_requirements)))
+        let verified_gate = bs::effective_gate_trail(&conn, &row, TaskStatus::Verified, &groups);
+        let verification = crate::db::verification_store::coverage(&conn, &row, &verified_gate.criteria)?;
+        Ok(Some((row, children, messages, artifacts, asset_links, gate_requirements, verification)))
     })
     .await;
     match joined {
-        Ok(Ok(Some((row, children, messages, artifacts, asset_links, gate_requirements)))) => {
+        Ok(Ok(Some((row, children, messages, artifacts, asset_links, gate_requirements, verification)))) => {
             // Weak ETag for read-modify-write callers (AMUX-1711 parity).
             let mut headers = HeaderMap::new();
             if let Ok(v) = format!("W/\"{}-{}\"", row.id, row.rev).parse() {
@@ -4919,6 +4978,7 @@ pub async fn get_item(
             body["artifacts"] = json!(artifacts);
             body["asset_links"] = json!(asset_links);
             body["gate_requirements"] = json!(gate_requirements);
+            body["verification"] = verification;
             (StatusCode::OK, headers, Json(body)).into_response()
         }
         Ok(Ok(None)) => not_found(&id),
@@ -7436,7 +7496,7 @@ mod af413_discarded_tests {
     }
 }
 
-const PATCH_CONTROL: [&str; 11] = [
+const PATCH_CONTROL: [&str; 12] = [
     // The lane ASSERTS that this card was folded into another. It is not read
     // from prose: the caller names the target and the SERVER writes the
     // canonical `capture folded into <ID>` line that `folded_into()` parses.
@@ -7444,6 +7504,7 @@ const PATCH_CONTROL: [&str; 11] = [
     "expect_rev",
     "gate_ack",
     "gate_checked",
+    "reverify",
     "force",
     "reason",
     "authorized_by",
@@ -9228,7 +9289,9 @@ pub async fn patch_item(
                     );
                 };
                 let from = bs::parse_status(&next.status);
-                if from != Some(target) {
+                let rechecking_verified = from == Some(TaskStatus::Verified) && target == TaskStatus::Verified
+                    && map.get("reverify").and_then(Value::as_bool) == Some(true);
+                if from != Some(target) || rechecking_verified {
                     let Some(from) = from else {
                         return finish(
                             &slot_w,
@@ -10449,6 +10512,12 @@ pub async fn patch_item(
                             status_event = Some((from_raw, target_raw));
                             changed.push("status".into());
                         }
+                        Err(TransitionError::NoOp) if rechecking_verified && !force => {
+                            next.log = Some(bs::append_log(next.log.as_deref(), &hhmm(),
+                                &format!("{actor_name}: verified gate rechecked; {}", authz_line)));
+                            next.last_verified_at = Some(now_secs());
+                            changed.push("last_verified_at".into());
+                        }
                         Err(TransitionError::NoOp) => { /* nothing to do */ }
                         Err(TransitionError::GateBlocked { blocked }) => {
                             return finish(
@@ -10666,6 +10735,24 @@ pub async fn patch_item(
             }
             next.updated = now_secs();
             bs::save_patched(conn, &mut next)?;
+            if next.status == "verified" && (row.status != "verified" || map.get("reverify").and_then(Value::as_bool) == Some(true)) && !map.get("force").and_then(Value::as_bool).unwrap_or(false) {
+                let groups = next.session.as_deref().map(crate::api::session_verbs::lane_groups).unwrap_or_default();
+                let trail = bs::effective_gate_trail(conn, &next, TaskStatus::Verified, &groups);
+                // Persist exactly the gate that passed normal transition validation.
+                // This is an attributed acknowledgement, never a fabricated harness run.
+                crate::db::verification_store::insert(conn, &crate::db::verification_store::VerificationRow {
+                    id: format!("VER-{}", ulid::Ulid::new().to_string().to_lowercase()),
+                    task_id: next.id.clone(),
+                    verifier: json!({"type":"gate_acknowledgement","source":trail.source.token(),"scope":trail.source.scope()}).to_string(),
+                    criteria: json!(trail.criteria).to_string(),
+                    evidence: json!({"evidence":next.evidence,"reviewer":next.reviewer}).to_string(),
+                    verdict: "acknowledged".into(), reason: None, run_detail: None,
+                    actor: actor_name.clone(), created_at: now_secs(), criteria_version: 0,
+                    harness_version: None, duration_ms: 0,
+                })?;
+                tracing::info!(target: "amux::verification", card = %next.id, actor = %actor_name,
+                    criteria_count = trail.criteria.len(), "verified gate acknowledgement recorded");
+            }
             if let Some((from, to)) = &status_event {
                 if to == "doing" {
                     ensure_owner_doing_claim(

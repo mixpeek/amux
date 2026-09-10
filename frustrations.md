@@ -3679,3 +3679,36 @@ CARD: AMUX-4362
 SYMPTOM: Opening the passing populated torrent screenshot showed tiny adjacent pause and stop glyphs with correspondingly small targets at 375px.
 COST: A visual review found friction that successful click assertions missed.
 FIX: Give every torrent action a bordered 44px target and readable theme text. LC-TORRENT records measured dimensions and fails below 44px while retaining viewport-fit and effect checks.
+
+## Accepted message remains in the focused composer and invites another send
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: Production history recorded one confirmed send at 15:20:44 ET and another identical-content attempt marked stuck at 15:21:05 ET; the composer-delivery log retained the second draft. Draft clearing skipped focused inputs and could clear a detached peek input after a render. The user saw the worker replying while the text remained in the composer.
+COST: Two identical-content attempts 21 seconds apart and a user-reported ambiguous send state; logs alone could not prove whether both came from the same transport identity.
+FIX: Persist ordinary messages and uploaded-file references in the existing local outbox before clearing exactly the accepted live draft. Replay one stable message ID and require a confirmed, deferred or deduplicated receipt; retain ambiguous attempts for review. Composer acceptance and replay failures emit diagnostic events. Regression coverage includes focus, replacement nodes, delayed receipts, newer edits, storage failure and reload.
+
+## Create worker delayed focus sends directory text into the name
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The real Sonnet lifecycle's create request concatenated its directory onto the worker name and sent an empty dir. openCreate unconditionally focused the name after 100ms, stealing focus from the directory during entry.
+COST: One malformed stopped lab worker and a failed 30-second wait for the intended worker; the requested provider journey had not started.
+FIX: Delayed initial focus only runs when focus is outside the active create dialog. Log when an existing field keeps focus, and test directory typing across the delayed callback with a controlled browser clock.
+
+## Fresh worker can launch outside its configured directory
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: A private lab worker configured with the invoice scratch directory showed a different working directory in its Sonnet terminal after shell initialization.
+COST: Halted the lab before sending any implementation instructions and rebuilt the launcher to keep test writes in the requested workspace.
+FIX: The actual provider invocation now performs a quoted cd to the resolved workspace with &&, after shell/profile/environment setup. A provider_launch_workspace_pinned event records the selected directory; the real worker run checks that directory before doing work.

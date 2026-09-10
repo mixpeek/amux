@@ -57,11 +57,11 @@ test.describe('board card details', () => {
     await expect(details).toHaveText('Details');
     await expect(page.locator('#bd-tab-lineage')).toHaveCount(0);
     await expect(page.locator('#bd-lineage')).toHaveCount(0);
-    await expect(page.locator('#bd-meta')).toContainText('Produced assets (3)', { timeout: 15_000 });
+    await expect(page.locator('#bd-meta')).toContainText('Produced output (3)', { timeout: 15_000 });
     await expect(page.locator('#bd-meta')).toContainText('Retired artifacts (1)');
     await expect(page.locator('#bd-preview')).toContainText('Visible task context from authoritative hydration.');
 
-    const assets = page.locator('#bd-meta .bd-card-section', { hasText: 'Produced assets (3)' });
+    const assets = page.locator('#bd-meta .bd-card-section', { hasText: 'Produced output (3)' });
     const file = assets.locator('button.file-link', { hasText: '/tmp/amux-card-details/result.md' });
     await expect(file).toHaveCount(1);
     await expect(file).toHaveAttribute('type', 'button');
@@ -160,7 +160,7 @@ test.describe('board card details', () => {
     await expect(page.locator('#board-detail-overlay')).toHaveClass(/active/, { timeout: 30_000 });
     await expect(page.locator('#bd-status-banner')).toContainText('Final outcome: done', { timeout: 15_000 });
     await expect(page.locator('#bd-meta')).toContainText('Tests/deployment/live evidence:');
-    await expect(page.locator('#bd-meta')).toContainText('Produced assets');
+    await expect(page.locator('#bd-meta')).toContainText('Produced output');
     await expect(page.locator('#bd-meta')).toContainText(artifact);
 
     const refresh = page.locator('#bd-status-banner button', { hasText: `Refresh from ${worker}` });
@@ -227,8 +227,8 @@ test.describe('board card details', () => {
     await refresh.click();
 
     await expect(page.locator('#bd-status-banner')).toContainText('Final outcome: done', { timeout: 15_000 });
-    const doneButton = page.locator('#bd-status-row button', { hasText: 'Done' });
-    await expect(doneButton).toHaveAttribute('style', /background/);
+    const doneButton = page.locator('#bd-status-select');
+    await expect(doneButton).toHaveValue('done');
     expect(detailGets).toBeGreaterThanOrEqual(2);
     expect(statusRequests, 'a stale old client must not route a terminal Refresh to the worker').toBe(0);
 
@@ -321,7 +321,7 @@ test.describe('board card details', () => {
 
     await expect(page.locator('#bd-status-banner')).toContainText('Final outcome: done', { timeout: 15_000 });
     await expect(page.locator('#bd-status-banner')).not.toContainText('stale Codex provider output after terminal close');
-    await expect(page.locator('#bd-status-row button', { hasText: 'Done' })).toHaveAttribute('style', /background/);
+    await expect(page.locator('#bd-status-select')).toHaveValue('done');
     await expect(page.locator('#toast')).toHaveText('Refreshed final terminal summary from the board');
     expect(detailGets).toBeGreaterThanOrEqual(2);
     expect(statusRequests, 'terminal Refresh must not ask the provider').toBe(0);

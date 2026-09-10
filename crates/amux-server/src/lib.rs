@@ -566,6 +566,7 @@ async fn async_main() {
     // spawned further down (after the listener is up) and now needs the store to
     // tell a lane its browser was released (AF-497).
     let reaper_store = state.store.clone();
+    api::board_intake::initialize();
     let app = api::router(state);
 
     // SNI dual-cert: Tailscale LE cert for the tailnet hostname, self-signed

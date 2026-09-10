@@ -721,3 +721,45 @@ cards. Every seeded card must reach done/verified with a correct worker-written
 receipt and evidence. Every remaining run-owned capture must also be resolved by
 its worker. A completed handoff alone does not satisfy this boundary.
 `AMUX_LIFECYCLE_QUEUE_OBSERVE=1` checks an existing run without creating cards.
+
+### Linked work, revised verification, and reliable sending
+
+The suite also includes these connected acceptance cases:
+
+- **LC-LINKED-RECORD** opens an epic, children and dependencies, follows a source
+  message into Messages, previews a produced file and `file://` URL, opens a real
+  web URL and inspects the actual Git commit. It repeats on desktop, phone and Safari.
+- **LC-GATE-REVISION** verifies a task, changes its gate in the task editor, checks
+  that retained evidence is labeled as covering the older criteria, refuses an old
+  checklist and explicitly rechecks the new one. Typed criteria have server-owned
+  versions; independent verification must rerun the current version. A checklist
+  acknowledgement is displayed separately from an independently executed test.
+- **LC-COMPLEX-VERIFIED** creates two Claude Sonnet workers in one private group.
+  They decompose an invoice reconciliation project into two linked epics and at
+  least five dependent children, implement a CLI and responsive report, exchange
+  review messages, register artifacts and commits, and finish phase one at Done.
+  The observer then changes the Verified gate to add duplicate-ID and negative
+  amount rejection. The peers implement the amendment and independently execute
+  verification of each other's work. Every real deliverable and epic must reach
+  Verified with current criteria and no remaining open run-owned work. The
+  observer never supplies completion evidence or advances those cards.
+- **LC-SEMANTIC-INTAKE** uses the real configured helper model to append a
+  paraphrase, update refined requirements and create distinct deliverables.
+  It checks the resulting IDs and preserved context, not only the classifier's
+  explanation. Comparison is scoped to open work with the same ownership.
+  Explicit graph, gate, callback or scheduling metadata is preserved as its own
+  record; ambiguous or unavailable comparison preserves the incoming request.
+  The intake receipt records whether comparison ran and the candidate count.
+- **LC-LOCAL-OUTBOX** uploads a file and sends a multiline draft while the server
+  is delayed. Local persistence must clear only the accepted draft immediately,
+  preserve attachment references and one message ID through reload/retry, and
+  keep newer edits. Refused or ambiguous delivery stays in the outbox for review.
+  Storage failure must retain the draft and cause zero network submissions.
+
+Focused live commands still require the dedicated lab variables above. Set
+`AMUX_HELPER_MODEL=sonnet` on that lab server to exercise semantic comparison
+with Sonnet too. Run the browser cases with the consolidated configuration, and
+run both live cases with `e2e/lifecycle/live.config.ts`. They are automatically
+included by the consolidated runner's existing discovery. Real worker tests
+may take substantially longer than fixture tests; their timeout is a failure,
+not permission to manufacture a terminal state.

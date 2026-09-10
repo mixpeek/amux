@@ -785,6 +785,19 @@ pub struct CliModel;
 
 impl ModelClient for CliModel {
     fn complete(&self, model: &str, prompt: &str) -> Result<String, String> {
+        complete_cli(model, prompt, false)
+    }
+}
+
+/// Classification may return data only, with no tools, MCP servers or hooks.
+pub struct ReadOnlyCliModel;
+impl ModelClient for ReadOnlyCliModel {
+    fn complete(&self, model: &str, prompt: &str) -> Result<String, String> {
+        complete_cli(model, prompt, true)
+    }
+}
+
+fn complete_cli(model: &str, prompt: &str, read_only: bool) -> Result<String, String> {
         let cli = std::env::var("AMUX_HELPER_CLI").unwrap_or_else(|_| "claude".into());
         let mut cmd = std::process::Command::new(&cli);
         // Pipe the prompt via stdin instead of passing it as a CLI argument.
@@ -792,6 +805,12 @@ impl ModelClient for CliModel {
         // argv clean in `ps` output. `claude --print` with no prompt arg reads
         // stdin, which is how this works.
         cmd.arg("--print");
+        if read_only {
+            cmd.args(["--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+                "--disable-slash-commands", "--no-session-persistence", "--settings", "{\"disableAllHooks\":true}"]);
+            cmd.env_remove("CLAUDECODE").env_remove("CLAUDE_CODE_ENTRYPOINT");
+            cmd.current_dir(std::env::temp_dir());
+        }
         if !model.trim().is_empty() {
             cmd.arg("--model").arg(model.trim());
         }
@@ -836,7 +855,7 @@ impl ModelClient for CliModel {
         } else {
             err.chars().take(400).collect()
         })
-    }
+
 }
 
 /// Direct Anthropic API client: a single blocking HTTP POST per call, no CLI

@@ -4446,6 +4446,7 @@ fn associate_capture_card(
     session_name: &str,
     body: &str,
     now_ms: i64,
+    intake: &super::board_intake::Plan,
 ) -> rusqlite::Result<Option<CaptureAssociation>> {
     let mut live_owned = Vec::new();
     for id in prompt_card_refs(body) {
@@ -4470,7 +4471,13 @@ fn associate_capture_card(
             "ledger: substantive prompt named multiple live owned cards; capturing an explicit reconciliation card"
         );
     }
-    if let Some(row) = mint_capture_card(conn, session_name, body, now_ms)? {
+    let title = amux_core::board::title_from_prompt(body).unwrap_or_default();
+    if let Some(row) = super::board_intake::apply(conn, intake, &title, body, now_ms / 1000)? {
+        return Ok(Some(CaptureAssociation {row, created:false}));
+    }
+    if let Some(mut row) = mint_capture_card(conn, session_name, body, now_ms)? {
+        row.log = Some(crate::db::board_store::append_log(row.log.as_deref(), &chrono::Local::now().format("%H:%M").to_string(), &format!("{}; disposition=create", intake.log_line())));
+        crate::db::board_store::save_patched(conn, &mut row)?;
         return Ok(Some(CaptureAssociation { row, created: true }));
     }
 
@@ -4761,6 +4768,9 @@ pub(crate) async fn cmd_hist_record_full(
             let sess_log = cap_session.clone();
             let peer_requester = (cap_ctype == "session" && !cap_origin.trim().is_empty())
                 .then(|| cap_origin.clone());
+            let _intake_guard = super::board_intake::lock(&cap_session, "agent").await;
+            let intake = super::board_intake::plan(&state.store, &cap_session, "agent",
+                &amux_core::board::title_from_prompt(&cap_text_for_capture).unwrap_or_default(), &cap_text_for_capture).await;
             let res = state
                 .store
                 .write_async(move |conn| match associate_capture_card(
@@ -4768,6 +4778,7 @@ pub(crate) async fn cmd_hist_record_full(
                     &cap_session,
                     &cap_text_for_capture,
                     now_ms,
+                    &intake,
                 )? {
                     Some(mut association) => {
                         if let Some(requester) = peer_requester.as_deref() {
@@ -4792,8 +4803,17 @@ pub(crate) async fn cmd_hist_record_full(
                                 payload: None,
                             }
                         };
+                        let mut events = vec![ev];
+                        if !association.created {
+                            events.push(crate::db::PendingEvent {
+                                entity_type: amux_core::revision::EntityType::Task,
+                                entity_id: association.row.id.clone(),
+                                mutation: amux_core::revision::MutationKind::Updated,
+                                payload: Some(association.row.snapshot()),
+                            });
+                        }
                         *associated_w.lock().unwrap() = Some(association);
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![ev] })
+                        Ok(crate::db::WriteOutcome { applied: true, events })
                     }
                     None => Ok(crate::db::WriteOutcome { applied: false, events: vec![] }),
                 })
@@ -8651,7 +8671,12 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
         type_line(name, "unset ANTHROPIC_API_KEY").await;
         poll_shell_prompt(name, 3000).await;
     }
-    // Launch the provider command.
+    // Startup profiles and scoped environment files may change directory.
+    // Pin the actual provider invocation to the resolved workspace, even when
+    // an earlier shell setup line was delayed by interactive initialization.
+    let cmd = format!("cd {} && {cmd}", sh_quote(&work_dir));
+    tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
+        "launching provider in resolved worker workspace");
     let _ = send_literal(name, &cmd).await;
     sleep_ms(150).await;
     send_key(name, "Enter").await;
@@ -12264,6 +12289,9 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                 std::sync::Arc::new(std::sync::Mutex::new(None));
             let associated_w = associated.clone();
             let peer_requester = sender.clone();
+            let _intake_guard = super::board_intake::lock(&sess3, "agent").await;
+            let intake = super::board_intake::plan(&state.store, &sess3, "agent",
+                &amux_core::board::title_from_prompt(&text3).unwrap_or_default(), &text3).await;
             let res = state
                 .store
                 .write_async(move |conn| {
@@ -12285,7 +12313,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                     if already > 0 {
                         return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                     }
-                    match associate_capture_card(conn, &sess3, &text3, now_ms)? {
+                    match associate_capture_card(conn, &sess3, &text3, now_ms, &intake)? {
                         Some(mut association) => {
                             if !peer_requester.trim().is_empty() {
                                 arm_peer_callback(conn, &mut association.row, &peer_requester)?;
@@ -12298,16 +12326,13 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                                   AND card_id IS NULL ORDER BY id DESC LIMIT 1)",
                                 rusqlite::params![association.row.id, sess3, text3],
                             )?;
-                            let events = if association.created {
-                                vec![crate::db::PendingEvent {
-                                    entity_type: amux_core::revision::EntityType::Task,
-                                    entity_id: association.row.id.clone(),
-                                    mutation: amux_core::revision::MutationKind::Created,
-                                    payload: Some(association.row.snapshot()),
-                                }]
-                            } else {
-                                vec![]
-                            };
+                            let events = vec![crate::db::PendingEvent {
+                                entity_type: amux_core::revision::EntityType::Task,
+                                entity_id: association.row.id.clone(),
+                                mutation: if association.created { amux_core::revision::MutationKind::Created }
+                                    else { amux_core::revision::MutationKind::Updated },
+                                payload: Some(association.row.snapshot()),
+                            }];
                             *associated_w.lock().unwrap() = Some(association);
                             Ok(crate::db::WriteOutcome { applied: true, events })
                         }
