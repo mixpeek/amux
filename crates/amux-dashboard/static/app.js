@@ -9705,7 +9705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.874';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.875';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12606,10 +12606,10 @@ function _renderPeekFileChips() {
     let statusHtml = '';
     if (f.error) {
       statusHtml = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
-        `<span class="chip-retry" onclick="event.stopPropagation();retryPeekFile(${i})" title="Retry upload">↻</span>`;
+        `<button type="button" class="chip-retry" onclick="event.stopPropagation();retryPeekFile(${i})" title="Retry upload">Retry</button>`;
     } else if (isUploading) {
       const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
-      statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`;
+      statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`;
     } else {
       statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span>`;
     }
@@ -12645,14 +12645,14 @@ function _cancelUpload(f) {
 
 function retryPeekFile(idx) {
   const f = peekFiles[idx];
-  if (!f || f.inflight || f.path) return;
-  _runUpload(f, _peekSink());
+  if (!f || f.inflight || f.queued || f.path) return;
+  _queueAttachment(f, _peekSink());
 }
 
 function retryCardFile(name, idx) {
   const f = (_cardFiles[name] || [])[idx];
-  if (!f || f.inflight || f.path) return;
-  _runUpload(f, _cardSink(name));
+  if (!f || f.inflight || f.queued || f.path) return;
+  _queueAttachment(f, _cardSink(name));
 }
 
 /// Clear the composer: text, the saved draft, and any staged attachments.
@@ -12719,7 +12719,7 @@ function _peekFilesRestore(session) {
   // the reporting user was staring at — it rendered "0%" forever, which reads
   // as "still working" and is why they waited instead of removing it.
   peekFiles.forEach(f => {
-    if (!f.path && !f.inflight && !f.error) f.error = 'upload did not finish — retry or remove';
+    if (!f.path && !f.inflight && !f.queued && !f.error) f.error = 'upload did not finish — retry or remove';
   });
   renderPeekFiles();
 }
@@ -12759,9 +12759,9 @@ function _renderCardFileChips(name) {
     let status;
     if (f.path) status = `<span style="color:var(--green);font-size:0.75rem;">✓</span>`;
     else if (f.error) status = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
-      `<span class="chip-retry" onclick="event.stopPropagation();retryCardFile('${name}',${i})" title="Retry upload">↻</span>`;
+      `<button type="button" class="chip-retry" onclick="event.stopPropagation();retryCardFile('${name}',${i})" title="Retry upload">Retry</button>`;
     else { const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
-           status = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`; }
+           status = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`; }
     // The × is on EVERY chip in EVERY state — an escape hatch that only exists
     // once an upload finishes is not one (the peek's own AMUX-85 lesson).
     const rm = `<span class="chip-remove" onclick="event.stopPropagation();removeCardFile('${name}',${i})" title="Remove">×</span>`;
@@ -12823,16 +12823,16 @@ function _blockedByAttachment(files) {
   const arr = files || [];
   const pending = arr.filter(f => !f.path);
   if (!pending.length) return false;
-  const inflight = pending.filter(f => f.inflight);
-  const stuck = pending.filter(f => !f.inflight);
+  const inflight = pending.filter(f => f.inflight || f.queued);
+  const stuck = pending.filter(f => !f.inflight && !f.queued);
   const say = (typeof showToast === 'function') ? showToast : function () {};
   if (stuck.length) {
     // Name the FIRST stuck file — a count alone does not tell you which chip to
     // press, and past 12 files the chips are collapsed behind a summary row.
     const n = stuck[0].name;
     say(stuck.length === 1
-      ? `"${n}" did not upload — Retry (↻) or remove (×) it to send`
-      : `${stuck.length} attachments did not upload, starting with "${n}" — Retry (↻) or remove (×) them to send`);
+      ? `"${n}" did not upload — Retry or remove (×) it to send`
+      : `${stuck.length} attachments did not upload, starting with "${n}" — Retry or remove (×) them to send`);
     return true;
   }
   const n = inflight[0].name;
@@ -12843,10 +12843,11 @@ function _blockedByAttachment(files) {
 }
 
 function _peekSink() {
+  const files = peekFiles; // bind to the originating worker before any queue wait
   return {
-    push: (p) => peekFiles.push(p),
-    has: (p) => peekFiles.indexOf(p) >= 0,
-    drop: (p) => { const i = peekFiles.indexOf(p); if (i >= 0) peekFiles.splice(i, 1); },
+    push: (p) => files.push(p),
+    has: (p) => files.indexOf(p) >= 0,
+    drop: (p) => { const i = files.indexOf(p); if (i >= 0) files.splice(i, 1); },
     render: _scheduleRenderPeekFiles,
   };
 }
@@ -12859,14 +12860,23 @@ function _cardSink(name) {
   };
 }
 function _enqueueUpload(file, sink) {
-  _uploadQueue.push({ file, sink: sink || _peekSink() });
+  if (!file) return;
+  sink = sink || _peekSink();
+  _queueAttachment(_createAttachment(file, sink), sink);
+}
+function _queueAttachment(f, sink) {
+  f.error = null; f.queued = true; f.status = 'Queued';
+  _uploadQueue.push({ f, sink });
+  sink.render();
   _drainUploadQueue();
 }
 function _drainUploadQueue() {
   while (_uploadQueue.length && _uploadActive < _UPLOAD_CONCURRENCY) {
+    const { f, sink } = _uploadQueue.shift();
+    f.queued = false;
+    if (f.cancelled) continue;
     _uploadActive++;
-    const { file, sink } = _uploadQueue.shift();
-    uploadAndAttach(file, sink).finally(() => { _uploadActive--; _drainUploadQueue(); });
+    _runUpload(f, sink).finally(() => { _uploadActive--; _drainUploadQueue(); });
   }
 }
 
@@ -12882,7 +12892,7 @@ function _scheduleRenderPeekFiles() {
   }
 }
 
-async function uploadAndAttach(file, sink) {
+function _createAttachment(file, sink) {
   sink = sink || _peekSink();
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
@@ -12899,10 +12909,14 @@ async function uploadAndAttach(file, sink) {
   // and `cancelled`/`inflight` are EXPLICIT rather than inferred (AF-235).
   const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
                         chunk: 0, totalChunks, file, error: null, inflight: false,
-                        cancelled: false, aborter: null };
+                        cancelled: false, aborter: null, queued: false, status: 'Queued' };
   sink.push(placeholder);
   sink.render();
-  await _runUpload(placeholder, sink);
+  return placeholder;
+}
+async function uploadAndAttach(file, sink) {
+  sink = sink || _peekSink();
+  await _runUpload(_createAttachment(file, sink), sink);
 }
 
 // Drive one attachment to completion. Safe to call again on a failed chip.
@@ -12923,71 +12937,103 @@ async function uploadAndAttach(file, sink) {
 // the chip still lands on its path. That was already the right shape against one
 // array; since AMUX-3372 added card composers there are now several sinks, and it
 // is the only shape that works.
+const _UPLOAD_ATTEMPTS = 3;
+function _uploadDiagnostic(f, action, error) {
+  fetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+    signal:AbortSignal.timeout(5000),
+    body:JSON.stringify({kind:'attachment-upload', action, phase:f.phase, attempt:f.attempt,
+      bytes:f.file?.size, completedChunks:f.chunk, totalChunks:f.totalChunks,
+      error:error?.message, httpStatus:error?.status, measured:true, ver:APP_VER})}).catch(()=>{});
+}
+// Deadline includes reading the response body. A header-only response used to
+// leave response.json() pending forever, just like an unanswered fetch.
+async function _uploadRequest(f, phase, url, options) {
+  f.phase = phase;
+  const controller = new AbortController();
+  f.aborter = controller;
+  // Live upload/start reached 30.8s under host contention; allow that measured
+  // slow path before retrying. Chunk requests include up to 5MB of transfer.
+  const timeoutMs = phase === 'chunk' ? 60000 : 45000;
+  let timer, onAbort;
+  const cancelled = new Promise((_, reject) => {
+    onAbort = () => reject(Object.assign(new Error('Upload cancelled'), {name:'AbortError'}));
+    controller.signal.addEventListener('abort', onAbort, {once:true});
+  });
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(Object.assign(new Error('Upload timed out during ' + phase), {retryable:true}));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([deadline, cancelled, (async () => {
+      const response = await fetch(url, {...options, headers:_authHeaders(options.headers || {}), signal:controller.signal});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) {
+        const status = response.status;
+        throw Object.assign(new Error(data.error || ('Upload request failed (HTTP ' + status + ')')),
+          {status, retryable:[408,425,429,500,502,503,504].includes(status) || (status === 404 && phase !== 'start')});
+      }
+      return data;
+    })()]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', onAbort);
+    if (f.aborter === controller) f.aborter = null;
+  }
+}
 async function _runUpload(f, sink) {
+  if (f.inflight || f.cancelled) return;
   const file = f.file;
   if (!file) { f.error = 'file no longer held — re-attach it'; f.inflight = false; sink.render(); return; }
-  f.error = null; f.cancelled = false; f.inflight = true; f.chunk = 0;
-  f.aborter = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  const _sig = f.aborter ? f.aborter.signal : undefined;
-  const totalChunks = f.totalChunks;
-  sink.render();
-
+  f.error = null; f.inflight = true; f.queued = false;
   try {
-    const startR = await fetch(API + '/api/upload/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks }),
-      signal: _sig
-    });
-    const startD = await startR.json();
-    if (!startR.ok || startD.error) throw new Error(startD.error || 'start failed');
-    const uploadId = startD.id;
-
-    for (let i = 0; i < totalChunks; i++) {
+    for (let attempt = 1; attempt <= _UPLOAD_ATTEMPTS; attempt++) {
       if (f.cancelled) return;
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const blob = file.slice(start, end);
-      const r = await fetch(API + '/api/upload/' + uploadId + '/chunk/' + i, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: blob,
-        signal: _sig
-      });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
-        throw new Error(d.error || 'chunk ' + i + ' failed');
-      }
-      f.chunk = i + 1;
+      f.attempt = attempt; f.chunk = 0;
+      f.status = attempt === 1 ? 'Starting…' : 'Retrying ' + attempt + '/' + _UPLOAD_ATTEMPTS + '…';
       sink.render();
+      try {
+        const start = await _uploadRequest(f, 'start', API + '/api/upload/start', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:file.name, size:file.size, chunks:f.totalChunks})});
+        if (typeof start.id !== 'string' || !start.id) throw new Error('Server did not return an upload ID');
+        const uploadUrl = API + '/api/upload/' + encodeURIComponent(start.id);
+        for (let i = 0; i < f.totalChunks; i++) {
+          if (f.cancelled) return;
+          f.status = 'Uploading ' + Math.round(i / f.totalChunks * 100) + '%'; sink.render();
+          await _uploadRequest(f, 'chunk', uploadUrl + '/chunk/' + i, {
+            method:'PUT', headers:{'Content-Type':'application/octet-stream'},
+            body:file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size))});
+          f.chunk = i + 1;
+        }
+        if (f.cancelled) return;
+        f.status = 'Finishing…'; sink.render();
+        const done = await _uploadRequest(f, 'finish', uploadUrl + '/finish', {method:'POST'});
+        if (typeof done.path !== 'string' || !done.path || typeof done.url !== 'string' || !done.url)
+          throw new Error('Server did not confirm the uploaded file');
+        if (f.cancelled) return;
+        f.path = done.path; f.url = done.url; f.error = null; f.status = '';
+        _uploadDiagnostic(f, 'complete');
+        return;
+      } catch (error) {
+        if (f.cancelled) return;
+        // Each retry gets a fresh upload ID: the server's in-flight map can
+        // disappear during deploys. Retain the File, never attach a partial result.
+        const retryable = error.retryable === true || error instanceof TypeError || error.name === 'AbortError';
+        _uploadDiagnostic(f, retryable && attempt < _UPLOAD_ATTEMPTS ? 'retry' : 'failed', error);
+        if (!retryable || attempt === _UPLOAD_ATTEMPTS) throw error;
+        f.status = 'Retrying ' + (attempt + 1) + '/' + _UPLOAD_ATTEMPTS + '…'; sink.render();
+        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+      }
     }
-
-    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST', signal: _sig });
-    const finD = await finR.json();
-    if (!finR.ok || finD.error) throw new Error(finD.error || 'finalize failed');
-    if (f.cancelled) return;
-    f.path = finD.path;
-    f.url = finD.url;
-    f.error = null;
-  } catch(e) {
-    // A DELIBERATE CANCEL IS NOT A FAILURE — it has already removed the chip.
-    if (f.cancelled || (e && e.name === 'AbortError')) return;
-    console.error('Upload error:', e);
-    // KEEP THE CHIP. This used to `sink.drop(placeholder)` behind a single
-    // toast, which silently lost the file: the only record that you had
-    // attached anything was a message that disappears. The chip now presents
-    // as something to act on, and `file` above is what makes Retry real.
-    //
-    // Note the card composer has rendered an `f.error` state since AMUX-3372
-    // and NOTHING HAS EVER SET IT — the sole failure path dropped the chip, so
-    // that branch and its `.failed` style were unreachable. This is the write
-    // that makes them live.
-    f.error = (e && e.message) ? e.message : 'upload failed';
-    showToast('Upload failed: ' + f.error + ' — use Retry on the chip');
+  } catch (error) {
+    if (!f.cancelled) {
+      f.error = error.message || 'Upload failed'; f.status = '';
+      showToast('Upload failed: ' + f.error + ' — use Retry on the chip');
+    }
   } finally {
-    f.inflight = false;
-    f.aborter = null;
-    sink.render();
+    f.inflight = false; f.aborter = null; sink.render();
   }
 }
 
@@ -36137,7 +36183,7 @@ function _torrentRender() {
         <div style="height:100%;width:${pct}%;background:${isPaused ? 'var(--yellow)' : 'var(--accent)'};border-radius:2px;transition:width 0.3s;"></div>
       </div>
       <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:0.75rem;color:var(--dim);">
-        <span>${size}</span><span>${pct}%</span>
+        <span>${size}</span><span>${esc(f.status || (pct + '%'))}</span>
       </div>
       ${t.files && t.files.length ? `<div style="margin-top:6px;font-size:0.78rem;">
         ${t.files.map(f => {
