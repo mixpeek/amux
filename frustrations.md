@@ -3577,3 +3577,26 @@ CARD: AMUX-4362
 SYMPTOM: The published lifecycle audit failed GitHub checks because test-send-retry-identity.py, already on main, was not invoked by any workflow or hook.
 COST: Stable retry identity and refusal-without-terminal-injection had a regression file but no continuous coverage, and the required harness-wiring ratchet blocked checks.
 FIX: Invoke the real Python harness in checks.yml next to the existing send-retry tests. Its outage/recovery/refusal cases and the harness-wiring ratchet pass locally. The existing test-harness-wired.sh diagnostic names any future unwired harness in CI and locally; no product runtime path is involved.
+
+## Image attachments stay at zero percent
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4374
+SYMPTOM: Two image.png chips stayed at 0%; upload fetch and response-body reads had no deadline. Live start requests took 24.6s and 30.8s despite ultimately returning200. A hung request could hold one of four slots forever. Queued uploads also captured the global peek array, so switching workers before their start could misroute attachments.
+COST: Owner could not reliably attach screenshots or send the blocked draft.
+FIX: Bound each upload phase, retry transient failures up to three attempts with fresh upload IDs, and retain failed chips with an explicit Retry button. Show queued/starting/uploading/finishing/retrying states. Create placeholders immediately and capture the originating attachment array; retries share the concurrency limit. Record phase, attempt, bytes, HTTP status and outcome in attachment-upload diagnostics. Desktop/phone regression tests cover stalled fetches and bodies, retries, server restarts, cancellation and worker switching.
+
+
+## The outage test still treated a refused write as a lost connection
+AREA: tests
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: GitHub's e2e job failed the shipped-function Node test because it still expected a failed outbox write to make the connection badge read Sync error. The current product deliberately reports connection/read health separately and shows pending operation failures in the outbox.
+COST: The stale assertion stopped the browser CI job before its browser cases could run.
+FIX: Align the assertion with the documented connection behavior, retain the checks for pending counts and read/auth errors, and explicitly assert the failed operation still displays its error. The existing named Node assertion is the local/CI diagnostic; no runtime behavior is changed.

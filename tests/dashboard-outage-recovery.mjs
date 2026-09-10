@@ -168,7 +168,7 @@ test('editor keeps its draft on failed save and reports Saved only after acknowl
   assert.equal(ctx._bdLoadedIdentity.rev, 2);
 });
 
-test('Live requires successful reads and no failed or pending writes', () => {
+test('connection status follows reads while pending write errors remain visible on their operations', () => {
   const {ctx, element} = fixture(['updateConnectionStatus']);
   const connection = element('connection');
   ctx.document.querySelectorAll = () => [connection];
@@ -176,10 +176,12 @@ test('Live requires successful reads and no failed or pending writes', () => {
     _liveSSE:true, _recordConnState() {}, _sessionReadNotice:() => ''});
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Live');
   ctx._writeError = '500: pool timeout';
-  ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Sync error');
-  ctx._writeError = ''; ctx.offlineQueue = [{url:'/api/board/TASK-1',timestamp:Date.now()}];
+  ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Live');
+  assert.equal(ctx._writeError, '500: pool timeout', 'a live connection does not erase the failed write');
+  ctx.offlineQueue = [{url:'/api/board/TASK-1',timestamp:Date.now(),error:ctx._writeError}];
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, '1 pending');
-  ctx.offlineQueue = []; ctx._boardReadError = '500';
+  assert.match(element('offline-ops').innerHTML, /500: pool timeout/, 'the failed operation retains its actionable error');
+  ctx._writeError = ''; ctx.offlineQueue = []; ctx._boardReadError = '500';
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Sync error');
   ctx._boardReadError = ''; ctx._syncReadError = 'network_error';
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Sync error');
