@@ -603,6 +603,12 @@ PYIDENTITY
     printf '%s\n' "$PROV_JSON" > "${INSTALL}.identity.json.new.$$"
     mv -f "${INSTALL}.identity.json.new.$$" "${INSTALL}.identity.json"
 
+    # Strip com.apple.provenance so macOS Gatekeeper doesn't show a
+    # "Verifying..." progress dialog on every launch. The xattr survives
+    # codesign and mv, and on macOS 26+ triggers verification even for
+    # properly-signed local builds.
+    xattr -d com.apple.provenance "$INSTALL_TMP" 2>/dev/null || true
+
     if cmp -s "$INSTALL_TMP" "$INSTALL"; then
       echo "== ACTIVATION IDENTICAL BINARY sha=$built_sha action=skip_install — keeping executable inode and mtime; no self-adoption"
       rm -f "$INSTALL_TMP"

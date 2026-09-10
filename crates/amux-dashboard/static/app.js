@@ -1966,8 +1966,10 @@ function describeOp(item) {
 // Connection status
 function updateConnectionStatus() {
   // Log the state transition (for the click-to-view disconnection history).
+  // _writeError is a failed offline-queue op, not a connectivity issue.
+  // The offline-banner already surfaces it; don't also flip the conn badge red.
   const readState = _sessionLoadError ? (_sessionLoadError.status === 401 ? 'auth' : 'error')
-    : (_writeError || _boardReadError || _syncReadError ? 'error' : null);
+    : (_boardReadError || _syncReadError ? 'error' : null);
   _recordConnState(readState || (!online ? 'offline' : (_liveSSE ? 'live' : 'polling')));
   // Update all connection status indicators (main + peek)
   document.querySelectorAll('#conn-status').forEach(el => {
@@ -2321,8 +2323,10 @@ async function _runSyncBanner() {
   // server-side history so the Messages tab flips ⏳pending → delivered.
   try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
   if (doneCount) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
-  // Auto-dismiss after 4s if all succeeded
-  if (!failCount) setTimeout(() => banner.classList.remove('active'), 4000);
+  // Auto-dismiss: immediately if failures (the offline-banner already shows
+  // the pending ops, so two banners for the same thing is redundant), or after
+  // 2s on full success so the user sees the completion flash.
+  setTimeout(() => banner.classList.remove('active'), failCount ? 0 : 2000);
 }
 
 async function _syncOneDraft(draft) {
@@ -9653,7 +9657,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.863';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.866';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11039,16 +11043,13 @@ function _peekHtml(raw) {
 // reading amux's own label rather than guessing at prose.
 const _NON_HUMAN_PROMPT_MARKS = [
   ['[amux-origin:', 'session'],     // a peer worker, server-verified origin
+  ['[UNVERIFIED INJECTION:', 'unstamped'], // raw-tmux fallback when server was unreachable
+  ['[Request interrupted by user]', 'amux'], // Claude Code system chrome
   ['[amux auto-pickup]', 'amux'],
   ['[amux staged-guard]', 'amux'],
   ['[amux]', 'amux'],               // idle nudges, advance nudges, digests
   ['[amux ', 'amux'],               // any other bracketed amux subsystem
   ['[Scheduled]', 'schedule'],
-  // amux's AUTO context-low compact (Ethan 2026-08-13: a /compact reminder was
-  // polluting the human navigator). The reminder text ("Context is at N%
-  // remaining … Compacting now keeps you working …") is amux-injected, so the
-  // prefix `/compact Context is at` is the tell — a human's bare `/compact`
-  // still reads as human.
   ['/compact Context is at', 'amux'],
 ];
 
@@ -11539,8 +11540,11 @@ async function refreshPeek(liveOnly, bypassTrim) {
     // transcript history) follows and fills in scrollback. Only the full response
     // carries the ETag the poll conditions on.
     const _et = liveOnly ? _peekLiveEtag : _peekEtag;
+    const _peekAc = new AbortController();
+    const _peekTimeout = setTimeout(() => _peekAc.abort(), 15000);
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=300' + (liveOnly ? '&live=1' : '') + (bypassTrim ? '&notrim=1' : ''),
-      _et ? { headers: { 'If-None-Match': _et } } : undefined);
+      { ...(_et ? { headers: { 'If-None-Match': _et } } : {}), signal: _peekAc.signal });
+    clearTimeout(_peekTimeout);
     if (!_peekIdentityCurrent(identity)) return;
     hidePeekLoading();   // a response arrived (200 painted below, or 304 = already latest) → drop the "Loading latest…" cue
     if (!liveOnly) _peekLastFullMs = performance.now();   // history is fresh (200 or 304)
@@ -35198,14 +35202,147 @@ const _KIND_COLORS = {
 function _metricsSetMode(mode) {
   _metricsMode = mode;
   document.getElementById('metricsmode-system')?.classList.toggle('active', mode === 'system');
+  document.getElementById('metricsmode-host')?.classList.toggle('active', mode === 'host');
   document.getElementById('metricsmode-disk')?.classList.toggle('active', mode === 'disk');
   const mc = document.getElementById('metrics-content');
   const rc = document.getElementById('reclaim-content');
+  const hc = document.getElementById('host-content');
   if (mc) mc.style.display = mode === 'system' ? '' : 'none';
   if (rc) rc.style.display = mode === 'disk' ? '' : 'none';
+  if (hc) hc.style.display = mode === 'host' ? '' : 'none';
+  // The worker sidebar only pairs with the System view; Host and Disk are host-wide.
   const sb = document.getElementById('metrics-sidebar');
-  if (sb) sb.style.display = mode === 'disk' ? 'none' : '';
+  if (sb) sb.style.display = (mode === 'system') ? '' : 'none';
   if (mode === 'disk') _reclaimLoad(); else _reclaimStopPolling();
+  if (mode === 'host') _hostLoad();
+}
+
+// ── Host analysis (Metrics ▸ Host) ──────────────────────────────────────────
+// Renders GET /api/metrics/host, which runs the embedded, re-runnable
+// scripts/host-analysis.sh — one cross-platform source of truth for the host the
+// server runs on (this Mac in dev, the Linux LXC in cloud).
+let _hostData = null;
+
+function _hostLoad() {
+  const el = document.getElementById('host-content');
+  if (el && !_hostData) el.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Analyzing host&hellip;</div>';
+  fetch(API + '/api/metrics/host')
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(d => { _hostData = d; _hostRender(); })
+    .catch(e => {
+      if (el) el.innerHTML = '<div style="color:var(--red);padding:20px;font-size:0.85rem;">Failed to load host analysis: ' + esc(String(e)) + '</div>';
+    });
+}
+
+function _hostStateColor(s) {
+  return s === 'ok' ? '#3fb950' : s === 'warn' ? '#f0a742' : s === 'critical' ? '#f85149' : '#6e7681';
+}
+
+function _hostRender() {
+  const d = _hostData;
+  const el = document.getElementById('host-content');
+  if (!d || !el) return;
+
+  const num = (val, dp) => (val === null || val === undefined) ? '—' : (dp != null ? Number(val).toFixed(dp) : val);
+  const v = d.verdicts || {};
+  const cpu = d.cpu || {}, mem = d.memory || {}, swap = d.swap || {}, disk = d.disk || {}, pc = d.process_counts || {};
+
+  let html = `<div class="metrics-hdr">
+    <div class="metrics-hdr-left">
+      <span class="metrics-hdr-title">Host Analysis</span>
+      ${d.host ? `<span class="metrics-hostname">${esc(String(d.host))}</span>` : ''}
+      ${(d.os || d.os_version || d.arch) ? `<span class="metrics-uptime">${esc([d.os, d.os_version, d.arch].filter(Boolean).join(' '))}</span>` : ''}
+      ${d.uptime_seconds ? `<span class="metrics-uptime">up ${_metricsFormatUptime(d.uptime_seconds)}</span>` : ''}
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      ${d.analysis_ms != null ? `<span style="font-size:0.7rem;color:var(--dim);">${esc(String(d.generated_at || ''))} · ${d.analysis_ms}ms</span>` : ''}
+      <button class="btn" onclick="_hostLoad()" style="font-size:0.8rem;padding:5px 12px;">↻ Refresh</button>
+    </div>
+  </div>`;
+
+  // The measured contract: if the probe could not run, say so instead of a blank panel.
+  if (d.measured === false) {
+    html += `<div class="metrics-no-psutil">⚠️ Host analysis did not run: ${esc(String(d.why_unmeasured || 'unknown reason'))}</div>`;
+    el.innerHTML = html;
+    return;
+  }
+
+  const chip = (label, state) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;background:var(--panel,#161b22);border:1px solid var(--border,#30363d);font-size:0.75rem;">
+    <span style="width:8px;height:8px;border-radius:50%;background:${_hostStateColor(state)};"></span>${label}: <b style="color:${_hostStateColor(state)};">${esc(String(state || 'unknown'))}</b></span>`;
+  html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px;">
+    ${chip('CPU', v.cpu)} ${chip('Memory', v.memory)} ${chip('Disk', v.disk)}</div>`;
+
+  html += '<div class="metrics-cards">';
+  const lpc = cpu.load_per_core;
+  html += `<div class="metrics-card">
+    <div class="metrics-card-title">CPU load</div>
+    <div class="metrics-card-value">${num(lpc, 2)}<span> /core</span></div>
+    <div class="metrics-card-sub">${num(cpu.count)} logical${cpu.physical ? ' / ' + num(cpu.physical) + ' physical' : ''} cores</div>
+    <div class="metrics-gauge"><div class="metrics-gauge-fill" style="width:${Math.min(100, (lpc || 0) / 4 * 100)}%;background:${_hostStateColor(v.cpu)};"></div></div>
+  </div>`;
+  if (mem.total_mb) {
+    html += `<div class="metrics-card">
+      <div class="metrics-card-title">Memory</div>
+      <div class="metrics-card-value">${num(mem.used_mb / 1024, 1)}<span> GB</span></div>
+      <div class="metrics-card-sub">of ${num(mem.total_mb / 1024, 1)} GB — ${num(mem.percent, 0)}%${mem.pressure ? ' · pressure ' + esc(String(mem.pressure)) : ''}</div>
+      <div class="metrics-gauge"><div class="metrics-gauge-fill" style="width:${Math.min(100, mem.percent || 0)}%;background:${_hostStateColor(v.memory)};"></div></div>
+    </div>`;
+  }
+  if (swap.total_mb != null) {
+    const sp = swap.total_mb > 0 ? swap.used_mb / swap.total_mb * 100 : 0;
+    html += `<div class="metrics-card">
+      <div class="metrics-card-title">Swap</div>
+      <div class="metrics-card-value" style="font-size:1.2rem;">${num(swap.used_mb, 0)}<span> MB</span></div>
+      <div class="metrics-card-sub">of ${num(swap.total_mb, 0)} MB — ${sp.toFixed(0)}%</div>
+      <div class="metrics-gauge"><div class="metrics-gauge-fill ${_metricsGaugeCls(sp)}" style="width:${Math.min(100, sp)}%"></div></div>
+    </div>`;
+  }
+  if (disk.total_gb) {
+    html += `<div class="metrics-card reclaim-catcard" onclick="_metricsSetMode('disk')" title="Open Disk Cleanup">
+      <div class="metrics-card-title">Disk${disk.path ? ' (' + esc(String(disk.path)) + ')' : ''}</div>
+      <div class="metrics-card-value">${num(disk.free_gb, 1)}<span> GB free</span></div>
+      <div class="metrics-card-sub">${num(disk.used_gb, 1)} of ${num(disk.total_gb, 1)} GB — ${num(disk.percent, 0)}%</div>
+      <div class="metrics-gauge"><div class="metrics-gauge-fill" style="width:${Math.min(100, disk.percent || 0)}%;background:${_hostStateColor(v.disk)};"></div></div>
+      <div style="font-size:0.66rem;color:var(--accent,#58a6ff);margin-top:6px;">Disk Cleanup ›</div>
+    </div>`;
+  }
+  html += '</div>';
+
+  if (cpu.load_avg && cpu.load_avg.length) {
+    html += '<div class="metrics-section-title">Load Average</div><div class="metrics-load-row">';
+    const labels = ['1 min', '5 min', '15 min'];
+    cpu.load_avg.forEach((la, i) => {
+      html += `<div class="metrics-load-item"><div class="metrics-load-val">${num(la, 2)}</div><div class="metrics-load-lbl">${labels[i] || ''}</div></div>`;
+    });
+    html += '</div>';
+  }
+
+  const counts = [['total', 'total'], ['claude', 'claude'], ['rustc', 'rustc'], ['cargo', 'cargo'], ['node', 'node'], ['python3', 'python3']];
+  if (counts.some(([k]) => pc[k] != null)) {
+    html += '<div class="metrics-section-title">Processes</div><div class="metrics-load-row">';
+    counts.forEach(([k, lbl]) => { if (pc[k] != null) html += `<div class="metrics-load-item"><div class="metrics-load-val">${pc[k]}</div><div class="metrics-load-lbl">${lbl}</div></div>`; });
+    html += '</div>';
+  }
+
+  const procTable = (title, rows, primary) => {
+    if (!rows || !rows.length) return '';
+    let t = `<div class="metrics-section-title">${title}</div><div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;">`;
+    rows.forEach(p => {
+      const cpuCell = `<span style="color:${p.cpu_percent >= 100 ? '#f85149' : 'var(--fg)'};">${num(p.cpu_percent, 1)}%</span>`;
+      const memCell = `${num(p.rss_mb, 1)} MB`;
+      t += `<tr style="border-bottom:1px solid var(--border,#21262d);">
+        <td style="padding:5px 10px 5px 0;font-family:var(--mono,monospace);color:var(--dim);width:64px;">${p.pid}</td>
+        <td style="padding:5px 12px 5px 0;text-align:right;width:90px;">${primary === 'cpu' ? cpuCell : memCell}</td>
+        <td style="padding:5px 12px 5px 0;text-align:right;width:90px;color:var(--dim);">${primary === 'cpu' ? memCell : cpuCell}</td>
+        <td style="padding:5px 0;">${esc(String(p.command || ''))}</td>
+      </tr>`;
+    });
+    return t + '</table></div>';
+  };
+  html += procTable('Top by CPU', d.top_cpu, 'cpu');
+  html += procTable('Top by Memory', d.top_mem, 'mem');
+
+  el.innerHTML = html;
 }
 
 function _reclaimStopPolling() {

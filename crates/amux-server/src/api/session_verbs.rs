@@ -18055,20 +18055,35 @@ pub(crate) async fn report_post(state: &AppState, name: &str, headers: &HeaderMa
                     // measurement's freshness, never about who produced it.
                     let fresh_reading = {
                         static LAST_ACTED: std::sync::OnceLock<
-                            std::sync::Mutex<std::collections::HashMap<String, u64>>,
+                            std::sync::Mutex<std::collections::HashMap<String, (u64, f64)>>,
                         > = std::sync::OnceLock::new();
                         let map = LAST_ACTED.get_or_init(Default::default);
                         let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
-                        if g.get(name) == Some(&used) {
-                            tracing::debug!(
-                                target: "compaction",
-                                session = %name, used, pct,
-                                "auto-compact SKIPPED — same reading already acted on \
-                                 (AMUX-3805); waiting for a fresh one"
-                            );
-                            false
+                        let now = now_f64();
+                        if let Some(&(prev_used, prev_ts)) = g.get(name) {
+                            if prev_used == used {
+                                tracing::debug!(
+                                    target: "compaction",
+                                    session = %name, used, pct,
+                                    "auto-compact SKIPPED — same reading already acted on \
+                                     (AMUX-3805); waiting for a fresh one"
+                                );
+                                false
+                            } else if now - prev_ts < 120.0 {
+                                tracing::debug!(
+                                    target: "compaction",
+                                    session = %name, used, pct,
+                                    elapsed_s = (now - prev_ts).round() as i64,
+                                    "auto-compact SKIPPED — cooldown (120s) not elapsed; \
+                                     previous compact may still be processing"
+                                );
+                                false
+                            } else {
+                                g.insert(name.to_string(), (used, now));
+                                true
+                            }
                         } else {
-                            g.insert(name.to_string(), used);
+                            g.insert(name.to_string(), (used, now));
                             true
                         }
                     };

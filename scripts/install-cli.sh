@@ -73,6 +73,7 @@ for ((i=0; i<${#source_files[@]}; i++)); do
     refuse bash_syntax
   fi
   chmod 0755 "$candidate"
+  xattr -d com.apple.provenance "$candidate" 2>/dev/null || true
 done
 
 # Publish the helper first, so the main entrypoint never appears without it.
