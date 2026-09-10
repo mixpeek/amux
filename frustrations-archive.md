@@ -7868,3 +7868,27 @@ CARD: AMUX-4377
 SYMPTOM: Both private Sonnet workers had returned to childless bash panes after Stop, but the API still reported running:true because their recent waiting/blocked reports were preserved.
 COST: Cleanup falsely looked incomplete and the UI could offer running-only controls for a terminated provider.
 FIX: Under the same start/stop operation lock, retire the stopped process's live report while preserving model diagnostics. Do not report success when hard-kill remains unconfirmed; publish a failed-stop event. Validate the persisted report and real paused-worker API state.
+
+## Global history refresh erases a newly accepted local message
+VALIDATED: codex-amux-lifecycle | Validated delayed nonempty global history and identical text to different workers: focused-browser-896 36/36, and all corresponding merged browser cases pass in focused-browser-897. Source retains unechoed local records and repaints provenance.
+AREA: messages
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The broad browser run still classified a just-sent prompt as Unclassified in all three browsers. A delayed nonempty global-history response replaced the local history array after the composer had appended the accepted message.
+COST: A focused empty-server run passed but missed the populated-server ordering; the second full run exposed three failures after 749 other checks passed.
+FIX: Use the same unechoed-local merge as scoped Messages views when applying global history, then repaint provenance. Scope consecutive history deduplication by worker and type. A delayed nonempty history regression exercises the ordering and identical sends to two peers.
+
+## Verified column metadata truncates its name on a phone
+VALIDATED: codex-amux-lifecycle | Validated LC-BOARD-HEADER across desktop/mobile/Safari in focused-browser-895, 896 and 897; manually inspected the 375px Safari screenshot showing full Verified and Terminal labels with controls inside the column.
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: A settled 375px screenshot of the real completed board showed VERIF... and TERMI... beside the column controls, obscuring the status name and terminal designation.
+COST: The final visual audit found a readability problem despite successful task and gate assertions.
+FIX: Give the column identity a compact two-row layout on phones so the full status name and terminal badge fit beside the controls. LC-BOARD-HEADER measures both text boxes and verifies all header controls remain inside their column.

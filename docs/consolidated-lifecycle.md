@@ -811,3 +811,19 @@ minutes an unresolved reservation requires terminal review. It cannot become
 "already delivered" merely by existing or aging out. Confirmed receipts retain
 the original response ID for 30 days. Logs use `amux::message_acceptance` to
 identify pending, uncertain, or unrecorded acceptance.
+
+### Expanded verification receipts (2026-09-10)
+
+See [the recorded validation report](lifecycle-validation-2026-09-10.md) for the
+actual Sonnet run, retained failures, repairs, and scope boundaries. Set
+`AMUX_LIFECYCLE_INTERVENTIONS` to a local JSON file to attach operator actions to
+the complex run's proof. Completion receipts may name one epic or an array of
+epics per worker; every named epic must have current independent verification,
+linked messages, and direct output references. After workers stop, the observer
+loads saved terminal records through the UI before searching peer messages.
+
+The consolidated browser suite also covers delayed nonempty history snapshots,
+identical messages sent to different peers, full phone Verified headers, and
+worker menus surviving scroll events from unrelated panels. Queue unit contracts
+execute the shipped functions and check automatic replay while connectivity is
+believed offline, plus quiet normal sends and visible stuck-send status.

@@ -5106,7 +5106,13 @@ function toggleMenu(name) {
 function _menuScrollClose(e) {
   // Scrolls INSIDE the open menu (it has overflow-y:auto) must not close it.
   const el = openMenu && document.getElementById('menu-' + openMenu);
-  if (el && e.target instanceof Node && el.contains(e.target)) return;
+  if (el && e.target instanceof Node) {
+    if (el.contains(e.target)) return;
+    // Only scrolling an ancestor of the trigger moves its anchor. A delayed
+    // scroll in a closed terminal or another panel must not dismiss this menu.
+    const anchor = el._menuOrigParent;
+    if (anchor && !e.target.contains(anchor)) return;
+  }
   closeAllMenus();
 }
 function closeAllMenus() {
@@ -9803,7 +9809,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.893';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.894';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

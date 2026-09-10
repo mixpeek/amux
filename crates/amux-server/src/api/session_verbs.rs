@@ -28642,6 +28642,10 @@ mod refusal_status_tests {
             "tmux not found or timed out",
             "Claude failed to start",
             "could not write session env",
+            // A stop that cannot establish process exit is an operational
+            // failure, not a successful or safely refused stop receipt.
+            "worker is still running; herdr hard-kill is unavailable",
+            "could not confirm the worker process stopped",
         ];
         let mut found = 0usize;
         let mut match_patterns = 0usize;

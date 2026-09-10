@@ -146,6 +146,13 @@ test('LC-COMPLEX-VERIFIED: Sonnet peers decompose linked work, adapt to changed 
       }
       for(const name of names) {
         await menu(page,name,'peek-terminal');
+        await page.locator('#peek-loading-ind').waitFor({state:'hidden'});
+        const earlier=page.locator('.peek-earlier-bar[onclick]');
+        if(await earlier.isVisible()) {
+          const response=page.waitForResponse(r=>r.url().includes('/sessions/'+name+'/log?'));
+          await earlier.click();expect((await response).ok()).toBe(true);
+          await expect(page.locator('.peek-earlier-block')).toBeVisible();
+        }
         await page.getByRole('button',{name:'Filter messages',exact:true}).click();await page.locator('[name="peek-filter-source"][value="session"]').check();
         await page.getByRole('dialog',{name:'Filter worker messages'}).getByRole('button',{name:'Done',exact:true}).click();
         await page.getByRole('button',{name:'Find in terminal',exact:true}).click();await page.locator('#peek-search').fill('COMPLEX_VERIFIED');

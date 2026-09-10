@@ -502,6 +502,8 @@ fn pane_churn_distinct(name: &str, now: f64, window_s: f64) -> usize {
 /// reads, a 2s TTL collapses the real work by ~2x while being invisible to a
 /// human polling the dashboard.
 struct ListSnapshot {
+    /// Keep snapshots scoped to the database owner, including parallel test apps.
+    store: std::sync::Weak<crate::db::Store>,
     /// When the build that produced `json` was entered.
     stamp: f64,
     /// The serialized array; empty = no snapshot (cold or invalidated).
@@ -520,6 +522,7 @@ fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
         std::sync::Mutex::new(ListSnapshot {
+            store: std::sync::Weak::new(),
             stamp: 0.0,
             json: String::new(),
             epoch: 0,
@@ -2636,12 +2639,14 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 /// A 2s-stale response is invisible to a human and halves the subprocess
 /// load.
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
+    let store_key = std::sync::Arc::downgrade(store);
     let ttl = env_secs("AMUX_SESSIONS_CACHE_TTL_S", 2.0);
     let now = chrono::Utc::now().timestamp() as f64;
     let epoch_now = SESSIONS_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     let runtime_epoch_now = SESSIONS_RUNTIME_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     if let Ok(c) = build_array_cache().lock() {
         if now - c.stamp < ttl
+            && c.store.ptr_eq(&store_key)
             && !c.json.is_empty()
             && c.epoch == epoch_now
             && c.runtime_epoch == runtime_epoch_now
@@ -2736,7 +2741,8 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
         g
     } else {
         if let Ok(c) = build_array_cache().lock() {
-            if !c.json.is_empty()
+            if c.store.ptr_eq(&store_key)
+                && !c.json.is_empty()
                 && c.epoch == epoch_now
                 && c.registry == registry_fingerprint()
             {
@@ -2753,7 +2759,8 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
                 break;
             }
             if let Ok(c) = build_array_cache().lock() {
-                if !c.json.is_empty()
+                if c.store.ptr_eq(&store_key)
+                    && !c.json.is_empty()
                     && c.epoch == epoch_now
                     && c.registry == registry_fingerprint()
                 {
@@ -2785,6 +2792,7 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     // refreshed, and rebuilding immediately would waste its work.
     if let Ok(c) = build_array_cache().lock() {
         if now - c.stamp < ttl
+            && c.store.ptr_eq(&store_key)
             && !c.json.is_empty()
             && c.epoch == epoch_now
             && c.runtime_epoch == runtime_epoch_now
@@ -2813,6 +2821,7 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     {
         if let Ok(mut c) = build_array_cache().lock() {
             *c = ListSnapshot {
+                store: store_key,
                 stamp: now,
                 json: json.clone(),
                 epoch: epoch_start,

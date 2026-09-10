@@ -140,6 +140,7 @@ def main():
         run('syntax', ['bash', 'scripts/safe-cargo.sh', 'check', '--workspace'])
         run('contracts', ['bash', 'scripts/test-contended.sh', '--workspace'], live=True)
     if args.mode in ('browser', 'full'):
+        run('outbox-contracts', ['node', '--test', 'tests/dashboard-outage-recovery.mjs'])
         assets = {'/' + name: hashlib.sha256((ROOT / 'crates/amux-dashboard/static' / name).read_bytes()).hexdigest()
                   for name in ('app.js', 'app.css', 'sw.js')}
         manifest = out / 'expected-assets.json'
