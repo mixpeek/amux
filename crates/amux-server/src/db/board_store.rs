@@ -1879,7 +1879,16 @@ impl IssueRow {
                 "session": session,
                 "prompt": self.callback_prompt,
                 "trigger": "dependency_resolution",
-                "resolution_status": if amux_core::board::verified_is_meaningful(core_item_type(&self.item_type)) { "verified" } else { "done" },
+                // AF-681: this used to be called `resolution_status`, which reads
+                // as "how did THIS card resolve" -- primis reported it reading
+                // "verified" on a card that was actually `discarded`. It never
+                // answered that question: it is `verified_is_meaningful(item_type)`,
+                // a constant for the TYPE, computed the same way whether this card
+                // discarded, verified, or never fired at all. `dependency_resolved`
+                // right below is the real per-card answer. Renamed to say what it
+                // actually is: which word THIS TYPE's completion is spelled with,
+                // for phrasing a callback prompt before anything has happened yet.
+                "completion_label_for_type": if amux_core::board::verified_is_meaningful(core_item_type(&self.item_type)) { "verified" } else { "done" },
                 "dependency_resolved": dependency_is_resolved(&self.status, &self.item_type),
                 "state": self.callback_state,
                 "message_id": self.callback_message_id,
@@ -4508,6 +4517,50 @@ mod tests {
         let stored = get_issue(&conn, &row.id).unwrap().unwrap();
         assert_eq!(stored.callback_state.as_deref(), Some("pending"));
         assert!(stored.callback_message_id.is_none());
+    }
+
+    /// AF-681, reported by primis: `resolution_status` (now
+    /// `completion_label_for_type`) read "verified" on a card that had
+    /// actually DISCARDED, which looks like a false claim about the outcome.
+    /// It is not an outcome at all -- it is `verified_is_meaningful(item_type)`,
+    /// a constant for the TYPE that does not change no matter what happened to
+    /// this specific card. Pin that a `code` card reports the SAME label
+    /// whether it is still pending or has actually discarded, and that a
+    /// non-code type reports "done" the same way -- proving the field cannot
+    /// answer "how did this resolve", which is what `dependency_resolved` is for.
+    #[test]
+    fn completion_label_for_type_is_a_type_constant_not_an_outcome() {
+        let conn = create_db();
+
+        let mut code_card = new_card("todo");
+        code_card.item_type = "code".into();
+        code_card.requested_by = Some("requester".into());
+        code_card.callback_session = Some("requester".into());
+        let mut code_row = create_issue(&conn, &code_card, 1000).expect("create code card");
+        assert_eq!(
+            code_row.snapshot()["callback"]["completion_label_for_type"], "verified",
+            "code's completion word is 'verified' before anything has happened"
+        );
+
+        code_row.status = "discarded".into();
+        code_row.updated = 2000;
+        save_patched(&conn, &mut code_row).expect("discard");
+        assert_eq!(
+            code_row.snapshot()["callback"]["completion_label_for_type"], "verified",
+            "the label is UNCHANGED by discarding -- it never claimed to describe \
+             what happened, only what this TYPE's completion is called"
+        );
+        assert_eq!(
+            code_row.snapshot()["callback"]["dependency_resolved"], false,
+            "the REAL per-card outcome lives here, not in the type label"
+        );
+
+        let mut chore_card = new_card("todo");
+        chore_card.item_type = "chore".into();
+        chore_card.requested_by = Some("requester".into());
+        chore_card.callback_session = Some("requester".into());
+        let chore_row = create_issue(&conn, &chore_card, 1000).expect("create chore card");
+        assert_eq!(chore_row.snapshot()["callback"]["completion_label_for_type"], "done");
     }
 
     #[test]
