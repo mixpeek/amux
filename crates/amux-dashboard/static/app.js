@@ -3218,16 +3218,23 @@ function _sessionReadNotice() {
         ? ' ' + pending + ' queued operation' + (pending === 1 ? '' : 's') + ' will sync automatically when the server returns.'
         : ' Commands you send will be queued and delivered when the server returns.')
     : '';
+  const errDetail = _sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error';
+  const troubleshoot = auth ? '' : '<div style="margin-top:8px;font-size:0.78rem;color:var(--dim);">'
+    + '<b>Troubleshooting:</b> '
+    + (_sessionLoadError.status >= 500
+      ? 'The server returned an error. Check if the amux process is healthy: <code>curl -sk $(amux url)/api/health</code>'
+      : 'Cannot reach the server. Verify the server is running (<code>systemctl --user status amux</code>) '
+        + 'and the URL is correct (<code>amux url</code>). If on a remote device, check your network/VPN connection.')
+    + '</div>';
   return '<div class="session-read-notice" role="alert"><strong>'
-    + (auth ? 'Access to this workspace needs to be renewed' : 'Worker updates are unavailable')
+    + (auth ? 'Access to this workspace needs to be renewed' : 'Cannot connect to amux server')
     + '</strong><p>' + (auth
       ? 'Open your owner access link, or ask the workspace owner for a new invite.'
-      : 'The worker list could not be loaded. Retrying automatically.')
+      : errDetail + ' on GET /api/sessions. Retrying automatically.')
     + offlineCaps
-    + '</p><button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
-    + '<details><summary>Connection details</summary><code>GET /api/sessions · '
-    + (_sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error')
-    + ' · ' + esc(_sessionLoadError.reason) + '</code></details></div>';
+    + '</p>' + troubleshoot
+    + '<button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
+    + '</div>';
 }
 
 // AF-639. The honest end state for a browser the server will not bootstrap:
@@ -9734,7 +9741,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.873';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.874';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10224,7 +10231,8 @@ async function _peekAgentsLoad(force=false) {
     const fresh=new Map(data.subagents.map(s=>[ids(s),s]));
     const ordered=state.items.filter(s=>fresh.has(ids(s))).map(s=>fresh.get(ids(s)));
     const known=new Set(ordered.map(ids));
-    state.items=ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
+    const all = ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
+    state.items = all.filter(s => s.active);
     state.error=false; state.loadedAt=Date.now();
     _peekAgentsLog('list',{count:state.items.length});
   } catch(e) {
@@ -16119,6 +16127,8 @@ async function _peekMessagesLoad(more) {
     _peekMsgRowsFor = sess; more = false;
   }
   if (more && _peekMsgDone) return;            // nothing older to load
+  const prevCount = _peekMsgServerRows.length;
+  const prevDone = _peekMsgDone;
   if (!more) { _peekMsgServerRows = []; _peekMsgOffset = 0; _peekMsgDone = false; }
   _peekMessagesRender();                        // paint what we have instantly
   try {
@@ -16126,7 +16136,11 @@ async function _peekMessagesLoad(more) {
     if (peekSession !== sess) return;           // user moved on mid-flight
     _peekMsgServerRows = _peekMsgServerRows.concat(rows);
     _peekMsgOffset += rows.length;
-    _peekMsgDone = rows.length < _PEEK_MSG_PAGE; // a short page is the last page
+    // A short page is the last page. When refreshing the same page size
+    // (SSE tick, not "Load older"), preserve a previous exhaustion so the
+    // button does not reappear every tick on boundary-sized stores.
+    if (!more && rows.length === prevCount && prevDone) _peekMsgDone = true;
+    else _peekMsgDone = rows.length < _PEEK_MSG_PAGE;
     _peekMsgRows = _mergeUnechoed(_peekMsgServerRows, sess); // pending merge + time sort, once, on the full set
   } catch(e) {
     if (!more) { try { await _loadCmdHistoryFromServer(); } catch(e2) {} } // fall back to the shared cache on first load only
