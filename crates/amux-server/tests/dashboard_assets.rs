@@ -621,9 +621,26 @@ fn the_version_parser_reads_real_values_and_rejects_junk() {
 /// this check, and the direction that was already covered. Every name you call
 /// must exist; every name you define must not already. This is the mirror.
 /// Body of a top-level `function NAME(` in app.js, brace-matched.
+///
+/// MATCHES `async function NAME(` TOO (AF-639, 2026-09-10). This helper
+/// originally matched only the bare keyword, written against
+/// `_staleShellRecover` when it was synchronous. A later, independent fix
+/// made that same function `async` to await a real fetch, and this helper
+/// went stale silently: `.unwrap_or_else(|| panic!(...))` fires on ANY
+/// missing match, so "the function was renamed" and "the function grew an
+/// `async` keyword" produce an identical panic, and the message names the
+/// former. Confirmed live: `src.find("\nfunction _staleShellRecover(")` is
+/// `None` against the current app.js, where the declaration is
+/// `async function _staleShellRecover()`. Two-fix rule: search both forms
+/// rather than special-case one caller, so the next function that becomes
+/// async does not repeat this.
 fn fn_body(src: &str, name: &str) -> String {
-    let head = format!("\nfunction {name}(");
-    let i = src.find(&head).unwrap_or_else(|| panic!("no top-level function {name} in app.js"));
+    let sync_head = format!("\nfunction {name}(");
+    let async_head = format!("\nasync function {name}(");
+    let i = src
+        .find(&sync_head)
+        .or_else(|| src.find(&async_head))
+        .unwrap_or_else(|| panic!("no top-level function {name} in app.js"));
     let open = src[i..].find('{').expect("function has a body") + i;
     let bytes = src.as_bytes();
     let (mut depth, mut end) = (0usize, open);
@@ -668,10 +685,30 @@ fn a_shell_the_server_withheld_the_token_from_stops_reloading_and_says_so() {
     let guard = body
         .find("_authWithheld")
         .expect("_staleShellRecover must special-case the withheld shell");
-    let reload = body.find("location.reload").expect("the reload path is still the other arm");
+
+    // THE ANCHOR MOVED (AF-639, 2026-09-10). This assertion originally pinned
+    // `location.reload`, because a blind reload into an identical shell was the
+    // futile act the guard existed to skip. A separate fix landed on main the
+    // same day and rewrote the recovery path to FETCH the real bootstrap and
+    // act only on a genuinely DIFFERENT token (`location.replace('/?_fresh=auth'
+    // ...)`), which already stops the reload storm and does it better. The
+    // string "location.reload" no longer appears in this function's body at
+    // all, so the old `.expect(...)` PANICS rather than failing an assertion --
+    // confirmed live on origin/main's current app.js, where the merge that
+    // combined both fixes kept the code correct (the withheld guard still
+    // precedes the recovery, and still returns) but left this test anchored to
+    // code that had already moved. A clean merge with no conflict markers is
+    // not proof the result stayed testable (CLAUDE.md's own warning, applied to
+    // a test rather than a feature). What survives is the same property this
+    // cell always checked: the guard must precede whatever the OTHER arm does,
+    // and must return before it. The other arm is now the recovery fetch.
+    let recovery = body
+        .find("fetch('/?_fresh=auth'")
+        .expect("the recovery fetch is the other arm; if it moved, re-anchor this deliberately");
     assert!(
-        guard < reload,
-        "the withheld check must come BEFORE the reload, or the futile reload still runs"
+        guard < recovery,
+        "the withheld check must come BEFORE the recovery fetch, or a browser that already \
+         knows it was refused spends a 12s timeout re-learning it"
     );
     assert!(
         body[..guard].find("sessionStorage").is_none(),
@@ -679,8 +716,8 @@ fn a_shell_the_server_withheld_the_token_from_stops_reloading_and_says_so() {
          once-per-10-minutes budget that the real stale-shell case needs"
     );
     assert!(
-        body[guard..reload].contains("return"),
-        "the withheld arm must RETURN; falling through reaches the reload it exists to skip"
+        body[guard..recovery].contains("return"),
+        "the withheld arm must RETURN; falling through reaches the recovery it exists to skip"
     );
 
     // And it must leave something a human can act on, not just skip the
