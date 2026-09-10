@@ -9734,7 +9734,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.872';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.873';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11205,8 +11205,7 @@ function _peekLiveHtml(raw) {
     const input = plain.slice(i, end).join('\n').replace(/^\s*❯\s?/, '').trim();
     const pastes = input.match(/\[Pasted text #\d+[^\]]*\]/g) || [];
     const summary = pastes.length ? 'Unsent worker input · ' + pastes.length + ' pasted block' + (pastes.length === 1 ? '' : 's') : 'Worker input';
-    const draft = input ? '<details class="peek-worker-input"><summary>' + esc(summary) + '</summary>'
-      + '<p>This is the worker’s input box, not a delivered chat message. Collapsed paste contents are only available in the worker terminal.</p>'
+    const draft = input ? '<details class="peek-worker-input" open><summary>' + esc(summary) + '</summary>'
       + '<pre>' + esc(input) + '</pre></details>' : '';
     return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
       + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
