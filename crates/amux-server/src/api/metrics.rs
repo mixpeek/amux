@@ -16,8 +16,89 @@ use std::path::PathBuf;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", axum::routing::get(metrics))
+        .route("/host", axum::routing::get(host))
         .route("/fleet", axum::routing::get(fleet))
         .route("/replay", axum::routing::get(replay))
+}
+
+/// The full host-analysis script, embedded at compile time so the running
+/// binary always carries the exact bytes from the commit it was built at (no
+/// drift, no repo-relative path to resolve from ~/.local/bin), and so the same
+/// bytes are runnable standalone from any checkout. `../../../../` climbs
+/// api → src → amux-server → crates → repo root.
+const HOST_ANALYSIS_SH: &str = include_str!("../../../../scripts/host-analysis.sh");
+
+/// GET /api/metrics/host — full host-machine analysis: OS, CPU/load, memory,
+/// swap, disk (on the DATA volume, per the collect_system_metrics comment),
+/// uptime, top processes by CPU and RSS, and fleet process counts.
+///
+/// The body is produced by `scripts/host-analysis.sh` (embedded above) so the
+/// Metrics tab renders precisely what the standalone script prints — one
+/// cross-platform source of truth. Stamped with the measured/n_considered
+/// contract (ethos rule 4): host fields go null when a probe cannot run on a
+/// platform, so a reader must be able to tell "measured and fine" from "the
+/// probe never ran". `n_considered` is the total process population the top-N
+/// lists were ranked from.
+async fn host() -> Response {
+    match tokio::task::spawn_blocking(run_host_analysis).await {
+        Ok(Ok(v)) => {
+            let n = v
+                .get("process_counts")
+                .and_then(|p| p.get("total"))
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0) as usize;
+            Json(crate::api::measured::measured(v, n)).into_response()
+        }
+        Ok(Err(why)) => Json(crate::api::measured::unmeasured(json!({}), &why)).into_response(),
+        Err(e) => Json(crate::api::measured::unmeasured(
+            json!({}),
+            &format!("host-analysis task panicked: {e}"),
+        ))
+        .into_response(),
+    }
+}
+
+/// Run the embedded script by piping it to `bash -s` on stdin and parsing its
+/// JSON. No temp file (nothing to leave behind, nothing for a concurrent writer
+/// to truncate mid-read), and no on-disk script at all. The script is ~10 KB —
+/// well under the OS pipe buffer — so writing it in full before reading stdout
+/// cannot deadlock.
+fn run_host_analysis() -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let bash = if std::path::Path::new("/bin/bash").exists() {
+        "/bin/bash"
+    } else {
+        "bash"
+    };
+    let mut child = Command::new(bash)
+        .arg("-s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn bash: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "bash stdin unavailable".to_string())?
+        .write_all(HOST_ANALYSIS_SH.as_bytes())
+        .map_err(|e| format!("write script to bash: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("wait for bash: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "host-analysis.sh exited {}: {}",
+            out.status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("host-analysis.sh output was not valid JSON: {e}"))
 }
 
 /// GET /api/metrics/replay — audit replay (RR-0111a): fold the event journal
@@ -557,6 +638,44 @@ mod tests {
     use chrono::Utc;
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    /// The embedded host-analysis script runs and produces the shape the Metrics
+    /// tab and `measured` stamp depend on. Exercises the SHIPPED bytes
+    /// (include_str! + `bash -s`), not a paraphrase (ethos rule 7): a broken
+    /// script or a renamed key fails here rather than as a blank panel.
+    #[test]
+    fn host_analysis_runs_and_returns_the_expected_shape() {
+        let v = super::run_host_analysis().expect("host-analysis.sh should run and emit JSON");
+        for k in [
+            "cpu",
+            "memory",
+            "disk",
+            "top_cpu",
+            "top_mem",
+            "process_counts",
+            "verdicts",
+        ] {
+            assert!(v.get(k).is_some(), "missing key {k}: {v}");
+        }
+        // Measurable on any supported host (macOS or Linux CI).
+        assert!(v["cpu"]["count"].as_u64().unwrap_or(0) >= 1, "cpu.count: {v}");
+        assert!(
+            v["disk"]["total_gb"].as_f64().unwrap_or(0.0) > 0.0,
+            "disk.total_gb: {v}"
+        );
+        // n_considered is drawn from this, so it must be a real population.
+        assert!(
+            v["process_counts"]["total"].as_u64().unwrap_or(0) >= 1,
+            "process_counts.total: {v}"
+        );
+        for dim in ["cpu", "memory", "disk"] {
+            let s = v["verdicts"][dim].as_str().unwrap_or("");
+            assert!(
+                ["ok", "warn", "critical", "unknown"].contains(&s),
+                "verdict {dim} = {s:?}: {v}"
+            );
+        }
+    }
 
     /// Regression guard for the wrong-volume disk gauge.
     ///

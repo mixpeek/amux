@@ -1164,10 +1164,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="metrics-expand-btn" onclick="_metricsToggleSidebar()" title="Show workers list"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
     <div class="metrics-modebar">
       <button class="metrics-modebtn active" id="metricsmode-system" onclick="_metricsSetMode('system')">System</button>
+      <button class="metrics-modebtn" id="metricsmode-host" onclick="_metricsSetMode('host')">Host</button>
       <button class="metrics-modebtn" id="metricsmode-disk" onclick="_metricsSetMode('disk')">Disk Cleanup</button>
     </div>
     <div id="metrics-content"><div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Loading metrics&hellip;</div></div>
     <div id="reclaim-content" style="display:none;"></div>
+    <div id="host-content" style="display:none;"></div>
   </div>
 </div>
 
