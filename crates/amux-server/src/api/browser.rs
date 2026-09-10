@@ -2174,7 +2174,29 @@ async fn profile_combine(
                     dc.len()
                 );
             }
-            conn.execute_batch("INSERT OR REPLACE INTO main.cookies SELECT * FROM src.cookies")?;
+            // A HOST'S JAR MUST COME FROM ONE PROFILE.
+            //
+            // Merging at the (host, name, path) level unions two accounts for
+            // the same site, and the union is a valid session for NEITHER:
+            // whichever names both profiles share get the later value while the
+            // names only the earlier one had stay behind, so the jar is a
+            // mixture no server issued. Chrome then discards it.
+            //
+            // Measured 2026-09-10 consolidating 18 profiles: 9 of them claimed
+            // .google.com and 11 claimed .mixpeek.com. The result held 229
+            // cookies, and Chrome dropped 35 of them on first launch —
+            // accounts.google.com went from 7 names to 0 and the account was
+            // signed out. A two-source combine whose sources shared no
+            // contested host kept 76 of 76 and stayed signed in.
+            //
+            // So a source takes a host WHOLE: its rows for that host replace
+            // everything already there for it. Later sources still win, but
+            // they win a whole site instead of a scattering of names.
+            let hosts_taken = conn.execute(
+                "DELETE FROM main.cookies WHERE host_key IN (SELECT DISTINCT host_key FROM src.cookies)",
+                [],
+            )?;
+            conn.execute_batch("INSERT INTO main.cookies SELECT * FROM src.cookies")?;
             let after: i64 = conn.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))?;
             let hosts: i64 = conn
                 .query_row("SELECT COUNT(DISTINCT host_key) FROM src.cookies", [], |r| r.get(0))?;
@@ -2184,12 +2206,15 @@ async fn profile_combine(
             report.push(json!({
                 "source": src_name,
                 "role": "merged",
-                // Three numbers, because "merged 10" alone cannot tell an
-                // add from a replace and the difference is whose login wins.
+                // Four numbers, because "merged 10" alone cannot tell an add
+                // from a replace, and the difference is whose login wins.
+                // `cookies_displaced` is rows this source EVICTED by taking
+                // their host whole — the count of other profiles' logins for
+                // sites this one also has.
                 "cookies_offered": available,
                 "cookies_added": after - before,
-                "cookies_replaced": available - (after - before),
-                "hosts": hosts,
+                "cookies_displaced": hosts_taken,
+                "hosts_taken_whole": hosts,
             }));
         }
         Ok(Value::Array(report))
@@ -2226,7 +2251,7 @@ async fn profile_combine(
         "registered": registered,
         "label": label,
         "merged": report,
-        "conflict_rule": "later sources win on a conflicting (host, name, path)",
+        "conflict_rule": "a source takes each of its hosts WHOLE; later sources win an entire site, never a mixture of two accounts' cookies",
     }))
     .into_response()
 }
@@ -3655,12 +3680,23 @@ mod tests {
             .to_string_lossy()
             .as_ref()])
             .unwrap();
-        dc.execute_batch("INSERT OR REPLACE INTO main.cookies SELECT * FROM src.cookies").unwrap();
+        // The shipped statements: a source takes each of its hosts WHOLE.
+        // Merging name-by-name instead unions two accounts on a shared host
+        // and produces a jar that is a session for neither — measured
+        // 2026-09-10, Chrome discarded 35 such cookies on first launch.
+        let shared_probe = dc
+            .execute(
+                "DELETE FROM main.cookies WHERE host_key IN (SELECT DISTINCT host_key FROM src.cookies)",
+                [],
+            )
+            .unwrap();
+        dc.execute_batch("INSERT INTO main.cookies SELECT * FROM src.cookies").unwrap();
         let after: i64 = dc.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
 
         // alpha's own row survives, beta's is added: that is the point of
         // combining, and a copy alone would not do it.
         assert_eq!(after - before, 1, "beta's distinct host is added");
+        let _ = &shared_probe;
         let alpha: String = dc
             .query_row("SELECT value FROM cookies WHERE host_key='alpha.test'", [], |r| r.get(0))
             .unwrap();
@@ -3673,7 +3709,15 @@ mod tests {
         let shared: String = dc
             .query_row("SELECT value FROM cookies WHERE host_key='shared.test'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(shared, "from-beta.test", "later sources win on a conflicting row");
+        assert_eq!(shared, "from-beta.test", "later sources win a contested host");
+        assert_eq!(
+            dc.query_row("SELECT COUNT(*) FROM cookies WHERE host_key='shared.test'", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+            1,
+            "a contested host must hold ONE profile's jar, not a union of two"
+        );
+        assert_eq!(shared_probe, 1, "taking a host whole must evict the rows it replaces");
     }
 
     #[test]
