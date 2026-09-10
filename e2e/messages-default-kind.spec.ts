@@ -19,16 +19,14 @@ test('Messages tab opens with the human pill selected', async ({ page }) => {
   console.log('[COUNTS-FETCH-UNFILTERED] ' + urls.filter(u => u.includes('counts=1')).every(u => !u.includes('kind=')));
   const sel = chips.filter(c => c.selected).map(c => c.label);
   expect(sel.join(','), 'exactly one chip selected, and it is Human').toMatch(/Human/i);
-  // Counts must come from the UNFILTERED ?counts=1 call, so a non-human chip
-  // must not read 0 while messages exist. Guarded on All>0: the e2e server
-  // starts with an EMPTY history db, where every chip is legitimately 0 and a
-  // blanket no-zeros assertion fails for a reason that has nothing to do with
-  // the filter.
-  const all = parseInt((chips.find(c => /^All/.test(c.label))?.label || 'All 0').split(' ').pop()!, 10);
-  if (all > 0) {
-    const zeros = chips.filter(c => !/^All/.test(c.label) && / 0$/.test(c.label)).map(c => c.label);
-    expect(zeros, `chips read 0 while All=${all} — counts got filtered: ${zeros}`).toEqual([]);
-  } else {
-    console.log('[SKIP] empty history db — count-integrity check not exercised here');
+  // A non-empty history can legitimately contain only human messages. Compare
+  // each chip with the unfiltered backend total instead of requiring every kind.
+  expect(urls.some(u => u.includes('counts=1'))).toBe(true);
+  expect(urls.filter(u => u.includes('counts=1')).every(u => !u.includes('kind='))).toBe(true);
+  const counts = await page.evaluate(async () => (await fetch('/api/history?counts=1')).json());
+  for (const [label, key] of Object.entries({ All: 'all', Human: 'human', Session: 'session', Scheduled: 'schedule', amux: 'amux', Unstamped: 'unstamped', Unclassified: 'unknown' })) {
+    const chip = chips.find(c => c.label.startsWith(label + ' '));
+    expect(chip, label).toBeTruthy();
+    expect(Number(chip!.label.split(' ').pop()), label).toBe(counts[key] || 0);
   }
 });

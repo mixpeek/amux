@@ -119,6 +119,44 @@ test('search navigation shares real matches and reports an empty filter', async 
   await expect(page.locator('#toast')).toContainText('This worker has no saved earlier output.');
 });
 
+test('Find stays visible when full history arrives, but respects scrolling away', async ({ page }) => {
+  const beacons: any[] = [];
+  await page.route('**/api/client-debug', async route => {
+    beacons.push(route.request().postDataJSON());
+    await route.fulfill({ json: { ok: true } });
+  });
+  const live = 'live preface\n'.repeat(15) + 'needle\n' + 'live tail\n'.repeat(80);
+  let history = 'earlier conversation\n'.repeat(120);
+  await page.route('**/api/sessions/nav-probe/peek?*', route => route.fulfill({
+    json: { name: 'nav-probe', output: live, history },
+  }));
+  await page.evaluate(raw => {
+    const w = window as any;
+    eval('_peekHistoryRaw = ""; _peekHistoryHTML = ""; _peekEarlier = { chunks: [], loadedKb: 0, done: true };');
+    eval('_lastLiveHTML = _peekHtml(' + JSON.stringify(raw) + '); lastPeekHTML = _lastLiveHTML;');
+    w.applyPeekSearch(false, false);
+  }, live);
+  await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
+  await page.locator('#peek-search').fill('needle');
+  await expect(page.locator('.peek-highlight.current')).toBeInViewport();
+  await page.evaluate(() => (window as any).refreshPeek(false));
+  await expect(page.locator('.peek-highlight.current')).toBeInViewport();
+  // A user who has deliberately left the result must not be snapped back by
+  // subsequent updates to the history.
+  await page.locator('#peek-body').evaluate(el => { el.scrollTop = 0; });
+  history += 'more earlier output\n';
+  await page.evaluate(() => (window as any).refreshPeek(false));
+  expect(await page.locator('#peek-body').evaluate(el => el.scrollTop)).toBe(0);
+  // Finding text before it exists in the live frame must also land when the
+  // full response later supplies the first match.
+  await page.locator('#peek-search').fill('late-history-marker');
+  await expect(page.locator('.peek-highlight')).toHaveCount(0);
+  history += 'late-history-marker\n';
+  await page.evaluate(() => (window as any).refreshPeek(false));
+  await expect(page.locator('.peek-highlight.current')).toBeInViewport();
+  await expect.poll(() => beacons.some(b => b.verdict === 'deferred-search-landed' && b.target_visible)).toBe(true);
+});
+
 test('search retains the selected message type and filters matches when it changes', async ({ page }, testInfo) => {
   await page.evaluate(() => {
     eval("_peekMsgRows = [{session:'nav-probe',type:'direct',text:'needle from the owner'}, {session:'nav-probe',type:'direct',text:'another needle from the owner'}]");
@@ -187,6 +225,7 @@ test('toolbar has one horizontal row, explicit filters and reachable named actio
   }
   await sourceFilter(page, 'session');
   expect(await page.evaluate(() => eval('_peekMsgNavKind'))).toBe('session');
+  expect(await page.locator('#peek-nav-label').evaluate(el => !el.getClientRects().length || el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await expect(page.locator('#peek-msg-count')).toHaveText('0');
   // Empty loaded output may still have earlier messages; these remain actions.
   await expect(page.getByRole('button', { name: 'Previous message', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
@@ -223,6 +262,11 @@ test('toolbar has one horizontal row, explicit filters and reachable named actio
   await tabs.click();
   await expect(page.locator('#peek-tab-customizer-menu')).toBeVisible();
   await expect(tabs).toHaveAttribute('aria-expanded', 'true');
+  await tabs.click();
+  // The removed modal must stay absent; subagent-arrows.spec.ts exercises
+  // the replacement terminal navigation, output, retry and parent restoration.
+  await expect(page.locator('#peek-subagents-btn')).toHaveCount(0);
+  await expect(page.locator('#subagents-overlay')).toHaveCount(0);
 });
 
 test('a toolbar layout regression announces itself to client diagnostics', async ({ page }) => {

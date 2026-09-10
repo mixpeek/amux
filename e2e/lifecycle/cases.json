@@ -280,7 +280,11 @@
     "actions": "Upload a text file, close peek mid-transfer, cancel another, force failure, retry and download.",
     "expected": "File bytes match; transfer survives closing; cancel is not an error; failed chip retains its retryable file.",
     "sources": [
-      "e2e/upload-chip-escape.spec.ts"
+      "e2e/upload-chip-escape.spec.ts",
+      "e2e/lifecycle/uploads.spec.ts",
+      "e2e/lifecycle/files-upload.spec.ts",
+      "e2e/lifecycle/composer.spec.ts",
+      "e2e/lifecycle/sonnet-upload.ts"
     ]
   },
   {
@@ -559,7 +563,8 @@
       "e2e/lifecycle/coordination.spec.ts",
       "e2e/lifecycle/live-coordination.spec.ts",
       "e2e/worker-request-callback.spec.ts",
-      "e2e/isolated-worker.spec.ts"
+      "e2e/isolated-worker.spec.ts",
+      "e2e/lifecycle/live-sonnet-pair.spec.ts"
     ]
   },
   {
@@ -571,7 +576,8 @@
       "e2e/lifecycle/coordination.spec.ts",
       "e2e/lifecycle/live-coordination.spec.ts",
       "e2e/worker-request-callback.spec.ts",
-      "e2e/isolated-worker.spec.ts"
+      "e2e/isolated-worker.spec.ts",
+      "e2e/lifecycle/live-sonnet-pair.spec.ts"
     ]
   },
   {

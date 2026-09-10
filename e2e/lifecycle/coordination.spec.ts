@@ -49,7 +49,10 @@ test('LC-COORD-POLICY: peer task awareness spans groups; explicit deny and isola
       expect(body.error).toMatch(target === raw ? /isolated/i : /cross.group|allowance/i);
       await info.attach(`refused-${target}`, { body: JSON.stringify(body), contentType: 'application/json' });
     }
-    await page.reload();
+    await page.locator('#board-detail-overlay.active > .overlay-header').getByRole('button', { name: /Back/ }).click();
+    const closeWorker = page.locator('#peek-overlay.active').getByRole('button', { name: 'Close worker', exact: true });
+    if (await closeWorker.isVisible()) await closeWorker.click();
+    await page.goto('/');
     for (const id of grants) {
       const deny = page.locator(`button[onclick*="_grantReject('${id}'"]`);
       await expect(deny).toBeVisible();

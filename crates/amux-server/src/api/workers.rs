@@ -2279,8 +2279,20 @@ mod tests {
         // Bare /api/sessions now serves the PYTHON SHAPE (bare array from
         // the dedicated handler, no Deprecated header) — the SPA's
         // fetchSessions throws on anything else (browser-golden finding #3).
-        let (st, headers, legacy) = send(&app, "GET", "/api/sessions", None).await;
-        assert_eq!(st, StatusCode::OK);
+        let (mut st, mut headers, mut legacy) = send(&app, "GET", "/api/sessions", None).await;
+        // Parallel worker tests can invalidate the global discovery revision.
+        // Retry only its explicit fail-closed response; other failures retain
+        // their body below and must not be hidden by a general retry.
+        for attempt in 1..5 {
+            if st != StatusCode::INTERNAL_SERVER_ERROR
+                || legacy["error"].as_str() != Some("sessions list changed during discovery; retry")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50 * attempt)).await;
+            (st, headers, legacy) = send(&app, "GET", "/api/sessions", None).await;
+        }
+        assert_eq!(st, StatusCode::OK, "legacy discovery response: {legacy}");
         assert!(headers.get("deprecated").is_none());
         let arr = legacy.as_array().expect("bare array");
         assert_eq!(arr.len(), 1);

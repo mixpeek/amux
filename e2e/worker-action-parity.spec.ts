@@ -93,7 +93,8 @@ test('worker card and peek share all worker actions, plus both peek-only actions
     };
   }, SAMPLE);
 
-  expect(state.card).toHaveLength(26);
+  expect(state.card).toHaveLength(27);
+  expect(state.card).toContain('task-queue');
   expect(state.card).toContain('copy-directory-link');
   expect(state.peek).toEqual(state.card);
   expect(state.peekOnly).toEqual(['File browser', 'Focus mode']);

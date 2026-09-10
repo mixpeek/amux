@@ -621,3 +621,103 @@ are automatically included. Review uncommitted tests in other checkouts separate
 a stable run of this checkout cannot certify concurrent drafts. The inherited
 Playwright startup banner describes configured browser targets; the report’s
 Selection field and executed test counts are the authoritative scope of this run.
+
+## Two Sonnet workers and uploads
+
+Run the focused real-provider scenario with:
+
+```bash
+python3 scripts/lifecycle/run.py live --grep LC-SONNET
+```
+
+It creates exactly two Claude workers using `--model sonnet` in one group. The
+reviewer must reproduce the seeded failure before approval, the author must revise,
+and both must finish their own work. Message origin, ordering, real card IDs,
+terminal search/navigation, final evidence, independent execution of the resulting
+module, and desktop/phone rendering are checked. A final report's boolean about
+outstanding changes does not replace the durable changes-requested message.
+
+Use a dedicated server/home, a private `TMUX_TMPDIR`, and a scratch Git repository.
+Export both `CC_HOME` and `AMUX_HOME` to that home and `AMUX_API` and `AMUX_URL` to
+that server in the worker environment. Before launching workers, run the checkout's
+`amux url --verify` with those variables and verify the printed endpoint. The CLI
+now resolves its configured home's endpoint consistently for every verb. Put this
+checkout's CLI first on the lab PATH; testing an older installed client measures
+that older client instead.
+
+For subscription authentication, retain the provider's existing login. Isolate the
+server's transcript/usage discovery to the scratch project; importing the host's
+entire history can trip the lab's spend circuit. If the user's login shell changes
+cwd, use a lab-only `CLAUDE_ENV_FILE` to restore the scratch directory and lab
+variables before Bash commands. Do not edit the user's shell profile.
+
+`AMUX_LIFECYCLE_PAIR_RUN=<existing run>` and
+`AMUX_LIFECYCLE_PAIR_OBSERVE=1` resume read-only observation after diagnosis. The
+report identifies observation mode; it is not evidence of a clean autonomous run.
+Retain earlier failed runs and record any operator steering separately.
+
+The ordinary browser phase now includes real multi-chunk text upload, Unicode and
+long filenames, image preview, SHA-256 verification of downloaded bytes, attachment
+removal and worker switching. Controlled delivery tests separately exercise text
+and attachment retention until acceptance, permanent refusals, durable offline
+queuing, duplicate-tap protection, and typing the next draft while a send is pending.
+These controlled transport tests do not substitute for live model execution.
+
+Browser discovery uses a private tmux socket. Focused invocations start only the
+selected project's server. `AMUX_LIFECYCLE_PORT` changes the base port when running
+separate projects concurrently; each invocation still needs its own output directory.
+
+
+The Sonnet selection runs the review pair first, then reuses the author in a fresh
+conversation for a real `fruit-counts.csv` upload. It requires the worker to read
+the uploaded path, produce a JSON receipt (two rows, total six), and finish its
+own task with the receipt as evidence. No receipt or peer review is fabricated by
+the observer. The pair's HTML must fit both 375px and 1280px.
+
+`AMUX_LIFECYCLE_PAIR_RUN` is generated once per live invocation and shared by the
+pair and upload cases. To inspect an existing upload without submitting new work,
+set `AMUX_LIFECYCLE_UPLOAD_OBSERVE=1`, the existing pair run, and optionally
+`AMUX_LIFECYCLE_UPLOAD_RECEIPT` to its receipt filename. Observation is recorded
+explicitly and is not a claim that this invocation created or drove the workers.
+Observe the pair before resetting its author for upload: a new conversation does
+not retain the old terminal's searchable content.
+
+`LC-FILES-UPLOAD` also exercises the Files tab's upload, preview, rename, download,
+and delete controls, including the mobile More menu. Downloaded bytes must equal
+the original uploaded bytes. Composer refusal tests cover peek and card Send /
+Queue and the Control+Enter retry shortcut.
+
+On a machine with other active checkouts, use a private `node_modules` installed
+with `npm ci` and a private browser cache. Do not symlink another lane's mutable
+dependencies: browser revisions can disappear mid-run when that lane upgrades.
+For example, set `PLAYWRIGHT_BROWSERS_PATH` to a task-owned directory and run
+`npx playwright install chromium webkit` before starting the suite. Keep the same
+environment for the suite, and do not replace its pinned executable during a run.
+
+The live pair uses Amux's Bash `amux send` transport explicitly. Claude's native
+`SendMessage` can reach another Claude session while bypassing Amux's history,
+which does not prove Amux routing, verified origins, or policy. The Messages
+check selects the Session filter and searches the visible message list; text in
+an inactive Terminal panel cannot satisfy it.
+
+For a manually provisioned tmux lab, create `TMUX_TMPDIR` before starting the
+server, unset inherited `TMUX`/`TMUX_PANE`, and verify the actual socket before
+creating workers. A nonexistent `TMUX_TMPDIR` can make tmux fall back to its shared
+socket. The bundled browser harness creates its private directory itself.
+
+The final `LC-SONNET-CROSSGROUP` phase reuses those same two workers, moves the
+reviewer into a different group through the UI, and requires each worker to read
+the other's real completed task metadata. Each writes an independently checked
+receipt, sends Amux messages with verified origins, and finishes its own new chore.
+Both terminal search and the visible Session messages are checked at desktop and
+phone widths. `AMUX_LIFECYCLE_CROSSGROUP_OBSERVE=1` observes an existing completed
+phase without changing groups or sending new prompts.
+
+`LC-SONNET-QUEUE` is the final acceptance boundary. It creates four real chore
+cards on the existing pair: each worker gets one Backlog and one To Do card,
+with dependencies in opposite directions. After creation the observer only reads;
+it never sends a wake-up, claims work, changes status, writes receipts or completes
+cards. Every seeded card must reach done/verified with a correct worker-written
+receipt and evidence. Every remaining run-owned capture must also be resolved by
+its worker. A completed handoff alone does not satisfy this boundary.
+`AMUX_LIFECYCLE_QUEUE_OBSERVE=1` checks an existing run without creating cards.

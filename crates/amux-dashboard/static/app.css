@@ -1927,6 +1927,10 @@
   .peek-filter-caption { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; font:600 0.75rem/1.15 system-ui,sans-serif; }
   #peek-filter-summary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); font-size:0.62rem; font-weight:400; }
   .peek-msg-count { flex-shrink:0; color:var(--dim); font:500 0.65rem/1 system-ui,sans-serif; }
+  @media (max-width: 480px) {
+    .peek-filter-caption { display:none; }
+    .peek-filter-btn { justify-content:space-between; }
+  }
   .peek-filter-panel { position:absolute; top:calc(100% + 7px); left:0; width:min(320px,calc(100vw - 24px)); box-sizing:border-box; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,0.25); z-index:65; max-height:calc(100dvh - 180px); overflow-y:auto; }
   .peek-filter-panel[hidden] { display:none; }
   .peek-filter-heading, .peek-filter-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -2049,7 +2053,7 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 20px;
     font-size: 0.72rem; max-width: 180px; user-select: none;
   }
-  .peek-attach-chip.uploading { animation: chip-pulse 1.2s ease-in-out infinite; }
+  .peek-attach-chip.uploading { animation: none; }
   @keyframes chip-pulse { 0%,100% { opacity: 0.45; } 50% { opacity: 0.85; } }
   .peek-attach-chip img { width: 24px; height: 24px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
   .peek-attach-chip .chip-icon { font-size: 1rem; line-height: 1; flex-shrink: 0; }
@@ -6127,3 +6131,6 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .peek-agent-nav button:disabled { opacity:0.5; cursor:wait; }
 .peek-agent-heading { color:var(--dim); font-weight:600; }
 .peek-output-wrap:has(.peek-agent-nav:not([hidden])) #peek-body { padding-top:62px; }
+
+/* AMUX-4374: the failed attachment has a named, keyboard-accessible action. */
+.peek-attach-chip button.chip-retry { border:0; background:transparent; padding:4px; font:inherit; color:var(--accent); }

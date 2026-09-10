@@ -1941,82 +1941,6 @@ THE SHAPE, which is the reusable part: a cell that reads the ambient environment
  is to run the file somewhere the ambient answer is absent.
 
 ---
-## The staged-guard's blocked-commit remedy edits the other lane's staged work
-AREA: attribution
-SEVERITY: slows
-STATUS: fixed
-DATE: 2026-08-31
-SESSION: amux (found the technique), amux-frustrations (filed and fixed)
-CARD: AF-365
-SYMPTOM: When the guard BLOCKS a commit over a peer's co-edited file, its only
-  suggestion was `git restore --staged <their paths>`. On a shared index that
-  mutates state belonging to the other lane: their file is staged because THEY
-  staged it, and unstaging is an edit to someone else's in-flight work made by a
-  party who cannot see what they intended. The near-miss that exposed it: amux had
-  an unstaged `checks.yml` hunk at ~line 316 while my hunk in the SAME FILE was
-  already staged at ~line 181.
-COST: No damage, because amux found the exit themselves and said the guard does not
-  suggest it. What the obvious path would have cost is worse than plain absorption:
-  committing that file would have SPLIT my change, landing my CI wiring under their
-  commit message while the app.js it wires stayed uncommitted, so my own commit
-  would have wired nothing. Two lanes, one file, and every documented move was wrong.
-  `git add -p`, which the guard recommends two screens down for the partial-stage
-  case, is also the wrong tool here: the problem is not which of YOUR hunks to take,
-  it is that THEIRS are already staged.
-FIX: Fixed. `git commit <your paths>` is now offered FIRST, labelled as the exit
-  that touches nothing the peer owns, and the unstage remedy now says out loud that
-  it edits the shared index. A cell in test_amux_staged_guard.py pins both the
-  presence and the ORDER, plus the stated reason, because an unexplained ordering
-  gets tidied back by the next person who thinks restore reads better first.
-  The cell reads the SHIPPED hook rather than executing the branch (that text is
-  inline in main() and reaching it needs a multi-session git fixture), and it says
-  so rather than implying parity with the cells above it.
-
----
-## Editing a running .sh corrupts it mid-run, and the instrument cannot report its own death
-AREA: instruments
-SEVERITY: blocks
-STATUS: fixed
-DATE: 2026-08-31
-SESSION: amux (hit it and diagnosed it), amux-frustrations (owns the file, took the fix)
-CARD: AF-368
-SYMPTOM: `amux` ran `scripts/test-contended.sh -p amux-server` and got:
-    1888 passed, 0 failed, and NO `test result: FAILED` line anywhere
-    no contention verdict printed at all
-    ./scripts/test-contended.sh: line 53: syntax error near unexpected token `('
-    exit 2
-  Line 53 was a bare `#`, and the file was `bash -n` clean throughout. Two of my
-  commits to that file landed inside their run. bash reads a script INCREMENTALLY,
-  by byte offset, so the file growing underneath the running shell shifted the
-  offsets and bash resumed mid-token, then failed on whatever byte now sat at its
-  saved position — nowhere near either edit.
-COST: Near-miss on a false red. Exit 2 with zero failures reads as a broken suite,
-  and amux nearly reported it as one; what stopped them was noticing that "0 failed"
-  and "exit 2" cannot both be a test result. They also correctly refused to report
-  their own AMUX-3718 work green off that run, because its exit status described my
-  edit rather than their code. This is the THIRD cause of a red suite after the
-  builder and the dirty worktree, and it is the one this script structurally cannot
-  report: it dies before reaching any echo, so its verdict is not wrong, it is
-  ABSENT. The instrument's blind spot is the instrument.
-FIX: Fixed. The wrapper now copies itself to a temp file and `exec`s that before
-  doing anything else, so an edit cannot reach a run in flight. `exec` means one
-  shell and the exit status still belongs to cargo. Snapshotting is the only fix at
-  the right layer, because a report cannot describe a run that stopped existing.
-  GENERALISES, and this is the part worth keeping: every .sh in this repo is
-  exposed, and the bash CLI ships on SAVE, so `amux` itself is the largest instance
-  — a long `amux` invocation running while any lane saves that file is this exact
-  hazard. Not fixed here; that is a separate card.
-  A NOTE ON THE TEST, because the first one lied. I wrote a behavioural cell that
-  started the wrapper, truncated the file to garbage mid-run, and asserted it still
-  exited 0. It passed. It also passed with the re-exec MUTATED AWAY, because bash
-  buffers a file this small in a single read and the truncation never reached the
-  running shell. A control that cannot fail is worse than none, so it was deleted
-  rather than relabelled. The shipped cells assert the preamble exists, execs the
-  snapshot, and has NO executable statement before it — position being the property
-  that matters, since a snapshot taken after other work is a snapshot of a file that
-  could already have moved. Both mutations now redden exactly one cell each.
-
----
 ## A status signal with a store, a consumer and a unit test, and no producer anywhere
 AREA: instruments
 SEVERITY: slows
@@ -3408,6 +3332,153 @@ SYMPTOM: The terminal lost its agent arrows; the replacement toolbar button only
 COST: Owner could not navigate subagent work where they were reading the terminal and had to request the controls again.
 FIX: Two arrows beside Copy cycle current main/subagent output, preserving the main draft and view. Read owned structured child transcripts, never inject navigation keys. Missing outputs and list failures announce themselves through subagent-navigation diagnostics. Desktop/phone navigation, no-child, failure, and parent restoration tests. Live verification also caught a parent loading indicator surviving a quick child switch; clear it on selection and cover that race.
 
+## Sending cleared a draft before Amux confirmed delivery
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The worker composer cleared text and attachments before /send returned; permanent refusal lost the visible retry draft. A second send could race the pending request.
+COST: The lifecycle failure-path test reproduced loss of the only visible message draft.
+FIX: 2ba4ec5b retains text and files until server or durable outbox acceptance, disables duplicate sends, preserves concurrent new drafts, and emits composer-delivery/unconfirmed with draft_retained to the local client-debug log.
+
+## A dedicated CC_HOME still routed Bash commands to production
+AREA: cli
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The Sonnet lab workers used their dedicated CC_HOME but the Bash CLI resolved the production endpoint.json and its legacy verbs defaulted to port 8824.
+COST: The live pair queried the wrong board and required an explicit AMUX_API correction before coordination could continue.
+FIX: 2ba4ec5b resolves endpoint.json from CC_HOME and initializes the API base for every legacy verb; the URL diagnostic names the endpoint file. Eight shell routing tests passed.
+
+## An idle hook sent Escape into an active Claude tool turn
+AREA: scheduler
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The live Sonnet pair showed interrupted tools when an idle-hook callback trusted the hook over a fresh active terminal frame and sent a leading Escape.
+COST: The real peer-review cycle needed recovery after callbacks interrupted work.
+FIX: 2ba4ec5b classifies the fresh frame after the send lock: active frames paste without Escape and live selectors wait. Queue admission still trusts the hook so background agents cannot strand delivery. Six steer tests passed; local verdicts idle_hook_live_activity_paste and idle_hook_live_selector_wait identify the paths.
+
+## Freeze reordered pinned workers instead of freezing the displayed list
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The status-order test pinned a worker and then Freeze moved it into a computed status bucket instead of preserving the order on screen.
+COST: The broad visual test exposed a visible jump when enabling Freeze.
+FIX: 2ba4ec5b snapshots rendered card order, appends remaining workers, and emits worker-freeze-order/captured-rendered-order locally. The nine ordering tests passed on all three browser targets.
+
+## Files menu Download failed after a successful upload and rename
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: An actual Files-tab upload/preview/rename succeeded, but Download was canceled. Its direct anchor used the JSON preview endpoint and omitted bearer authentication.
+COST: The new exact-byte roundtrip test could not retrieve the file that the UI had successfully uploaded.
+FIX: The menu now shares the authenticated raw-byte download helper with the preview toolbar. Failures emit file-download/failed locally. Upload, preview, rename, exact-byte download and deletion passed on desktop Chromium, mobile Chromium and WebKit.
+
+## A just-created worker accepted keystrokes in its launch shell
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: A real Sonnet worker was still executing its launch shell when Send pasted a long prompt. The send later reported not_submitted. The test had mistaken --model sonnet in the launch command for the ready provider banner.
+COST: The fresh two-worker acceptance run could not begin its review cycle; the retained draft made recovery possible.
+FIX: During the startup window, send waits for a positive provider UI frame before typing and refuses without typing if readiness times out. Local verdicts send_waiting_for_boot_ui and send_boot_ui_not_ready expose both outcomes. The live suite requires the actual Sonnet version/footer, and pair/upload are serial so a failed pair cannot reset the author for upload.
+
+## Settings promised a Notes folder that never loaded
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The settings suite carried a skipped test for a Notes folder section that displayed an ellipsis forever; no client code populated it and no backing endpoint existed.
+COST: The consolidated mobile audit could not verify the advertised feature and reported skipped coverage.
+FIX: Removed the unsupported section and replaced the skip with an assertion that the misleading UI is absent. Settings now run at mobile width on its separate server; failures and screenshots are retained in the lifecycle report. There is no remaining Notes-sync action to emit a runtime event.
+
+## The route catalog advertised a nonexistent host-metrics endpoint
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The route-table integration test received 404 for OPTIONS /api/metrics/host even though the catalog advertised GET. At the tested revision, the real metrics router implemented /api/metrics, /fleet and /replay, while the host panel was not yet exposed.
+COST: The merged lifecycle verification failed its route-table consistency gate.
+FIX: Initially removed the unsupported catalog entry. Incoming main commit 1b22fd21 subsequently implemented /host and exposed its UI, so the integrated change preserves that implementation and restores its catalog entry. The bidirectional route-table check verifies agreement; the consolidated browser suite now opens Host, checks a real measured response, refreshes, and follows Disk Cleanup and System navigation. Host measurement failures retain the existing measured=false diagnostic.
+
+
+## Find did not land when its first match arrived with terminal history
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The live Sonnet screenshot showed an unrelated earlier message while Find displayed CROSS_ACK and a match count. The query had been entered before the full history response; only Locate armed a deferred jump. A DOM-visible assertion did not prove the match was inside the scrolling terminal.
+COST: A user could find a message in the count while still being shown unrelated output.
+FIX: Typed Find now arms the same one-shot jump when its current frame has no match; arriving history lands it and emits peek-message-nav/deferred-search-landed with measured target geometry. Existing selected-result buffering and a reader's deliberate scroll remain intact. The regression covers late history and scrolling away; live checks now require the selected match to be in the viewport.
+
+## A saved board title clipped after switching from desktop to phone width
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The phone screenshot of a completed queue task showed only its shared run prefix; the distinguishing task suffix was hidden. The readonly textarea kept its desktop height after its width changed.
+COST: Different completed tasks appeared to have the same title on a resized or rotated display.
+FIX: Observe title width and recalculate its content height in the next animation frame without editing the text or causing a ResizeObserver loop. The local board-detail-layout/title-resized-after-wrap event names measured corrections. The real board-create/read/export scenario now checks the complete title after desktop-to-phone resizing.
+
+
+## The extra terminal action crowded the phone filter caption
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: After the new Subagents action arrived on main, the phone toolbar squeezed the word Filters into the match count. All outer buttons were still large enough, so the old geometry check missed the overlapping inner caption.
+COST: The live peer-message screenshot had an unreadable filter caption despite a passing outer-toolbar check.
+FIX: Phone layouts use the filter icon and count, retaining the full accessible name and selected-source description. The toolbar diagnostic now reports clipped_filter_caption, and the viewport regression checks the inner label as well as button bounds.
+
+
+## The Subagents dialog opened behind the terminal
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The newly added toolbar button activated a same-z-index overlay placed before Peek in the DOM; its data loaded but Peek covered its contents and close button. The overlay-card/head classes also had no styling.
+COST: The new action could not be inspected or dismissed through its own controls while the terminal remained open.
+FIX: The incoming main change replaced this dialog with read-only terminal arrows, removing the covered overlay entirely. Preserve that replacement and verify the old dialog and launch button remain absent; the consolidated suite includes subagent-arrows.spec.ts for output, retry, navigation and parent restoration. Existing subagent-navigation diagnostics expose failures; no dialog runtime path remains to diagnose.
+
+
+## Host status chips were unreadable in light mode
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The new Host panel passed navigation tests, but the actual phone and desktop screenshots showed near-black CPU/Memory/Disk labels on a hard-coded dark chip background in light mode. The status text also used bright dark-theme colors.
+COST: A user could see colored dots and values without being able to read which host dimension they described.
+FIX: v0.9.874 uses the existing card/text and semantic status theme colors. The real Host lifecycle toggles both themes through Settings and checks computed label/status contrast against 4.5:1. Local host-analysis-contrast diagnostics report readable/low-contrast, actual foreground/background colors, ratios, theme and six considered samples after rendering.
+
 ## Claude opens a diff sidebar in the worker terminal
 AREA: terminal
 SEVERITY: slows
@@ -3418,3 +3489,117 @@ CARD: AMUX-4372
 SYMPTOM: mixpeek-general displayed Claude's diff sidebar and /diff to hide diff, compressing the conversation and showing empty diff panels.
 COST: Owner had to request removal of a terminal layout they never want.
 FIX: Close observed active sidebars once (89 panes checked, zero left open; native close controls preserve drafts), seed Claude's native diffSidebarOpen=false on worker launches (including already-trusted folders), and remove /diff from amux command suggestions. Log preference persistence success/failure; regression tests cover preference reset, idempotence, unrelated config preservation, and slash-command discovery.
+
+
+## The send-retry regression existed without a CI invocation
+AREA: tests
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The published lifecycle audit failed GitHub checks because test-send-retry-identity.py, already on main, was not invoked by any workflow or hook.
+COST: Stable retry identity and refusal-without-terminal-injection had a regression file but no continuous coverage, and the required harness-wiring ratchet blocked checks.
+FIX: Invoke the real Python harness in checks.yml next to the existing send-retry tests. Its outage/recovery/refusal cases and the harness-wiring ratchet pass locally. The existing test-harness-wired.sh diagnostic names any future unwired harness in CI and locally; no product runtime path is involved.
+
+## Image attachments stay at zero percent
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4374
+SYMPTOM: Two image.png chips stayed at 0%; upload fetch and response-body reads had no deadline. Live start requests took 24.6s and 30.8s despite ultimately returning200. A hung request could hold one of four slots forever. Queued uploads also captured the global peek array, so switching workers before their start could misroute attachments.
+COST: Owner could not reliably attach screenshots or send the blocked draft.
+FIX: Bound each upload phase, retry transient failures up to three attempts with fresh upload IDs, and retain failed chips with an explicit Retry button. Show queued/starting/uploading/finishing/retrying states. Create placeholders immediately and capture the originating attachment array; retries share the concurrency limit. Record phase, attempt, bytes, HTTP status and outcome in attachment-upload diagnostics. Desktop/phone regression tests cover stalled fetches and bodies, retries, server restarts, cancellation and worker switching.
+
+
+## The outage test still treated a refused write as a lost connection
+AREA: tests
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: GitHub's e2e job failed the shipped-function Node test because it still expected a failed outbox write to make the connection badge read Sync error. The current product deliberately reports connection/read health separately and shows pending operation failures in the outbox.
+COST: The stale assertion stopped the browser CI job before its browser cases could run.
+FIX: Align the assertion with the documented connection behavior, retain the checks for pending counts and read/auth errors, and explicitly assert the failed operation still displays its error. The existing named Node assertion is the local/CI diagnostic; no runtime behavior is changed.
+
+## Startup message refusal inherited HTTP 500
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Hosted refusal census found one unclassified send failure: a worker still starting correctly declined typing but appeared as a server crash.
+COST: Failed hosted Rust check after the lifecycle push.
+FIX: Classify the startup refusal as 409 with a wait/retry next step. The literal census and state-refusal regression diagnose future classification drift.
+
+## A populated torrent panel threw after the upload status change
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: SPA lint caught undefined f in the torrent progress renderer, copied from attachment status rendering. Empty torrent fixtures had not reached it.
+COST: Blocked follow-up SPA check; populated downloads would disappear behind a console error.
+FIX: Restore torrent percentage rendering and bump app/service-worker versions together. LC-TORRENT verifies populated progress and pause/resume/remove on all three viewports; the existing no-undef gate identifies the offending binding.
+
+## Parallel legacy discovery test discarded the retryable response body
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Hosted legacy sessions test returned 500 during parallel roster mutations and only printed the status, omitting its diagnostic body.
+COST: Failed hosted Rust check requiring a separate investigation.
+FIX: Preserve the body in the status assertion and retry at most four times only for the exact documented discovery-revision invalidation error. All other errors still fail immediately.
+
+
+## Torrent control names exposed symbols instead of actions
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The populated-panel browser check found buttons named only pause/stop glyphs; title tooltips did not supply an accessible action name.
+COST: Three viewport failures after progress rendering was repaired.
+FIX: Explicit aria-labels name Pause, Resume, Remove and Stop & remove. LC-TORRENT uses accessible action names and verifies each resulting state, so missing labels cannot silently regress.
+
+## Two-image roundtrip test downloaded without its authenticated context
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Both UI uploads finished, but the new direct download assertion returned 401 in all three browsers; its APIRequestContext omitted the dashboard bearer token.
+COST: Three failed checks in a 45-case upload/composer run; earlier progress comments overstated that case before the final summary.
+FIX: Use the existing auth helper for downloads and assert the actual status with the requested URL. Keep the real byte equality check and preserve the original failed report.
+
+## Provider usage disappears during account throttling
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4375
+SYMPTOM: Settings showed Claude Unavailable after HTTP429 despite an active subscription. The last successful report existed only in a short-lived route cache; deployments erased it. Routing and reserve consumers bypassed that cache and made competing probes. The whole-envelope stale fallback also rewound healthy Codex/Gemini rows.
+COST: Owner lost visibility into remaining plan capacity and had to reopen Settings to discover recovery.
+FIX: Share one in-flight Claude probe across server consumers, respect Retry-After with bounded exponential backoff, and atomically persist credential-scoped usage snapshots and cooldowns. Show historical readings with their observation time and scheduled refresh; never route work from stale percentages. Preserve other providers' current rows. Settings refreshes while open and retains readings through network interruptions. Log fresh, last_known, retry_scheduled and cache_write_failed outcomes. Tests cover concurrent consumers, restart/backoff/account isolation, stale routing exclusion, provider independence, and desktop/phone recovery.
+
+
+## Torrent controls were too small to tap on a phone
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Opening the passing populated torrent screenshot showed tiny adjacent pause and stop glyphs with correspondingly small targets at 375px.
+COST: A visual review found friction that successful click assertions missed.
+FIX: Give every torrent action a bordered 44px target and readable theme text. LC-TORRENT records measured dimensions and fails below 44px while retaining viewport-fit and effect checks.

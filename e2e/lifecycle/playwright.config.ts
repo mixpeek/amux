@@ -3,8 +3,16 @@
 import { defineConfig } from '@playwright/test';
 import base from '../playwright.config';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 
 const output = path.resolve(process.env.AMUX_LIFECYCLE_OUTPUT || 'test-results/lifecycle');
+const firstPort = Number(process.env.AMUX_LIFECYCLE_PORT || 19823);
+const selected = process.argv.flatMap((arg, index, args) => arg.startsWith('--project=')
+  ? [arg.slice(10)] : arg === '--project' ? [args[index + 1]] : []);
+// A separate socket prevents read-only discovery from probing the live fleet.
+// macOS's long TMPDIR exceeds the Unix socket path limit once tmux appends its suffix.
+const socketRoot = () => fs.mkdtempSync(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(), 'amux-lc-'));
 export default defineConfig({
   ...base,
   testDir: '..',
@@ -13,14 +21,14 @@ export default defineConfig({
   fullyParallel: false,
   retries: 0,
   projects: base.projects!.map((project, index) => ({
-    ...project, use: { ...project.use, baseURL: `https://localhost:${19823 + index * 10}` },
+    ...project, use: { ...project.use, baseURL: `https://localhost:${firstPort + index * 10}` },
   })),
   webServer: (base.webServer as any[]).map((server, index) => ({
     ...server,
     command: `bash ${path.join(__dirname, 'serve.sh')}`,
-    url: `https://localhost:${19823 + index * 10}/health`,
-    env: { ...server.env, AMUX_RS_PORT: String(19823 + index * 10) },
-  })),
+    url: `https://localhost:${firstPort + index * 10}/health`,
+    env: { ...server.env, AMUX_RS_PORT: String(firstPort + index * 10), TMUX_TMPDIR: socketRoot() },
+  })).filter((_, index) => !selected.length || selected.includes(base.projects![index].name!)),
   outputDir: path.join(output, 'browser-artifacts'),
   reporter: [
     ['line'],

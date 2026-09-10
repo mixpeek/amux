@@ -3,9 +3,11 @@ import { boot, auth, checkpoint } from './evidence';
 
 test('LC-BOARD: create through UI, inspect, reload, search and export exact new work', async ({ page, request }, info) => {
   test.setTimeout(90_000);
+  const pageErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
   await boot(page);
   const headers = await auth(page);
-  const title = `lifecycle-${info.project.name}-${Date.now()}`;
+  const title = `lifecycle-${info.project.name}-${Date.now()} — preserve this complete task title when switching between desktop and phone layouts`;
   await page.locator('#tab-board').click();
   await page.locator('.board-new-btn').click();
   await page.locator('#be-title').fill(title);
@@ -25,6 +27,15 @@ test('LC-BOARD: create through UI, inspect, reload, search and export exact new 
   await page.goto(`/#issue=${encodeURIComponent(card.id)}`);
   await expect(page.locator('#bd-key')).toHaveText(card.id);
   await expect(page.locator('#bd-preview')).toContainText('preserve this exact note');
+  const initialViewport = page.viewportSize()!;
+  for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 667 }]) {
+    await page.setViewportSize(size);
+    await expect.poll(() => page.locator('#bd-title').evaluate(el => el.scrollHeight <= el.clientHeight + 1),
+      { message: 'the saved title must remain fully readable after resizing' }).toBe(true);
+    await checkpoint(page, info, `02-title-wrap-${size.width}`);
+  }
+  await page.setViewportSize(initialViewport);
+  expect(pageErrors.filter(error => /ResizeObserver/.test(error))).toEqual([]);
   await checkpoint(page, info, '02-persisted-task-detail');
   await page.reload();
   await expect(page.locator('#bd-key')).toHaveText(card.id);
@@ -44,6 +55,7 @@ test('LC-BOARD: create through UI, inspect, reload, search and export exact new 
   expect(exported).toContain(title);
   expect(exported).toContain(card.id);
   await info.attach('exported-work', { path: destination, contentType: 'application/json' });
+  expect(pageErrors.filter(error => /ResizeObserver/.test(error))).toEqual([]);
 });
 
 // Enumerated product surfaces, not a BFS that blindly starts workers or sends email.

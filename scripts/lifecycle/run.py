@@ -87,7 +87,7 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--binary', type=Path, help='existing test binary; records hash and marks source provenance unverified')
     parser.add_argument('--project', choices=['desktop', 'mobile', 'ios-safari'])
-    parser.add_argument('--grep', help='focused browser validation; always reported as partial')
+    parser.add_argument('--grep', help='focused browser or live validation; always reported as partial')
     args = parser.parse_args()
     out = (args.output or ROOT / 'test-results' / f'lifecycle-{time.strftime("%Y%m%d-%H%M%S")}').resolve()
     # Never reuse old reports as current evidence.
@@ -168,7 +168,9 @@ def main():
             state['stages'].append({'name': 'live-journey', 'status': 'INCOMPLETE',
                                     'note': 'Dedicated lab required: URL, WORKSPACE, and LAB_ACK=dedicated-test-instance'})
         else:
-            run('live-journey', ['node', 'node_modules/@playwright/test/cli.js', 'test', '--config=e2e/lifecycle/live.config.ts'], browser_json='live.json', live=True)
+            command = ['node', 'node_modules/@playwright/test/cli.js', 'test', '--config=e2e/lifecycle/live.config.ts']
+            if args.grep: command += ['--grep', args.grep]
+            run('live-journey', command, browser_json='live.json', live=True)
     statuses = [stage['status'] for stage in state['stages']]
     state['status'] = 'FAIL' if 'FAIL' in statuses else 'INCOMPLETE'
     if statuses and all(status == 'PASS' for status in statuses) and args.mode in ('browser', 'live'):

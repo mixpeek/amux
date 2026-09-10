@@ -65,15 +65,8 @@ import type { Page, APIRequestContext } from '@playwright/test';
 // the theme test asserts the product's default aesthetic instead of branching.
 test.use({ colorScheme: 'dark' });
 
-// ---- desktop scope ----------------------------------------------------------
-// No control in the panel is mobile-specific; the mobile project re-running
-// identical pref writes would only race the desktop worker.
-test.beforeEach(async ({}, testInfo) => {
-  test.skip(
-    testInfo.project.name === 'mobile',
-    'settings panel controls are desktop-scoped (no mobile-specific control)',
-  );
-});
+// Each project owns a separate server/home, so settings writes are isolated.
+// Exercise the same visible controls at phone widths as well as desktop.
 
 // ---- helpers (settle/token idioms shared with golden.spec.ts) ---------------
 
@@ -830,13 +823,13 @@ test('settings_usage_meter', async ({ page, request }) => {
     await expect(row, `missing ${provider.id} summary`).toHaveCount(1);
     const summary = row.locator('summary');
     await expect(summary).toContainText(provider.label);
-    if (!provider.available) await expect(summary).toContainText('Unavailable');
+    if (!provider.available) await expect(summary).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account');
     if (provider.metered === false) await expect(summary).toContainText('Unlimited');
 
     if (!(await row.evaluate((element) => element.hasAttribute('open')))) await summary.click();
     if (!provider.available) {
       expect(provider.cause, `${provider.id} degradation must name its cause`).toBeTruthy();
-      await expect(row).toContainText(String(provider.reason));
+      await expect(row).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Waiting for the provider’s usage report.' : String(provider.reason));
       continue;
     }
     const windows = (provider.windows || []).filter((window: any) =>
@@ -939,11 +932,10 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
   const emailPrompt = page.locator('#team-invite-email');
   await expect(emailPrompt).toBeVisible();
   await emailPrompt.fill('invitee@example.com');
-  await expect(page.locator('#team-scope-level option')).toHaveText([
-    'Global — every worker and card',
-    'Group — workers tagged in one group',
-    'Worker — one worker only',
-  ]);
+  await expect(page.locator('#invite-team-id')).toBeVisible();
+  await expect(page.locator('#invite-team-id')).toHaveValue('team_global');
+  const teams = await (await request.get('/api/org/teams', { headers: authHeaders(token) })).json();
+  expect(teams.some((team: any) => team.id === 'team_global')).toBe(true);
   const [invRes] = await Promise.all([
     page.waitForResponse(
       (r) => r.url().endsWith('/api/org/invites') && r.request().method() === 'POST',
@@ -1022,17 +1014,11 @@ test('settings_about_branding_editor', async ({ page, request }) => {
   await res.json();
 });
 
-test('settings_notes_folder_row', async ({}, testInfo) => {
-  testInfo.annotations.push({
-    type: 'not-relevant',
-    description:
-      'control: "Notes folder" row (#settings-notes-dir) — pure display div with NO populating code ' +
-      'in the extracted client (grep app.js: nothing writes it) and no notes-dir endpoint in the Rust ' +
-      'OR Python server (amux-server.py only carries the same dead markup at :32957). Vestigial UI ' +
-      'from the removed notes-sync feature → NOT RELEVANT ANYMORE; candidate for deletion from ' +
-      'index.html rather than porting.',
-  });
-  test.fixme(true, 'Notes folder row is dead UI in both servers (not relevant anymore — remove, do not port)');
+test('settings_notes_folder_row', async ({ page }) => {
+  await settle(page);
+  await openSettings(page);
+  await expect(page.locator('#settings-notes-section')).toHaveCount(0);
+  await expect(page.getByText('Notes sync (read + write) with this folder', { exact: false })).toHaveCount(0);
 });
 
 // ============================================================================

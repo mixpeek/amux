@@ -1733,6 +1733,24 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
 /// durable answer is the lane's own reported state, which `steer_lane_at_boundary`
 /// already prefers. This narrows the fallback's blast radius; it does not make
 /// the fallback good.
+#[derive(Debug, PartialEq, Eq)]
+enum IdleHookFrame {
+    Selector,
+    Active,
+    Idle,
+}
+
+// A hook controls queue admission; this fresh frame controls destructive keys.
+fn idle_hook_frame(raw: &str) -> IdleHookFrame {
+    if detect_claude_status(raw) == "waiting" {
+        IdleHookFrame::Selector
+    } else if pane_bar_says_generating(raw) {
+        IdleHookFrame::Active
+    } else {
+        IdleHookFrame::Idle
+    }
+}
+
 pub(crate) fn pane_bar_says_generating(raw_output: &str) -> bool {
     let clean = strip_ansi(raw_output);
     let nonblank: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -6010,6 +6028,7 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
     //     on its own without anybody fixing amux.
     let conflict: &[(&str, &str)] = &[
         ("not running", "POST /api/sessions/<name>/start, or send again to auto-wake it"),
+        ("worker is still starting", "wait for the provider terminal to be ready, then retry the retained message"),
         // The keys landed and Claude Code did not take them. amux did its job
         // and the composer declined, so the text is still in the input box —
         // recoverable, and the caller needs to know it is NOT delivered.
@@ -7060,6 +7079,24 @@ async fn send_text_inner(
         now_i64() - last_started < 20
     };
     let mut out_st = tmux_capture(name, 15).await;
+    // A newly-created pane can be running its launch shell without drawing a
+    // shell prompt OR the provider composer. Sending then types the user's
+    // prompt into the startup script. Wait on positive UI evidence, not the
+    // process existence or the model name echoed by the launch command.
+    if boot_in_flight && !claude_ui_visible(&strip_ansi(&out_st)) {
+        tracing::info!(session = %name, verdict = "send_waiting_for_boot_ui",
+            "new worker has not drawn its provider UI — holding message before typing");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline && !claude_ui_visible(&strip_ansi(&out_st)) {
+            sleep_ms(250).await;
+            out_st = tmux_capture(name, 15).await;
+        }
+        if !claude_ui_visible(&strip_ansi(&out_st)) {
+            tracing::warn!(session = %name, verdict = "send_boot_ui_not_ready",
+                "provider UI did not appear — message was not typed into the launch shell");
+            return (false, "worker is still starting — message not sent; retry when its terminal is ready".into());
+        }
+    }
     if !out_st.is_empty() && at_resume_picker(&strip_ansi(&out_st)) {
         return (false, "session is in resume picker".into());
     }
@@ -7391,6 +7428,27 @@ async fn send_text_inner(
     // `sent_at` bounds the JSONL evidence window: an OLDER identical message
     // (a second "continue" minutes later) must not count as this send.
     let sent_at = now_f64();
+    // A Stop hook authorizes draining the queue, not pressing Escape forever.
+    // Another turn/tool can start between that hook and this send lock. Preserve
+    // hook-based admission (background agents must not strand the queue), but
+    // use the live footer to choose non-interrupting paste and verification.
+    // The Sonnet pair lifecycle reproduced rejected tool calls on callbacks
+    // whose hook still said idle while the footer said "esc to interrupt".
+    if hook_confirmed_idle {
+        let live = tmux_capture(name, 30).await;
+        if idle_hook_frame(&live) == IdleHookFrame::Selector {
+            tracing::warn!(session = %name, verdict = "idle_hook_live_selector_wait",
+                "idle hook became stale before a live selector — preserving the pending question");
+            return (false, "session at a selector — retry at next idle boundary".into());
+        }
+        if idle_hook_frame(&live) == IdleHookFrame::Active {
+            generating = true;
+            tracing::warn!(
+                session = %name, verdict = "idle_hook_live_activity_paste", from_steering,
+                "idle hook disagrees with live activity — delivering without Escape"
+            );
+        }
+    }
     if !generating {
         // Fresh re-check right before the Escape (py:25597): "esc to interrupt"
         // in the STATUS BAR is the reliable generating signal. Scoped to the
@@ -23341,6 +23399,10 @@ mod tests {
         let shell = "Last login: Sat\nmixpeek$ ";
         assert!(!claude_ui_visible(shell));
         assert!(at_shell_prompt(shell));
+        let launching = "source /tmp/lab/amux.env 2>/dev/null; set +a; unset ANTHROPIC_API_KEY;\nclaude --model sonnet --session-id test-id";
+        assert!(!claude_ui_visible(launching), "the model in a launch command is not a ready provider");
+        let sonnet = "Claude Code v2.1.267\nSonnet 5 with xhigh effort · Claude Max\n❯ \n⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents";
+        assert!(claude_ui_visible(sonnet), "the actual Sonnet footer releases a held startup send");
         // Spinner = active; prompt-glyph lines never count as chrome.
         let active = "\u{273b} Crunching\u{2026} (12s)\n\u{276f} typed text";
         assert_eq!(detect_claude_status(active), "active");
@@ -26936,6 +26998,21 @@ mod steer_freeze_tests {
   gpt-5.6-sol xhigh · ~/Dev/amux";
 
     #[test]
+    fn stale_idle_hook_preserves_sonnet_tools_and_pending_questions() {
+        // Captured in the two-Sonnet lifecycle: an automated callback rejected
+        // an in-flight tool, then the resulting AskUserQuestion was vulnerable
+        // to the next callback. Both must keep Escape out of delivery.
+        let busy = "Running 1 shell command…\n────────────────────\n❯ \n────────────────────\n  ⏵⏵ auto mode on · esc to interrupt · ← 2 agents\n";
+        let question = "☐ Capture shells\nHow should I handle these?\n❯ 1. Discard both now (Recommended)\n  2. Leave them open\n  3. Explain why\n  4. Type something.\n────────────────────\nEnter to select · ↑/↓ to navigate · Esc to cancel\n";
+        assert_eq!(idle_hook_frame(busy), IdleHookFrame::Active);
+        assert_eq!(idle_hook_frame(question), IdleHookFrame::Selector);
+        // Mentioning interruption in ordinary transcript prose must still let
+        // an idle queue drain; otherwise this fix recreates the old freeze.
+        assert_eq!(idle_hook_frame(FROZEN_IDLE_PANE), IdleHookFrame::Idle);
+        assert_eq!(idle_hook_frame(IDLE_WITH_AGENTS_PANE), IdleHookFrame::Active);
+    }
+
+    #[test]
     fn prose_about_esc_to_interrupt_is_not_a_generating_lane() {
         assert!(
             !pane_bar_says_generating(FROZEN_IDLE_PANE),
@@ -28219,6 +28296,7 @@ mod refusal_status_tests {
     fn state_refusals_are_conflicts() {
         for msg in [
             "not running",
+            "worker is still starting — message not sent; retry when its terminal is ready",
             "session is in resume picker",
             "session at a selector — retry at next idle boundary",
             "session started generating — retry at next turn boundary",

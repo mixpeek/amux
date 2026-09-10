@@ -763,7 +763,7 @@ let _lastPeekedSession = '';
 let peekTimer = null;
 let peekSessionDir = '';
 let peekSearchQuery = '';
-let _peekPendingFindScroll = false;   // one-shot scroll-to-match after a ⌖ Locate open
+let _peekPendingFindScroll = false;   // one-shot Locate/Find jump when history supplies a match
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
@@ -4362,7 +4362,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onpaste="handleCardPaste('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
-          <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_sendMode === 'queue' ? 'Queue' : 'Send'}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
+          <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" ${_composerPendingSends.has(s.name) ? 'disabled' : ''} onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_composerPendingSends.has(s.name) ? 'Sending…' : (_sendMode === 'queue' ? 'Queue' : 'Send')}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
         </div>` : ''}
       </div>
     </div>`;
@@ -7180,66 +7180,36 @@ async function sendFromInput(name) {
     channelOpen(name, routed.target, routed.message);
     return;
   }
-  // Honour the SAME send/queue mode the peek composer uses — the card now has
-  // the same split control, and a button labelled Queue that sends anyway would
-  // be the AMUX-2140 shape: a control you can read correctly and still be lied
-  // to by. Direct-send when the worker is at a selector, matching sendPeekCmd:
-  // a waiting session needs the keystroke to land now, not at a turn boundary.
-  const _atSel = (sessions.find(s => s.name === name) || {}).status === 'waiting';
-  if (_sendMode === 'queue' && !_atSel) {
-    cmdHistoryAdd(text || msg, { type: 'steering', session: name });
-    inp.value = '';
-    _draftClear(name);
-    inp.style.height = 'auto';
-    const _nf = _files.length;
-    _clearCardFiles(name);
-    const splitMain = inp.closest('.panel, .card')?.querySelector('.send-split-main');
-    if (splitMain) { splitMain.dataset.prevText = splitMain.textContent; splitMain.textContent = 'Queuing…'; splitMain.disabled = true; splitMain.style.opacity = '0.6'; }
-    await steerSession(name, _expandAtMentions(msg));
-    if (splitMain) { splitMain.textContent = splitMain.dataset.prevText || 'Queue'; splitMain.disabled = false; splitMain.style.opacity = ''; }
-    inp.style.borderColor = '#a371f7';
-    setTimeout(() => { inp.style.borderColor = ''; }, 600);
-    const sess = sessions.find(s => s.name === name);
-    const cnt = _steerHumanCount(sess);
-    if (typeof showToast === 'function') showToast('Queued for ' + name + (cnt > 1 ? ' (' + cnt + ' in queue)' : '') + (_nf ? ' · ' + _nf + ' file' + (_nf === 1 ? '' : 's') : ''));
-    return;
+  const original = inp.value;
+  const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
+  if (_composerPendingSends.has(name)) return;
+  _draftSave(name, original);
+  _composerPendingSends.add(name);
+  _syncComposerPending();
+  try {
+    const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
+      : await doSend(name, _expandAtMentions(msg));
+    if (!['sent', 'queued'].includes(result)) {
+      _composerUnconfirmed(name, result, _files.length);
+      showToast('Message not confirmed — draft and attachments kept');
+      return;
+    }
+    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
+    if (_liveComposerValue(name) === original) _draftClear(name);
+    const sent = new Set(_files);
+    for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
+    renderCardFiles(name);
+    if (result === 'queued') showToast('Queued for ' + name);
+    else showToast('Sent to ' + name);
+    _cardQueuedBadge(name);
+  } catch (e) {
+    _composerUnconfirmed(name, 'exception', _files.length);
+    showToast('Message not confirmed — draft and attachments kept');
+  } finally {
+    _composerPendingSends.delete(name);
+    _syncComposerPending();
   }
-  cmdHistoryAdd(text || msg, { session: name });
-  inp.value = '';
-  _draftClear(name);          // it left the composer — a restored copy would be a ghost
-  inp.style.height = 'auto';
-  _clearCardFiles(name);
-  // OUTCOME FROM doSend, NOT FROM A FLAG SAMPLED BEFORE THE ATTEMPT (amux-cloud,
-  // reviewing this card). `online` and "what the send actually did" are two different
-  // facts and they diverge in reachable ways: an online fetch that THROWS gets queued
-  // while the toast said "Sent" — false success in exactly the case this card exists to
-  // report; a 500 produced two contradictory toasts with the wrong one last; and a
-  // declined start prompt sent nothing while claiming it had (62 of 105 lanes are not
-  // running, so that path is live).
-  //
-  // Same defect as AMUX-2363 six commits earlier, inverted onto the client: there the
-  // endpoint reported that it was REACHED rather than what it DID. doSend knows the
-  // outcome; it was throwing it away and the caller was guessing.
-  const _outcome = await doSend(name, _expandAtMentions(msg));
-  // Same queue/send semantics as the peek composer. doSend() has always queued
-  // correctly when offline; the worker list just never SAID which happened — a
-  // 400ms green border reads identically for "delivered" and "sitting in a local
-  // queue until the server comes back". Those are different facts and the second
-  // one is the one you need.
-  const _colour = { sent: 'var(--green)', queued: '#d29922', starting: '#d29922',
-                    failed: 'var(--red, #f85149)', declined: '' };
-  inp.style.borderColor = _colour[_outcome] !== undefined ? _colour[_outcome] : 'var(--green)';
-  setTimeout(() => { inp.style.borderColor = ''; }, 600);
-  if (typeof showToast === 'function') {
-    // Silent when doSend already spoke — that double-toast was case 2 in the review,
-    // where the WRONG message was the one left on screen.
-    const _msg = { sent: 'Sent to ' + name,
-                   queued: 'Queued for ' + name,
-                   starting: 'Starting ' + name + ' \u2014 will resend',
-                   declined: 'Not sent \u2014 ' + name + ' is not running' }[_outcome];
-    if (_msg) showToast(_msg);
-  }
-  _cardQueuedBadge(name);
 }
 
 // Mirror the peek's "queued" pill onto the card, so a worker with locally-queued
@@ -9988,6 +9958,7 @@ function openPeek(name, opts) {
     _peekFilesRestore(name);
   }
   peekSession = name;
+  _syncComposerPending();
   const identityOverlay = document.getElementById('peek-overlay');
   if (identityOverlay) {
     identityOverlay.dataset.session = name;
@@ -11848,6 +11819,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
       if (_peekPendingFindScroll && _peekMatches.length) {
         _peekPendingFindScroll = false;
         _peekScrollTo(peekSearchIndex, true, true);
+        _peekNavBeacon('deferred-search-landed', _peekMsgPrompts(), _peekMatches[peekSearchIndex]);
       }
     } else if (!_peekScrollLocked) {
       const _liveEl = document.getElementById('pk-live');
@@ -11909,6 +11881,7 @@ function applyPeekSearch(keepIndex, doScroll) {
   if (!body) return;
   const q = peekSearchQuery.trim();
   if (!q) {
+    _peekPendingFindScroll = false;
     _paintPeekRegions(body);
     _peekMatches = [];
     peekSearchIndex = 0;
@@ -11954,6 +11927,9 @@ function applyPeekSearch(keepIndex, doScroll) {
   }
   _peekReclassifyPrompts();
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
+  // Typed Find has the same late-history race as Locate: an empty live frame
+  // is not proof that the requested text is absent from the arriving history.
+  if (!keepIndex && doScroll !== false) _peekPendingFindScroll = !_peekMatches.length;
   _peekScrollTo(peekSearchIndex, doScroll);
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'no matches';
 }
@@ -12228,13 +12204,15 @@ function _peekToolbarCheck() {
     // scaled screen rectangles to CSS sizes falsely flagged every 80% control.
     const small = controls.filter(el => el.offsetWidth < 43 || el.offsetHeight < 43);
     const overflow = rect.right > document.documentElement.clientWidth + 1 || toolbar.scrollWidth > toolbar.clientWidth + 1;
-    const fault = overflow || small.length || toolbar.offsetHeight > 48;
+    const caption = document.getElementById('peek-nav-label');
+    const clippedCaption = !!caption?.getClientRects().length && caption.scrollWidth > caption.clientWidth + 1;
+    const fault = overflow || small.length || clippedCaption || toolbar.offsetHeight > 48;
     const key = fault ? [innerWidth, toolbar.offsetHeight, overflow, small.length].join(':') : '';
     if (key && key !== _peekToolbarFault) {
       try { fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({kind:'peek-toolbar-layout',verdict:'unusable-controls',session:peekSession,
           measured:true,n_considered:controls.length,viewport:innerWidth,height:toolbar.offsetHeight,rendered_height:rect.height,
-          overflow,small_targets:small.length,ver:APP_VER})}).catch(() => {}); } catch(e) {}
+          overflow,small_targets:small.length,clipped_filter_caption:clippedCaption,ver:APP_VER})}).catch(() => {}); } catch(e) {}
     }
     _peekToolbarFault = key;
   });
@@ -12609,10 +12587,10 @@ function _renderPeekFileChips() {
     let statusHtml = '';
     if (f.error) {
       statusHtml = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
-        `<span class="chip-retry" onclick="event.stopPropagation();retryPeekFile(${i})" title="Retry upload">↻</span>`;
+        `<button type="button" class="chip-retry" onclick="event.stopPropagation();retryPeekFile(${i})" title="Retry upload">Retry</button>`;
     } else if (isUploading) {
       const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
-      statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`;
+      statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`;
     } else {
       statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span>`;
     }
@@ -12648,14 +12626,14 @@ function _cancelUpload(f) {
 
 function retryPeekFile(idx) {
   const f = peekFiles[idx];
-  if (!f || f.inflight || f.path) return;
-  _runUpload(f, _peekSink());
+  if (!f || f.inflight || f.queued || f.path) return;
+  _queueAttachment(f, _peekSink());
 }
 
 function retryCardFile(name, idx) {
   const f = (_cardFiles[name] || [])[idx];
-  if (!f || f.inflight || f.path) return;
-  _runUpload(f, _cardSink(name));
+  if (!f || f.inflight || f.queued || f.path) return;
+  _queueAttachment(f, _cardSink(name));
 }
 
 /// Clear the composer: text, the saved draft, and any staged attachments.
@@ -12722,7 +12700,7 @@ function _peekFilesRestore(session) {
   // the reporting user was staring at — it rendered "0%" forever, which reads
   // as "still working" and is why they waited instead of removing it.
   peekFiles.forEach(f => {
-    if (!f.path && !f.inflight && !f.error) f.error = 'upload did not finish — retry or remove';
+    if (!f.path && !f.inflight && !f.queued && !f.error) f.error = 'upload did not finish — retry or remove';
   });
   renderPeekFiles();
 }
@@ -12762,9 +12740,9 @@ function _renderCardFileChips(name) {
     let status;
     if (f.path) status = `<span style="color:var(--green);font-size:0.75rem;">✓</span>`;
     else if (f.error) status = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
-      `<span class="chip-retry" onclick="event.stopPropagation();retryCardFile('${name}',${i})" title="Retry upload">↻</span>`;
+      `<button type="button" class="chip-retry" onclick="event.stopPropagation();retryCardFile('${name}',${i})" title="Retry upload">Retry</button>`;
     else { const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
-           status = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`; }
+           status = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`; }
     // The × is on EVERY chip in EVERY state — an escape hatch that only exists
     // once an upload finishes is not one (the peek's own AMUX-85 lesson).
     const rm = `<span class="chip-remove" onclick="event.stopPropagation();removeCardFile('${name}',${i})" title="Remove">×</span>`;
@@ -12826,16 +12804,16 @@ function _blockedByAttachment(files) {
   const arr = files || [];
   const pending = arr.filter(f => !f.path);
   if (!pending.length) return false;
-  const inflight = pending.filter(f => f.inflight);
-  const stuck = pending.filter(f => !f.inflight);
+  const inflight = pending.filter(f => f.inflight || f.queued);
+  const stuck = pending.filter(f => !f.inflight && !f.queued);
   const say = (typeof showToast === 'function') ? showToast : function () {};
   if (stuck.length) {
     // Name the FIRST stuck file — a count alone does not tell you which chip to
     // press, and past 12 files the chips are collapsed behind a summary row.
     const n = stuck[0].name;
     say(stuck.length === 1
-      ? `"${n}" did not upload — Retry (↻) or remove (×) it to send`
-      : `${stuck.length} attachments did not upload, starting with "${n}" — Retry (↻) or remove (×) them to send`);
+      ? `"${n}" did not upload — Retry or remove (×) it to send`
+      : `${stuck.length} attachments did not upload, starting with "${n}" — Retry or remove (×) them to send`);
     return true;
   }
   const n = inflight[0].name;
@@ -12846,10 +12824,11 @@ function _blockedByAttachment(files) {
 }
 
 function _peekSink() {
+  const files = peekFiles; // bind to the originating worker before any queue wait
   return {
-    push: (p) => peekFiles.push(p),
-    has: (p) => peekFiles.indexOf(p) >= 0,
-    drop: (p) => { const i = peekFiles.indexOf(p); if (i >= 0) peekFiles.splice(i, 1); },
+    push: (p) => files.push(p),
+    has: (p) => files.indexOf(p) >= 0,
+    drop: (p) => { const i = files.indexOf(p); if (i >= 0) files.splice(i, 1); },
     render: _scheduleRenderPeekFiles,
   };
 }
@@ -12862,14 +12841,23 @@ function _cardSink(name) {
   };
 }
 function _enqueueUpload(file, sink) {
-  _uploadQueue.push({ file, sink: sink || _peekSink() });
+  if (!file) return;
+  sink = sink || _peekSink();
+  _queueAttachment(_createAttachment(file, sink), sink);
+}
+function _queueAttachment(f, sink) {
+  f.error = null; f.queued = true; f.status = 'Queued';
+  _uploadQueue.push({ f, sink });
+  sink.render();
   _drainUploadQueue();
 }
 function _drainUploadQueue() {
   while (_uploadQueue.length && _uploadActive < _UPLOAD_CONCURRENCY) {
+    const { f, sink } = _uploadQueue.shift();
+    f.queued = false;
+    if (f.cancelled) continue;
     _uploadActive++;
-    const { file, sink } = _uploadQueue.shift();
-    uploadAndAttach(file, sink).finally(() => { _uploadActive--; _drainUploadQueue(); });
+    _runUpload(f, sink).finally(() => { _uploadActive--; _drainUploadQueue(); });
   }
 }
 
@@ -12885,7 +12873,7 @@ function _scheduleRenderPeekFiles() {
   }
 }
 
-async function uploadAndAttach(file, sink) {
+function _createAttachment(file, sink) {
   sink = sink || _peekSink();
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
@@ -12902,10 +12890,14 @@ async function uploadAndAttach(file, sink) {
   // and `cancelled`/`inflight` are EXPLICIT rather than inferred (AF-235).
   const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
                         chunk: 0, totalChunks, file, error: null, inflight: false,
-                        cancelled: false, aborter: null };
+                        cancelled: false, aborter: null, queued: false, status: 'Queued' };
   sink.push(placeholder);
   sink.render();
-  await _runUpload(placeholder, sink);
+  return placeholder;
+}
+async function uploadAndAttach(file, sink) {
+  sink = sink || _peekSink();
+  await _runUpload(_createAttachment(file, sink), sink);
 }
 
 // Drive one attachment to completion. Safe to call again on a failed chip.
@@ -12926,71 +12918,103 @@ async function uploadAndAttach(file, sink) {
 // the chip still lands on its path. That was already the right shape against one
 // array; since AMUX-3372 added card composers there are now several sinks, and it
 // is the only shape that works.
+const _UPLOAD_ATTEMPTS = 3;
+function _uploadDiagnostic(f, action, error) {
+  fetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+    signal:AbortSignal.timeout(5000),
+    body:JSON.stringify({kind:'attachment-upload', action, phase:f.phase, attempt:f.attempt,
+      bytes:f.file?.size, completedChunks:f.chunk, totalChunks:f.totalChunks,
+      error:error?.message, httpStatus:error?.status, measured:true, ver:APP_VER})}).catch(()=>{});
+}
+// Deadline includes reading the response body. A header-only response used to
+// leave response.json() pending forever, just like an unanswered fetch.
+async function _uploadRequest(f, phase, url, options) {
+  f.phase = phase;
+  const controller = new AbortController();
+  f.aborter = controller;
+  // Live upload/start reached 30.8s under host contention; allow that measured
+  // slow path before retrying. Chunk requests include up to 5MB of transfer.
+  const timeoutMs = phase === 'chunk' ? 60000 : 45000;
+  let timer, onAbort;
+  const cancelled = new Promise((_, reject) => {
+    onAbort = () => reject(Object.assign(new Error('Upload cancelled'), {name:'AbortError'}));
+    controller.signal.addEventListener('abort', onAbort, {once:true});
+  });
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(Object.assign(new Error('Upload timed out during ' + phase), {retryable:true}));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([deadline, cancelled, (async () => {
+      const response = await fetch(url, {...options, headers:_authHeaders(options.headers || {}), signal:controller.signal});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) {
+        const status = response.status;
+        throw Object.assign(new Error(data.error || ('Upload request failed (HTTP ' + status + ')')),
+          {status, retryable:[408,425,429,500,502,503,504].includes(status) || (status === 404 && phase !== 'start')});
+      }
+      return data;
+    })()]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', onAbort);
+    if (f.aborter === controller) f.aborter = null;
+  }
+}
 async function _runUpload(f, sink) {
+  if (f.inflight || f.cancelled) return;
   const file = f.file;
   if (!file) { f.error = 'file no longer held — re-attach it'; f.inflight = false; sink.render(); return; }
-  f.error = null; f.cancelled = false; f.inflight = true; f.chunk = 0;
-  f.aborter = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  const _sig = f.aborter ? f.aborter.signal : undefined;
-  const totalChunks = f.totalChunks;
-  sink.render();
-
+  f.error = null; f.inflight = true; f.queued = false;
   try {
-    const startR = await fetch(API + '/api/upload/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks }),
-      signal: _sig
-    });
-    const startD = await startR.json();
-    if (!startR.ok || startD.error) throw new Error(startD.error || 'start failed');
-    const uploadId = startD.id;
-
-    for (let i = 0; i < totalChunks; i++) {
+    for (let attempt = 1; attempt <= _UPLOAD_ATTEMPTS; attempt++) {
       if (f.cancelled) return;
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const blob = file.slice(start, end);
-      const r = await fetch(API + '/api/upload/' + uploadId + '/chunk/' + i, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: blob,
-        signal: _sig
-      });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
-        throw new Error(d.error || 'chunk ' + i + ' failed');
-      }
-      f.chunk = i + 1;
+      f.attempt = attempt; f.chunk = 0;
+      f.status = attempt === 1 ? 'Starting…' : 'Retrying ' + attempt + '/' + _UPLOAD_ATTEMPTS + '…';
       sink.render();
+      try {
+        const start = await _uploadRequest(f, 'start', API + '/api/upload/start', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:file.name, size:file.size, chunks:f.totalChunks})});
+        if (typeof start.id !== 'string' || !start.id) throw new Error('Server did not return an upload ID');
+        const uploadUrl = API + '/api/upload/' + encodeURIComponent(start.id);
+        for (let i = 0; i < f.totalChunks; i++) {
+          if (f.cancelled) return;
+          f.status = 'Uploading ' + Math.round(i / f.totalChunks * 100) + '%'; sink.render();
+          await _uploadRequest(f, 'chunk', uploadUrl + '/chunk/' + i, {
+            method:'PUT', headers:{'Content-Type':'application/octet-stream'},
+            body:file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size))});
+          f.chunk = i + 1;
+        }
+        if (f.cancelled) return;
+        f.status = 'Finishing…'; sink.render();
+        const done = await _uploadRequest(f, 'finish', uploadUrl + '/finish', {method:'POST'});
+        if (typeof done.path !== 'string' || !done.path || typeof done.url !== 'string' || !done.url)
+          throw new Error('Server did not confirm the uploaded file');
+        if (f.cancelled) return;
+        f.path = done.path; f.url = done.url; f.error = null; f.status = '';
+        _uploadDiagnostic(f, 'complete');
+        return;
+      } catch (error) {
+        if (f.cancelled) return;
+        // Each retry gets a fresh upload ID: the server's in-flight map can
+        // disappear during deploys. Retain the File, never attach a partial result.
+        const retryable = error.retryable === true || error instanceof TypeError || error.name === 'AbortError';
+        _uploadDiagnostic(f, retryable && attempt < _UPLOAD_ATTEMPTS ? 'retry' : 'failed', error);
+        if (!retryable || attempt === _UPLOAD_ATTEMPTS) throw error;
+        f.status = 'Retrying ' + (attempt + 1) + '/' + _UPLOAD_ATTEMPTS + '…'; sink.render();
+        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+      }
     }
-
-    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST', signal: _sig });
-    const finD = await finR.json();
-    if (!finR.ok || finD.error) throw new Error(finD.error || 'finalize failed');
-    if (f.cancelled) return;
-    f.path = finD.path;
-    f.url = finD.url;
-    f.error = null;
-  } catch(e) {
-    // A DELIBERATE CANCEL IS NOT A FAILURE — it has already removed the chip.
-    if (f.cancelled || (e && e.name === 'AbortError')) return;
-    console.error('Upload error:', e);
-    // KEEP THE CHIP. This used to `sink.drop(placeholder)` behind a single
-    // toast, which silently lost the file: the only record that you had
-    // attached anything was a message that disappears. The chip now presents
-    // as something to act on, and `file` above is what makes Retry real.
-    //
-    // Note the card composer has rendered an `f.error` state since AMUX-3372
-    // and NOTHING HAS EVER SET IT — the sole failure path dropped the chip, so
-    // that branch and its `.failed` style were unreachable. This is the write
-    // that makes them live.
-    f.error = (e && e.message) ? e.message : 'upload failed';
-    showToast('Upload failed: ' + f.error + ' — use Retry on the chip');
+  } catch (error) {
+    if (!f.cancelled) {
+      f.error = error.message || 'Upload failed'; f.status = '';
+      showToast('Upload failed: ' + f.error + ' — use Retry on the chip');
+    }
   } finally {
-    f.inflight = false;
-    f.aborter = null;
-    sink.render();
+    f.inflight = false; f.aborter = null; sink.render();
   }
 }
 
@@ -13085,98 +13109,97 @@ function _updateSendSplit() {
     const main = split.querySelector('.send-split-main');
     if (main) main.textContent = _sendMode === 'queue' ? 'Queue' : 'Send';
   });
+  _syncComposerPending();
 }
 setTimeout(_updateSendSplit, 0);
 
+const _composerPendingSends = new Set();
+function _composerUnconfirmed(session, result, attachments) {
+  // The local log is available even with analytics disabled. Never send message
+  // contents, upload paths or credentials in a failure beacon.
+  fetch(API + '/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: 'composer-delivery', verdict: 'unconfirmed', session,
+      result, attachments, draft_retained: true, measured: true, n_considered: 1, ver: APP_VER})
+  }).catch(() => {});
+}
+
+function _syncComposerPending() {
+  const sync = (btn, session) => {
+    if (!btn) return;
+    const pending = _composerPendingSends.has(session);
+    btn.disabled = pending;
+    btn.textContent = pending ? 'Sending…' : (_sendMode === 'queue' ? 'Queue' : 'Send');
+  };
+  sync(document.querySelector('#peek-overlay .send-split-main'), peekSession);
+  document.querySelectorAll('.card[data-session]').forEach(card =>
+    sync(card.querySelector('.send-split-main'), card.dataset.session));
+}
+
 async function sendPeekCmd() {
-  if (!peekSession) return;
+  const session = peekSession;
+  if (!session || _composerPendingSends.has(session)) return;
   if (_blockedByAttachment(peekFiles)) return;
   const inp = document.getElementById('peek-cmd-input');
-  const text = inp.value.trim();
+  const original = inp.value;
+  const text = original.trim();
   const files = peekFiles.filter(f => f.path);
-  if (!text && files.length === 0) {
-    // Empty send = extract + submit the suggested prompt from the session
-    _submitSuggestion(peekSession, true);
-    return;
-  }
-  // Queue mode: enqueue to the steering queue — no status check. The client's
-  // status is a snapshot, and racing it was exactly how queued messages fell
-  // through to direct sends. The server delivers at the next turn boundary; an
-  // idle session picks it up within seconds via the fast steering tick.
-  //
-  // ATTACHMENTS QUEUE TOO (Ethan 2026-08-13: "why are queue messages not queued
-  // here — with a file it sent in the box?"). This used to require
-  // `files.length === 0`, so ANY attached file fell through to the immediate
-  // direct send below — attaching a file silently bypassed the queue. But the
-  // uploaded files persist at their paths and the message that carries them is
-  // just `text @path1 @path2`, which is plain text — exactly what the steering
-  // queue delivers. So build the @path refs (same as the direct path does) and
-  // queue that. "steering carries text only" is true and irrelevant: @path IS
-  // text.
-  //
-  // EXCEPTION: when the session is at a selector (status 'waiting' = NEEDS
-  // INPUT), it is explicitly parked ON your answer. The steering queue only
-  // delivers at an IDLE boundary, never at a picker — so a queued reply would
-  // sit undelivered forever (you "keep sending commands and they don't go
-  // through"). Send those DIRECT so they land immediately.
-  const _atSelector = (sessions.find(s => s.name === peekSession) || {}).status === 'waiting';
-  if (_sendMode === 'queue' && !_atSelector) {
-    let queuedMsg = text;
-    if (files.length > 0) {
-      const refs = files.map(f => '@' + f.path).join(' ');
-      queuedMsg = text ? `${text} ${refs}` : refs;
-    }
-    cmdHistoryAdd(text || queuedMsg, {type:'steering', session: peekSession});
-    inp.value = '';
-    inp.style.height = 'auto';
-    _draftClear(peekSession);
-    clearPeekFiles();
-    const peekSendBtn = document.querySelector('.peek-cmd-bar .send-split-main, .peek-cmd-bar .btn.primary');
-    if (peekSendBtn) { peekSendBtn.dataset.prevText = peekSendBtn.textContent; peekSendBtn.textContent = 'Queuing…'; peekSendBtn.disabled = true; peekSendBtn.style.opacity = '0.6'; }
-    await steerSession(peekSession, queuedMsg);
-    if (peekSendBtn) { peekSendBtn.textContent = peekSendBtn.dataset.prevText || 'Queue'; peekSendBtn.disabled = false; peekSendBtn.style.opacity = ''; }
-    const sess = sessions.find(s => s.name === peekSession);
-    const cnt = _steerHumanCount(sess);
-    showToast('Queued for ' + peekSession + (cnt > 1 ? ' (' + cnt + ' in queue)' : '')
-              + (files.length ? ' · ' + files.length + ' file' + (files.length === 1 ? '' : 's') : ''));
-    return;
-  }
-  // 'send' mode + active session sends immediately. The old confirmation dialog
-  // here required a second Enter (or click) to confirm — that was the real
-  // "press enter twice" bug. The safe default is 'queue' mode (handled just
-  // above), which reliably delivers at the next turn boundary; use the send-mode
-  // toggle to switch between queue and send.
-  cmdHistoryAdd(text, {session: peekSession});
-
-  // Build message: inline @path references (no newlines — tmux treats \n as Enter,
-  // which would split the message and send the path as a separate submit)
+  if (!text && !files.length) { _submitSuggestion(session, true); return; }
   let message = text;
-  if (files.length > 0) {
-    const refs = files.map(f => '@' + f.path).join(' ');
-    message = text ? `${text} ${refs}` : refs;
+  if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
+  const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
+  const queued = _sendMode === 'queue' && !atSelector;
+  if (!queued) {
+    const routed = _atRoute(message);
+    if (routed && routed.target !== session) {
+      // The channel drawer now owns this draft; opening it is the explicit handoff.
+      inp.value = ''; inp.style.height = 'auto'; _draftClear(session); clearPeekFiles();
+      channelOpen(session, routed.target, routed.message);
+      return;
+    }
+    message = _expandAtMentions(message);
   }
-  // @-route at start of message → open channel drawer prefilled
-  const routed = _atRoute(message);
-  if (routed && routed.target !== peekSession) {
-    inp.value = '';
-    inp.style.height = 'auto';
-    _draftClear(peekSession);
-    clearPeekFiles();
-    channelOpen(peekSession, routed.target, routed.message);
-    return;
+  // A cleared field is not a delivery receipt. Keep text and uploads recoverable
+  // through refusal, a reload, or switching workers while the request is in flight.
+  _draftSave(session, original);
+  _composerPendingSends.add(session);
+  _syncComposerPending();
+  let result = 'failed';
+  try {
+    result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
+      : await doSend(session, message);
+    if (!['sent', 'queued'].includes(result)) {
+      _composerUnconfirmed(session, result, files.length);
+      showToast('Message not confirmed — draft and attachments kept');
+      return;
+    }
+    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
+    if (peekSession === session && inp.value === original) {
+      inp.value = ''; inp.style.height = 'auto'; _draftClear(session);
+    } else if (peekSession !== session && _draftGet(session) === original) {
+      _draftClear(session);
+    }
+    // Remove only the acknowledged files, never a new attachment added while
+    // waiting, or attachments belonging to a different worker's composer.
+    const sent = new Set(files);
+    for (const f of files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    if (peekSession === session) {
+      peekFiles = peekFiles.filter(f => !sent.has(f));
+      _peekFilesStash(session);
+      renderPeekFiles();
+      inp.style.borderColor = 'var(--green)';
+      setTimeout(() => { inp.style.borderColor = ''; }, 400);
+      _refreshPeekSoon();
+    } else if (_peekFilesBySession[session]) {
+      _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
+    }
+    if (result === 'queued') showToast('Queued for ' + session);
+  } catch (e) {
+    _composerUnconfirmed(session, 'exception', files.length);
+    showToast('Message not confirmed — draft and attachments kept');
+  } finally {
+    _composerPendingSends.delete(session);
+    _syncComposerPending();
   }
-
-  inp.value = '';
-  inp.style.height = 'auto';
-  _draftClear(peekSession);
-  clearPeekFiles();
-
-  // @mentions in the middle of a message stay as text + API hints (Claude can reach them).
-  message = _expandAtMentions(message);
-  const _sendResult = await doSend(peekSession, message);
-  inp.style.borderColor = _sendResult === 'queued' ? '#d29922' : 'var(--green)';
-  setTimeout(() => { inp.style.borderColor = ''; }, 400);
-  _refreshPeekSoon();
 }
 // Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
 // Claude repaints a picker/selection in <50ms and the peek endpoint serves in
@@ -13282,7 +13305,9 @@ async function steerSession(name, text) {
     _steeringUpdateBadge();
     render();
     try { _scheduleSyncRetry(); } catch (e) {}
+    return true;
   }
+  return false;
 }
 function peekDownloadLog() {
   if (!peekSession) return;
@@ -18134,12 +18159,8 @@ function closeFilePreview() {
   _fileViewMode = 'preview';
 }
 
-async function _fileDownload() {
-  const dlBtn = document.getElementById('file-download-btn');
-  const url = dlBtn.dataset.url;
-  const filename = dlBtn.dataset.filename || 'download';
+async function _downloadFileBytes(url, filename) {
   try {
-    dlBtn.textContent = '⏳ …';
     const r = await fetch(url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const blob = await r.blob();
@@ -18149,6 +18170,19 @@ async function _fileDownload() {
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch (e) {
+    fetch(API + '/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: 'file-download', verdict: 'failed', measured: true,
+        n_considered: 1, ver: APP_VER})}).catch(() => {});
+    throw e;
+  }
+}
+
+async function _fileDownload() {
+  const dlBtn = document.getElementById('file-download-btn');
+  try {
+    dlBtn.textContent = '⏳ …';
+    await _downloadFileBytes(dlBtn.dataset.url, dlBtn.dataset.filename || 'download');
     dlBtn.textContent = '✓ Done';
     setTimeout(() => { dlBtn.textContent = '⬇ Download'; }, 2000);
   } catch(e) {
@@ -20773,14 +20807,13 @@ function _showFilesMenu(path, btn, type) {
     const dlItem = document.createElement('button');
     dlItem.className = 'explore-menu-item';
     dlItem.textContent = 'Download';
-    dlItem.onclick = () => {
+    dlItem.onclick = async () => {
       popup.remove();
-      const a = document.createElement('a');
-      a.href = API + '/api/file?path=' + encodeURIComponent(path);
-      a.download = path.split('/').pop();
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      try {
+        // The viewer endpoint returns JSON, and a direct anchor omits bearer
+        // auth. Use the same authenticated byte download as the preview toolbar.
+        await _downloadFileBytes(API + '/api/file/raw?path=' + encodeURIComponent(path), path.split('/').pop());
+      } catch (e) { showToast('Download failed: ' + e.message); }
     };
     popup.appendChild(dlItem);
   }
@@ -22271,19 +22304,16 @@ function toggleFreeze() {
     cardOrder = [];
     localStorage.removeItem('amux_card_order');
   } else {
-    // Compute order using the SAME logic as render() — works even for collapsed groups
-    const visible = sessions.filter(s => !s.archived);
-    let ordered;
-    if (layoutMode === 'group') {
-      const buckets = Object.fromEntries(_WORKER_STATUS_GROUPS.map(g => [g.key, []]));
-      visible.forEach(s => buckets[_sessStatusKey(s)].push(s));
-      const sortFn = _sortFnFor(sortMode);
-      for (const k of Object.keys(buckets)) buckets[k].sort(sortFn);
-      ordered = _WORKER_STATUS_GROUPS.flatMap(g => buckets[g.key]);
-    } else {
-      ordered = [...visible].sort(_sortFnFor(sortMode));
-    }
-    cardOrder = ordered.map(s => s.name);
+    // Freeze what the user actually sees. Rebuilding status buckets here put
+    // pinned workers back below active workers in group view on the same tap.
+    const rendered = [...document.querySelectorAll('#cards .card[data-session]')]
+      .map(card => card.dataset.session);
+    const remaining = sessions.filter(s => !s.archived && !rendered.includes(s.name))
+      .sort(_sortFnFor(sortMode)).map(s => s.name);
+    cardOrder = [...new Set([...rendered, ...remaining])];
+    fetch(API + '/api/client-debug', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ kind: 'worker-freeze-order', verdict: 'captured-rendered-order',
+        measured: true, n_considered: rendered.length, layout: layoutMode, ver: APP_VER }) }).catch(() => {});
     localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
     _frozen = true;
     localStorage.setItem('amux_frozen', '1');
@@ -28583,6 +28613,31 @@ async function saveBoardEdit() {
 let boardDetailId = null;
 let boardDetailStatus = 'todo';
 let _boardDetailOpenGeneration = 0;
+// A readonly title still wraps when the device rotates or its pane narrows.
+// The input handler only sizes edits; observe width so saved titles cannot
+// retain a desktop-height textarea and hide their distinguishing final words.
+const _bdTitleForResize = document.getElementById('bd-title');
+if (_bdTitleForResize && window.ResizeObserver) {
+  let width = 0;
+  new ResizeObserver(entries => {
+    const nextWidth = entries[0].contentRect.width;
+    if (!nextWidth || nextWidth === width || !document.getElementById('board-detail-overlay').classList.contains('active')) return;
+    width = nextWidth;
+    // Writing an observed box inside this callback can trigger the browser's
+    // ResizeObserver-loop error even when the next callback ignores height.
+    requestAnimationFrame(() => {
+      if (!document.getElementById('board-detail-overlay').classList.contains('active')) return;
+      const clipped = _bdTitleForResize.scrollHeight > _bdTitleForResize.clientHeight + 1;
+      _bdTitleForResize.style.height = 'auto';
+      _bdTitleForResize.style.height = _bdTitleForResize.scrollHeight + 'px';
+      if (clipped) {
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'board-detail-layout', verdict: 'title-resized-after-wrap',
+            measured: true, n_considered: 1, card: boardDetailId, width: Math.round(width), ver: APP_VER }) }).catch(() => {});
+      }
+    });
+  }).observe(_bdTitleForResize);
+}
 function _boardDetailIdentityDiscard(requestedId, generation, responseId) {
   try {
     fetch(API + '/api/client-debug', {
@@ -32946,7 +33001,7 @@ function usageProviderMeta(provider) {
   if (provider.auth_type) bits.push(String(provider.auth_type).replace(/-/g, ' '));
   return [...new Set(bits)];
 }
-function usageWindowRow(window) {
+function usageWindowRow(window, stale = false) {
   const used = Math.max(0, Math.min(100, Number(window.used_percent) || 0));
   const remaining = window.remaining_percent === null || window.remaining_percent === undefined
     ? 100 - used : Number(window.remaining_percent);
@@ -32955,20 +33010,40 @@ function usageWindowRow(window) {
   if (window.remaining_amount !== null && window.remaining_amount !== undefined) {
     amount += ' · ' + window.remaining_amount + ' requests';
   }
-  const reset = usageResetText(window.resets_at);
+  const ended = stale && window.resets_at && (typeof window.resets_at === 'number'
+    ? window.resets_at * 1000 : Date.parse(window.resets_at)) <= Date.now();
+  const reset = ended ? '' : usageResetText(window.resets_at);
+  if (ended) amount = 'Last reported: ' + amount;
   return '<div class="usage-window" data-usage-window>'
     + '<div class="usage-window-line"><span class="usage-window-label" title="' + esc(window.label || 'Limit') + '">' + esc(window.label || 'Limit') + '</span>'
     + '<span class="usage-window-value">' + esc(amount) + '</span></div>'
     + '<div class="usage-bar" aria-label="' + esc(amount) + '"><span style="width:' + used + '%;background:' + colour + '"></span></div>'
-    + (reset ? '<div class="usage-reset">Resets ' + esc(reset) + '</div>' : '')
+    + (ended ? '<div class="usage-reset">Previous window · waiting for updated usage</div>'
+      : reset ? '<div class="usage-reset">Resets ' + esc(reset) + '</div>' : '')
     + '</div>';
+}
+let _usageRefreshTimer = null;
+let _usageLoading = false;
+function usageRecoveryNote(provider) {
+  const age = provider.observed_at ? Math.max(0, Math.floor(Date.now()/1000 - provider.observed_at)) : provider.cache_age_s;
+  const checked = age == null ? '' : 'Last checked ' + (age < 60 ? 'just now' : age < 3600
+    ? Math.floor(age/60) + ' min ago' : Math.floor(age/3600) + ' hr ago');
+  const delay = provider.retry_at ? Math.max(0, provider.retry_at - Date.now()/1000) : null;
+  const retry = delay == null ? 'Refreshing automatically' : delay > 60
+    ? 'Next check in ' + Math.ceil(delay/60) + ' min' : 'Checking again shortly';
+  return '<div class="usage-reset usage-recovery" role="status">'
+    + esc([checked, provider.stale || !provider.available ? retry : ''].filter(Boolean).join(' · ')) + '</div>';
 }
 async function loadUsage() {
   const el = document.getElementById('settings-usage-body');
-  if (!el) return;
-  el.textContent = 'Loading…';
+  if (!el || _usageLoading) return;
+  _usageLoading = true;
+  clearTimeout(_usageRefreshTimer);
+  const openProviders = [...el.querySelectorAll('.usage-provider[open]')].map(p => p.dataset.provider);
+  if (!el.querySelector('.usage-provider')) el.textContent = 'Checking usage…';
   try {
-    const r = await fetch(API + '/api/usage');
+    const r = await fetch(API + '/api/usage', {signal:AbortSignal.timeout(30000)});
+    if (!r.ok) throw new Error('Usage refresh failed');
     const d = await r.json();
     // Old servers remain usable during a rolling deploy: synthesize their
     // Claude-only body into the provider collection the new renderer expects.
@@ -32988,25 +33063,34 @@ async function loadUsage() {
     el.innerHTML = providers.map(provider => {
       const windows = Array.isArray(provider.windows) ? provider.windows : [];
       const minimum = windows.length ? Math.min(...windows.map(w => Number(w.remaining_percent) || 0)) : null;
-      const status = !provider.available ? 'Unavailable'
+      const pending = !provider.available && (provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause));
+      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account')
         : provider.metered === false ? 'Unlimited'
-        : minimum === null ? 'No active limits' : usagePercent(minimum) + '% left';
+        : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
       const detail = !provider.available
-        ? '<div class="usage-unavailable">' + esc(provider.reason || 'Usage unavailable') + '</div>'
-        : windows.length ? windows.map(usageWindowRow).join('')
+        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>'
+        : windows.length ? windows.map(w => usageWindowRow(w, provider.stale === true)).join('')
         : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>';
       return '<details class="usage-provider" data-provider="' + esc(provider.id || '') + '"'
-        + (constrained && constrained.id === provider.id ? ' open' : '') + '>'
+        + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
         + (provider.plan ? '<span class="usage-provider-plan">' + esc(String(provider.plan).replace(/_/g, ' ')) + '</span>' : '')
         + '<span class="usage-provider-status">' + esc(status) + '</span></summary>'
         + '<div class="usage-provider-detail">' + detail
+        + (provider.observed_at || provider.stale || pending ? usageRecoveryNote(provider) : '')
         + (meta.length ? '<div class="usage-provider-meta">' + meta.map(bit => '<span>' + esc(bit) + '</span>').join('') + '</div>' : '')
         + '</div></details>';
     }).join('');
   } catch (e) {
-    el.innerHTML = '<span style="color:var(--dim);">Could not load usage</span>';
+    if (!el.querySelector('.usage-provider')) el.textContent = 'Reconnecting to usage updates…';
+    else if (!el.querySelector('.usage-connection-note')) el.insertAdjacentHTML('beforeend',
+      '<div class="usage-reset usage-connection-note" role="status">Showing the last reading · reconnecting automatically</div>');
+  } finally {
+    _usageLoading = false;
+    _usageRefreshTimer = setTimeout(() => {
+      if (document.getElementById('settings-menu')?.classList.contains('open')) loadUsage();
+    }, 30000);
   }
   // The bars say HOW MUCH is gone. This says WHAT SPENT IT (AMUX-3544/3550).
   // Appended as its own node and loaded separately on purpose: if attribution
@@ -35464,7 +35548,29 @@ function _hostLoad() {
 }
 
 function _hostStateColor(s) {
-  return s === 'ok' ? '#3fb950' : s === 'warn' ? '#f0a742' : s === 'critical' ? '#f85149' : '#6e7681';
+  return s === 'ok' ? 'var(--green)' : s === 'warn' ? 'var(--yellow)' : s === 'critical' ? 'var(--red)' : 'var(--dim)';
+}
+
+// Measure the actual theme colors, so a future palette regression is visible
+// in local diagnostics instead of only in a screenshot (AMUX-4362).
+function _hostContrastCheck() {
+  const luminance = color => {
+    const rgb = (color.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => {
+      const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  };
+  const samples = Array.from(document.querySelectorAll('#host-content .host-state-chip')).flatMap(chip => {
+    const background = getComputedStyle(chip).backgroundColor;
+    return [chip, chip.querySelector('b')].filter(Boolean).map(el => {
+      const foreground = getComputedStyle(el).color, a = luminance(foreground), b = luminance(background);
+      return { text:el.textContent.trim(), foreground, background, ratio:(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05) };
+    });
+  });
+  if (!samples.length) return;
+  fetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({kind:'host-analysis-contrast', verdict:samples.every(s=>s.ratio>=4.5) ? 'readable' : 'low-contrast',
+      measured:true, n_considered:samples.length, light:document.body.classList.contains('light'), samples, ver:APP_VER})}).catch(()=>{});
 }
 
 function _hostRender() {
@@ -35496,7 +35602,7 @@ function _hostRender() {
     return;
   }
 
-  const chip = (label, state) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;background:var(--panel,#161b22);border:1px solid var(--border,#30363d);font-size:0.75rem;">
+  const chip = (label, state) => `<span class="host-state-chip" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;background:var(--card);color:var(--text);border:1px solid var(--border);font-size:0.75rem;">
     <span style="width:8px;height:8px;border-radius:50%;background:${_hostStateColor(state)};"></span>${label}: <b style="color:${_hostStateColor(state)};">${esc(String(state || 'unknown'))}</b></span>`;
   html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px;">
     ${chip('CPU', v.cpu)} ${chip('Memory', v.memory)} ${chip('Disk', v.disk)}</div>`;
@@ -35572,6 +35678,7 @@ function _hostRender() {
   html += procTable('Top by Memory', d.top_mem, 'mem');
 
   el.innerHTML = html;
+  requestAnimationFrame(_hostContrastCheck);
 }
 
 function _reclaimStopPolling() {
@@ -36086,10 +36193,10 @@ function _torrentRender() {
     const isPaused = t.status === 'paused' || t.status === 'waiting';
     const isDone = t.status === 'complete';
     const ctrlBtns = isDone
-      ? `<button onclick="_torrentRemove('${t.gid}')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.78rem;" title="Remove">&#x2716;</button>`
-      : `${isActive ? `<button onclick="_torrentAction('${t.gid}','pause')" style="background:none;border:none;color:var(--yellow);cursor:pointer;font-size:0.85rem;" title="Pause">&#x23F8;</button>` : ''}
-         ${isPaused ? `<button onclick="_torrentAction('${t.gid}','resume')" style="background:none;border:none;color:var(--green);cursor:pointer;font-size:0.85rem;" title="Resume">&#x25B6;</button>` : ''}
-         <button onclick="_torrentAction('${t.gid}','remove')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:0.85rem;" title="Stop &amp; remove">&#x23F9;</button>`;
+      ? `<button onclick="_torrentRemove('${t.gid}')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Remove" aria-label="Remove">&#x2716;</button>`
+      : `${isActive ? `<button onclick="_torrentAction('${t.gid}','pause')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Pause" aria-label="Pause">&#x23F8;</button>` : ''}
+         ${isPaused ? `<button onclick="_torrentAction('${t.gid}','resume')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Resume" aria-label="Resume">&#x25B6;</button>` : ''}
+         <button onclick="_torrentAction('${t.gid}','remove')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Stop &amp; remove" aria-label="Stop &amp; remove">&#x23F9;</button>`;
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
         <strong style="flex:1;font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.name || t.gid)}</strong>

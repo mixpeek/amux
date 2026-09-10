@@ -9,7 +9,11 @@ async function send(page: Page, name: string, text: string) {
   await card.locator('.card-menu-btn').click();
   await page.locator('.card-menu.open .card-menu-item', { hasText: 'Peek terminal' }).click();
   await page.locator('#peek-cmd-input').fill(text);
+  const delivered = page.waitForResponse(r => r.url().endsWith(`/${name}/send`) && r.request().method() === 'POST', { timeout: 90_000 });
   await page.locator('#peek-overlay .send-split-main').getByText('Send', { exact: true }).click();
+  const response = await delivered;
+  expect(response.ok()).toBe(true);
+  expect((await response.json()).submitted).toBe(true);
 }
 
 for (const crossGroup of [false, true]) {
@@ -27,10 +31,11 @@ for (const crossGroup of [false, true]) {
     expect(healthResponse.ok()).toBeTruthy();
     const health = await healthResponse.json();
     const source = `${run}.mjs`, reviewed = `${run}-review.json`, integrated = `${run}-integrated.json`;
+    const provider = process.env.AMUX_LIFECYCLE_PROVIDER || 'claude';
     for (const name of names) {
       const group = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       const made = await request.post('/api/sessions', { headers, data: { name, dir: cwd,
-        tags: [group], provider: process.env.AMUX_LIFECYCLE_PROVIDER || 'claude' } });
+        tags: [group], provider, ...(provider === 'claude' ? { flags: '--model sonnet' } : {}) } });
       expect(made.status()).toBe(201);
     }
     const rosterResponse = await request.get('/api/sessions', { headers });
@@ -39,9 +44,10 @@ for (const crossGroup of [false, true]) {
     for (const name of names) {
       const expectedGroup = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       expect(roster.find((row: any) => row.name === name)?.tags).toContain(expectedGroup);
+      if (provider === 'claude') expect(`${roster.find((row: any) => row.name === name)?.flags}`).toMatch(/sonnet/);
     }
     const common = `This is an authorized coordination acceptance run ${run}. Work only in ${cwd},
-only with ${names.join(', ')}. Use real amux peer messages and your own board tasks.
+only with ${names.join(', ')}. Use Bash amux send for peer messages (not Claude native SendMessage), and your own board tasks.
 Read peers' actual board tasks for context; preserve ownership, link dependencies, and record IDs,
 commands/results and artifacts. Follow existing gates. Never forge another worker's review or output.
 No external email or unrelated peers. Drive owned tasks to done/verified when honestly complete.`;

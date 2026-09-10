@@ -173,6 +173,23 @@ impl RunOutcome {
         matches!(self, RunOutcome::Delivered { .. } | RunOutcome::ShellOk { .. })
     }
 
+    /// The reason a run did not land, for surfacing beside `last_delivery` on
+    /// the SCHEDULE object itself (AF-648) — `None` for `Delivered`/`Queued`/
+    /// `ShellOk`, which have nothing to explain. Strips the `status()`-derived
+    /// prefix `note()` already adds ("refused: ", "delivery failed: ") since
+    /// the field name itself carries that context there.
+    pub fn refusal_reason(&self) -> Option<String> {
+        match self {
+            RunOutcome::Refused { reason } | RunOutcome::Failed { reason } => {
+                Some(reason.clone())
+            }
+            RunOutcome::ShellError { note } => Some(note.clone()),
+            RunOutcome::Delivered { .. } | RunOutcome::Queued { .. } | RunOutcome::ShellOk { .. } => {
+                None
+            }
+        }
+    }
+
     /// Is the command GONE — nothing arrived and nothing is pending?
     ///
     /// The inverse of `landed()` is not this. `!landed()` is true for `Queued`,
@@ -1051,6 +1068,10 @@ pub fn insert_run(
 /// scheduler last acted on this row", and leaving it stale after a refused fire
 /// would make a broken schedule look untouched. What the run DID is in the run
 /// row, which is where a reader who cares must look.
+///
+/// AF-648: `last_delivery`/`last_refusal_reason` are stamped alongside it so a
+/// reader of the SCHEDULE object (not the run row) can also see it — without
+/// changing when or whether `last_run`/`run_count` themselves advance.
 pub fn record_run(
     conn: &Connection,
     schedule_id: &str,
@@ -1060,9 +1081,10 @@ pub fn record_run(
     let now_ts = chrono::Utc::now().timestamp();
     insert_run(conn, schedule_id, now_ts, outcome, source, None)?;
     conn.execute(
-        "UPDATE schedules SET run_count = COALESCE(run_count,0) + 1, last_run=?1, updated=?1
-         WHERE id=?2",
-        rusqlite::params![now_ts, schedule_id],
+        "UPDATE schedules SET run_count = COALESCE(run_count,0) + 1, last_run=?1, updated=?1,
+         last_delivery=?2, last_refusal_reason=?3
+         WHERE id=?4",
+        rusqlite::params![now_ts, outcome.status(), outcome.refusal_reason(), schedule_id],
     )?;
     Ok(())
 }
@@ -2030,6 +2052,21 @@ async fn fire_one(
                     insert_run(conn, &sid, now_ts, outcome, "cron-rs", note.as_deref())?;
                 }
             }
+            // AF-648: last_run/run_count already advanced in the CLAIM phase
+            // above (deliberately, AF-515) and are NOT touched here. This
+            // stamps the MOST RECENT occurrence's outcome so a reader of the
+            // schedule object itself — not the run history — can see a
+            // refusal/failure without last_run masquerading as health.
+            if let Some(last_outcome) = outcomes.last() {
+                conn.execute(
+                    "UPDATE schedules SET last_delivery=?1, last_refusal_reason=?2 WHERE id=?3",
+                    rusqlite::params![
+                        last_outcome.status(),
+                        last_outcome.refusal_reason(),
+                        sid
+                    ],
+                )?;
+            }
             Ok(WriteOutcome { applied: true, events: vec![] })
         })
         .await?;
@@ -2248,6 +2285,32 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.outcome.clone()
         }
+    }
+
+    #[test]
+    fn refusal_reason_is_none_for_landed_or_pending_outcomes_only() {
+        assert_eq!(
+            RunOutcome::Refused { reason: "target archived".into() }.refusal_reason(),
+            Some("target archived".to_string())
+        );
+        assert_eq!(
+            RunOutcome::Failed { reason: "tmux send failed".into() }.refusal_reason(),
+            Some("tmux send failed".to_string())
+        );
+        assert_eq!(
+            RunOutcome::ShellError { note: "exit 1".into() }.refusal_reason(),
+            Some("exit 1".to_string())
+        );
+        assert_eq!(
+            RunOutcome::Delivered { submission: "confirmed".into(), detail: "sent".into() }
+                .refusal_reason(),
+            None
+        );
+        assert_eq!(
+            RunOutcome::Queued { queue_id: "q1".into(), detail: "queued".into() }.refusal_reason(),
+            None
+        );
+        assert_eq!(RunOutcome::ShellOk { note: None }.refusal_reason(), None);
     }
 
     fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Local> {
@@ -2861,6 +2924,38 @@ mod tests {
         assert_eq!(rc, 1);
     }
 
+    #[tokio::test]
+    async fn run_now_stamps_last_delivery_and_reason_the_same_way_the_cron_path_does() {
+        // AF-648's second RECORD site: manual run-now goes through
+        // `record_run`, not `fire_one`. Both must agree on what the schedule
+        // object reports afterward.
+        let (store, _dir) = store();
+        store
+            .write_async(|conn| {
+                let row = make_row("SCHED-78", "alpha", Some("every 1h"), "2026-08-10T09:00");
+                insert_schedule(conn, &row)?;
+                record_run(
+                    conn,
+                    "SCHED-78",
+                    &RunOutcome::Refused { reason: "target 'alpha' is archived".into() },
+                    "manual:tester",
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let conn = store.read().unwrap();
+        let (last_delivery, last_refusal_reason): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT last_delivery, last_refusal_reason FROM schedules WHERE id='SCHED-78'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(last_delivery.as_deref(), Some("refused"));
+        assert_eq!(last_refusal_reason.as_deref(), Some("target 'alpha' is archived"));
+    }
+
     // ---- dual-scheduler: shadow mode fires NOTHING -----------------------
 
     #[tokio::test]
@@ -3132,6 +3227,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_delivery_stamps_last_delivery_and_reason_on_the_schedule() {
+        // AF-648 / ts-gke's SCHED-419 report: `last_run`/`run_count` advancing
+        // on a refusal is deliberate (AF-515, asserted above) and untouched
+        // here. What was missing is a way to read the refusal off the
+        // SCHEDULE object itself, without opening the run history.
+        let (store, _dir) = store();
+        store
+            .write_async(|conn| {
+                insert_schedule(conn, &make_row("SCHED-419", "tubescience", Some("0 * * * *"), "2020-01-01T00:00"))?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let stub = StubDeliverer::new(RunOutcome::Refused {
+            reason: "schedule PAUSED: the plan window is 99% used and 30% is reserved for the human (AMUX_BACKGROUND_RESERVE_PCT)".into(),
+        });
+        let mut seen = HashMap::new();
+        let before_count: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT run_count FROM schedules WHERE id='SCHED-419'", [], |r| r.get(0))
+            .unwrap();
+        scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &stub).await.unwrap();
+
+        let conn = store.read().unwrap();
+        let (last_run, run_count, last_delivery, last_refusal_reason): (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT last_run, run_count, last_delivery, last_refusal_reason \
+                 FROM schedules WHERE id='SCHED-419'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        // The CLAIM-phase clock still advances exactly as before (AF-515) —
+        // this fix is additive, not a change to when last_run/run_count bump.
+        assert!(last_run.is_some(), "last_run must still advance on a refusal");
+        assert_eq!(run_count, before_count + 1, "run_count must still advance on a refusal");
+        // The new fields are what makes the refusal visible on the object.
+        assert_eq!(last_delivery.as_deref(), Some("refused"));
+        assert!(
+            last_refusal_reason.unwrap().contains("plan window is 99% used"),
+            "the schedule object must carry WHY, not just THAT"
+        );
+    }
+
+    #[tokio::test]
     async fn a_queued_delivery_records_the_queue_id_not_success() {
         let (store, _dir) = store();
         store
@@ -3208,6 +3354,34 @@ mod tests {
             .unwrap();
         assert_eq!(status, "delivered");
         assert_eq!(submission, "unverified", "a verdict of 'unverified' must survive to the row");
+    }
+
+    #[tokio::test]
+    async fn a_successful_fire_stamps_last_delivery_with_no_refusal_reason() {
+        // Control for a_refused_delivery_stamps_last_delivery_and_reason_on_the_schedule:
+        // a healthy fire must not leave a stale reason behind, and must read
+        // as delivered on the schedule object, not just in the run row.
+        let (store, _dir) = store();
+        store
+            .write_async(|conn| {
+                insert_schedule(conn, &make_row("SCHED-9", "alpha", Some("every 10m"), "2020-01-01T00:00"))?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let stub = StubDeliverer::confirmed();
+        let mut seen = HashMap::new();
+        scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &stub).await.unwrap();
+        let conn = store.read().unwrap();
+        let (last_delivery, last_refusal_reason): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT last_delivery, last_refusal_reason FROM schedules WHERE id='SCHED-9'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(last_delivery.as_deref(), Some("delivered"));
+        assert_eq!(last_refusal_reason, None, "a landed delivery has nothing to explain");
     }
 
     #[test]
