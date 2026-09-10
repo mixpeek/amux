@@ -3633,3 +3633,26 @@ CARD: AMUX-4362
 SYMPTOM: Hosted legacy sessions test returned 500 during parallel roster mutations and only printed the status, omitting its diagnostic body.
 COST: Failed hosted Rust check requiring a separate investigation.
 FIX: Preserve the body in the status assertion and retry at most four times only for the exact documented discovery-revision invalidation error. All other errors still fail immediately.
+
+
+## Torrent control names exposed symbols instead of actions
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The populated-panel browser check found buttons named only pause/stop glyphs; title tooltips did not supply an accessible action name.
+COST: Three viewport failures after progress rendering was repaired.
+FIX: Explicit aria-labels name Pause, Resume, Remove and Stop & remove. LC-TORRENT uses accessible action names and verifies each resulting state, so missing labels cannot silently regress.
+
+## Two-image roundtrip test downloaded without its authenticated context
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Both UI uploads finished, but the new direct download assertion returned 401 in all three browsers; its APIRequestContext omitted the dashboard bearer token.
+COST: Three failed checks in a 45-case upload/composer run; earlier progress comments overstated that case before the final summary.
+FIX: Use the existing auth helper for downloads and assert the actual status with the requested URL. Keep the real byte equality check and preserve the original failed report.

@@ -1,4 +1,5 @@
 import {test,expect,Page} from './fixtures';
+import {auth} from './lifecycle/evidence';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64');
 const file=(name='image.png')=>({name,mimeType:'image/png',buffer:png});
 async function setup(page:Page) {
@@ -115,6 +116,7 @@ test('two images upload through the real API and download byte-for-byte',async({
   await page.locator('#peek-file-input').setInputFiles([file('roundtrip-one.png'),file('roundtrip-two.png')]);
   await expect(chips(page).filter({hasText:'✓'})).toHaveCount(2,{timeout:20000});
   await expect.poll(()=>completed.length).toBe(2);
-  for(const result of completed){const r=await page.request.get(result.url);expect(r.ok()).toBe(true);expect(await r.body()).toEqual(png);}
+  const headers=await auth(page);
+  for(const result of completed){const r=await page.request.get(result.url,{headers});expect(r.status(),`authenticated download: ${result.url}`).toBe(200);expect(await r.body()).toEqual(png);}
   await page.screenshot({path:info.outputPath('upload-complete.png')});
 });
