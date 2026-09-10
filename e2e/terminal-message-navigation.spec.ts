@@ -629,6 +629,10 @@ test('live worker composer is a preserved draft, never a delivered message', asy
   await expect(draft).toBeVisible();
   await expect(page.locator('#peek-overlay')).toHaveCSS('opacity', '1');
   await expect(draft.locator('summary')).toHaveText('Unsent worker input · 2 pasted blocks');
+  await expect(draft.locator('pre')).toBeVisible();
+  // Worker input is intentionally expanded by default (36ab5405). It remains
+  // a draft, and the reader can collapse it without changing the terminal.
+  await draft.locator('summary').click();
   await expect(draft.locator('pre')).toBeHidden();
   await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
   await expect(page.locator('#pk-live')).not.toContainText('Unclassified');

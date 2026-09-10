@@ -9142,15 +9142,58 @@ fn structured_resume_prompt(context: &StructuredResumeContext, reason: &str) -> 
 // for the shell, hard-kill on timeout. tmux stays alive.
 // ---------------------------------------------------------------------------
 
-async fn stop_session(name: &str) -> (bool, String) {
+async fn stop_session(state: &AppState, name: &str) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
     }
-    // Same exclusion as start_session (see session_op_lock): a stop typing
-    // /exit into a pane a concurrent start is booting is exactly the 2026-08-09
-    // interleaving incident.
+    // Keep the terminal stop and its durable status edge under the same lock
+    // as start. A fresh launch must not have its report erased by an older stop.
     let op_lock = session_op_lock(name);
     let _op = op_lock.lock().await;
+    let result = stop_session_process(name).await;
+    if result.0 {
+        if let Err(error) = clear_stopped_report(state, name).await {
+            tracing::warn!(session = name, %error, "worker stopped but status reset failed");
+            return (false, format!("worker stopped but status reset failed: {error}"));
+        }
+    }
+    result
+}
+
+async fn clear_stopped_report(state: &AppState, name: &str) -> anyhow::Result<()> {
+    use rusqlite::OptionalExtension;
+    let name = name.to_string();
+    state.store.write_async(move |conn| {
+        ensure_fleet_tables(conn)?;
+        let raw: Option<String> = conn.query_row(
+            "SELECT value FROM prefs WHERE key='session_reports'", [], |r| r.get(0)
+        ).optional()?;
+        let mut reports: Value = match raw {
+            Some(raw) => serde_json::from_str(&raw)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+            None => json!({}),
+        };
+        if let Some(report) = reports.get_mut(&name).and_then(Value::as_object_mut) {
+            // Keep model, token and conversation diagnostics. Only the live
+            // assertion belongs to the process that has just ended.
+            report.insert("state".into(), json!("idle"));
+            report.insert("source".into(), json!("server-stop"));
+            report.insert("ts".into(), json!(now_f64()));
+            report.remove("subagents");
+            conn.execute(
+                "UPDATE prefs SET value=?1 WHERE key='session_reports'", [reports.to_string()]
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await?;
+    crate::api::sessions_legacy::invalidate_sessions_runtime_cache();
+    Ok(())
+}
+
+async fn stop_session_process(name: &str) -> (bool, String) {
+    if !valid_session_name(name) {
+        return (false, "invalid session name".into());
+    }
     let cfg = parse_env(name);
     if backend_of_cfg(&cfg) == "herdr" {
         if !herdr_agent_running(name).await {
@@ -9173,7 +9216,7 @@ async fn stop_session(name: &str) -> (bool, String) {
                 return (true, "stopped".into());
             }
         }
-        return (true, "stopped (hard-kill unavailable on rust origin — pane close is a gap)".into());
+        return (false, "worker is still running; herdr hard-kill is unavailable".into());
     }
     let tmux_sess = tmux_name(name);
     if !tmux_sessions_set().await.contains(&tmux_sess) {
@@ -9224,6 +9267,9 @@ async fn stop_session(name: &str) -> (bool, String) {
     }
     type_line(name, "stty sane").await;
     sleep_ms(1000).await;
+    if pane_has_live_child(name).await != Some(false) {
+        return (false, "could not confirm the worker process stopped".into());
+    }
     (true, "stopped (hard-kill)".into())
 }
 
@@ -9256,7 +9302,7 @@ async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
             let start = data.len().saturating_sub(MAX_LOG_BYTES);
             let _ = std::fs::write(log_path(name), &data[start..]);
         }
-        let _ = stop_session(name).await;
+        let _ = stop_session(state, name).await;
     }
     kill_tmux_session(name).await;
     let mut cfg = parse_env(name);
@@ -9317,7 +9363,7 @@ async fn reset_session(state: &AppState, name: &str) -> (bool, String) {
                 let _ = std::fs::write(log_path(name), &data[start..]);
             }
         }
-        let _ = stop_session(name).await;
+        let _ = stop_session(state, name).await;
         kill_tmux_session(name).await;
     }
     let mut meta = load_meta(name);
@@ -15176,11 +15222,13 @@ async fn post_dispatch(
             let st2 = state.clone();
             let n = name.to_string();
             tokio::spawn(async move {
-                let (ok, _msg) = stop_session(&n).await;
+                let (ok, msg) = stop_session(&st2, &n).await;
                 if ok {
                     emit_event(&st2, &n, "session.stopped", None, None, "api-stop").await;
-                    // _complete_session_board_issue is a deliberate no-op in
-                    // Python (py:12727) — nothing to port.
+                    // Stopping a process never completes its board work.
+                } else {
+                    tracing::warn!(session = %n, reason = %msg, "session_stop_failed");
+                    emit_event(&st2, &n, "session.stop_failed", Some(json!({"message": msg})), None, "api-stop").await;
                 }
             });
             jresp(StatusCode::ACCEPTED, json!({"ok": true, "message": "stopping"}))
@@ -17294,7 +17342,7 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         return jresp(StatusCode::FORBIDDEN, json!({"error": "cannot delete pinned session — unpin first"}));
     }
     if is_running(name).await {
-        let _ = stop_session(name).await;
+        let _ = stop_session(state, name).await;
     }
     // Worktree cleanup (py:76300).
     if cfg.get("CC_WORKTREE") == Some("1") {
@@ -18314,7 +18362,7 @@ async fn restart_for_swap(state: &AppState, name: &str, provider: &str) -> bool 
             }
         }
     }
-    let _ = stop_session(name).await;
+    let _ = stop_session(state, name).await;
     kill_tmux_session(name).await;
     let (ok, _msg) = start_session(state, name, "", false).await;
     ok
@@ -19403,7 +19451,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
             tokio::spawn(async move {
                 // py:76651 _restart_in_new_dir: hard-kill then start. The
                 // graceful stop records the resumable name first.
-                let _ = stop_session(&n).await;
+                let _ = stop_session(&st2, &n).await;
                 kill_tmux_session(&n).await;
                 sleep_ms(2000).await;
                 let _ = start_session(&st2, &n, "", false).await;
@@ -19822,7 +19870,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         let st2 = state.clone();
         let n = name.to_string();
         tokio::spawn(async move {
-            let _ = stop_session(&n).await;
+            let _ = stop_session(&st2, &n).await;
             kill_tmux_session(&n).await;
             // skip_conv_id=true AND the meta already cleared: belt and braces,
             // because either one alone still leaves a path that could resume.
@@ -24420,6 +24468,33 @@ CLAUDE-POSTFIX-COMPLETE
             crate::db::queries::get_worker(&conn, "plain-twin").unwrap().is_none(),
             "a plain env-file session's twin must not be invented as a worker"
         );
+    }
+
+    #[tokio::test]
+    async fn stop_status_edge_retires_only_the_stopped_workers_live_report() {
+        let (state, _dir) = state();
+        state.store.write(|conn| {
+            ensure_fleet_tables(conn)?;
+            conn.execute("INSERT INTO prefs(key,value) VALUES('session_reports',?1)",
+                [json!({"stopped": {"state":"waiting", "ts":now_f64(), "model":"sonnet",
+                    "subagents":{"count":2}}, "peer":{"state":"active","ts":now_f64()}}).to_string()])?;
+            Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
+        }).unwrap();
+        clear_stopped_report(&state, "stopped").await.unwrap();
+        let conn = state.store.read().unwrap();
+        let raw: String = conn.query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r| r.get(0)).unwrap();
+        let reports: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reports["stopped"]["state"], "idle");
+        assert_eq!(reports["stopped"]["source"], "server-stop");
+        assert_eq!(reports["stopped"]["model"], "sonnet");
+        assert!(reports["stopped"].get("subagents").is_none());
+        assert_eq!(reports["peer"]["state"], "active");
+        let mut signals = crate::api::sessions_legacy::tests::signals();
+        signals.now = now_f64();
+        signals.running.insert("amux-stopped".into());
+        signals.shell_only.insert("amux-stopped".into());
+        signals.reports = reports;
+        assert!(!signals.agent_running("amux-stopped"), "a dead worker must not be rescued by its old report");
     }
 
     #[tokio::test]

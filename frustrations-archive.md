@@ -7844,3 +7844,27 @@ CARD: AMUX-4377
 SYMPTOM: Production history recorded one confirmed send at 15:20:44 ET and another identical-content attempt marked stuck at 15:21:05 ET; the composer-delivery log retained the second draft. Draft clearing skipped focused inputs and could clear a detached peek input after a render. The user saw the worker replying while the text remained in the composer.
 COST: Two identical-content attempts 21 seconds apart and a user-reported ambiguous send state; logs alone could not prove whether both came from the same transport identity.
 FIX: Persist ordinary messages and uploaded-file references in the existing local outbox before clearing exactly the accepted live draft. Replay one stable message ID and require a confirmed, deferred or deduplicated receipt; retain ambiguous attempts for review. Composer acceptance and replay failures emit diagnostic events. Regression coverage includes focus, replacement nodes, delayed receipts, newer edits, storage failure and reload.
+
+## An in-flight send reservation is reported as an accepted retry
+VALIDATED: codex-amux-lifecycle | Validated on 2026-09-10: four message_acceptance server tests and the file_backed_verbs_roundtrip_hermetically real steering route pass, including reservation/receipt distinction, archived-target retry, exact response ID, old receipt and unavailable-store cases. Main b5786c06 is live by production health. Logs: work/message-acceptance-891c.log and work/send-routes-891.log.
+AREA: messages
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: send_dedup inserted an identity before attempting delivery, then treated any duplicate row as proof of delivery. Steering reserved before validation and did not release an archived-target refusal. A retry could therefore receive ok/deduped while nothing had been accepted.
+COST: The local-outbox acceptance audit found a server receipt that could remove pending user intent prematurely; isolating reservation versus acceptance required a separate persistence and routing regression pass.
+FIX: Store the confirmed response ID separately from the reservation. Pending attempts cannot acknowledge delivery, legacy unknown rows remain uncertain, failed identity storage refuses an untracked send, and validation refusals reserve nothing. Record the original queue/send ID only after actual acceptance. New message_acceptance tests and the real steering route test validate the distinction; amux::message_acceptance logs unconfirmed receipt states.
+
+## Stop leaves a terminated worker marked as running
+VALIDATED: codex-amux-lifecycle | Validated 2026-09-10: stop_status_edge test passes; the real UI Stop action on both retained Sonnet workers now reaches API running:false with standing orders disabled. Evidence work/stop-status-892b.log and work/complex-pause-final.log. Existing task states are preserved; no task is completed by stopping a worker.
+AREA: lifecycle
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: Both private Sonnet workers had returned to childless bash panes after Stop, but the API still reported running:true because their recent waiting/blocked reports were preserved.
+COST: Cleanup falsely looked incomplete and the UI could offer running-only controls for a terminated provider.
+FIX: Under the same start/stop operation lock, retire the stopped process's live report while preserving model diagnostics. Do not report success when hard-kill remains unconfirmed; publish a failed-stop event. Validate the persisted report and real paused-worker API state.

@@ -9803,7 +9803,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.890';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.891';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -15421,6 +15421,9 @@ function cmdHistoryAdd(text, opts) {
   // (the "sent from phone, missing on desktop" bug, 2026-07-16). The push above
   // is just this device's optimistic local copy; the server pull reconciles it.
   _cmdHistoryIdx = -1;
+  // The live frame can arrive before local queue persistence resolves. Repaint
+  // provenance even when the next frame has identical bytes.
+  try { if (entry.session === peekSession) _peekReclassifyPrompts(); } catch(e) {}
   // Keep the peek Messages tab + its count badge live as you send.
   try { _peekMessagesBadge(); if (_peekTab === 'messages') _peekMessagesRender(); } catch(e) {}
 }
@@ -34200,11 +34203,13 @@ async function _handleDeeplink(hash) {
     const tab = TABS.includes(maybeTab) ? maybeTab : (maybeTab === 'lineage' ? 'preview' : '');
     const id = tab ? raw.slice(0, cut) : raw;
     const tryOpen = (attempt) => {
-      if (typeof boardItems !== 'undefined' && boardItems.some(i => i.id === id)) {
+      if (location.hash !== hash) return;
+      if (typeof boardItems !== 'undefined' && document.getElementById('board-detail-overlay')) {
         switchView('board');
-        setTimeout(() => {
+        setTimeout(async () => {
+          if (location.hash !== hash) return;
           try {
-            openBoardDetail(id);
+            await openBoardDetail(id);
             if (tab) boardDetailTab(tab);
           } catch (e) {}
         }, 250);
@@ -34212,7 +34217,9 @@ async function _handleDeeplink(hash) {
       }
       if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
     };
-    tryOpen(0);
+    // A newly created or capped-out card may not be in boardItems. The detail
+    // loader resolves its ID directly; waiting for the list can never find it.
+    setTimeout(() => tryOpen(0), 0);
     return;
   }
   // #browser=<session> — land in the Browser view focused on a given session's
