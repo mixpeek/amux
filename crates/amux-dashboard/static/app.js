@@ -9705,7 +9705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.873';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.874';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -35477,7 +35477,29 @@ function _hostLoad() {
 }
 
 function _hostStateColor(s) {
-  return s === 'ok' ? '#3fb950' : s === 'warn' ? '#f0a742' : s === 'critical' ? '#f85149' : '#6e7681';
+  return s === 'ok' ? 'var(--green)' : s === 'warn' ? 'var(--yellow)' : s === 'critical' ? 'var(--red)' : 'var(--dim)';
+}
+
+// Measure the actual theme colors, so a future palette regression is visible
+// in local diagnostics instead of only in a screenshot (AMUX-4362).
+function _hostContrastCheck() {
+  const luminance = color => {
+    const rgb = (color.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => {
+      const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  };
+  const samples = Array.from(document.querySelectorAll('#host-content .host-state-chip')).flatMap(chip => {
+    const background = getComputedStyle(chip).backgroundColor;
+    return [chip, chip.querySelector('b')].filter(Boolean).map(el => {
+      const foreground = getComputedStyle(el).color, a = luminance(foreground), b = luminance(background);
+      return { text:el.textContent.trim(), foreground, background, ratio:(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05) };
+    });
+  });
+  if (!samples.length) return;
+  fetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({kind:'host-analysis-contrast', verdict:samples.every(s=>s.ratio>=4.5) ? 'readable' : 'low-contrast',
+      measured:true, n_considered:samples.length, light:document.body.classList.contains('light'), samples, ver:APP_VER})}).catch(()=>{});
 }
 
 function _hostRender() {
@@ -35509,7 +35531,7 @@ function _hostRender() {
     return;
   }
 
-  const chip = (label, state) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;background:var(--panel,#161b22);border:1px solid var(--border,#30363d);font-size:0.75rem;">
+  const chip = (label, state) => `<span class="host-state-chip" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;background:var(--card);color:var(--text);border:1px solid var(--border);font-size:0.75rem;">
     <span style="width:8px;height:8px;border-radius:50%;background:${_hostStateColor(state)};"></span>${label}: <b style="color:${_hostStateColor(state)};">${esc(String(state || 'unknown'))}</b></span>`;
   html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px;">
     ${chip('CPU', v.cpu)} ${chip('Memory', v.memory)} ${chip('Disk', v.disk)}</div>`;
@@ -35585,6 +35607,7 @@ function _hostRender() {
   html += procTable('Top by Memory', d.top_mem, 'mem');
 
   el.innerHTML = html;
+  requestAnimationFrame(_hostContrastCheck);
 }
 
 function _reclaimStopPolling() {
