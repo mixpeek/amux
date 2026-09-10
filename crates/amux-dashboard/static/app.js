@@ -6999,44 +6999,19 @@ async function doSend(name, text) {
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
   const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
-  // Use direct fetch (not apiCall) so we can handle 409 specifically
-  try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: sendBody
-    });
-    if (_isLocallyQueued(r)) return 'queued';
-    if (r.ok) return 'sent';
-    if (r.status === 409) {
-      const d = await r.json().catch(() => ({}));
-      const msg = d.message || 'not running';
-      if (msg === 'not running') {
-        const start = await showConfirm(
-          `Worker "${name}" is not running.\n\nStart it and resend?`, 'Start & Send', false);
-        if (start) {
-          await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/start', { method: 'POST' });
-          showToast('Starting ' + name + '...');
-          // Wait for session to be ready, then retry send
-          setTimeout(() => doSend(name, text), 3000);
-          return 'starting';
-        }
-        return 'declined';        // user said no — nothing sent, nothing queued
-      } else {
-        showToast('Send failed: ' + msg);
-        return 'failed';
-      }
-    }
-    showToast('Send error: ' + r.status);
-    return 'failed';
-  } catch(e) {
-    // Offline — queue it (same body, same msg_id → server-side dedup if the
-    // original request actually landed before the connection died)
-    const queued = await _queueOp(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: sendBody
-    });
-    return queued ? 'queued' : 'failed';
-  }
+  // QUEUE-FIRST: always push to the local outbox, then let the sync flush
+  // deliver it. This gives immediate UI response whether online or offline,
+  // and the queue's own dedup + retry handles delivery. (Ethan, 2026-09-10:
+  // "i want it to just push it to the server and have it put into the queue")
+  const _outboxId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+  const queued = await _queueOp(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: sendBody, _outboxId
+  });
+  if (!queued) return 'failed';
+  // Kick the flush immediately so online delivery is near-instant
+  try { _scheduleSyncRetry(); } catch (e) {}
+  return 'queued';
 }
 
 async function doKeys(name, keys) {
@@ -7259,7 +7234,7 @@ async function sendFromInput(name) {
     // Silent when doSend already spoke — that double-toast was case 2 in the review,
     // where the WRONG message was the one left on screen.
     const _msg = { sent: 'Sent to ' + name,
-                   queued: 'Offline \u2014 queued for ' + name,
+                   queued: 'Queued for ' + name,
                    starting: 'Starting ' + name + ' \u2014 will resend',
                    declined: 'Not sent \u2014 ' + name + ' is not running' }[_outcome];
     if (_msg) showToast(_msg);
@@ -9741,7 +9716,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.874';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.880';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13198,8 +13173,8 @@ async function sendPeekCmd() {
 
   // @mentions in the middle of a message stay as text + API hints (Claude can reach them).
   message = _expandAtMentions(message);
-  await doSend(peekSession, message);
-  inp.style.borderColor = 'var(--green)';
+  const _sendResult = await doSend(peekSession, message);
+  inp.style.borderColor = _sendResult === 'queued' ? '#d29922' : 'var(--green)';
   setTimeout(() => { inp.style.borderColor = ''; }, 400);
   _refreshPeekSoon();
 }
@@ -13291,13 +13266,13 @@ function _showSteerPrompt(text) {
 async function steerSession(name, text) {
   if (!text) return;
   const msgId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
+  // QUEUE-FIRST: push to local outbox, let sync flush deliver it.
+  const queued = await _queueOp(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ text, record_history: true, msg_id: msgId })
   });
-  if (r) {
-    const d = await r.json().catch(() => ({}));
-    const newEntry = { id: d.id || ('steer-' + Date.now()), text, queued_at: Date.now() / 1000, guard: '' };
+  if (queued) {
+    const newEntry = { id: 'steer-' + Date.now(), text, queued_at: Date.now() / 1000, guard: '' };
     const sess = sessions.find(s => s.name === name);
     if (sess) {
       if (!sess.steering) sess.steering = [];
@@ -13306,6 +13281,7 @@ async function steerSession(name, text) {
     if (peekSession === name && _peekTab === 'steering') _steeringRender();
     _steeringUpdateBadge();
     render();
+    try { _scheduleSyncRetry(); } catch (e) {}
   }
 }
 function peekDownloadLog() {
@@ -15949,8 +15925,10 @@ function _peekMsgRenderChips(items) {
   const bar = document.getElementById('peek-messages-filter');
   if (!bar) return;
   // Count by kind so each chip shows how many of that type exist.
-  const counts = { all: items.length, human: 0, session: 0, schedule: 0, amux: 0 };
-  items.forEach(e => { counts[_msgKind(e)]++; });
+  // Seed from _MSG_KIND_ORDER so every chip reads 0 rather than undefined
+  // when no messages of that kind exist (unstamped/unknown were missing).
+  const counts = _MSG_KIND_ORDER.reduce((a, k) => (a[k] = 0, a), { all: 0 });
+  items.forEach(e => { const k = _msgKind(e); if (k in counts) counts[k]++; counts.all++; });
   // Every kind chip is ALWAYS shown, even at zero. Hiding empty ones made the
   // filter row change shape as you moved between sessions, and an absent chip
   // reads as "this kind does not exist" rather than "none here".
@@ -15989,7 +15967,11 @@ function _peekMessagesRender() {
     </div>`;
   }).join('');
   const cnt = document.getElementById('peek-messages-count');
-  if (cnt) cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages');
+  if (cnt) {
+    const isFallback = !_peekMsgRows || _peekMsgRowsFor !== peekSession;
+    const loadingHint = _peekMsgLoading && isFallback ? ' (loading…)' : '';
+    cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages') + loadingHint;
+  }
   // Date-group headers (Ethan 2026-08-13: "still has no timestamp thing"): the
   // per-worker Messages list never got the review-by-calendar pattern the global
   // Messages tab has. Same helpers, same sticky header, same data-day the picker
@@ -16088,6 +16070,7 @@ let _peekMsgRowsFor = '';     // which session _peekMsgRows belongs to
 let _peekMsgServerRows = [];  // raw server rows accumulated across pages, current session
 let _peekMsgOffset = 0;       // server offset = count of raw server rows fetched so far
 let _peekMsgDone = false;     // no older server page remains
+let _peekMsgLoading = false;  // true while the session-scoped fetch is in flight
 const _PEEK_MSG_PAGE = 200;   // page size, matching the global _MSGS_PAGE
 
 // Local entries that the server has not echoed yet (no id) must survive the
@@ -16130,10 +16113,11 @@ async function _peekMessagesLoad(more) {
   const prevCount = _peekMsgServerRows.length;
   const prevDone = _peekMsgDone;
   if (!more) { _peekMsgServerRows = []; _peekMsgOffset = 0; _peekMsgDone = false; }
-  _peekMessagesRender();                        // paint what we have instantly
+  _peekMsgLoading = true;
+  _peekMessagesRender();                        // paint what we have instantly (with loading indicator)
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, _peekMsgOffset);
-    if (peekSession !== sess) return;           // user moved on mid-flight
+    if (peekSession !== sess) { _peekMsgLoading = false; return; }
     _peekMsgServerRows = _peekMsgServerRows.concat(rows);
     _peekMsgOffset += rows.length;
     // A short page is the last page. When refreshing the same page size
@@ -16145,6 +16129,7 @@ async function _peekMessagesLoad(more) {
   } catch(e) {
     if (!more) { try { await _loadCmdHistoryFromServer(); } catch(e2) {} } // fall back to the shared cache on first load only
   }
+  _peekMsgLoading = false;
   if (peekSession !== sess) return;
   _peekMessagesRender();
   _peekReclassifyPrompts();
