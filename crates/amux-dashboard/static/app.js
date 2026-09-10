@@ -9739,7 +9739,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.878';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.892';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10231,7 +10231,8 @@ async function _peekAgentsLoad(force=false) {
     const ordered=state.items.filter(s=>fresh.has(ids(s))).map(s=>fresh.get(ids(s)));
     const known=new Set(ordered.map(ids));
     const all = ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
-    state.items = all.filter(s => s.active);
+    const cutoff = Date.now() / 1000 - 300;
+    state.items = all.filter(s => s.last_active > cutoff);
     state.error=false; state.loadedAt=Date.now();
     _peekAgentsLog('list',{count:state.items.length});
   } catch(e) {
