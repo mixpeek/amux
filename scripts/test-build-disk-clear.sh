@@ -16,9 +16,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SCRIPT="$(pwd)/scripts/rust-auto-build.sh"
+SELF="$(pwd)/scripts/test-build-disk-clear.sh"
 PASS=0; FAIL=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/amux-cargo-guard-test.XXXXXX");
 export AMUX_CARGO_GUARD_TEST_FIXTURE="$TMP"; trap 'rm -rf "$TMP"' EXIT
+# AF-675: an abort under `set -euo pipefail` used to print NOTHING before this
+# -- the only signal was the ABSENCE of the summary line at the bottom, which
+# is exactly the symptom that made the original AMUX-134 outage hard to read
+# (a suite's own "N passed, 0 failed" followed by a bare nonzero exit, nothing
+# in between). Name the abort so it announces itself instead of being read
+# from a hole (ethos rule 4).
+trap 'echo "test-build-disk-clear: ABORTED at line $LINENO (\`$BASH_COMMAND\`) -- $PASS passed, $FAIL failed before the abort" >&2' ERR
 # Cleanup diagnostics cannot depend on a running server or an inherited fleet
 # endpoint. This also reproduces CI, where no deployment-permit server exists.
 export AMUX_URL=http://127.0.0.1:1
@@ -352,12 +360,28 @@ fi
 # whole population is unreachable and the suite reports PASS. This cell runs the
 # same construct with names that can never match, under the same shell options,
 # so it reproduces the idle-runner condition on any host.
-if out_n=$(bash -c 'set -euo pipefail
-x="$( { pgrep -x amux_no_such_rustc; pgrep -x amux_no_such_cargo; } 2>/dev/null | tr -d "[:space:]")" || true
-printf "REACHED[%s]" "$x"' 2>/dev/null) && [ "$out_n" = "REACHED[]" ]; then
-  ok
+#
+# AF-675: this used to be a HAND-TYPED COPY of the pattern rather than the
+# SHIPPED line above, so a regression to that line's own `|| true` placement
+# or pipefail safety kept its own separately-maintained fix regardless of what
+# happened to the real one -- invisible on any box with a live builder, which
+# is every box that runs the auto-builder. Extract the actual assignment line
+# from $SELF and substitute names that can never match, so this cell fails
+# when the SHIPPED text regresses, not only when a hand-copy of it does.
+_shipped_line=$(grep -F '_real_builds="$( { pgrep -x rustc || true' "$SELF" | head -1)
+if [ -z "$_shipped_line" ]; then
+  bad "(n) could not find the shipped assignment line in $SELF to test" ""
 else
-  bad "(n) the no-match probe must REACH its decision under set -euo pipefail" "$out_n"
+  _probe_line=$(printf '%s\n' "$_shipped_line" | sed \
+    -e 's/pgrep -x rustc/pgrep -x amux_no_such_rustc/' \
+    -e 's/pgrep -x cargo/pgrep -x amux_no_such_cargo/')
+  if out_n=$(bash -c "set -euo pipefail
+$_probe_line
+printf 'REACHED[%s]' \"\$_real_builds\"" 2>/dev/null) && [ "$out_n" = "REACHED[]" ]; then
+    ok
+  else
+    bad "(n) the SHIPPED assignment line must reach its decision under set -euo pipefail" "$out_n"
+  fi
 fi
 
 echo
