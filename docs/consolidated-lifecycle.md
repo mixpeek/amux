@@ -712,3 +712,12 @@ receipt, sends Amux messages with verified origins, and finishes its own new cho
 Both terminal search and the visible Session messages are checked at desktop and
 phone widths. `AMUX_LIFECYCLE_CROSSGROUP_OBSERVE=1` observes an existing completed
 phase without changing groups or sending new prompts.
+
+`LC-SONNET-QUEUE` is the final acceptance boundary. It creates four real chore
+cards on the existing pair: each worker gets one Backlog and one To Do card,
+with dependencies in opposite directions. After creation the observer only reads;
+it never sends a wake-up, claims work, changes status, writes receipts or completes
+cards. Every seeded card must reach done/verified with a correct worker-written
+receipt and evidence. Every remaining run-owned capture must also be resolved by
+its worker. A completed handoff alone does not satisfy this boundary.
+`AMUX_LIFECYCLE_QUEUE_OBSERVE=1` checks an existing run without creating cards.

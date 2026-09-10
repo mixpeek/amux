@@ -78,8 +78,10 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
         if (!owned.some((c: any) => c.id === proof.own_task_id && c.session === name && ['done', 'verified'].includes(c.status) && String(c.evidence || '').includes(`${run}-cross-${role}.json`))) return false;
         cards.push(...owned); messages.push(...await history.json());
       }
-      return cards.every(c => ['done', 'verified', 'discarded', 'cancelled'].includes(c.status)) &&
-        [[author, reviewer, 'CROSS_REQUEST'], [reviewer, author, 'CROSS_ACK'], [author, reviewer, 'CROSS_DONE']]
+      // This phase proves the two cross-group work cards. The following queue
+      // phase requires the entire run-owned board, including parked captures,
+      // to reach terminal states after real backlog/todo pickup.
+      return [[author, reviewer, 'CROSS_REQUEST'], [reviewer, author, 'CROSS_ACK'], [author, reviewer, 'CROSS_DONE']]
           .every(([from, to, marker]) => messages.some(m => m.origin === from && m.session === to && String(m.text).startsWith(marker)));
     }, { timeout: 720_000, intervals: [5000, 15000, 30000], message: 'cross-group peers must read real task metadata, exchange Amux messages and finish their own work' }).toBe(true);
     for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 667 }]) {

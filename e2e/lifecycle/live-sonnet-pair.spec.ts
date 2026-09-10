@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import { runSonnetUpload } from './sonnet-upload';
 import { runSonnetCrossgroup } from './sonnet-crossgroup';
+import { runSonnetQueue } from './sonnet-queue';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
 test.describe.configure({ mode: 'serial' });
@@ -208,3 +209,5 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
 test('LC-SONNET-UPLOAD: same Sonnet worker reads a real UI upload and finishes its receipt task', runSonnetUpload);
 
 test('LC-SONNET-CROSSGROUP: the same pair discovers peer tasks and exchanges messages across groups', runSonnetCrossgroup);
+
+test('LC-SONNET-QUEUE: both workers pick up backlog and todo with dependencies and reach evidenced terminal states', runSonnetQueue);
