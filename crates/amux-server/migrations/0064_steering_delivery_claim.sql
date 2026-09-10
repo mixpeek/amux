@@ -1,0 +1,12 @@
+-- AF-678: steer_deliver_for_session used to delete a steering_queue row AFTER
+-- delivery (send_text_inner already succeeded, keystrokes irreversibly typed
+-- into the target pane), in a SEPARATE transaction whose result was discarded.
+-- A crash, restart, or write failure between those two steps left the row
+-- undeleted, so the next delivery attempt for that session found the same row
+-- and delivered it again -- guaranteed redelivery, not a rare race, since a
+-- session's idle report re-triggers this routinely.
+--
+-- This column lets delivery CLAIM a row before attempting send_text_inner
+-- (mirroring AF-515's scheduler fix), so a crash mid-delivery leaves a
+-- reconcilable, visible gap instead of a guaranteed duplicate.
+ALTER TABLE steering_queue ADD COLUMN delivering_since REAL;

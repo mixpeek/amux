@@ -12892,6 +12892,40 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
 }
 
 /// Deliver the oldest queued steering message for ONE specific session.
+/// Atomically claim a `steering_queue` row for delivery (AF-678). Only one
+/// caller can win this UPDATE for a given row -- a losing caller means
+/// someone else is already delivering it (or already has), which is
+/// contention, not a delivery refusal.
+async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
+    let id = id.to_string();
+    store
+        .write_async(move |conn| {
+            let n = conn.execute(
+                "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL",
+                rusqlite::params![now_f64(), id],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        })
+        .await
+        .map(|r| r.applied)
+        .unwrap_or(false)
+}
+
+/// Release a claim so the row stays eligible for retry (AMUX-2629): a
+/// refused send must not lose its place in the queue just because it
+/// happened to get claimed first. Best-effort like every other steering
+/// write here -- a failure leaves the row claimed, which
+/// `reconcile_orphaned_steering_claims` resolves on the next restart.
+async fn unclaim_steering_row(store: &crate::db::SharedStore, id: &str) {
+    let id = id.to_string();
+    let _ = store
+        .write_async(move |conn| {
+            conn.execute("UPDATE steering_queue SET delivering_since=NULL WHERE id=?1", [id])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .await;
+}
+
 /// Called reactively when a session reports "idle" — the report IS the turn
 /// boundary, so there is no need to re-check `steer_lane_at_boundary` (the
 /// caller just wrote "idle" into session_reports). This closes the race where
@@ -12937,6 +12971,23 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     let mut sent = None;
     let mut was_mid_turn = false;
     for (rid, rtext, queued_at) in rows {
+        // AF-678: CLAIM before delivering, mirroring AF-515's scheduler fix.
+        // `send_text_inner` below can leave keystrokes irreversibly typed into
+        // the pane, and the row used to stay in `steering_queue` until a
+        // SEPARATE, later write_async deleted it — so a crash, restart, or a
+        // write failure under normal DB contention between those two steps
+        // left the row undeleted, and the NEXT call for this session (which
+        // happens routinely, on every idle report) delivered it again.
+        // Claiming first means a crash after this point leaves a reconcilable
+        // row (see reconcile_orphaned_steering_claims) instead of a
+        // guaranteed duplicate.
+        if !claim_steering_row(&state.store, &rid).await {
+            // Already claimed (a concurrent caller is mid-delivery on this
+            // exact row) or the claim write itself failed. Either way, this
+            // is not a delivery refusal — do not skip() it, just leave it for
+            // whoever holds the claim (or the next tick) and try the next row.
+            continue;
+        }
         // This function is called BECAUSE the lane just reported idle, so the
         // boundary is not in question; the age still decides whether a lane
         // that flickers idle-then-busy gets an overdue delivery.
@@ -12953,6 +13004,10 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
             sent = Some((msg, age));
             break;
         }
+        // REFUSED: release the claim so the row stays eligible for retry
+        // (AMUX-2629's head-of-line fix depends on a refused row remaining in
+        // the queue, not being lost because it happened to get claimed).
+        unclaim_steering_row(&state.store, &rid).await;
         skip(session, &rid, &format!("send-refused: {msg}"));
     }
     let Some((msg, age)) = sent else { return false };
@@ -12976,7 +13031,7 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     // erases. That remaining hole is named on the card, not fixed here.
     let outcome2 = msg.clone();
     let (id2, sess2, text2) = (id.clone(), session_s.clone(), text.clone());
-    let _ = state
+    let finalized = state
         .store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
@@ -12997,6 +13052,20 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
+    // AF-678: this used to be `let _ =`, discarding the result unconditionally.
+    // A delivered message whose finalize write then failed left the row
+    // CLAIMED (delivering_since set) rather than deleted, which is exactly
+    // the state reconcile_orphaned_steering_claims exists to find on the next
+    // restart — but only if a failure here is loud enough to be worth
+    // grepping for before that restart happens.
+    if let Err(error) = finalized {
+        tracing::warn!(
+            steer_id = %id, session = %session, %error,
+            "steering: delivered but the finalize write (delete + history) failed — \
+             the row stays claimed; reconcile_orphaned_steering_claims will resolve it \
+             as interrupted on the next restart rather than silently retrying it (AF-678)"
+        );
+    }
     emit_event(
         state,
         session,
@@ -13015,6 +13084,63 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     .await;
     tracing::info!(session = %session, id = %id, detail = %msg, "steering delivered (reactive)");
     true
+}
+
+/// A claimed steering row cannot survive the process that was delivering it
+/// (AF-678, same shape as AF-515's scheduler fix). Reconcile on startup: any
+/// row still carrying `delivering_since` means the previous process died (or
+/// otherwise never finalized) between claiming it and recording the outcome,
+/// so its TRUE delivery status is unknown — it may have already reached the
+/// pane. Move it to `steering_history` with an `interrupted` outcome and
+/// delete it from the queue, rather than clearing the claim and letting it
+/// be retried: retrying is exactly the guaranteed-duplicate shape this fix
+/// exists to close, and a message that silently drops here is visible in the
+/// log and in `steering_history`, which a duplicate typed into a pane is not.
+struct OrphanedSteeringClaim {
+    id: String,
+    session: String,
+    text: String,
+    queued_at: f64,
+    guard: Option<String>,
+    sender: Option<String>,
+}
+
+pub fn reconcile_orphaned_steering_claims(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    let orphans: Vec<OrphanedSteeringClaim> = conn
+        .prepare(
+            "SELECT id, session, text, queued_at, guard, sender FROM steering_queue \
+             WHERE delivering_since IS NOT NULL",
+        )?
+        .query_map([], |r| {
+            Ok(OrphanedSteeringClaim {
+                id: r.get(0)?,
+                session: r.get(1)?,
+                text: r.get(2)?,
+                queued_at: r.get(3)?,
+                guard: r.get(4)?,
+                sender: r.get(5)?,
+            })
+        })?
+        .flatten()
+        .collect();
+    for OrphanedSteeringClaim { id, session, text, queued_at, guard, sender } in &orphans {
+        conn.execute(
+            "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+             VALUES(?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                id,
+                session,
+                redact_secrets(text),
+                queued_at,
+                now_f64(),
+                "interrupted: server restarted before this delivery attempt recorded an outcome",
+                guard,
+                sender,
+            ],
+        )?;
+        conn.execute("DELETE FROM steering_queue WHERE id=?1", [id])?;
+    }
+    Ok(orphans.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -23278,6 +23404,125 @@ mod tests {
         // Same anti-vacuity guard as the producer check: zero matches would be
         // zero failures and a green run.
         assert!(seen >= 6, "expected to inspect at least 6 history inserts, saw {seen}");
+    }
+
+    /// AF-678. Two callers claim the same row (the shape a concurrent
+    /// `steer_deliver_for_session` invocation would hit): the first CLAIM
+    /// must win and the second must see nothing to claim, or two deliveries
+    /// of the same row become possible again with the claim mechanism itself
+    /// providing no protection. Calls the REAL `claim_steering_row` /
+    /// `unclaim_steering_row` -- not a hand-copy of their SQL -- so a
+    /// regression to the shipped guard is what this test would catch.
+    #[tokio::test]
+    async fn a_second_claim_on_an_already_claimed_row_affects_nothing() {
+        let (st, _dir) = state();
+        st.store
+            .write_async(|conn| {
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) \
+                     VALUES('c1','lane-c','hello',0)",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            claim_steering_row(&st.store, "c1").await,
+            "the first claim on an unclaimed row must win"
+        );
+        let stamp_after_first: f64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT delivering_since FROM steering_queue WHERE id='c1'", [], |r| r.get(0))
+            .unwrap();
+
+        assert!(
+            !claim_steering_row(&st.store, "c1").await,
+            "a second claim on an already-claimed row must affect nothing"
+        );
+        let stamp_after_second: f64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT delivering_since FROM steering_queue WHERE id='c1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            stamp_after_first, stamp_after_second,
+            "the second claim must not have overwritten the first claimant's stamp"
+        );
+
+        unclaim_steering_row(&st.store, "c1").await;
+        assert!(
+            claim_steering_row(&st.store, "c1").await,
+            "unclaiming (a refused send) must leave the row eligible for a fresh claim (AMUX-2629)"
+        );
+    }
+
+    /// AF-678. A row left claimed (delivering_since set) means a previous
+    /// process died between claiming it and finalizing delivery -- its true
+    /// outcome is unknown. The reconciler must move it to history as
+    /// `interrupted` and remove it from the queue, and must NOT touch a row
+    /// nobody has claimed (that one is still legitimately waiting its turn).
+    #[tokio::test]
+    async fn reconcile_orphaned_steering_claims_resolves_claimed_rows_only() {
+        let (st, _dir) = state();
+        st.store
+            .write_async(|conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at, guard, sender, delivering_since) \
+                     VALUES('orphan-1','lane-o','stuck message',10.0,'board-drive','origin-lane',5.0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) \
+                     VALUES('waiting-1','lane-o','not yet attempted',20.0)",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        let n = st
+            .store
+            .write_async(|conn| {
+                let n = crate::api::session_verbs::reconcile_orphaned_steering_claims(conn)?;
+                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            })
+            .await
+            .unwrap();
+        assert!(n.applied, "the claimed row must have been reconciled");
+
+        let conn = st.store.read().unwrap();
+        let orphan_in_queue: i64 = conn
+            .query_row("SELECT COUNT(*) FROM steering_queue WHERE id='orphan-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphan_in_queue, 0, "the claimed orphan must leave the queue");
+        let (outcome, guard, sender): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT outcome, guard, sender FROM steering_history WHERE id='orphan-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(
+            outcome.as_deref().is_some_and(|o| o.starts_with("interrupted")),
+            "an orphaned claim must read as interrupted, not as a clean delivery: {outcome:?}"
+        );
+        assert_eq!(guard.as_deref(), Some("board-drive"), "the producer must survive into history");
+        assert_eq!(sender.as_deref(), Some("origin-lane"));
+
+        // CONTROL: the never-claimed row must be untouched. Without this, a
+        // reconciler that clears the whole table would pass the assertions
+        // above just as well.
+        let waiting_in_queue: i64 = conn
+            .query_row("SELECT COUNT(*) FROM steering_queue WHERE id='waiting-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(waiting_in_queue, 1, "a row nobody has claimed must not be reconciled away");
     }
 
     /// The behavioural half: a guard set at enqueue must still be readable in

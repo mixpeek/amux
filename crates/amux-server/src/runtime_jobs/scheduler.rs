@@ -2109,7 +2109,20 @@ pub async fn run_scheduler(
                      each is a turn that may not have reached its lane (AF-515)"
                 );
             }
-            Ok(WriteOutcome { applied: n > 0 || c > 0, events: vec![] })
+            // AF-678: unrelated to scheduling, but this is the one reliable
+            // "runs once at boot regardless of shadow/firing mode" moment
+            // this file already establishes for exactly this class of
+            // orphan (a manual shell run is a different subsystem too, and
+            // shares this same block).
+            let s = crate::api::session_verbs::reconcile_orphaned_steering_claims(conn)?;
+            if s > 0 {
+                tracing::warn!(
+                    orphaned_steering_claims = s,
+                    "startup: steering messages claimed but never finalized before a restart — \
+                     moved to steering_history as interrupted rather than retried (AF-678)"
+                );
+            }
+            Ok(WriteOutcome { applied: n > 0 || c > 0 || s > 0, events: vec![] })
         })
         .await;
     match reconciled {
