@@ -585,6 +585,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="groups-container"></div>
 </div>
 <div id="board-view" style="display:none;">
+  <div class="board-page-heading"><div><h1>Board</h1><p>Turn work into outcomes</p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
+  <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
   <div class="board-toolbar">
     <div id="bf-chips" style="display:none;flex-basis:100%;order:3;flex-wrap:wrap;gap:6px;padding-top:6px;"></div>
     <!-- #bf-add is the FIRST flex child of the wrap (AMUX-2569): as a later
@@ -1878,14 +1880,19 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button id="bd-delete" class="btn" onclick="boardDetailDelete()" style="display:none;color:var(--red);border-color:rgba(248,81,73,0.3);">Delete</button>
   </div>
   <div class="board-detail-body">
-    <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
-    <div id="bd-status-banner" class="bd-status-banner" style="display:none;"></div>
     <div class="board-detail-status-row" id="bd-status-row"></div>
+    <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+    <div id="bd-record-summary"></div>
     <div class="board-detail-tabs">
       <button class="board-detail-tab active" id="bd-tab-preview" onclick="boardDetailTab('preview')">Details</button>
+      <button class="board-detail-tab" id="bd-tab-subtasks" onclick="boardDetailTab('subtasks')">Subtasks <span id="bd-count-subtasks">0</span></button>
+      <button class="board-detail-tab" id="bd-tab-files" onclick="boardDetailTab('files')">Files <span id="bd-count-files">0</span></button>
+      <button class="board-detail-tab" id="bd-tab-related" onclick="boardDetailTab('related')">Related <span id="bd-count-related">0</span></button>
       <button class="board-detail-tab" id="bd-tab-history" onclick="boardDetailTab('history')">Worker actions<span id="bd-hist-n" class="bd-hist-n"></span></button>
       <button class="board-detail-tab" id="bd-tab-edit" onclick="boardDetailTab('edit')">Edit</button>
     </div>
+    <details id="bd-description-card" class="bd-card-section" open><summary><span class="bd-section-icon" aria-hidden="true">≡</span><h4>Description</h4></summary><div id="bd-preview" class="board-detail-preview md-content bd-section-body"></div></details>
+    <div id="bd-status-banner" class="bd-status-banner" style="display:none;"></div>
     <div class="board-detail-meta" id="bd-meta"></div>
     <div id="bd-edit-fields" style="display:none;">
       <div class="board-detail-row" id="bd-session-row">
@@ -1920,7 +1927,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <textarea id="bd-desc" class="board-detail-desc-input" placeholder="Add notes, description, or context... (supports Markdown)"></textarea>
     <div id="bd-log" class="board-detail-log" style="display:none"></div>
-    <div id="bd-preview" class="board-detail-preview md-content" style="display:none;"></div>
   </div>
   <div id="bd-edit-footer" class="board-detail-footer" style="display:none;">
     <span id="bd-save-status" style="font-size:0.78rem;color:var(--dim);"></span>

@@ -3682,6 +3682,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         let mut doing_by_id: BTreeMap<String, (String, String, i64)> = BTreeMap::new();
         let mut doing_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut blocked_doing_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut epic_doing_counts: BTreeMap<String, usize> = BTreeMap::new();
         for row in stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -3691,7 +3692,15 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             ))
         })? {
             let (sess, id, title, updated) = row?;
-            let blocked = crate::db::board_store::get_issue(conn, &id)?
+            let issue = crate::db::board_store::get_issue(conn, &id)?;
+            // Decomposition keeps the parent epic Doing while its children run.
+            // Like board-drive's WIP/resume selection, runtime attribution must
+            // treat that container as context, not a competing execution claim.
+            if issue.as_ref().is_some_and(|row| row.item_type == "epic") {
+                *epic_doing_counts.entry(sess).or_default() += 1;
+                continue;
+            }
+            let blocked = issue
                 .is_some_and(|issue| !crate::runtime_jobs::board_drive::doing_is_unblocked(conn, &issue));
             if blocked {
                 *blocked_doing_counts.entry(sess).or_default() += 1;
@@ -3904,6 +3913,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 "n_considered": truth.n_considered,
                 "card_count": truth.n_considered,
                 "blocked_doing_count": blocked_doing_count,
+                "epic_container_count": epic_doing_counts.get(&name).copied().unwrap_or(0),
                 "verdict": truth.verdict,
                 "violation": truth.violation,
                 "runtime_status": runtime_status,

@@ -1619,7 +1619,7 @@ async fn noop_patch_reports_applied_false_and_moves_nothing() {
     // Read back: rev truly unmoved, no log lines invented.
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert_eq!(detail["rev"].as_i64().unwrap(), rev0);
-    assert_eq!(detail["log"], Value::Null);
+    assert_eq!(detail["log"], card["log"], "no-op must preserve the intake audit");
 }
 
 // ---- optimistic concurrency ----------------------------------------------
@@ -4750,7 +4750,7 @@ async fn status_update_claim_rolls_back_when_its_log_write_fails() {
         |r| Ok((r.get(0)?, r.get(1)?)),
     ).unwrap();
     assert_eq!(status, "todo");
-    assert!(log.as_deref().unwrap_or("").is_empty(), "partial log: {log:?}");
+    assert_eq!(log.as_deref(), made["log"].as_str(), "failed update must preserve the pre-existing intake audit");
 }
 
 /// Artifact identity is the `(task, artifact)` pair in the URL. A mismatched
@@ -5996,4 +5996,40 @@ async fn every_close_refusal_offers_the_reassignment_exit() {
             "{want_code}: the exit reads as a way around the refusal: {v}"
         );
     }
+}
+
+#[tokio::test]
+async fn changed_verified_gate_preserves_history_and_rejects_the_old_checklist() {
+    let (app, _dir) = app();
+    let first = vec!["Report total equals 42", "Peer checked malformed input"];
+    let second = vec!["Report total equals 42", "Peer checked malformed input", "Duplicate invoices are rejected"];
+    let card = create(&app, json!({"title":"gate revision acceptance", "type":"chore", "gate": first})).await;
+    let path = format!("/api/board/{}", card["id"].as_str().unwrap());
+    let (st, _, result) = send(&app, "PATCH", &path, Some(json!({"status":"verified", "gate_checked":first}))).await;
+    assert_eq!(st, StatusCode::OK, "{result}");
+    let (_, _, initial) = send(&app, "GET", &path, None).await;
+    assert_eq!(initial["verification"]["gate_matches"], true);
+    let (st, _, result) = send(&app, "PATCH", &path, Some(json!({"gate":second}))).await;
+    assert_eq!(st, StatusCode::OK, "{result}");
+    let (_, _, revised) = send(&app, "GET", &path, None).await;
+    assert_eq!(revised["status"], "verified", "preserve historical status while naming stale coverage");
+    assert_eq!(revised["verification"]["state"], "needs_reverification");
+    assert_eq!(revised["verification"]["gate_snapshot"], json!(first));
+    let (st, _, refused) = send(&app, "PATCH", &path, Some(json!({"status":"verified", "reverify":true, "gate_checked":first}))).await;
+    assert_eq!(st, StatusCode::CONFLICT, "recheck must enforce amended criteria: {refused}");
+    let (st, _, checked) = send(&app, "PATCH", &path, Some(json!({"status":"verified", "reverify":true, "gate_checked":second}))).await;
+    assert_eq!(st, StatusCode::OK, "{checked}");
+    let (_, _, rechecked) = send(&app, "GET", &path, None).await;
+    assert_eq!(rechecked["verification"]["state"], "current");
+    assert_eq!(rechecked["verification"]["attempts"], 2);
+
+    let other = create(&app, json!({"title":"new gate acceptance", "type":"chore", "gate":second})).await;
+    let other_path = format!("/api/board/{}", other["id"].as_str().unwrap());
+    let (st, _, refused) = send(&app, "PATCH", &other_path, Some(json!({"status":"verified", "gate_checked":first}))).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["missing"], json!(["Duplicate invoices are rejected"]));
+    let (st, _, result) = send(&app, "PATCH", &other_path, Some(json!({"status":"verified", "gate_checked":second}))).await;
+    assert_eq!(st, StatusCode::OK, "{result}");
+    let (_, _, checked) = send(&app, "GET", &other_path, None).await;
+    assert_eq!(checked["verification"]["state"], "current");
 }

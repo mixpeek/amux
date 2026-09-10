@@ -721,3 +721,93 @@ cards. Every seeded card must reach done/verified with a correct worker-written
 receipt and evidence. Every remaining run-owned capture must also be resolved by
 its worker. A completed handoff alone does not satisfy this boundary.
 `AMUX_LIFECYCLE_QUEUE_OBSERVE=1` checks an existing run without creating cards.
+
+### Linked work, revised verification, and reliable sending
+
+The suite also includes these connected acceptance cases:
+
+- **LC-LINKED-RECORD** opens an epic, children and dependencies, follows a source
+  message into Messages, previews a produced file and `file://` URL, opens a real
+  web URL and inspects the actual Git commit. It repeats on desktop, phone and Safari.
+- **LC-GATE-REVISION** verifies a task, changes its gate in the task editor, checks
+  that retained evidence is labeled as covering the older criteria, refuses an old
+  checklist and explicitly rechecks the new one. Typed criteria have server-owned
+  versions; independent verification must rerun the current version. A checklist
+  acknowledgement is displayed separately from an independently executed test.
+- **LC-COMPLEX-VERIFIED** creates two Claude Sonnet workers in one private group.
+  They decompose an invoice reconciliation project into two linked epics and at
+  least five dependent children, implement a CLI and responsive report, exchange
+  review messages, register artifacts and commits, and finish phase one at Done.
+  The observer then changes the Verified gate to add duplicate-ID and negative
+  amount rejection. The peers implement the amendment and independently execute
+  verification of each other's work. Every real deliverable and epic must reach
+  Verified with current criteria and no remaining open run-owned work. The
+  observer never supplies completion evidence or advances those cards.
+- **LC-SEMANTIC-INTAKE** uses the real configured helper model to append a
+  paraphrase, update refined requirements and create distinct deliverables.
+  It checks the resulting IDs and preserved context, not only the classifier's
+  explanation. Comparison is scoped to open work with the same ownership.
+  Explicit graph, gate, callback or scheduling metadata is preserved as its own
+  record; ambiguous or unavailable comparison preserves the incoming request.
+  The intake receipt records whether comparison ran and the candidate count.
+- **LC-LOCAL-OUTBOX** uploads a file and sends a multiline draft while the server
+  is delayed. Local persistence must clear only the accepted draft immediately,
+  preserve attachment references and one message ID through reload/retry, and
+  keep newer edits. Refused or ambiguous delivery stays in the outbox for review.
+  Storage failure must retain the draft and cause zero network submissions.
+
+Focused live commands still require the dedicated lab variables above. Set
+`AMUX_HELPER_MODEL=sonnet` on that lab server to exercise semantic comparison
+with Sonnet too. Run the browser cases with the consolidated configuration, and
+run both live cases with `e2e/lifecycle/live.config.ts`. They are automatically
+included by the consolidated runner's existing discovery. Real worker tests
+may take substantially longer than fixture tests; their timeout is a failure,
+not permission to manufacture a terminal state.
+
+The browser runner now checks the **served** `app.js`, `app.css` and `sw.js`
+hashes before executing cases. Each isolated server writes an
+`asset-provenance-<port>.json` receipt with its `/health` build identity and the
+expected/actual hashes. A stale shared-build embed refuses the run immediately;
+a successful cargo exit alone does not establish dashboard provenance.
+
+Install the current Bash client into the dedicated lab with `make install-cli
+BIN_DIR=<lab>/bin` before starting real workers. An old installed client can have
+different retry behavior even when the server is current. Keep that installation
+receipt with the live evidence. `scripts/test-board-help.py` covers read-only
+artifact/decomposition discovery; help must never register an output.
+
+If a provider limit interrupts the complex case before the gate amendment, keep
+its failed run and resume the **same** workers and files using
+`AMUX_LIFECYCLE_COMPLEX_RESUME_PHASE1=1` with the original
+`AMUX_LIFECYCLE_COMPLEX_RUN`. This sends `continue` to each existing worker and
+still requires all phase-one work, the real gate amendment, and independent
+verification. Use `AMUX_LIFECYCLE_COMPLEX_OBSERVE=1` only after the amendment was
+actually delivered. Record any permission-dialog cancellation, environment repair,
+or resume separately; resumed work is not an uninterrupted autonomy result.
+
+Each browser project has its own server, home and tmux socket. The consolidated
+runner permits the three projects to run concurrently but limits each project
+to one worker, preserving serialization of global settings within that server.
+The report names the actual selected scope; a focused run remains partial.
+
+The complex observer follows the workers' registered output paths, including
+subdirectories, and reads the resulting bytes through the file API. Additional
+epics created for a criteria amendment are legitimate work: they must also
+finish, with current independent verification. The seven original minimum task
+IDs are checked in the completion receipt, and every additional Verified card
+must meet the same verification assertions. Preserve extra operator review
+findings and interventions alongside the run rather than describing a resumed
+or steered run as uninterrupted.
+
+Semantic intake currently considers up to 80 recent open candidates within the
+same worker/human ownership scope; receipts expose both considered and available
+counts. It does not merge across owners or reopen completed tasks automatically.
+
+Message retries must also distinguish a server reservation from an acceptance
+receipt. `message_acceptance_` server tests cover simultaneous retries, refused
+steering, unavailable identity storage, old rows without receipts, and long
+response-loss windows. A pending attempt returns a retryable failure; after two
+minutes an unresolved reservation requires terminal review. It cannot become
+"already delivered" merely by existing or aging out. Confirmed receipts retain
+the original response ID for 30 days. Logs use `amux::message_acceptance` to
+identify pending, uncertain, or unrecorded acceptance.

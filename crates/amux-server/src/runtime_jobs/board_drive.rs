@@ -4523,7 +4523,7 @@ fn unnudged_capture_cleanup(conn: &Connection, session: &str) -> Option<String> 
         .prepare(
             "SELECT id,title,COALESCE(desc,''),COALESCE(log,'') FROM issues \
              WHERE session=?1 AND status='doing' AND source='capture' \
-             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
+             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' AND COALESCE(type,'') != 'epic' \
              ORDER BY updated DESC LIMIT 40",
         )
         .and_then(|mut st| {
@@ -4722,6 +4722,7 @@ pub fn select_advance_with(
         .prepare(
             "SELECT id, status FROM issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent' \
+             AND NOT (COALESCE(type,'')='epic' AND status='doing') \
              ORDER BY CASE status WHEN 'doing' THEN 0 ELSE 1 END, updated DESC LIMIT 40",
         )
         .and_then(|mut st| {
@@ -4804,7 +4805,10 @@ pub fn select_advance_with(
     // paths, three verdicts, one unchanged card). desc and log are passed
     // separately so the capture brand reads the current desc, not the durable
     // log marker — a reshaped card no longer re-nags (AMUX-3187).
-    let why = pickup_junk_reason(&row.title, &row.desc, row.log.as_deref().unwrap_or(""));
+    // A decomposed epic preserves its source prompt as context. Its children
+    // carry execution; a review-stage epic is real review work, not a shell.
+    let why = if row.item_type == "epic" { String::new() }
+        else { pickup_junk_reason(&row.title, &row.desc, row.log.as_deref().unwrap_or("")) };
     if !why.is_empty() {
         // TELL THE LANE, do not just log it (py:13513, board-exp-1). Refusing to
         // nudge "advance it" at a capture shell is right — nothing about a chat
@@ -10820,6 +10824,23 @@ mod tests {
     /// while being wrong — so the fixture uses ages whose median is not the
     /// mean and not an endpoint. 2/10/30 has mean 14 and median 10; an
     /// off-by-one in the OFFSET lands on 2 or 30, and averaging lands on 14.
+    #[test]
+    fn a_decomposed_capture_epic_is_not_asked_to_decompose_again() {
+        let conn = board_db();
+        add_card(&conn, "EPIC-1", "lane", "doing", "Build the invoice tool", "**Prompt:** build and review the invoice tool");
+        conn.execute("UPDATE issues SET type='epic', source='capture', creator='amux' WHERE id='EPIC-1'", []).unwrap();
+        add_card(&conn, "CHILD-1", "lane", "doing", "Implement the parser", "SCOPE: parse strict integer cents\n- [ ] malformed amounts fail");
+        conn.execute("UPDATE issues SET epic='EPIC-1' WHERE id='CHILD-1'", []).unwrap();
+        assert!(unnudged_capture_cleanup(&conn, "lane").is_none());
+        match select_advance(&conn, "lane", &[], now_f64()) {
+            Advance::Nudge { card, kind, .. } => {
+                assert_eq!(card, "CHILD-1");
+                assert_ne!(kind, "decompose-asked");
+            }
+            _ => panic!("advance must target the executable child"),
+        }
+    }
+
     #[test]
     fn the_queue_shape_reports_the_dispatchable_slice_and_the_age_of_the_human_backlog() {
         let conn = board_db();

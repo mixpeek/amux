@@ -19,7 +19,7 @@ export async function checkpoint(page: Page, info: TestInfo, name: string) {
     body: JSON.stringify({ ...state, coverage: 'discovered; effects require scenario assertions' }, null, 2),
     contentType: 'application/json',
   });
-  await info.attach(name, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  await info.attach(name, { body: await page.screenshot({ fullPage: true, animations:'disabled' }), contentType: 'image/png' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
     `${name}: page must fit the viewport`).toBe(true);
 }

@@ -2770,19 +2770,25 @@ Usage: amux board epic $id <EPIC-ID> | none"
       # Creating children with repeated `board add` calls made dependency,
       # priority, ownership and epic linking optional at every step, and left
       # half a plan behind whenever one call failed.
+      # Help must work before ID validation: workers ask for the schema before
+      # they can author the plan. Keep the same concrete shape at either position.
+      local help='Usage: amux board decompose <CAPTURE-ID> --stdin | --file <plan.json>
+The plan is JSON: {"tasks":[{"title":"Parse invoices","description":"Parse and validate invoice rows","type":"chore","priority":1,"depends_on":[],"next_action":"Implement strict CSV parsing","acceptance_criteria":["Malformed amounts are rejected with a nonzero exit"]},{"title":"Produce report","description":"Generate a report from valid rows","type":"chore","priority":1,"depends_on":[1],"next_action":"Generate the customer totals","acceptance_criteria":["The report totals match the input invoices"]}]}
+Supply 2-50 children. depends_on contains 1-based indexes of earlier tasks, not IDs or titles. priority is an integer 0 (highest) through 3.
+Every child needs a concrete description, next_action, and 1-12 falsifiable acceptance_criteria. The source capture becomes their linked epic atomically.'
       local id="${1:-}"
+      if [[ "$id" == --help || "$id" == -h || "${2:-}" == --help || "${2:-}" == -h ]]; then
+        printf '%s\n' "$help"
+        return 0
+      fi
+      [[ -n "$id" ]] || die "$help"
       _board_id_guard "decompose" "$id"
-      [[ -n "$id" ]] || die "Usage: amux board decompose <CAPTURE-ID> --stdin | --file <plan.json>
-The plan is JSON: {\"tasks\":[{\"title\":\"...\",\"description\":\"...\",\"type\":\"code\",\"priority\":0,\"depends_on\":[],\"next_action\":\"Implement ...\",\"acceptance_criteria\":[\"The focused test fails before and passes after the change\"]}, ...]}
-depends_on contains 1-based indexes of earlier tasks. Priority is p0 (highest) through p3.
-Every child needs a concrete description, next action, and 1-12 falsifiable acceptance criteria."
       shift
       local plan=""
       case "${1:-}" in
         --stdin|-) plan=$(cat); shift ;;
         --file) [[ -n "${2:-}" && -r "${2:-}" ]] || die "amux board decompose: readable --file required"
                 plan=$(cat "$2"); shift 2 ;;
-        --help|-h) die "Usage: amux board decompose <CAPTURE-ID> --stdin | --file <plan.json>" ;;
         *) die "amux board decompose: pass the plan with --stdin or --file" ;;
       esac
       [[ -n "$plan" ]] || die "amux board decompose: the plan is empty"
@@ -2799,6 +2805,12 @@ Every child needs a concrete description, next action, and 1-12 falsifiable acce
       # but workers had no attributed CLI path to write it. A registry nobody
       # can reach from the pickup instruction degrades back into prose.
       local id="${1:-}" ref="${2:-}" kind="implementation" state="created" description=""
+      local help='Usage: amux board artifact <ISSUE-ID> <file|URL|commit|PR> [--kind K] [--state S] [--description TEXT]
+Use --stdin or --file <reference.txt> to read the reference. Example: amux board artifact AMUX-123 /tmp/result.json --kind verification --description "Recorded test output"'
+      if [[ "$id" == --help || "$id" == -h || "$ref" == --help || "$ref" == -h ]]; then
+        printf '%s\n' "$help"
+        return 0
+      fi
       _board_id_guard "artifact" "$id"
       [[ -n "$id" ]] || die "Usage: amux board artifact <ISSUE-ID> <file|URL|commit|PR> [--kind K] [--state S] [--description TEXT]"
       shift
@@ -2808,6 +2820,7 @@ Every child needs a concrete description, next action, and 1-12 falsifiable acce
         [[ -n "${2:-}" && -r "${2:-}" ]] || die "amux board artifact: readable --file required"
         ref=$(cat "$2"); shift 2
       else
+        [[ "${1:-}" != --* ]] || _board_bad_flag artifact "$1" "--stdin --file <reference.txt> --help"
         ref="${1:-}"; [[ $# -gt 0 ]] && shift
       fi
       [[ -n "$ref" ]] || die "amux board artifact: artifact reference required"

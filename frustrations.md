@@ -3603,3 +3603,14 @@ CARD: AMUX-4362
 SYMPTOM: Opening the passing populated torrent screenshot showed tiny adjacent pause and stop glyphs with correspondingly small targets at 375px.
 COST: A visual review found friction that successful click assertions missed.
 FIX: Give every torrent action a bordered 44px target and readable theme text. LC-TORRENT records measured dimensions and fails below 44px while retaining viewport-fit and effect checks.
+
+## An in-flight send reservation is reported as an accepted retry
+AREA: messages
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: send_dedup inserted an identity before attempting delivery, then treated any duplicate row as proof of delivery. Steering reserved before validation and did not release an archived-target refusal. A retry could therefore receive ok/deduped while nothing had been accepted.
+COST: The local-outbox acceptance audit found a server receipt that could remove pending user intent prematurely; isolating reservation versus acceptance required a separate persistence and routing regression pass.
+FIX: Store the confirmed response ID separately from the reservation. Pending attempts cannot acknowledge delivery, legacy unknown rows remain uncertain, failed identity storage refuses an untracked send, and validation refusals reserve nothing. Record the original queue/send ID only after actual acceptance. New message_acceptance tests and the real steering route test validate the distinction; amux::message_acceptance logs unconfirmed receipt states.

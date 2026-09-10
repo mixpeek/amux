@@ -636,5 +636,83 @@
     "sources": [
       "e2e/lifecycle/live-journey.spec.ts"
     ]
+  },
+  {
+    "id": "LC-LINKED-RECORD",
+    "surface": "Linked outcome board and task record",
+    "actions": "Create an epic and linked dependent children; inspect evidence and acceptance criteria; follow task, message, file, file URL, HTTP URL and git commit links. Repeat at desktop and phone widths.",
+    "expected": "Every link reaches its exact persisted target; evidence stays readable; no fabricated progress or overflow.",
+    "sources": [
+      "e2e/lifecycle/linked-record.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-COMPLEX-VERIFIED",
+    "surface": "Autonomous complex decomposition and verification",
+    "actions": "Send one substantive request to two real Sonnet workers. Require worker-created epic/children, dependencies, source-message links, peer review, produced artifacts and exact execution evidence. Change Verified criteria mid-work; observe discovery, extra work and independent verification.",
+    "expected": "Workers create the decomposition and satisfy the current gate. Every required deliverable reaches Verified. Stale acknowledgments fail, and no observer writes work evidence or closes deliverable cards.",
+    "sources": [
+      "e2e/lifecycle/live-complex-verified.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-GATE-REVISION",
+    "surface": "Gate changes and historical verification",
+    "actions": "Edit inherited and overridden criteria before transition and after verification; retry an old checklist, then supply current checks; reload details.",
+    "expected": "The effective gate is authoritative; changed criteria are visible; prior verification cannot silently claim the newer requirements.",
+    "sources": [
+      "crates/amux-server/tests/board_api.rs",
+      "e2e/lifecycle/gate-revision.spec.ts",
+      "crates/amux-server/tests/harness_enforcement.rs"
+    ]
+  },
+  {
+    "id": "LC-SEMANTIC-INTAKE",
+    "surface": "Semantic task intake",
+    "actions": "Submit paraphrased duplicate work, a refined requirement, a related independent outcome, and a different-domain task. Repeat through captured worker messages. Inspect actual model decisions, survivor IDs, retained context and task history.",
+    "expected": "Same work appends or updates one existing task; distinct outcomes get distinct tasks. No task content is lost; unavailable comparison is explicit.",
+    "sources": [
+      "e2e/lifecycle/live-semantic-intake.spec.ts",
+      "crates/amux-server/src/api/board_intake.rs"
+    ]
+  },
+  {
+    "id": "LC-LOCAL-OUTBOX",
+    "surface": "Durable local message acceptance",
+    "actions": "Send multiline text and an uploaded file; delay the server response, type a newer draft, reload, lose the response after delivery, retry, refuse submission and simulate full device storage. Inspect terminal and pending Messages.",
+    "expected": "Local persistence clears only the accepted draft immediately; attachment paths and one stable message ID survive retry/reload. Delivery requires a confirmed/deferred/deduplicated receipt. Refused or ambiguous operations remain reviewable and preserve ordering. Failed local storage keeps the draft and sends nothing.",
+    "sources": [
+      "e2e/lifecycle/composer.spec.ts",
+      "tests/dashboard-outage-recovery.mjs",
+      "e2e/lifecycle/live-complex-verified.spec.ts",
+      "e2e/lifecycle/composer-cards.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-FOCUS-NAVIGATION",
+    "surface": "Worker creation focus and explicit navigation",
+    "actions": "Type the worker directory while initial focus is delayed; reload a saved terminal and select the Workers tab before restoration runs.",
+    "expected": "Directory typing stays in its selected field. Explicit navigation cancels a delayed old-terminal restoration, and the requested main page remains usable.",
+    "sources": [
+      "e2e/lifecycle/create-focus.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-COMPOSER-LAYOUT",
+    "surface": "Long-draft composer layout",
+    "actions": "Enter a long multiline draft on desktop, mobile and Safari; inspect the Send button and mode menu.",
+    "expected": "Both controls retain 44px touch targets and the group stays compact rather than stretching to the textarea height.",
+    "sources": [
+      "e2e/lifecycle/composer-layout.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-DEEPLINK",
+    "surface": "Linked task and worker navigation",
+    "actions": "Edit a task without saving; follow a worker deep link in the same page; return to the task.",
+    "expected": "The previous task overlay no longer intercepts worker actions, and the unsaved task edit survives.",
+    "sources": [
+      "e2e/lifecycle/deeplink-surfaces.spec.ts"
+    ]
   }
 ]

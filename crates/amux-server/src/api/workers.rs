@@ -2330,6 +2330,7 @@ mod tests {
             ("tubescience", "ses-tubescience"),
             ("released", "ses-released"),
             ("conflict", "ses-conflict"),
+            ("decomposed", "ses-decomposed"),
         ] {
             conn.execute(
                 "INSERT INTO _amux_workers (id, display_name, state, created_at, updated_at) \
@@ -2352,6 +2353,8 @@ mod tests {
             ("TUBES-2459", "tubescience"),
             ("CONFLICT-1", "conflict"),
             ("CONFLICT-2", "conflict"),
+            ("DECOMP-1", "decomposed"),
+            ("DECOMP-2", "decomposed"),
         ] {
             conn.execute(
                 "INSERT INTO issues (id, title, status, session, creator, created, updated) \
@@ -2360,6 +2363,8 @@ mod tests {
             )
             .unwrap();
         }
+        conn.execute("UPDATE issues SET type='epic' WHERE id='DECOMP-1'", []).unwrap();
+        conn.execute("UPDATE issues SET epic='DECOMP-1' WHERE id='DECOMP-2'", []).unwrap();
         conn.execute(
             "INSERT INTO issues (id, title, status, session, creator, created, updated) \
              VALUES ('RELEASED-1', 'released title', 'done', 'released', 'test', ?1, ?1)",
@@ -2387,6 +2392,8 @@ mod tests {
             ("released", "RELEASED-1"),
             ("conflict", "CONFLICT-1"),
             ("conflict", "CONFLICT-2"),
+            ("decomposed", "DECOMP-1"),
+            ("decomposed", "DECOMP-2"),
         ] {
             conn.execute(
                 "INSERT INTO session_events (ts, session, type, data, source) \
@@ -2458,6 +2465,13 @@ mod tests {
         assert!(released["runtime_board"]["card_id"].is_null(), "{released}");
         assert_eq!(released["runtime_board"]["cardless_suppressed_by_live_claim"], json!(false), "{released}");
         assert!(released["task_board_id"].as_str().unwrap_or_default().is_empty(), "{released}");
+
+        let decomposed = rows.iter().find(|row| row["name"] == "decomposed").unwrap();
+        assert_eq!(decomposed["status"], json!("active"), "{decomposed}");
+        assert_eq!(decomposed["runtime_board"]["status"], json!("linked"));
+        assert_eq!(decomposed["runtime_board"]["card_id"], json!("DECOMP-2"));
+        assert_eq!(decomposed["runtime_board"]["card_count"], json!(1));
+        assert_eq!(decomposed["runtime_board"]["epic_container_count"], json!(1));
 
         let conflict = rows.iter().find(|row| row["name"] == "conflict").expect("conflict row");
         assert_eq!(conflict["status"], json!("unattributed"), "{conflict}");
