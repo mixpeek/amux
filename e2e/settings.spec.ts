@@ -823,13 +823,13 @@ test('settings_usage_meter', async ({ page, request }) => {
     await expect(row, `missing ${provider.id} summary`).toHaveCount(1);
     const summary = row.locator('summary');
     await expect(summary).toContainText(provider.label);
-    if (!provider.available) await expect(summary).toContainText('Unavailable');
+    if (!provider.available) await expect(summary).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account');
     if (provider.metered === false) await expect(summary).toContainText('Unlimited');
 
     if (!(await row.evaluate((element) => element.hasAttribute('open')))) await summary.click();
     if (!provider.available) {
       expect(provider.cause, `${provider.id} degradation must name its cause`).toBeTruthy();
-      await expect(row).toContainText(String(provider.reason));
+      await expect(row).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Waiting for the provider’s usage report.' : String(provider.reason));
       continue;
     }
     const windows = (provider.windows || []).filter((window: any) =>

@@ -3656,3 +3656,14 @@ CARD: AMUX-4362
 SYMPTOM: Both UI uploads finished, but the new direct download assertion returned 401 in all three browsers; its APIRequestContext omitted the dashboard bearer token.
 COST: Three failed checks in a 45-case upload/composer run; earlier progress comments overstated that case before the final summary.
 FIX: Use the existing auth helper for downloads and assert the actual status with the requested URL. Keep the real byte equality check and preserve the original failed report.
+
+## Provider usage disappears during account throttling
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex
+CARD: AMUX-4375
+SYMPTOM: Settings showed Claude Unavailable after HTTP429 despite an active subscription. The last successful report existed only in a short-lived route cache; deployments erased it. Routing and reserve consumers bypassed that cache and made competing probes. The whole-envelope stale fallback also rewound healthy Codex/Gemini rows.
+COST: Owner lost visibility into remaining plan capacity and had to reopen Settings to discover recovery.
+FIX: Share one in-flight Claude probe across server consumers, respect Retry-After with bounded exponential backoff, and atomically persist credential-scoped usage snapshots and cooldowns. Show historical readings with their observation time and scheduled refresh; never route work from stale percentages. Preserve other providers' current rows. Settings refreshes while open and retains readings through network interruptions. Log fresh, last_known, retry_scheduled and cache_write_failed outcomes. Tests cover concurrent consumers, restart/backoff/account isolation, stale routing exclusion, provider independence, and desktop/phone recovery.

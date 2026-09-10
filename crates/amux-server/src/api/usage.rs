@@ -176,8 +176,8 @@ pub async fn background_should_pause_now() -> bool {
         *g = Some(Instant::now());
     }
     let probe = crate::provider::claude::probe_usage_raw().await;
-    if let UsageProbe::Ok(body) = probe {
-        if let Some(pct) = session_pct_of(&shape_probe(UsageProbe::Ok(body))) {
+    if let Some(body) = probe.exact_body() {
+        if let Some(pct) = session_pct_of(&shape_probe(UsageProbe::Ok(body.clone()))) {
             note_window_pct(pct);
             return background_should_pause(Some(pct), reserve);
         }
@@ -329,7 +329,7 @@ async fn get_usage(
         let (claude, codex, gemini) =
             tokio::join!((probes.claude)(), (probes.codex)(), (probes.gemini)());
         let shaped = shape_all_providers(claude, codex, gemini);
-        if shaped.get("available") == Some(&json!(true)) {
+        if shaped.get("available") == Some(&json!(true)) && shaped.get("stale") != Some(&json!(true)) {
             c.last_good = Some(shaped.clone());
             c.last_good_at = Some(Instant::now());
         }
@@ -345,17 +345,26 @@ async fn get_usage(
     // changed — and both the age and the live failure travel with it, so the
     // response never claims to be something it is not.
     let mut stale_reason: Option<Value> = None;
-    if body.get("available") != Some(&json!(true)) {
+    if body.get("available") != Some(&json!(true))
+        && body.get("cache_managed") != Some(&json!(true))
+        && matches!(body.get("cause").and_then(Value::as_str), Some("rate_limited" | "probe_failed" | "unexpected_shape")) {
         let stale_window = usage_stale_window();
         if let (Some(good), Some(at)) = (&c.last_good, c.last_good_at) {
             if !stale_window.is_zero() && at.elapsed() < stale_window {
                 stale_reason = body.get("reason").cloned();
+                // Preserve today's Codex/Gemini result, not the old envelope
+                // that happened to accompany the last Claude success.
+                let providers = body.get("providers").cloned();
                 body = good.clone();
+                if let Some(providers) = providers { body["providers"] = providers; }
                 age = at.elapsed();
             }
         }
     }
 
+    if let Some(observed) = body.get("observed_at").and_then(Value::as_i64) {
+        age = Duration::from_secs((chrono::Utc::now().timestamp() - observed).max(0) as u64);
+    }
     // How old is this reading? A meter that silently shows a minute-old
     // number is fine; one that cannot tell you it is doing so is not.
     if let Some(obj) = body.as_object_mut() {
@@ -367,6 +376,11 @@ async fn get_usage(
             // "these are 4 minutes old because of a 429" is answerable.
             obj.insert("stale_reason".into(), reason);
         }
+    }
+    // Keep the provider row's age/recovery metadata alongside its own numbers.
+    let claude = shape_claude_provider(&body);
+    if let Some(providers) = body.get_mut("providers").and_then(Value::as_array_mut) {
+        if let Some(row) = providers.iter_mut().find(|p| p["id"] == "claude") { *row = claude; }
     }
     Json(body).into_response()
 }
@@ -561,6 +575,7 @@ fn shape_claude_provider(body: &Value) -> Value {
             "cause": body.get("cause").cloned().unwrap_or(Value::Null),
             "reason": body.get("reason").cloned()
                 .unwrap_or_else(|| json!("Claude usage is unavailable.")),
+            "retry_at": body.get("retry_at"),
             "windows": [],
         });
     }
@@ -593,6 +608,9 @@ fn shape_claude_provider(body: &Value) -> Value {
         "id": "claude", "label": "Claude", "available": true, "measured": true,
         "n_considered": windows.len(), "metered": true,
         "source": "Anthropic subscription API", "windows": windows,
+        "observed_at": body.get("observed_at"), "retry_at": body.get("retry_at"),
+        "cache_age_s": body.get("cache_age_s"), "stale": body.get("stale"),
+        "stale_reason": body.get("stale_reason"),
         "spend": body.get("spend").cloned().unwrap_or(Value::Null),
         "extra_usage": body.get("extra_usage").cloned().unwrap_or(Value::Null),
     })
@@ -705,6 +723,25 @@ fn shape_gemini_provider(probe: ProviderProbe) -> Value {
 /// spelled the way `loadUsage()` reads them.
 fn shape_probe(probe: UsageProbe) -> Value {
     match probe {
+        UsageProbe::Snapshot { body, observed_at, retry_at, failure } => {
+            let mut shaped = shape_probe(UsageProbe::Ok(body));
+            shaped["cache_managed"] = json!(true);
+            shaped["observed_at"] = json!(observed_at);
+            shaped["retry_at"] = json!(retry_at);
+            if let Some(failure) = failure {
+                shaped["stale"] = json!(true);
+                shaped["stale_reason"] = shape_probe(*failure)["reason"].clone();
+            }
+            shaped
+        }
+        UsageProbe::Deferred { failure, retry_at } => {
+            let mut shaped = shape_probe(*failure);
+            // The credential-scoped cache owns fallback. The route's legacy
+            // last-good envelope could belong to the previous login.
+            shaped["cache_managed"] = json!(true);
+            shaped["retry_at"] = json!(retry_at);
+            shaped
+        }
         UsageProbe::Ok(body) => match body {
             Value::Object(mut map) => {
                 map.insert("available".into(), json!(true));
@@ -737,8 +774,7 @@ fn shape_probe(probe: UsageProbe) -> Value {
         // own, and telling someone to re-login would be actively wrong.
         UsageProbe::Http(429) => degraded(
             "rate_limited",
-            "Anthropic rate-limited the usage probe (HTTP 429). This clears on its own; \
-             it is usually many Claude processes sharing one account."
+            "Anthropic paused usage refreshes (HTTP 429). amux will retry automatically."
                 .into(),
         ),
         UsageProbe::Http(code) => degraded(
@@ -1223,7 +1259,8 @@ mod tests {
         })
     }
 
-    fn app(probe: ProbeFn) -> axum::Router {
+    fn app(probe: ProbeFn) -> axum::Router { app_routes(routes_with(probe)) }
+    fn app_routes(routes: Router<AppState>) -> axum::Router {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("usage-test.db")).unwrap();
         std::mem::forget(dir);
@@ -1235,7 +1272,7 @@ mod tests {
         reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         Router::new()
-            .nest("/api/usage", routes_with(probe))
+            .nest("/api/usage", routes)
             .with_state(state)
     }
 
@@ -1574,6 +1611,52 @@ mod tests {
                 .contains("429"));
         })
         .await;
+    }
+
+    #[test]
+    fn dated_snapshot_reaches_the_provider_row_and_cold_retry_has_no_numbers() {
+        let body=shape_probe(UsageProbe::Snapshot { body:live_shaped_body(), observed_at:1000,
+            retry_at:1660, failure:Some(Box::new(UsageProbe::Http(429))) });
+        let row=shape_claude_provider(&body);
+        assert_eq!(row["observed_at"],1000); assert_eq!(row["retry_at"],1660);
+        assert_eq!(row["stale"],true); assert_eq!(row["windows"].as_array().unwrap().len(),3);
+        let cold=shape_claude_provider(&shape_probe(UsageProbe::Deferred { failure:Box::new(UsageProbe::Http(429)),retry_at:1660 }));
+        assert_eq!(cold["available"],false); assert_eq!(cold["retry_at"],1660);
+        assert!(cold["windows"].as_array().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn route_cache_cannot_resurrect_previous_credentials_reading() {
+        let (probe,_) = probe_sequence(vec![
+            UsageProbe::Ok(live_shaped_body()),
+            UsageProbe::Deferred { failure:Box::new(UsageProbe::Http(429)), retry_at:1660 },
+            UsageProbe::NoToken,
+        ]);
+        let app=app(probe);
+        temp_env_ttl("0",||async {
+            let (_,first)=get(&app).await; assert_eq!(first["available"],true);
+            for _ in 0..2 {
+                let (_,next)=get(&app).await;
+                assert_eq!(next["available"],false);
+                assert!(next["providers"][0]["windows"].as_array().unwrap().is_empty());
+            }
+        }).await;
+    }
+    #[tokio::test]
+    async fn claude_stale_fallback_does_not_rewind_other_providers() {
+        let (claude,_) = probe_sequence(vec![UsageProbe::Ok(live_shaped_body()),UsageProbe::Http(429)]);
+        let n=Arc::new(AtomicUsize::new(0));
+        let codex:ProviderProbeFn=Arc::new(move || {
+            let used=n.fetch_add(1,Ordering::SeqCst)*20;
+            Box::pin(async move { ProviderProbe::Ok(json!({"rateLimits":{"primary":{"usedPercent":used,"windowDurationMins":300}}})) })
+        });
+        let probes=UsageProbes { claude,codex,gemini:Arc::new(||Box::pin(async { ProviderProbe::Unavailable{cause:"test",reason:"test".into()} })) };
+        let app=app_routes(routes_with_probes(probes));
+        temp_env_ttl("0",||async {
+            let (_,first)=get(&app).await; let (_,second)=get(&app).await;
+            assert_eq!(first["providers"][1]["windows"][0]["used_percent"],0.0);
+            assert_eq!(second["providers"][1]["windows"][0]["used_percent"],20.0);
+            assert_eq!(second["providers"][0]["stale"],true);
+        }).await;
     }
 
     #[tokio::test]

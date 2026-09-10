@@ -5,7 +5,7 @@
 //! amux-server.py, ~line 3160): read the OAuth token from the macOS keychain
 //! (fallback `~/.claude/.credentials.json`), then GET
 //! `https://api.anthropic.com/api/oauth/usage`. STRICTLY read-only: one GET,
-//! no token refresh, no writes anywhere.
+//! no token refresh. A credential-scoped usage snapshot is cached locally.
 //!
 //! Invariant 20 discipline: every failure — no token, expired token, spawn
 //! error, HTTP error, unparseable body — collapses to
@@ -47,6 +47,7 @@ use amux_core::provider::{
 use async_trait::async_trait;
 
 use super::{PromptMode, ProviderAdapter};
+mod usage_cache;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// Keychain service name Claude Code stores its credentials under.
@@ -98,9 +99,9 @@ impl ProviderAdapter for ClaudeAdapter {
         // Invariant 20: routing can only act on numbers, so every
         // discriminated failure collapses to `unknown` HERE. The distinctions
         // survive for the human-facing endpoint, which calls the same probe.
-        match probe_usage_raw().await {
-            UsageProbe::Ok(body) => ProviderUsage::new(self.id(), map_usage_response(&body)),
-            _ => ProviderUsage::unknown(self.id()),
+        match probe_usage_raw().await.exact_body() {
+            Some(body) => ProviderUsage::new(self.id(), map_usage_response(body)),
+            None => ProviderUsage::unknown(self.id()),
         }
     }
 
@@ -161,6 +162,18 @@ pub enum UsageProbe {
     Transport(&'static str),
     /// 2xx, but the body was not JSON we could read.
     BadShape,
+    /// A dated reading, possibly historical. Routing accepts only failure=None.
+    Snapshot { body: serde_json::Value, observed_at: i64, retry_at: i64, failure: Option<Box<UsageProbe>> },
+    /// No reading yet; the shared probe has scheduled its next attempt.
+    Deferred { failure: Box<UsageProbe>, retry_at: i64 },
+}
+impl UsageProbe {
+    pub(crate) fn exact_body(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Ok(body) | Self::Snapshot { body, failure: None, .. } => Some(body),
+            _ => None,
+        }
+    }
 }
 
 /// One read-only GET of the subscription usage endpoint, with the cause of
@@ -168,40 +181,47 @@ pub enum UsageProbe {
 /// shaping (callers shape) — same URL, same three headers, same
 /// keychain-then-file credential order, same expiry check.
 pub async fn probe_usage_raw() -> UsageProbe {
-    let Some(token) = oauth_token().await else {
-        return UsageProbe::NoToken;
-    };
-    // Python: `if exp and now_ms > exp`. A credential that did not say when
-    // it expires (0) is treated as live — absence of a claim is not a claim.
+    use sha2::{Digest, Sha256};
+    static CACHE: tokio::sync::Mutex<Option<usage_cache::UsageCache>> = tokio::sync::Mutex::const_new(None);
+    // Hold the lock through the request: dashboard, routing and reserve share
+    // the same in-flight result rather than issuing competing account probes.
+    let mut guard = CACHE.lock().await;
+    let Some(token) = oauth_token().await else { return UsageProbe::NoToken; };
     if token.expires_at_ms > 0 && chrono::Utc::now().timestamp_millis() > token.expires_at_ms {
         return UsageProbe::Expired;
     }
+    let credential = format!("{:x}", Sha256::digest(token.access_token.as_bytes()));
+    let now = chrono::Utc::now().timestamp();
+    let path = usage_cache::cache_path();
+    if guard.as_ref().is_none_or(|c| !c.credential_matches(&credential)) {
+        *guard = Some(usage_cache::UsageCache::load(&path, &credential, now));
+    }
+    let cache = guard.as_mut().expect("initialized usage cache");
+    cache.refresh(&path, now, || fetch_usage(&token)).await
+}
+
+async fn fetch_usage(token: &OauthToken) -> (UsageProbe, Option<u64>) {
     let Ok(client) = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() else {
-        return UsageProbe::Transport("client");
+        return (UsageProbe::Transport("client"), None);
     };
-    let resp = client
-        .get(USAGE_URL)
+    let resp = client.get(USAGE_URL)
         .header("Authorization", format!("Bearer {}", token.access_token))
         .header("anthropic-beta", "oauth-2025-04-20")
-        .header("anthropic-version", "2023-06-01")
-        .send()
-        .await;
+        .header("anthropic-version", "2023-06-01").send().await;
     let resp = match resp {
         Ok(r) => r,
-        // Classify by predicate, never by the error's Display: a reqwest
-        // error renders the request URL, and the closed set keeps any future
-        // change to that rendering from reaching a user-visible string.
-        Err(e) if e.is_timeout() => return UsageProbe::Transport("timeout"),
-        Err(e) if e.is_connect() => return UsageProbe::Transport("connect"),
-        Err(_) => return UsageProbe::Transport("request"),
+        Err(e) if e.is_timeout() => return (UsageProbe::Transport("timeout"), None),
+        Err(e) if e.is_connect() => return (UsageProbe::Transport("connect"), None),
+        Err(_) => return (UsageProbe::Transport("request"), None),
     };
     let status = resp.status();
-    if !status.is_success() {
-        return UsageProbe::Http(status.as_u16());
-    }
+    let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok().or_else(|| chrono::DateTime::parse_from_rfc2822(v).ok()
+            .map(|at| (at.timestamp() - chrono::Utc::now().timestamp()).max(0) as u64)));
+    if !status.is_success() { return (UsageProbe::Http(status.as_u16()), retry_after); }
     match resp.json::<serde_json::Value>().await {
-        Ok(body) => UsageProbe::Ok(body),
-        Err(_) => UsageProbe::BadShape,
+        Ok(body) if !map_usage_response(&body).is_empty() => (UsageProbe::Ok(body), None),
+        _ => (UsageProbe::BadShape, None),
     }
 }
 
@@ -554,6 +574,8 @@ mod tests {
             UsageProbe::Http(c) => format!("http_{c}"),
             UsageProbe::Transport(w) => format!("transport_{w}"),
             UsageProbe::BadShape => "bad_shape".into(),
+            UsageProbe::Snapshot { failure, .. } => if failure.is_some() { "last_known" } else { "fresh" }.into(),
+            UsageProbe::Deferred { .. } => "retry_scheduled".into(),
         };
         eprintln!("live probe outcome: {tag}");
 
@@ -565,7 +587,7 @@ mod tests {
                 "a credential exists but the probe reported NoToken"
             );
         }
-        if let UsageProbe::Ok(body) = &probe {
+        if let Some(body) = probe.exact_body() {
             let windows = map_usage_response(body);
             // A 2xx body that maps to nothing means the response shape moved
             // under us — the failure mode a pass-through endpoint hides.
