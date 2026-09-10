@@ -88,11 +88,15 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
       await page.setViewportSize(size);
       for (const [name, marker] of [[author, 'CROSS_ACK'], [reviewer, 'CROSS_DONE']]) {
         await action(name, 'peek-terminal');
+        await page.getByRole('button', { name: 'Filter messages', exact: true }).click();
+        await page.locator('[name="peek-filter-source"][value="session"]').check();
+        await page.getByRole('dialog', { name: 'Filter worker messages' }).getByRole('button', { name: 'Done', exact: true }).click();
         await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
         await page.locator('#peek-search').fill(marker);
         await expect(page.locator('#peek-body .peek-highlight').first()).toBeVisible({ timeout: 30_000 });
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');
         await expect(page.locator('#peek-body .peek-highlight.current').first(), 'selected terminal result must be inside the visible output').toBeInViewport();
+        expect(await page.locator('#peek-body .peek-highlight.current').first().evaluate(el => el.closest('.peek-prompt')?.getAttribute('data-msg-kind'))).toBe('session');
         await checkpoint(page, info, `crossgroup-terminal-${name}-${size.width}`);
         await page.locator('#peek-search').press('Escape');
         await page.locator('#peek-tab-messages').click();

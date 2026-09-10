@@ -128,7 +128,7 @@ test('Find stays visible when full history arrives, but respects scrolling away'
   const live = 'live preface\n'.repeat(15) + 'needle\n' + 'live tail\n'.repeat(80);
   let history = 'earlier conversation\n'.repeat(120);
   await page.route('**/api/sessions/nav-probe/peek?*', route => route.fulfill({
-    json: { output: live, history },
+    json: { name: 'nav-probe', output: live, history },
   }));
   await page.evaluate(raw => {
     const w = window as any;
@@ -225,6 +225,7 @@ test('toolbar has one horizontal row, explicit filters and reachable named actio
   }
   await sourceFilter(page, 'session');
   expect(await page.evaluate(() => eval('_peekMsgNavKind'))).toBe('session');
+  expect(await page.locator('#peek-nav-label').evaluate(el => !el.getClientRects().length || el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await expect(page.locator('#peek-msg-count')).toHaveText('0');
   // Empty loaded output may still have earlier messages; these remain actions.
   await expect(page.getByRole('button', { name: 'Previous message', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
@@ -261,6 +262,11 @@ test('toolbar has one horizontal row, explicit filters and reachable named actio
   await tabs.click();
   await expect(page.locator('#peek-tab-customizer-menu')).toBeVisible();
   await expect(tabs).toHaveAttribute('aria-expanded', 'true');
+  await tabs.click();
+  // The removed modal must stay absent; subagent-arrows.spec.ts exercises
+  // the replacement terminal navigation, output, retry and parent restoration.
+  await expect(page.locator('#peek-subagents-btn')).toHaveCount(0);
+  await expect(page.locator('#subagents-overlay')).toHaveCount(0);
 });
 
 test('a toolbar layout regression announces itself to client diagnostics', async ({ page }) => {

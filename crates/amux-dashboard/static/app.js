@@ -9705,7 +9705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.872';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.873';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12223,13 +12223,15 @@ function _peekToolbarCheck() {
     // scaled screen rectangles to CSS sizes falsely flagged every 80% control.
     const small = controls.filter(el => el.offsetWidth < 43 || el.offsetHeight < 43);
     const overflow = rect.right > document.documentElement.clientWidth + 1 || toolbar.scrollWidth > toolbar.clientWidth + 1;
-    const fault = overflow || small.length || toolbar.offsetHeight > 48;
+    const caption = document.getElementById('peek-nav-label');
+    const clippedCaption = !!caption?.getClientRects().length && caption.scrollWidth > caption.clientWidth + 1;
+    const fault = overflow || small.length || clippedCaption || toolbar.offsetHeight > 48;
     const key = fault ? [innerWidth, toolbar.offsetHeight, overflow, small.length].join(':') : '';
     if (key && key !== _peekToolbarFault) {
       try { fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({kind:'peek-toolbar-layout',verdict:'unusable-controls',session:peekSession,
           measured:true,n_considered:controls.length,viewport:innerWidth,height:toolbar.offsetHeight,rendered_height:rect.height,
-          overflow,small_targets:small.length,ver:APP_VER})}).catch(() => {}); } catch(e) {}
+          overflow,small_targets:small.length,clipped_filter_caption:clippedCaption,ver:APP_VER})}).catch(() => {}); } catch(e) {}
     }
     _peekToolbarFault = key;
   });
@@ -28579,14 +28581,19 @@ if (_bdTitleForResize && window.ResizeObserver) {
     const nextWidth = entries[0].contentRect.width;
     if (!nextWidth || nextWidth === width || !document.getElementById('board-detail-overlay').classList.contains('active')) return;
     width = nextWidth;
-    const clipped = _bdTitleForResize.scrollHeight > _bdTitleForResize.clientHeight + 1;
-    _bdTitleForResize.style.height = 'auto';
-    _bdTitleForResize.style.height = _bdTitleForResize.scrollHeight + 'px';
-    if (clipped) {
-      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'board-detail-layout', verdict: 'title-resized-after-wrap',
-          measured: true, n_considered: 1, card: boardDetailId, width: Math.round(width), ver: APP_VER }) }).catch(() => {});
-    }
+    // Writing an observed box inside this callback can trigger the browser's
+    // ResizeObserver-loop error even when the next callback ignores height.
+    requestAnimationFrame(() => {
+      if (!document.getElementById('board-detail-overlay').classList.contains('active')) return;
+      const clipped = _bdTitleForResize.scrollHeight > _bdTitleForResize.clientHeight + 1;
+      _bdTitleForResize.style.height = 'auto';
+      _bdTitleForResize.style.height = _bdTitleForResize.scrollHeight + 'px';
+      if (clipped) {
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'board-detail-layout', verdict: 'title-resized-after-wrap',
+            measured: true, n_considered: 1, card: boardDetailId, width: Math.round(width), ver: APP_VER }) }).catch(() => {});
+      }
+    });
   }).observe(_bdTitleForResize);
 }
 function _boardDetailIdentityDiscard(requestedId, generation, responseId) {

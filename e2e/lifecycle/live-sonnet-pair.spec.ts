@@ -177,6 +177,9 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
       await page.setViewportSize(size);
       for (const [name, marker] of [[author, 'REVIEW_APPROVED'], [reviewer, 'PAIR_DONE']]) {
         await workerAction(page, name, 'peek-terminal');
+        await page.getByRole('button', { name: 'Filter messages', exact: true }).click();
+        await page.locator('[name="peek-filter-source"][value="session"]').check();
+        await page.getByRole('dialog', { name: 'Filter worker messages' }).getByRole('button', { name: 'Done', exact: true }).click();
         await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
         await page.locator('#peek-search').fill(marker);
         await expect(page.locator('#peek-body .peek-highlight').first(), 'real delivered message must be findable in terminal').toBeVisible({ timeout: 30_000 });
@@ -184,6 +187,7 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
         await page.getByRole('button', { name: 'Previous message', exact: true }).click();
         await page.waitForFunction(() => getComputedStyle(document.querySelector('#peek-overlay')!).opacity === '1');
         await expect(page.locator('#peek-body .peek-highlight.current').first(), 'selected terminal result must be inside the visible output').toBeInViewport();
+        expect(await page.locator('#peek-body .peek-highlight.current').first().evaluate(el => el.closest('.peek-prompt')?.getAttribute('data-msg-kind'))).toBe('session');
         await checkpoint(page, info, `terminal-${name}-${size.width}`);
         await page.locator('#peek-search').press('Escape');
         await page.locator('#peek-tab-messages').click();

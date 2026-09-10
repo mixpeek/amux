@@ -3517,4 +3517,28 @@ SESSION: codex-amux-lifecycle
 CARD: AMUX-4362
 SYMPTOM: The phone screenshot of a completed queue task showed only its shared run prefix; the distinguishing task suffix was hidden. The readonly textarea kept its desktop height after its width changed.
 COST: Different completed tasks appeared to have the same title on a resized or rotated display.
-FIX: Observe title width and recalculate its content height without editing the text. The local board-detail-layout/title-resized-after-wrap event names measured corrections. The real board-create/read/export scenario now checks the complete title after desktop-to-phone resizing.
+FIX: Observe title width and recalculate its content height in the next animation frame without editing the text or causing a ResizeObserver loop. The local board-detail-layout/title-resized-after-wrap event names measured corrections. The real board-create/read/export scenario now checks the complete title after desktop-to-phone resizing.
+
+
+## The extra terminal action crowded the phone filter caption
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: After the new Subagents action arrived on main, the phone toolbar squeezed the word Filters into the match count. All outer buttons were still large enough, so the old geometry check missed the overlapping inner caption.
+COST: The live peer-message screenshot had an unreadable filter caption despite a passing outer-toolbar check.
+FIX: Phone layouts use the filter icon and count, retaining the full accessible name and selected-source description. The toolbar diagnostic now reports clipped_filter_caption, and the viewport regression checks the inner label as well as button bounds.
+
+
+## The Subagents dialog opened behind the terminal
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: The newly added toolbar button activated a same-z-index overlay placed before Peek in the DOM; its data loaded but Peek covered its contents and close button. The overlay-card/head classes also had no styling.
+COST: The new action could not be inspected or dismissed through its own controls while the terminal remained open.
+FIX: The incoming main change replaced this dialog with read-only terminal arrows, removing the covered overlay entirely. Preserve that replacement and verify the old dialog and launch button remain absent; the consolidated suite includes subagent-arrows.spec.ts for output, retry, navigation and parent restoration. Existing subagent-navigation diagnostics expose failures; no dialog runtime path remains to diagnose.

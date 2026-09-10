@@ -1927,6 +1927,10 @@
   .peek-filter-caption { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; font:600 0.75rem/1.15 system-ui,sans-serif; }
   #peek-filter-summary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); font-size:0.62rem; font-weight:400; }
   .peek-msg-count { flex-shrink:0; color:var(--dim); font:500 0.65rem/1 system-ui,sans-serif; }
+  @media (max-width: 480px) {
+    .peek-filter-caption { display:none; }
+    .peek-filter-btn { justify-content:space-between; }
+  }
   .peek-filter-panel { position:absolute; top:calc(100% + 7px); left:0; width:min(320px,calc(100vw - 24px)); box-sizing:border-box; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,0.25); z-index:65; max-height:calc(100dvh - 180px); overflow-y:auto; }
   .peek-filter-panel[hidden] { display:none; }
   .peek-filter-heading, .peek-filter-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
