@@ -9981,6 +9981,22 @@ function openPeek(name, opts) {
   updateConnectionStatus();
   const peekOv = document.getElementById('peek-overlay');
   peekOv.classList.add('active');
+  // A translated/scaled terminal changes the visible scroll viewport after its
+  // first paint. Keep this contract observable so a future generic-overlay CSS
+  // change announces the bounce in the normal log sweep as well as browser E2E.
+  requestAnimationFrame(() => {
+    if (!_peekIdentityCurrent(openIdentity)) return;
+    const style = getComputedStyle(peekOv);
+    const transitions = style.transitionProperty.split(',').map(v => v.trim());
+    if (style.transform !== 'none' || transitions.includes('transform') || transitions.includes('all')) {
+      fetch(API + '/api/client-debug', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, keepalive: true,
+        body: JSON.stringify({kind:'peek-motion-contract', verdict:'layout_shift',
+          measured:true, n_considered:1, session:name, transform:style.transform,
+          transition:style.transitionProperty, ver:APP_VER}),
+      }).catch(() => {});
+    }
+  });
   showPeekLoading('Loading latest…');   // now the overlay is active — the "loading latest" cue can attach
   // Freeze the page behind the overlay: otherwise iOS scrolls the session list
   // to reveal the focused input, sliding content around under the fixed overlay
@@ -11240,7 +11256,7 @@ function _peekScrollAffordance() {
     _peekScrollLocked = false;
     body.scrollTop = body.scrollHeight;
     _hideScrollLockBadge(body);
-  }, _peekScrollLocked);
+  }, _peekBufferedOutput);
 }
 // app.js is loaded at the END of body, so DOMContentLoaded may already have
 // fired and a listener registered for it would never run. Bind now when the
@@ -21509,8 +21525,9 @@ document.getElementById('peek-body').addEventListener('scroll', function() {
     _hideScrollLockBadge(this);
   } else {
     _peekScrollLocked = true;
-    // Scrolling up is not itself news. The compact resume affordance appears
-    // only when a later frame is actually buffered.
+    // Scrolling up is not itself news. The bottom affordance says "Jump to
+    // bottom" until a later frame is actually buffered, then changes to
+    // "New output". Keep those facts separate so the control never lies.
   }
 }, {passive: true});
 // Force URLs in peek output to open in the system browser (PWA desktop + mobile).

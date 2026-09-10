@@ -14806,6 +14806,37 @@ async fn post_dispatch(
                 return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason}));
             }
             let prompt = body_str(body, "prompt").trim().to_string();
+            if !prompt.is_empty() {
+                // The create modal's prompt enters through /start rather than
+                // /send. Until now it bypassed cmd_history entirely, so the
+                // same human message rendered as "Unclassified" after a
+                // refresh and could disappear without a durable audit row if
+                // first-run boot timed out. Record the accepted work before
+                // spawning boot; send_after_ready remains the sole deliverer.
+                let email = headers
+                    .get("x-amux-user-email")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                let author = super::org::local_member_actor(headers).unwrap_or(email);
+                cmd_hist_record_full(
+                    state,
+                    name,
+                    &prompt,
+                    "user",
+                    author,
+                    true,
+                    DeliveryMeta::queued(now_i64() * 1000),
+                )
+                .await;
+                tracing::info!(
+                    session = %name,
+                    chars = prompt.chars().count(),
+                    measured = true,
+                    n_considered = 1,
+                    verdict = "start_prompt_queued_and_attributed",
+                    "create-time prompt entered the durable Messages ledger before worker boot"
+                );
+            }
             let st2 = state.clone();
             let n = name.to_string();
             tokio::spawn(async move {

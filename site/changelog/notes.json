@@ -1,5 +1,59 @@
 [
   {
+    "hash": "69490b05",
+    "short": "69490b05",
+    "title": "Mobile terminal renders diffs and streams incrementally",
+    "date": "2026-09-09",
+    "type": "fix",
+    "tags": ["dashboard", "mobile", "terminal"],
+    "description": "The mobile dashboard now renders terminal output as incremental diffs rather than full-frame snapshots. Output appears as it arrives, so monitoring an overnight agent from your phone shows live progress. Fixes AF-640."
+  },
+  {
+    "hash": "8f491b19",
+    "short": "8f491b19",
+    "title": "Terminal scroll notices kept truthful",
+    "date": "2026-09-09",
+    "type": "fix",
+    "tags": ["dashboard", "terminal"],
+    "description": "Fixed scroll position notices in the terminal view that could report stale state, making the indicator mislead about whether output had advanced since the last view."
+  },
+  {
+    "hash": "7e3ca68f",
+    "short": "7e3ca68f",
+    "title": "Board deduplicates autofix cards and expires stale alerts",
+    "date": "2026-09-09",
+    "type": "fix",
+    "tags": ["board", "hygiene"],
+    "description": "Autofix cards that trigger repeatedly for the same condition are now deduplicated rather than accumulating. Stale alert cards past their TTL are expired automatically. Conversational acks (messages that only acknowledge a prior message) are filtered out of the capture queue."
+  },
+  {
+    "hash": "7de6f593",
+    "short": "7de6f593",
+    "title": "Board hygiene runtime job: needsyou aging and stale card sweeps",
+    "date": "2026-09-09",
+    "type": "feat",
+    "tags": ["board", "runtime", "hygiene"],
+    "description": "A new background job runs continuously to keep the board clean. It ages out stale needsyou cards (no activity past a configurable threshold), deduplicates autofix alert bursts, and removes conversational acks that clog the review queue. Morning review queues now surface real decisions rather than resolved notifications."
+  },
+  {
+    "hash": "5abadb51",
+    "short": "5abadb51",
+    "title": "Break worker-list overload loop on session boot",
+    "date": "2026-09-09",
+    "type": "fix",
+    "tags": ["sessions", "reliability"],
+    "description": "Fixed an overload loop that could fire repeatedly during worker list initialization when a session booted while many sessions were active."
+  },
+  {
+    "hash": "05388566",
+    "short": "05388566",
+    "title": "Session log rotation, audit dir cleanup, and age-pruned dirs",
+    "date": "2026-09-09",
+    "type": "fix",
+    "tags": ["storage", "reliability"],
+    "description": "Added log rotation for session log files to prevent unbounded growth. Audit directories are cleaned when their associated sessions are gone. Additional directories are now included in age-based pruning."
+  },
+  {
     "hash": "f6a0edbf",
     "short": "f6a0edbf",
     "title": "Board captures require a disposition before requeuing",

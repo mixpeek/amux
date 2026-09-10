@@ -106,7 +106,7 @@ test('a prompt sent while terminal is open is immediately attributed to the huma
   await expect(prompt).not.toContainText('Unclassified');
 });
 
-test('terminal controls are compact and new-output affordance appears only after buffering', async ({ page }, testInfo) => {
+test('terminal controls stay compact and the bottom affordance distinguishes navigation from new output', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const transcript = Array.from({ length: 220 }, (_, i) => `terminal output row ${i}`).join('\n');
   const state = await boot(page, { transcript, live: 'latest output\n' });
@@ -124,11 +124,13 @@ test('terminal controls are compact and new-output affordance appears only after
     body.scrollTop = 0;
     body.dispatchEvent(new Event('scroll'));
   });
-  await expect(page.locator('.scroll-lock-badge')).toBeHidden();
+  const notice = page.locator('.scroll-lock-badge');
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveText('Jump to bottom \u2193');
+  expect(await notice.evaluate(el => el.closest('#peek-body') !== null)).toBe(true);
 
   state.setLive('new buffered output\n');
   await page.evaluate(() => (window as any).refreshPeek(true));
-  const notice = page.locator('.scroll-lock-badge');
   await expect(notice).toBeVisible();
   await expect(notice).toHaveText('New output \u2193');
   expect(await notice.evaluate(el => el.closest('#peek-body') !== null)).toBe(true);

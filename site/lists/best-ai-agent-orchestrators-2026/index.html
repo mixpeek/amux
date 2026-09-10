@@ -40,12 +40,12 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/lists/">Lists</a> <span class="sep">›</span> <span>Best AI Agent Orchestrators 2026</span></div>
 
     <h1>Best AI Agent Orchestrators 2026</h1>
-    <p class="subtitle">Open source and commercial — architecture, pricing, and honest guidance on when each one is right. Last updated August 2026.</p>
+    <p class="subtitle">Open source and commercial — architecture, pricing, and honest guidance on when each one is right. Last updated September 2026.</p>
 
     <table>
       <thead><tr><th>Tool</th><th>Type</th><th>Open source?</th><th>Stars</th><th>Architecture</th><th>Best for</th></tr></thead>
       <tbody>
-        <tr><td><strong>amux</strong></td><td>Coding fleet orchestrator</td><td>Yes (MIT+CC)</td><td>336★</td><td>tmux/herdr + Python + SQLite</td><td>Parallel Claude Code / Codex / Gemini fleets</td></tr>
+        <tr><td><strong>amux</strong></td><td>Coding fleet orchestrator</td><td>Yes (MIT+CC)</td><td>434★</td><td>tmux/herdr + Rust binary + SQLite</td><td>Parallel Claude Code / Codex / Gemini fleets</td></tr>
         <tr><td><strong>LangGraph</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>47k+★</td><td>Directed graph, Python</td><td>Custom stateful multi-agent pipelines</td></tr>
         <tr><td><strong>CrewAI</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>31k+★</td><td>Role-based crews, Python</td><td>Task-delegating agent teams with structured roles</td></tr>
         <tr><td><strong>AutoGen</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>38k+★</td><td>Conversation-based, Python</td><td>Microsoft ecosystem, conversation-driven agents</td></tr>
@@ -59,9 +59,9 @@
     </table>
 
     <h2>amux</h2>
-    <p>Open-source control plane for running an AI engineering team from a single dashboard or your phone. amux is not a framework — you don't write agent code. You configure workers (Claude Code, Codex, Gemini CLI), queue tasks on the shared kanban board, and let the fleet run. Self-healing watchdog keeps agents running overnight. Web dashboard + native iOS app for monitoring. Single Rust binary, zero external dependencies. 336 GitHub stars.</p>
-    <p><strong>New in August 2026:</strong> declarative IaC via <code>amux iac apply vertical.yaml</code> — define your entire agent team in one YAML file and apply it idempotently. Also: commit nudges (prevents work loss), worker model/cost visibility, herdr as an alternative terminal backend.</p>
-    <p><strong>Architecture:</strong> tmux or herdr sessions managed by a Python server. SQLite for state. REST API for inter-session coordination. Inline HTML/CSS/JS dashboard served from the same process.</p>
+    <p>Open-source control plane for running an AI engineering team from a single dashboard or your phone. amux is not a framework — you don't write agent code. You configure workers (Claude Code, Codex, Gemini CLI), queue tasks on the shared kanban board, and let the fleet run. Self-healing watchdog keeps agents running overnight. Web dashboard + native iOS app for monitoring. Single Rust binary, zero external dependencies. 434 GitHub stars.</p>
+    <p><strong>New in September 2026:</strong> board hygiene runtime job (automatic needsyou aging, autofix dedup, conversational ack filtering), mobile terminal streaming (incremental diffs on phones), and session log rotation. Install: <code>brew install mixpeek/amux/amux</code>.</p>
+    <p><strong>Architecture:</strong> tmux or herdr sessions managed by a Rust binary (axum server). SQLite for state. REST API for inter-session coordination. Static SPA dashboard served from the same binary.</p>
     <p><strong>Best for:</strong> Developers shipping code who want 10–50× throughput with minimal setup. Not a framework — you don't program agents, you run them. <a href="/compare/amux-vs-langraph/">amux vs LangGraph →</a></p>
 
     <h2>LangGraph</h2>

@@ -8230,6 +8230,12 @@ pub async fn patch_item(
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());
                 if requested_owner.as_deref() != Some(caller_lane.as_str()) {
+                    tracing::warn!(
+                        caller = %caller_lane,
+                        card = %id_w,
+                        requested_owner = ?requested_owner,
+                        "cross-board card reassignment refused"
+                    );
                     return finish(
                         &slot_w,
                         PatchOut::Refused(

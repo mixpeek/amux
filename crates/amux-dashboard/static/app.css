@@ -881,6 +881,10 @@
      (browsers render them ~2.1ch, which otherwise detaches the right border). */
   .overlay-body .peek-box .pemoji { display: inline-block; width: 2ch; text-align: center; overflow: hidden; }
   .overlay-status { color: var(--dim); font-size: 0.68rem; margin-top: 2px; flex-shrink: 0; text-align: center; }
+  /* The first successful peek response fills this after the terminal has
+     painted. Reserve its one line up front so "Updated …" cannot steal 13px
+     from the output viewport and make the terminal jump. */
+  #peek-status { min-height: 1.4em; line-height: 1.4; }
   /* Peek 'Plan' strip — read-only view of the agent's Claude Code task list. */
   .peek-plan { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 6px; background: var(--card); overflow: hidden; flex-shrink: 0; }
   .peek-plan-hdr { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: transparent; border: none; color: var(--text); cursor: pointer; font-size: 0.8rem; text-align: left; font-family: inherit; }
@@ -1969,7 +1973,15 @@
      cmd bar's own env(bottom) padding clears the home indicator. The retired
      js-bottom-extend mistook the TOP status-bar carve for a bottom dead strip and
      pushed the input 50px off-screen ("now it's cut off"). */
-  #peek-overlay { padding-bottom: 0 !important; bottom: 0 !important; }
+  /* The terminal is a viewport, not a modal card. The generic overlay entrance
+     translated and scaled the entire terminal for 250ms, changing both the
+     output box's top and height after content had already painted. That motion
+     looked like streaming output was bouncing even when the DOM was stable. */
+  #peek-overlay {
+    padding-bottom: 0 !important; bottom: 0 !important;
+    transform: none;
+    transition: opacity 0.12s;
+  }
 
   /* Peek focus mode — collapse everything above terminal on mobile */
   #peek-overlay.peek-focus .overlay-header,
