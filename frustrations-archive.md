@@ -7736,3 +7736,111 @@ FIX: Fixed. The wrapper now copies itself to a temp file and `exec`s that before
   could already have moved. Both mutations now redden exactly one cell each.
 
 ---
+
+## An already decomposed epic is asked to split again
+VALIDATED: codex-amux-lifecycle | Epic nudge: the new selector regression completed 1/1 in epic-nudge-885.log and asserted the actual executable child receives the advance after decomposition. This validates the candidate selector; the older pinned live lab backend still emitted the pre-fix redundant prompt and is not claimed as post-fix proof.
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The real reviewer's LSC1R-1 had two linked children and type epic, yet board-drive sent MSG45 calling it a capture shell and asking for decomposition. The shell classifier reread the preserved source prompt without considering the completed structural decomposition.
+COST: One redundant prompt while the reviewer was preparing independent tests; the notice contradicted the persisted graph.
+FIX: Capture cleanup excludes epics and ordinary Doing advances target their executable children. Review-stage epics remain reviewable without reclassifying their preserved prompt as a shell. The selector test asserts the actual child ID receives the advance.
+
+## Asking for artifact help creates an output named --help
+VALIDATED: codex-amux-lifecycle | Artifact help: scripts/test-board-help.py completed 5/5 real-CLI cases, including both artifact help positions and an unknown reference-position option; no HTTP request was made. The live author removed its earlier accidental --help artifact itself.
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The Sonnet author ran amux board artifact LSC1A-2 --help to discover the command. The CLI registered --help as an implementation artifact, and the worker had to investigate how to remove that bogus output.
+COST: Several additional API/schema-discovery commands and an accidental artifact in a real acceptance task.
+FIX: Handle help before ID/reference processing; reject unknown reference-position options before any request. scripts/test-board-help.py runs the actual CLI with a recording transport and verifies help and invalid-option paths issue zero requests.
+
+## Shared build served an older dashboard during acceptance
+VALIDATED: codex-amux-lifecycle | Asset provenance: full-browser-886, focused-browser-887 and focused-browser-888 each validated served app.js/app.css/sw.js hashes on all three isolated servers before browser execution. Build receipts include process build identity; wrong old assets were rejected and the invalid 883b run was retained as invalid.
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: A successful build from the private worktree served embedded APP_VER 0.9.879 while the tested source was 0.9.883. New board controls were absent. The server commit stamp also omitted dirty because build.rs evaluated repository-relative git pathspecs from the crate directory.
+COST: One five-minute browser run was invalidated and stopped; its red UI assertions were against the wrong asset bytes.
+FIX: Watch absolute dashboard asset paths and the manifest directory for shared-cache invalidation. Check the served app.js, app.css and sw.js hashes against source before browser acceptance and persist the process build and every digest. Resolve git status from the repository root and explicitly mark unverified binary provenance until the asset checks succeed.
+
+## A Doing epic makes its active child look like conflicting work
+VALIDATED: codex-amux-lifecycle | Runtime attribution: scripts/test-contended.sh -p amux-server --lib legacy_sessions_ -- --test-threads=1 completed 2/2 in runtime-attribution-885.log, including Doing epic plus one leaf and two conflicting leaf claims.
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: Both real Sonnet workers decomposed a captured Doing task into a Doing epic plus children, then claimed one child. /api/sessions reported active-conflicting-claims with n_considered=2 instead of attributing the one executable child; board-drive already excludes epics from resume and WIP selection.
+COST: Live terminal activity disagreed with the worker status during the complex lifecycle run.
+FIX: Exclude epic containers from runtime execution claims while exposing their measured epic_container_count. Keep unrelated leaf claims conflicting. The real HTTP projection regression covers the epic-plus-child and two-independent-claims cases together.
+
+## Decompose help omits the plan shape when workers explicitly ask for help
+VALIDATED: codex-amux-lifecycle | CLI decompose help: scripts/test-board-help.py completed 5/5 cases, executing the real CLI against a recording HTTP transport; both help positions returned plan examples with zero writes.
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The live Sonnet author searched repository source for DecomposeTask after the command's help path failed to expose the JSON shape. --help before the ID ran ID validation; after an ID it printed only usage. The working sample was available only when the ID was missing.
+COST: The author spent several minutes discovering the schema and encountered an outside-workspace read permission dialog before creating its three linked children.
+FIX: Both help positions return a concrete two-child JSON example with integer priorities, one-based dependencies and acceptance criteria; the existing board contract exposes the same plan shape for API discovery.
+
+## Returning to Workers can reopen the previous terminal over the menu
+VALIDATED: codex-amux-lifecycle | Navigation: LC-NAVIGATION in full-browser-886 passed before the run advanced to subsequent cases on all three projects. The resumed gate amendment with candidate 886 reached the actual board gate UI and delivered MSG61. Final LC-DEEPLINK additionally passed 3/3 in focused-browser-888.
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: After reload on iOS Safari, clicking Workers and opening its menu was interrupted by a delayed restoration of the previously open worker terminal. The explicit navigation did not invalidate the saved-screen callback.
+COST: One failed cleanup in the 39-case focused browser run; the old overlay intercepted the requested menu action.
+FIX: Main navigation advances the existing peek generation, explicit task and menu deep links supersede restoration, and a superseded callback emits peek_restore_superseded. A controlled-clock acceptance case reproduces the navigation race.
+
+## Fresh worker can launch outside its configured directory
+VALIDATED: codex-amux-lifecycle | Provider cwd: the real lc-sonnet-complex-1789069500 Sonnet pair launched in the configured private workspace; terminal screenshots and committed scratch deliverables establish the selected directory. This fixes provider launch; the user global login profile can still affect subsequent Bash commands, which workers explicitly cd before running.
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: A private lab worker configured with the invoice scratch directory showed a different working directory in its Sonnet terminal after shell initialization.
+COST: Halted the lab before sending any implementation instructions and rebuilt the launcher to keep test writes in the requested workspace.
+FIX: The actual provider invocation now performs a quoted cd to the resolved workspace with &&, after shell/profile/environment setup. A provider_launch_workspace_pinned event records the selected directory; the real worker run checks that directory before doing work.
+
+## Create worker delayed focus sends directory text into the name
+VALIDATED: codex-amux-lifecycle | Create focus: LC-CREATE-FOCUS passed on desktop, mobile and Safari in focused-browser-887 (30/30 total). The actual Sonnet pair was created with the intended names and workspace.
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: The real Sonnet lifecycle's create request concatenated its directory onto the worker name and sent an empty dir. openCreate unconditionally focused the name after 100ms, stealing focus from the directory during entry.
+COST: One malformed stopped lab worker and a failed 30-second wait for the intended worker; the requested provider journey had not started.
+FIX: Delayed initial focus only runs when focus is outside the active create dialog. Log when an existing field keeps focus, and test directory typing across the delayed callback with a controlled browser clock.
+
+## Accepted message remains in the focused composer and invites another send
+VALIDATED: codex-amux-lifecycle | Accepted composer: focused-browser-887 completed 30/30 across desktop, mobile and Safari, including local persistence before delayed receipts and replacement/focused inputs; dashboard-outage-recovery.mjs completed 21/21. Production incident retained as metadata without claiming identical transport identity.
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4377
+SYMPTOM: Production history recorded one confirmed send at 15:20:44 ET and another identical-content attempt marked stuck at 15:21:05 ET; the composer-delivery log retained the second draft. Draft clearing skipped focused inputs and could clear a detached peek input after a render. The user saw the worker replying while the text remained in the composer.
+COST: Two identical-content attempts 21 seconds apart and a user-reported ambiguous send state; logs alone could not prove whether both came from the same transport identity.
+FIX: Persist ordinary messages and uploaded-file references in the existing local outbox before clearing exactly the accepted live draft. Replay one stable message ID and require a confirmed, deferred or deduplicated receipt; retain ambiguous attempts for review. Composer acceptance and replay failures emit diagnostic events. Regression coverage includes focus, replacement nodes, delayed receipts, newer edits, storage failure and reload.

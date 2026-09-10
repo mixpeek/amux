@@ -3252,19 +3252,21 @@ function _sessionReadNotice() {
   const troubleshoot = auth ? '' : '<div style="margin-top:8px;font-size:0.78rem;color:var(--dim);">'
     + '<b>Troubleshooting:</b> '
     + (_sessionLoadError.status >= 500
-      ? 'The server returned an error. Check if the amux process is healthy: <code>curl -sk $(amux url)/api/health</code>'
-      : 'Cannot reach the server. Verify the server is running (<code>systemctl --user status amux</code>) '
-        + 'and the URL is correct (<code>amux url</code>). If on a remote device, check your network/VPN connection.')
+      ? 'The server returned an error. Check the server health and logs if retries do not recover.'
+      : _sessionLoadError.status
+        ? 'The server responded, but its worker list could not be read. Check the response details below.'
+        : 'Cannot reach the server. Check that amux is running and this device can reach its address or VPN.')
     + '</div>';
   return '<div class="session-read-notice" role="alert"><strong>'
-    + (auth ? 'Access to this workspace needs to be renewed' : 'Cannot connect to amux server')
+    + (auth ? 'Access to this workspace needs to be renewed' : 'Worker updates are unavailable')
     + '</strong><p>' + (auth
       ? 'Open your owner access link, or ask the workspace owner for a new invite.'
       : errDetail + ' on GET /api/sessions. Retrying automatically.')
     + offlineCaps
     + '</p>' + troubleshoot
     + '<button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
-    + '</div>';
+    + '<details><summary>Connection details</summary><code>GET /api/sessions · '
+    + errDetail + ' · ' + esc(_sessionLoadError.reason) + '</code></details></div>';
 }
 
 // AF-639. The honest end state for a browser the server will not bootstrap:
@@ -9748,7 +9750,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.888';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.889';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

@@ -696,5 +696,23 @@
     "sources": [
       "e2e/lifecycle/create-focus.spec.ts"
     ]
+  },
+  {
+    "id": "LC-COMPOSER-LAYOUT",
+    "surface": "Long-draft composer layout",
+    "actions": "Enter a long multiline draft on desktop, mobile and Safari; inspect the Send button and mode menu.",
+    "expected": "Both controls retain 44px touch targets and the group stays compact rather than stretching to the textarea height.",
+    "sources": [
+      "e2e/lifecycle/composer-layout.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-DEEPLINK",
+    "surface": "Linked task and worker navigation",
+    "actions": "Edit a task without saving; follow a worker deep link in the same page; return to the task.",
+    "expected": "The previous task overlay no longer intercepts worker actions, and the unsaved task edit survives.",
+    "sources": [
+      "e2e/lifecycle/deeplink-surfaces.spec.ts"
+    ]
   }
 ]

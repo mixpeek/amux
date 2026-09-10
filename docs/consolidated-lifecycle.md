@@ -784,3 +784,21 @@ still requires all phase-one work, the real gate amendment, and independent
 verification. Use `AMUX_LIFECYCLE_COMPLEX_OBSERVE=1` only after the amendment was
 actually delivered. Record any permission-dialog cancellation, environment repair,
 or resume separately; resumed work is not an uninterrupted autonomy result.
+
+Each browser project has its own server, home and tmux socket. The consolidated
+runner permits the three projects to run concurrently but limits each project
+to one worker, preserving serialization of global settings within that server.
+The report names the actual selected scope; a focused run remains partial.
+
+The complex observer follows the workers' registered output paths, including
+subdirectories, and reads the resulting bytes through the file API. Additional
+epics created for a criteria amendment are legitimate work: they must also
+finish, with current independent verification. The seven original minimum task
+IDs are checked in the completion receipt, and every additional Verified card
+must meet the same verification assertions. Preserve extra operator review
+findings and interventions alongside the run rather than describing a resumed
+or steered run as uninterrupted.
+
+Semantic intake currently considers up to 80 recent open candidates within the
+same worker/human ownership scope; receipts expose both considered and available
+counts. It does not merge across owners or reopen completed tasks automatically.
