@@ -3248,16 +3248,23 @@ function _sessionReadNotice() {
         ? ' ' + pending + ' queued operation' + (pending === 1 ? '' : 's') + ' will sync automatically when the server returns.'
         : ' Commands you send will be queued and delivered when the server returns.')
     : '';
+  const errDetail = _sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error';
+  const troubleshoot = auth ? '' : '<div style="margin-top:8px;font-size:0.78rem;color:var(--dim);">'
+    + '<b>Troubleshooting:</b> '
+    + (_sessionLoadError.status >= 500
+      ? 'The server returned an error. Check if the amux process is healthy: <code>curl -sk $(amux url)/api/health</code>'
+      : 'Cannot reach the server. Verify the server is running (<code>systemctl --user status amux</code>) '
+        + 'and the URL is correct (<code>amux url</code>). If on a remote device, check your network/VPN connection.')
+    + '</div>';
   return '<div class="session-read-notice" role="alert"><strong>'
-    + (auth ? 'Access to this workspace needs to be renewed' : 'Worker updates are unavailable')
+    + (auth ? 'Access to this workspace needs to be renewed' : 'Cannot connect to amux server')
     + '</strong><p>' + (auth
       ? 'Open your owner access link, or ask the workspace owner for a new invite.'
-      : 'The worker list could not be loaded. Retrying automatically.')
+      : errDetail + ' on GET /api/sessions. Retrying automatically.')
     + offlineCaps
-    + '</p><button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
-    + '<details><summary>Connection details</summary><code>GET /api/sessions · '
-    + (_sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error')
-    + ' · ' + esc(_sessionLoadError.reason) + '</code></details></div>';
+    + '</p>' + troubleshoot
+    + '<button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
+    + '</div>';
 }
 
 // AF-639. The honest end state for a browser the server will not bootstrap:
@@ -9741,7 +9748,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.885';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.886';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10232,7 +10239,8 @@ async function _peekAgentsLoad(force=false) {
     const fresh=new Map(data.subagents.map(s=>[ids(s),s]));
     const ordered=state.items.filter(s=>fresh.has(ids(s))).map(s=>fresh.get(ids(s)));
     const known=new Set(ordered.map(ids));
-    state.items=ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
+    const all = ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
+    state.items = all.filter(s => s.active);
     state.error=false; state.loadedAt=Date.now();
     _peekAgentsLog('list',{count:state.items.length});
   } catch(e) {
@@ -11213,8 +11221,7 @@ function _peekLiveHtml(raw) {
     const input = plain.slice(i, end).join('\n').replace(/^\s*❯\s?/, '').trim();
     const pastes = input.match(/\[Pasted text #\d+[^\]]*\]/g) || [];
     const summary = pastes.length ? 'Unsent worker input · ' + pastes.length + ' pasted block' + (pastes.length === 1 ? '' : 's') : 'Worker input';
-    const draft = input ? '<details class="peek-worker-input"><summary>' + esc(summary) + '</summary>'
-      + '<p>This is the worker’s input box, not a delivered chat message. Collapsed paste contents are only available in the worker terminal.</p>'
+    const draft = input ? '<details class="peek-worker-input" open><summary>' + esc(summary) + '</summary>'
       + '<pre>' + esc(input) + '</pre></details>' : '';
     return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
       + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
@@ -16001,8 +16008,10 @@ function _peekMsgRenderChips(items) {
   const bar = document.getElementById('peek-messages-filter');
   if (!bar) return;
   // Count by kind so each chip shows how many of that type exist.
-  const counts = { all: items.length, human: 0, session: 0, schedule: 0, amux: 0 };
-  items.forEach(e => { counts[_msgKind(e)]++; });
+  // Seed from _MSG_KIND_ORDER so every chip reads 0 rather than undefined
+  // when no messages of that kind exist (unstamped/unknown were missing).
+  const counts = _MSG_KIND_ORDER.reduce((a, k) => (a[k] = 0, a), { all: 0 });
+  items.forEach(e => { const k = _msgKind(e); if (k in counts) counts[k]++; counts.all++; });
   // Every kind chip is ALWAYS shown, even at zero. Hiding empty ones made the
   // filter row change shape as you moved between sessions, and an absent chip
   // reads as "this kind does not exist" rather than "none here".
@@ -16041,7 +16050,11 @@ function _peekMessagesRender() {
     </div>`;
   }).join('');
   const cnt = document.getElementById('peek-messages-count');
-  if (cnt) cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages');
+  if (cnt) {
+    const isFallback = !_peekMsgRows || _peekMsgRowsFor !== peekSession;
+    const loadingHint = _peekMsgLoading && isFallback ? ' (loading…)' : '';
+    cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages') + loadingHint;
+  }
   // Date-group headers (Ethan 2026-08-13: "still has no timestamp thing"): the
   // per-worker Messages list never got the review-by-calendar pattern the global
   // Messages tab has. Same helpers, same sticky header, same data-day the picker
@@ -16140,6 +16153,7 @@ let _peekMsgRowsFor = '';     // which session _peekMsgRows belongs to
 let _peekMsgServerRows = [];  // raw server rows accumulated across pages, current session
 let _peekMsgOffset = 0;       // server offset = count of raw server rows fetched so far
 let _peekMsgDone = false;     // no older server page remains
+let _peekMsgLoading = false;  // true while the session-scoped fetch is in flight
 const _PEEK_MSG_PAGE = 200;   // page size, matching the global _MSGS_PAGE
 
 // Local entries that the server has not echoed yet (no id) must survive the
@@ -16179,18 +16193,26 @@ async function _peekMessagesLoad(more) {
     _peekMsgRowsFor = sess; more = false;
   }
   if (more && _peekMsgDone) return;            // nothing older to load
+  const prevCount = _peekMsgServerRows.length;
+  const prevDone = _peekMsgDone;
   if (!more) { _peekMsgServerRows = []; _peekMsgOffset = 0; _peekMsgDone = false; }
-  _peekMessagesRender();                        // paint what we have instantly
+  _peekMsgLoading = true;
+  _peekMessagesRender();                        // paint what we have instantly (with loading indicator)
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, _peekMsgOffset);
-    if (peekSession !== sess) return;           // user moved on mid-flight
+    if (peekSession !== sess) { _peekMsgLoading = false; return; }
     _peekMsgServerRows = _peekMsgServerRows.concat(rows);
     _peekMsgOffset += rows.length;
-    _peekMsgDone = rows.length < _PEEK_MSG_PAGE; // a short page is the last page
+    // A short page is the last page. When refreshing the same page size
+    // (SSE tick, not "Load older"), preserve a previous exhaustion so the
+    // button does not reappear every tick on boundary-sized stores.
+    if (!more && rows.length === prevCount && prevDone) _peekMsgDone = true;
+    else _peekMsgDone = rows.length < _PEEK_MSG_PAGE;
     _peekMsgRows = _mergeUnechoed(_peekMsgServerRows, sess); // pending merge + time sort, once, on the full set
   } catch(e) {
     if (!more) { try { await _loadCmdHistoryFromServer(); } catch(e2) {} } // fall back to the shared cache on first load only
   }
+  _peekMsgLoading = false;
   if (peekSession !== sess) return;
   _peekMessagesRender();
   _peekReclassifyPrompts();

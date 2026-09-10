@@ -821,10 +821,14 @@ impl Fleet for LiveFleet {
         // promised "the amux harness stripped" and delivered env suppression.
         //
         // The owner's peek/send are untouched — that is the documented boundary.
+        //
+        // Isolation no longer excludes a lane from board_drive. The flag
+        // blocks inter-worker SENDS (a peer can't message an isolated lane),
+        // but the server's own card automation is not a peer message — it is
+        // the owner's board working as designed. Without this, every card on
+        // an isolated lane sits in backlog/todo permanently (AF-xxx, measured
+        // on `amux`: 138 backlog + 46 todo, zero driven).
         crate::api::session_verbs::all_lane_names()
-            .into_iter()
-            .filter(|l| !crate::api::session_verbs::session_is_isolated(l))
-            .collect()
     }
     fn auto_pickup_enabled(&self, lane: &str) -> bool {
         crate::api::session_verbs::standing_orders_on(lane, "CC_AUTO_PICKUP")
@@ -5461,7 +5465,6 @@ fn needsyou_renag_text(
 /// TUBES-2459 was the live specimen. The repair is a race-safe lifecycle write,
 /// not a display exemption: `backlog` is the durable state for work that cannot
 /// run, and the existing dependency/revisit machinery is what brings it back.
-/// Isolated workers remain outside board automation entirely.
 async fn normalize_blocked_doing(state: &AppState) -> usize {
     let candidates: Vec<String> = match state.store.read() {
         Ok(conn) => bs::list_issues(
@@ -5475,10 +5478,7 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
         .filter(|row| {
             row.owner_type == "agent"
                 && !is_dormant_type(&row.item_type)
-                && row
-                    .session
-                    .as_deref()
-                    .is_some_and(|lane| !crate::api::session_verbs::session_is_isolated(lane))
+                && row.session.as_deref().is_some()
                 && !doing_is_unblocked(&conn, row)
         })
         .map(|row| row.id)
@@ -5514,7 +5514,7 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
                     return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                 }
                 let lane = row.session.clone().unwrap_or_default();
-                if lane.is_empty() || crate::api::session_verbs::session_is_isolated(&lane) {
+                if lane.is_empty() {
                     return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                 }
                 let blocking = deps_blocking(conn, &row);
@@ -5711,11 +5711,7 @@ pub async fn drive_session(state: &AppState, lane: &str) -> LaneTrace {
         signals: crate::api::session_verbs::boundary_signals(state, None).await,
     };
     if !fleet.lanes().iter().any(|candidate| candidate == lane) {
-        let trace = if crate::api::session_verbs::session_is_isolated(lane) {
-            LaneTrace::skip(lane, "isolated", "isolated workers never receive board automation")
-        } else {
-            LaneTrace::skip(lane, "not-registered", "worker is not in the live fleet registry")
-        };
+        let trace = LaneTrace::skip(lane, "not-registered", "worker is not in the live fleet registry");
         publish_lane(trace.clone());
         return trace;
     }
@@ -5938,10 +5934,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         return LaneTrace::skip(lane, "opted-out", "CC_AUTO_PICKUP=0 in the session env")
             .with_counts(eligible, open);
     }
-    if fleet.is_isolated(lane) {
-        return LaneTrace::skip(lane, "isolated", "isolated workers never receive board automation")
-            .with_counts(eligible, open);
-    }
+    // Isolation no longer blocks board automation — see `lanes()` comment.
     // A stopped lane is woken only after a selector has found real work.
     // Re-select after start: the preflight authorizes a wake, not a stale card
     // mutation. An exact surviving claim comes first: resuming its own Doing
@@ -9461,10 +9454,12 @@ mod tests {
         assert_eq!(drive_lane(&state, &stopped, "lane").await.reason, "not-running-no-dispatchable-work");
         assert_eq!(stopped.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
 
+        // Isolated workers are now driven by board automation (isolation only
+        // blocks inter-worker sends, not the server's own card dispatch).
         let isolated = BoundaryFleet::default();
         isolated.running.store(false, std::sync::atomic::Ordering::SeqCst);
         isolated.isolated.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(drive_lane(&state, &isolated, "lane").await.reason, "isolated");
+        assert_eq!(drive_lane(&state, &isolated, "lane").await.reason, "not-running-no-dispatchable-work");
         let opted = BoundaryFleet::default();
         opted.running.store(false, std::sync::atomic::Ordering::SeqCst);
         opted.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
