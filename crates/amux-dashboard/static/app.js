@@ -9705,7 +9705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.875';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.876';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -36183,7 +36183,7 @@ function _torrentRender() {
         <div style="height:100%;width:${pct}%;background:${isPaused ? 'var(--yellow)' : 'var(--accent)'};border-radius:2px;transition:width 0.3s;"></div>
       </div>
       <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:0.75rem;color:var(--dim);">
-        <span>${size}</span><span>${esc(f.status || (pct + '%'))}</span>
+        <span>${size}</span><span>${pct}%</span>
       </div>
       ${t.files && t.files.length ? `<div style="margin-top:6px;font-size:0.78rem;">
         ${t.files.map(f => {

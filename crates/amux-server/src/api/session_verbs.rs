@@ -6028,6 +6028,7 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
     //     on its own without anybody fixing amux.
     let conflict: &[(&str, &str)] = &[
         ("not running", "POST /api/sessions/<name>/start, or send again to auto-wake it"),
+        ("worker is still starting", "wait for the provider terminal to be ready, then retry the retained message"),
         // The keys landed and Claude Code did not take them. amux did its job
         // and the composer declined, so the text is still in the input box —
         // recoverable, and the caller needs to know it is NOT delivered.
@@ -28295,6 +28296,7 @@ mod refusal_status_tests {
     fn state_refusals_are_conflicts() {
         for msg in [
             "not running",
+            "worker is still starting — message not sent; retry when its terminal is ready",
             "session is in resume picker",
             "session at a selector — retry at next idle boundary",
             "session started generating — retry at next turn boundary",

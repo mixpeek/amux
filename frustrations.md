@@ -3600,3 +3600,36 @@ CARD: AMUX-4362
 SYMPTOM: GitHub's e2e job failed the shipped-function Node test because it still expected a failed outbox write to make the connection badge read Sync error. The current product deliberately reports connection/read health separately and shows pending operation failures in the outbox.
 COST: The stale assertion stopped the browser CI job before its browser cases could run.
 FIX: Align the assertion with the documented connection behavior, retain the checks for pending counts and read/auth errors, and explicitly assert the failed operation still displays its error. The existing named Node assertion is the local/CI diagnostic; no runtime behavior is changed.
+
+## Startup message refusal inherited HTTP 500
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Hosted refusal census found one unclassified send failure: a worker still starting correctly declined typing but appeared as a server crash.
+COST: Failed hosted Rust check after the lifecycle push.
+FIX: Classify the startup refusal as 409 with a wait/retry next step. The literal census and state-refusal regression diagnose future classification drift.
+
+## A populated torrent panel threw after the upload status change
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: SPA lint caught undefined f in the torrent progress renderer, copied from attachment status rendering. Empty torrent fixtures had not reached it.
+COST: Blocked follow-up SPA check; populated downloads would disappear behind a console error.
+FIX: Restore torrent percentage rendering and bump app/service-worker versions together. LC-TORRENT verifies populated progress and pause/resume/remove on all three viewports; the existing no-undef gate identifies the offending binding.
+
+## Parallel legacy discovery test discarded the retryable response body
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-amux-lifecycle
+CARD: AMUX-4362
+SYMPTOM: Hosted legacy sessions test returned 500 during parallel roster mutations and only printed the status, omitting its diagnostic body.
+COST: Failed hosted Rust check requiring a separate investigation.
+FIX: Preserve the body in the status assertion and retry at most four times only for the exact documented discovery-revision invalidation error. All other errors still fail immediately.
