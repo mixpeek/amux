@@ -42,6 +42,7 @@
 //! - `POST /identify {profile?}`       — label/raise the amux window (AF-496)
 //! - `GET  /profiles?sizes=1`           — profile inventory
 //! - `POST /profile/create {name,url?}` — create profile dir (+ sign-in window)
+//! - `POST /profile/combine {name,sources[]}` — one profile holding several profiles' logins
 //! - `DELETE /profile/{name}`           — delete an amux-owned profile
 //! - `POST /navigate {url, session?}`   — navigate the session's tab
 //! - `GET  /screenshot?session=&url=`   — PNG to ~/.amux/browser-screenshots
@@ -81,6 +82,7 @@ pub fn routes() -> Router<AppState> {
         .route("/identify", post(identify))
         .route("/profiles", get(profiles))
         .route("/profile/create", post(profile_create))
+        .route("/profile/combine", post(profile_combine))
         .route("/profile/{name}", delete(profile_delete))
         .route("/navigate", post(navigate))
         .route("/screenshot", get(screenshot))
@@ -125,6 +127,30 @@ fn err(status: StatusCode, body: Value) -> Response {
 /// that separates them was one format specifier away the whole time.
 fn with_cause(e: &impl std::fmt::Display) -> String {
     format!("{e:#}")
+}
+
+/// Recursively copy a directory tree.
+///
+/// std has no directory copy, and shelling out to `cp -R` would make the
+/// failure a shell exit code instead of the io::Error naming the path that
+/// failed — which is the only thing worth reading when a profile copy breaks.
+/// Symlinks are followed only for files; a symlinked directory is skipped
+/// rather than descended, so a loop cannot hang the request.
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        if ty.is_dir() {
+            copy_tree(&from, &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+        // Anything else (symlink, socket, fifo) is deliberately skipped: a
+        // Chrome profile's sockets belong to the process that made them.
+    }
+    Ok(())
 }
 
 /// The ATTRIBUTION resolution: explicit `session` (body/query) →
@@ -1968,6 +1994,239 @@ struct CreateBody {
     session: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct CombineBody {
+    name: String,
+    #[serde(default)]
+    sources: Vec<String>,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+/// The cookie DB inside a Chrome user-data-dir, or None when the profile has
+/// never been opened (a created-but-unused profile has no `Default/`).
+fn profile_cookie_db(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let c = dir.join("Default").join("Cookies");
+    if c.is_file() { Some(c) } else { None }
+}
+
+/// POST /profile/combine — build ONE profile carrying several profiles' logins.
+///
+/// WHY THIS IS POSSIBLE AT ALL, because it is the non-obvious part. Chrome
+/// encrypts cookie values with a key held in the OS keychain ("Chrome Safe
+/// Storage" on macOS), and every amux profile on this host shares that one
+/// key. So an encrypted cookie blob copied between profiles ON THE SAME HOST
+/// still decrypts. Across hosts it would not, which is why this endpoint is
+/// local-only by construction and never ships a profile anywhere.
+///
+/// The first source is copied WHOLE, because a Chrome user-data-dir is more
+/// than its cookies — it carries `Local State`, preferences and the profile
+/// skeleton, and a hand-assembled directory does not reliably start. Every
+/// later source contributes its cookie rows on top. Later sources win on a
+/// conflicting (host, name, path); that is stated in the response rather than
+/// left for the caller to discover.
+async fn profile_combine(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CombineBody>,
+) -> Response {
+    let _ = (&state, &headers);
+    let name = body.name.trim().to_string();
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "profile name must be [A-Za-z0-9._-]+" }),
+        );
+    }
+    if name == "default" {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "refusing to overwrite 'default' — combine into a new name" }),
+        );
+    }
+    let sources: Vec<String> =
+        body.sources.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    if sources.len() < 2 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "combine needs at least 2 source profiles",
+                "got": sources.len(),
+                "hint": "POST {\"name\":\"work\",\"sources\":[\"a\",\"b\"]}",
+            }),
+        );
+    }
+    if sources.contains(&name) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "a profile cannot be one of its own sources", "name": name }),
+        );
+    }
+    let home = chrome::amux_home();
+    let chrome_dir = chrome::chrome_user_data_dir();
+
+    // A live browser holds its SQLite open with a WAL; copying it mid-write
+    // yields a profile that looks fine and has lost rows. Refuse instead.
+    {
+        let running = chrome::RUNNING.lock().expect("browser registry poisoned");
+        let busy: Vec<String> = running
+            .keys()
+            .filter(|k| k.as_str() == name || sources.iter().any(|s| s == *k))
+            .cloned()
+            .collect();
+        if !busy.is_empty() {
+            return err(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "stop the browser on these profiles first — copying a live cookie DB loses rows",
+                    "running": busy,
+                }),
+            );
+        }
+    }
+
+    let mut resolved = Vec::new();
+    for src in &sources {
+        let d = crate::integrations::browser::resolve_profile_dir(&home, &chrome_dir, src);
+        if !d.is_dir() {
+            return err(
+                StatusCode::NOT_FOUND,
+                json!({ "error": format!("source profile '{src}' does not exist"), "looked_in": d.display().to_string() }),
+            );
+        }
+        resolved.push((src.clone(), d));
+    }
+
+    let dest = home.join("playwright-auth").join("profiles").join(&name);
+    if dest.exists() {
+        if !body.overwrite {
+            return err(
+                StatusCode::CONFLICT,
+                json!({ "error": format!("profile '{name}' already exists"), "hint": "pass overwrite:true to rebuild it" }),
+            );
+        }
+        if let Err(e) = std::fs::remove_dir_all(&dest) {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) }));
+        }
+    }
+
+    let dest2 = dest.clone();
+    let resolved2 = resolved.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let (first_name, first_dir) = &resolved2[0];
+        copy_tree(first_dir, &dest2)?;
+        let mut report = vec![json!({
+            "source": first_name,
+            "role": "base",
+            "detail": "copied whole (Local State, preferences and cookies)",
+        })];
+        let dest_cookies = dest2.join("Default").join("Cookies");
+        for (src_name, src_dir) in resolved2.iter().skip(1) {
+            let Some(src_cookies) = profile_cookie_db(src_dir) else {
+                report.push(json!({
+                    "source": src_name, "role": "merged", "cookies_merged": 0,
+                    "detail": "no Default/Cookies — this profile has never been opened, so it carries no logins",
+                }));
+                continue;
+            };
+            if !dest_cookies.is_file() {
+                report.push(json!({
+                    "source": src_name, "role": "merged", "cookies_merged": 0,
+                    "detail": "base profile has no cookie DB to merge into (it has never been opened)",
+                }));
+                continue;
+            }
+            // Copy aside first: ATTACHing another profile's live-ish DB can
+            // trip its WAL, and a merge must never mutate a SOURCE.
+            let tmp = dest2.join(format!(".merge-{src_name}.sqlite"));
+            std::fs::copy(&src_cookies, &tmp)?;
+            let conn = rusqlite::Connection::open(&dest_cookies)?;
+            conn.execute("ATTACH DATABASE ?1 AS src", [tmp.to_string_lossy().as_ref()])?;
+            let before: i64 =
+                conn.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))?;
+            let available: i64 =
+                conn.query_row("SELECT COUNT(*) FROM src.cookies", [], |r| r.get(0))?;
+            // Column sets must match or INSERT..SELECT * silently misaligns.
+            // Same Chrome build across amux profiles, so this is a guard, not
+            // a migration: say so rather than writing scrambled rows.
+            let cols = |t: &str| -> anyhow::Result<Vec<String>> {
+                let mut st = conn.prepare(&format!("PRAGMA table_info({t})"))?;
+                let v = st
+                    .query_map([], |r| r.get::<_, String>(1))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(v)
+            };
+            let (dc, sc) = (cols("main.cookies")?, cols("src.cookies")?);
+            if dc != sc {
+                conn.execute_batch("DETACH DATABASE src").ok();
+                let _ = std::fs::remove_file(&tmp);
+                anyhow::bail!(
+                    "cookie schema differs between '{src_name}' and the base profile                      ({} vs {} columns) — they were written by different Chrome builds,                      so merging would misalign every row",
+                    sc.len(),
+                    dc.len()
+                );
+            }
+            conn.execute_batch("INSERT OR REPLACE INTO main.cookies SELECT * FROM src.cookies")?;
+            let after: i64 = conn.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))?;
+            let hosts: i64 = conn
+                .query_row("SELECT COUNT(DISTINCT host_key) FROM src.cookies", [], |r| r.get(0))?;
+            conn.execute_batch("DETACH DATABASE src").ok();
+            drop(conn);
+            let _ = std::fs::remove_file(&tmp);
+            report.push(json!({
+                "source": src_name,
+                "role": "merged",
+                // Three numbers, because "merged 10" alone cannot tell an
+                // add from a replace and the difference is whose login wins.
+                "cookies_offered": available,
+                "cookies_added": after - before,
+                "cookies_replaced": available - (after - before),
+                "hosts": hosts,
+            }));
+        }
+        Ok(Value::Array(report))
+    })
+    .await;
+
+    let report = match joined {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            let _ = std::fs::remove_dir_all(&dest);
+            return err(StatusCode::UNPROCESSABLE_ENTITY, json!({ "error": with_cause(&e) }));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dest);
+            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+        }
+    };
+
+    // Register it: a combined profile is a deliberate artifact and the reaper
+    // exempts registered profiles at any age. An unregistered one would be
+    // deleted after the TTL, taking the merge with it.
+    let label = if body.label.trim().is_empty() {
+        format!("combined: {}", sources.join(" + "))
+    } else {
+        body.label.trim().to_string()
+    };
+    let registered = chrome::registry_register(&home, &name, "", &label).is_ok();
+
+    Json(json!({
+        "ok": true,
+        "name": name,
+        "dir": dest.display().to_string(),
+        "sources": sources,
+        "registered": registered,
+        "label": label,
+        "merged": report,
+        "conflict_rule": "later sources win on a conflicting (host, name, path)",
+    }))
+    .into_response()
+}
+
 async fn profile_create(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3346,6 +3605,73 @@ mod tests {
     /// proves it is worth using: without this, `with_cause` could be rewritten
     /// to `format!("{e}")` and every check in the pair would stay green while
     /// the 502 went back to being undiagnosable.
+    #[test]
+    fn combining_profiles_copies_the_tree_and_merges_cookie_rows() {
+        use rusqlite::Connection;
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b, dest) = (tmp.path().join("a"), tmp.path().join("b"), tmp.path().join("dest"));
+
+        // Two profiles shaped like Chrome user-data-dirs.
+        for (dir, host) in [(&a, "alpha.test"), (&b, "beta.test")] {
+            std::fs::create_dir_all(dir.join("Default")).unwrap();
+            std::fs::write(dir.join("Local State"), b"{}").unwrap();
+            let c = Connection::open(dir.join("Default").join("Cookies")).unwrap();
+            c.execute_batch(
+                "CREATE TABLE cookies(host_key TEXT, name TEXT, path TEXT, value TEXT,                  PRIMARY KEY(host_key,name,path));",
+            )
+            .unwrap();
+            c.execute(
+                "INSERT OR REPLACE INTO cookies VALUES(?1,'sid','/',?2)",
+                rusqlite::params![host, format!("from-{host}")],
+            )
+            .unwrap();
+            // A row both profiles carry, to prove the conflict rule.
+            c.execute(
+                "INSERT OR REPLACE INTO cookies VALUES('shared.test','sid','/',?1)",
+                rusqlite::params![format!("from-{host}")],
+            )
+            .unwrap();
+        }
+
+        // The base is copied WHOLE: a merge that only moved cookies would lose
+        // `Local State` and the result would not start.
+        super::copy_tree(&a, &dest).unwrap();
+        assert!(dest.join("Local State").is_file(), "base profile skeleton must be copied");
+        assert!(super::profile_cookie_db(&dest).is_some());
+        assert!(
+            super::profile_cookie_db(&tmp.path().join("never-opened")).is_none(),
+            "a profile with no Default/ carries no logins and must report so"
+        );
+
+        let dc = Connection::open(dest.join("Default").join("Cookies")).unwrap();
+        let before: i64 = dc.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
+        dc.execute("ATTACH DATABASE ?1 AS src", [b
+            .join("Default")
+            .join("Cookies")
+            .to_string_lossy()
+            .as_ref()])
+            .unwrap();
+        dc.execute_batch("INSERT OR REPLACE INTO main.cookies SELECT * FROM src.cookies").unwrap();
+        let after: i64 = dc.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
+
+        // alpha's own row survives, beta's is added: that is the point of
+        // combining, and a copy alone would not do it.
+        assert_eq!(after - before, 1, "beta's distinct host is added");
+        let alpha: String = dc
+            .query_row("SELECT value FROM cookies WHERE host_key='alpha.test'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(alpha, "from-alpha.test", "the base profile keeps its own login");
+        let beta: String = dc
+            .query_row("SELECT value FROM cookies WHERE host_key='beta.test'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(beta, "from-beta.test", "the merged profile's login is present");
+        // The documented conflict rule, asserted rather than described.
+        let shared: String = dc
+            .query_row("SELECT value FROM cookies WHERE host_key='shared.test'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(shared, "from-beta.test", "later sources win on a conflicting row");
+    }
+
     #[test]
     fn with_cause_keeps_the_whole_chain_and_plain_display_does_not() {
         let e = anyhow::anyhow!("tcp connect error: Connection refused (os error 61)")
