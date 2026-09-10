@@ -9705,7 +9705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.875';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.876';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -33005,7 +33005,7 @@ function usageProviderMeta(provider) {
   if (provider.auth_type) bits.push(String(provider.auth_type).replace(/-/g, ' '));
   return [...new Set(bits)];
 }
-function usageWindowRow(window) {
+function usageWindowRow(window, stale = false) {
   const used = Math.max(0, Math.min(100, Number(window.used_percent) || 0));
   const remaining = window.remaining_percent === null || window.remaining_percent === undefined
     ? 100 - used : Number(window.remaining_percent);
@@ -33014,20 +33014,40 @@ function usageWindowRow(window) {
   if (window.remaining_amount !== null && window.remaining_amount !== undefined) {
     amount += ' · ' + window.remaining_amount + ' requests';
   }
-  const reset = usageResetText(window.resets_at);
+  const ended = stale && window.resets_at && (typeof window.resets_at === 'number'
+    ? window.resets_at * 1000 : Date.parse(window.resets_at)) <= Date.now();
+  const reset = ended ? '' : usageResetText(window.resets_at);
+  if (ended) amount = 'Last reported: ' + amount;
   return '<div class="usage-window" data-usage-window>'
     + '<div class="usage-window-line"><span class="usage-window-label" title="' + esc(window.label || 'Limit') + '">' + esc(window.label || 'Limit') + '</span>'
     + '<span class="usage-window-value">' + esc(amount) + '</span></div>'
     + '<div class="usage-bar" aria-label="' + esc(amount) + '"><span style="width:' + used + '%;background:' + colour + '"></span></div>'
-    + (reset ? '<div class="usage-reset">Resets ' + esc(reset) + '</div>' : '')
+    + (ended ? '<div class="usage-reset">Previous window · waiting for updated usage</div>'
+      : reset ? '<div class="usage-reset">Resets ' + esc(reset) + '</div>' : '')
     + '</div>';
+}
+let _usageRefreshTimer = null;
+let _usageLoading = false;
+function usageRecoveryNote(provider) {
+  const age = provider.observed_at ? Math.max(0, Math.floor(Date.now()/1000 - provider.observed_at)) : provider.cache_age_s;
+  const checked = age == null ? '' : 'Last checked ' + (age < 60 ? 'just now' : age < 3600
+    ? Math.floor(age/60) + ' min ago' : Math.floor(age/3600) + ' hr ago');
+  const delay = provider.retry_at ? Math.max(0, provider.retry_at - Date.now()/1000) : null;
+  const retry = delay == null ? 'Refreshing automatically' : delay > 60
+    ? 'Next check in ' + Math.ceil(delay/60) + ' min' : 'Checking again shortly';
+  return '<div class="usage-reset usage-recovery" role="status">'
+    + esc([checked, provider.stale || !provider.available ? retry : ''].filter(Boolean).join(' · ')) + '</div>';
 }
 async function loadUsage() {
   const el = document.getElementById('settings-usage-body');
-  if (!el) return;
-  el.textContent = 'Loading…';
+  if (!el || _usageLoading) return;
+  _usageLoading = true;
+  clearTimeout(_usageRefreshTimer);
+  const openProviders = [...el.querySelectorAll('.usage-provider[open]')].map(p => p.dataset.provider);
+  if (!el.querySelector('.usage-provider')) el.textContent = 'Checking usage…';
   try {
-    const r = await fetch(API + '/api/usage');
+    const r = await fetch(API + '/api/usage', {signal:AbortSignal.timeout(30000)});
+    if (!r.ok) throw new Error('Usage refresh failed');
     const d = await r.json();
     // Old servers remain usable during a rolling deploy: synthesize their
     // Claude-only body into the provider collection the new renderer expects.
@@ -33047,25 +33067,34 @@ async function loadUsage() {
     el.innerHTML = providers.map(provider => {
       const windows = Array.isArray(provider.windows) ? provider.windows : [];
       const minimum = windows.length ? Math.min(...windows.map(w => Number(w.remaining_percent) || 0)) : null;
-      const status = !provider.available ? 'Unavailable'
+      const pending = !provider.available && (provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause));
+      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account')
         : provider.metered === false ? 'Unlimited'
-        : minimum === null ? 'No active limits' : usagePercent(minimum) + '% left';
+        : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
       const detail = !provider.available
-        ? '<div class="usage-unavailable">' + esc(provider.reason || 'Usage unavailable') + '</div>'
-        : windows.length ? windows.map(usageWindowRow).join('')
+        ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>'
+        : windows.length ? windows.map(w => usageWindowRow(w, provider.stale === true)).join('')
         : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>';
       return '<details class="usage-provider" data-provider="' + esc(provider.id || '') + '"'
-        + (constrained && constrained.id === provider.id ? ' open' : '') + '>'
+        + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
         + (provider.plan ? '<span class="usage-provider-plan">' + esc(String(provider.plan).replace(/_/g, ' ')) + '</span>' : '')
         + '<span class="usage-provider-status">' + esc(status) + '</span></summary>'
         + '<div class="usage-provider-detail">' + detail
+        + (provider.observed_at || provider.stale || pending ? usageRecoveryNote(provider) : '')
         + (meta.length ? '<div class="usage-provider-meta">' + meta.map(bit => '<span>' + esc(bit) + '</span>').join('') + '</div>' : '')
         + '</div></details>';
     }).join('');
   } catch (e) {
-    el.innerHTML = '<span style="color:var(--dim);">Could not load usage</span>';
+    if (!el.querySelector('.usage-provider')) el.textContent = 'Reconnecting to usage updates…';
+    else if (!el.querySelector('.usage-connection-note')) el.insertAdjacentHTML('beforeend',
+      '<div class="usage-reset usage-connection-note" role="status">Showing the last reading · reconnecting automatically</div>');
+  } finally {
+    _usageLoading = false;
+    _usageRefreshTimer = setTimeout(() => {
+      if (document.getElementById('settings-menu')?.classList.contains('open')) loadUsage();
+    }, 30000);
   }
   // The bars say HOW MUCH is gone. This says WHAT SPENT IT (AMUX-3544/3550).
   // Appended as its own node and loaded separately on purpose: if attribution
