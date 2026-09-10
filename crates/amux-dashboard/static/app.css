@@ -1981,6 +1981,8 @@
   .peek-prompt-schedule { border-left-color: #3fb950; background: rgba(63,185,80,0.08); }
   .peek-prompt-amux     { border-left-color: #8b949e; }
   .peek-prompt-unknown { border-left-color: #d29922; border-left-style: dotted; }
+  .peek-queued-msg { margin:12px 0; padding:10px 12px; border-left:2px solid #666; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .peek-queued-prompt { color:#d8b365; }
   .peek-worker-input { display:block; margin:12px 0; padding:10px 12px; border:1px solid #666; border-radius:8px; white-space:normal; font:13px/1.5 system-ui,sans-serif; }
   .peek-worker-input summary { cursor:pointer; min-height:36px; padding:4px 0; color:#d8b365; }
   .peek-worker-input p { color:#aaa; margin:8px 0; }

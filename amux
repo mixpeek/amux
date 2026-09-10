@@ -2924,6 +2924,30 @@ Sets the session whose sign-off is required for review -> done."
       echo "$result" | _board_outcome "$id" "" "reviewer set to ${who:-none}"
       return $?
       ;;
+    shepherd)
+      # AF-697. The server's own cross-board-reassignment refusal, and this
+      # CLI's own help text (AF-66-era "workers may assign board items only
+      # to their own board" hint), both name `shepherd` as a peer-coordination
+      # escape hatch on par with `reviewer` -- but no verb existed to set it,
+      # so `amux board shepherd <id> <peer>` fell through to an unrecognized
+      # subcommand while `shepherd` is a fully PATCH-able server field
+      # (crates/amux-server/src/api/board.rs `set_opt("shepherd", ...)`).
+      # A how_to_fix that names a verb which does not exist is the same
+      # defect `reviewer` above was added to close for AMUX-2325 -- every
+      # gate-relevant or hand-off-relevant field needs an attributed setter,
+      # not a raw PATCH (ethos rule 6's unaudited back door).
+      local id="${1:-}"; local who="${2:-}"
+      _board_id_guard "shepherd" "$id"
+      [[ -n "$id" && -n "$who" ]] || die "Usage: amux board shepherd <ISSUE-ID> <session>   (pass 'none' to clear)
+Names the peer this card is handed off to, without moving it onto their board."
+      [[ "$who" == "none" ]] && who=""
+      local result
+      result=$(S="$who" python3 -c 'import json,os;print(json.dumps({"shepherd":os.environ["S"]}))' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "shepherd set to ${who:-none}"
+      return $?
+      ;;
     show|cat)
       # AF-66. Assignment/idle nudges tell agents to read a card with
       # `amux board show <ID>` -- and the verb did not exist, so it fell through
@@ -3842,6 +3866,8 @@ ${BOLD}amux board${RESET} — manage board issues from the CLI
   amux board artifact <ID> <ref>   Register a file, URL, commit, PR, screenshot or
                                    verification asset on the task.
   amux board reviewer <ID> <W>     Name the peer a card in review is handed to
+  amux board shepherd <ID> <W>     Name the peer a card is handed off to, without
+                                   moving it onto their board (pass 'none' to clear)
   amux board block <ID> --on <why> Block a card WITHOUT changing its status, so its
                                    lifecycle position survives. --on is required:
                                    a block with no named cause is unfalsifiable.

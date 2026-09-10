@@ -919,7 +919,14 @@ let _syncFlight = null;
 let _syncRetryTimer = null;
 const _outboxActive = new Set();
 window.addEventListener('offline', () => setOnline(false));
-window.addEventListener('online', () => { consecutiveFailures = 0; setOnline(true); });
+window.addEventListener('online', () => {
+  consecutiveFailures = 0;
+  setOnline(true);
+  // setOnline only drains on a false->true EDGE, and `online` is often still
+  // true here because nothing had failed yet. Drain on the event itself, which
+  // is the browser telling us the network is back.
+  try { _syncBackoffReset(); _scheduleSyncRetry(); } catch (e) {}
+});
 // Migrate localStorage keys from cc_ to amux_
 ['offline_queue','sessions_cache','drafts'].forEach(k => {
   const old = localStorage.getItem('cc_' + k);
@@ -1983,7 +1990,21 @@ function updateConnectionStatus() {
   const title = document.getElementById('offline-banner-title');
   if (!banner) return;
   const hasPending = offlineQueue.length || drafts.length;
-  if (!hasPending) {
+  // A QUEUED MESSAGE IS NORMAL. ONLY A STUCK ONE IS NEWS.
+  //
+  // This raised a warning banner the instant anything entered the queue, so
+  // the ordinary path — type, queue, send 300ms later — flashed "Unsaved
+  // changes" every single time (Ethan: "unsaved changes is too much"). The
+  // queue is the transport, not an incident.
+  //
+  // Announce only what the user can actually act on: we are offline, an op
+  // failed, or an op has been waiting long enough that it is no longer "about
+  // to send". Anything younger is in flight and stays silent.
+  const STUCK_MS = 20000;
+  const stuck = offlineQueue.filter(q =>
+    q.state === 'blocked' || q.error || (Date.now() - (q.timestamp || 0)) > STUCK_MS);
+  const worthShowing = !online || stuck.length || drafts.length;
+  if (!hasPending || !worthShowing) {
     banner.classList.remove('active');
     return;
   }
@@ -1991,7 +2012,11 @@ function updateConnectionStatus() {
   const parts = [];
   if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
   if (offlineQueue.length) parts.push(offlineQueue.length + ' op' + (offlineQueue.length === 1 ? '' : 's'));
-  title.innerHTML = '&#x26A0; ' + (online ? 'Unsaved changes' : 'Offline') + ' &mdash; ' + parts.join(', ') + ' pending';
+  // Say what is true. "Unsaved changes" over a queue that is retrying by
+  // itself reads as data loss; it is a delayed send.
+  title.innerHTML = online
+    ? '&#x21BB; Still sending &mdash; ' + parts.join(', ') + ' waiting'
+    : '&#x26A0; Offline &mdash; ' + parts.join(', ') + ' queued, will send on reconnect';
   const rows = [];
   drafts.forEach(d => {
     rows.push('<div class="offline-op">' +
@@ -2181,19 +2206,47 @@ function setOnline(val) {
 }
 
 // ═══════ SYNC BANNER ORCHESTRATOR ═══════
+// FIRE AND FORGET: THE NETWORK DECIDES, NOT OUR BELIEF ABOUT IT.
+//
+// This used to retry only `if (online)`, and `online` is this client's own
+// inference. It is wrong in both directions: it stays true through a real
+// outage until some fetch happens to fail, and it stays false after the
+// network returns until something else flips it. While it was false the timer
+// re-armed WITHOUT ever attempting a send, so a queued message could sit
+// forever with the network perfectly healthy — measured 2026-09-10, a queued
+// send survived reconnection and a healthy server and still read 1 of 1
+// pending until the user pressed Retry. That is the opposite of fire and
+// forget (Ethan: "it should just queue and send").
+//
+// A send attempt IS the connectivity probe, and it is cheap. So attempt
+// unconditionally and let the result drive the interval: fast while it is
+// working, backing off to a minute while it is not, so an offline phone is
+// not retrying every 2s all night.
+let _syncBackoffMs = 0;
+const _SYNC_MIN_MS = 2000, _SYNC_MAX_MS = 60000;
+function _syncBackoffReset() { _syncBackoffMs = 0; }
 function _scheduleSyncRetry() {
   clearTimeout(_syncRetryTimer);
-  if (offlineQueue.some(q => q.state !== 'blocked') || drafts.length) {
-    _syncRetryTimer = setTimeout(() => { if (online) runSyncBanner(); else _scheduleSyncRetry(); }, 15000);
-  }
+  const pending = offlineQueue.some(q => q.state !== 'blocked') || drafts.length;
+  if (!pending) { _syncBackoffMs = 0; return; }
+  _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
+  _syncRetryTimer = setTimeout(() => { runSyncBanner(); }, _syncBackoffMs);
 }
 function runSyncBanner(quiet = false) {
   if (_syncFlight) return _syncFlight;
+  const before = offlineQueue.length, draftsBefore = drafts.length;
   const run = async () => { await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
   _syncFlight = (navigator.locks
     ? navigator.locks.request('amux-outbox-replay', run) : run())
     .catch(e => { _writeError = String(e.message || e); showToast('Sync failed: ' + _writeError); })
-    .finally(() => { _syncFlight = null; updateConnectionStatus(); _scheduleSyncRetry(); });
+    .finally(() => {
+      _syncFlight = null;
+      // Progress resets the backoff: an interval earned during an outage must
+      // not persist into a working server.
+      if (offlineQueue.length < before || drafts.length < draftsBefore) _syncBackoffReset();
+      updateConnectionStatus();
+      _scheduleSyncRetry();
+    });
   return _syncFlight;
 }
 async function _runSyncBanner(quiet = false) {
@@ -11221,10 +11274,7 @@ function _peekLiveHtml(raw) {
     const end = plain.findIndex((line, n) => n > i && rule(line));
     if (end < 0 || !plain.slice(end + 1).some(line => /⏵|bypass permissions|\/rc failed|shift\+tab/.test(line))) continue;
     const input = plain.slice(i, end).join('\n').replace(/^\s*❯\s?/, '').trim();
-    const pastes = input.match(/\[Pasted text #\d+[^\]]*\]/g) || [];
-    const summary = pastes.length ? 'Unsent worker input · ' + pastes.length + ' pasted block' + (pastes.length === 1 ? '' : 's') : 'Worker input';
-    const draft = input ? '<details class="peek-worker-input" open><summary>' + esc(summary) + '</summary>'
-      + '<pre>' + esc(input) + '</pre></details>' : '';
+    const draft = input ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
     return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
       + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
   }
@@ -11853,7 +11903,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
     }
     const newHTML = _peekLiveHtml(output);
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
-    if (newHTML.includes('class="peek-worker-input"') && !_lastLiveHTML.includes('class="peek-worker-input"')) {
+    if (newHTML.includes('class="peek-queued-msg"') && !_lastLiveHTML.includes('class="peek-queued-msg"')) {
       _peekPollBeacon('worker-input-separated', name, { verdict: 'composer_excluded_from_messages' });
     }
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();

@@ -27,7 +27,7 @@ function fixture(names = [], shared = {}) {
     document: {getElementById: element},
     localStorage: {setItem(k,v) { stored.set(k,v); }, getItem(k) { return stored.get(k) ?? null; }},
     setTimeout(fn) { timers.set(++tid, fn); return tid; }, clearTimeout(id) { timers.delete(id); },
-    API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null,
+    API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null, _syncBackoffMs: 0, _SYNC_MIN_MS: 2000, _SYNC_MAX_MS: 60000,
     _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
     _OUTBOX_SKIP: /\/api\/client-debug/, _OUTBOX_METHODS: {POST:1,PATCH:1,PUT:1,DELETE:1},
     _authHeaders: h => h, esc: s => s, describeOp: q => q.url,
@@ -37,7 +37,7 @@ function fixture(names = [], shared = {}) {
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
   const ctx = vm.createContext(sandbox);
-  for (const name of ['_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
+  for (const name of ['_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -355,4 +355,36 @@ test('server deferred and steering receipts acknowledge storage without claiming
     await ctx.runSyncBanner();
     assert.equal(JSON.parse(stored.get('amux_offline_queue')).length, 0);
   }
+});
+
+test('replay retries a durable message even while connectivity is believed offline', async () => {
+  const {ctx, stored, timers} = fixture();
+  await enqueue(ctx);
+  ctx.online = false;
+  const retry = [...timers.values()].at(-1);
+  assert.ok(retry);
+  retry();
+  await ctx._syncFlight;
+  assert.equal(ctx.offlineQueue.length, 0);
+  assert.deepEqual(JSON.parse(stored.get('amux_offline_queue')), []);
+  assert.equal(ctx._syncBackoffMs, 0, 'successful drain resets outage backoff');
+});
+
+test('a newly queued send stays quiet while a stuck send shows its waiting state', () => {
+  const {ctx, element} = fixture(['updateConnectionStatus']);
+  ctx.document.querySelectorAll = () => [];
+  Object.assign(ctx, {_sessionLoadError:null, _boardReadError:'', _syncReadError:'',
+    _liveSSE:true, _recordConnState() {}, _sessionReadNotice:() => ''});
+  const classes = new Set();
+  element('offline-banner').classList = {add: x=>classes.add(x), remove:x=>classes.delete(x)};
+  ctx.offlineQueue = [{url:'/api/sessions/worker/send',timestamp:Date.now()}];
+  ctx.updateConnectionStatus();
+  assert.equal(classes.has('active'), false);
+  ctx.offlineQueue[0].timestamp -= 21000;
+  ctx.updateConnectionStatus();
+  assert.equal(classes.has('active'), true);
+  assert.match(element('offline-banner-title').innerHTML, /Still sending/);
+  ctx.online = false;
+  ctx.updateConnectionStatus();
+  assert.match(element('offline-banner-title').innerHTML, /will send on reconnect/);
 });
