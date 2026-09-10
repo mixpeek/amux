@@ -1928,8 +1928,19 @@
   #peek-filter-summary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); font-size:0.62rem; font-weight:400; }
   .peek-msg-count { flex-shrink:0; color:var(--dim); font:500 0.65rem/1 system-ui,sans-serif; }
   @media (max-width: 480px) {
+    /* THE CAPTION IS HIDDEN HERE, SO THE CONTROL MUST STOP CLAIMING ITS WIDTH.
+       `.peek-msg-filter` is flex:1 inside `.peek-msg-nav`, which is itself
+       flex:1 in the toolbar. With the caption gone the button still took its
+       full share: measured 144px of a 378px toolbar at 390px wide, 38% of the
+       row, holding a 17px funnel icon and a count. It read as an empty broken
+       box (Ethan, 2026-09-10) — and emptier still while the count shows the
+       provenance-pending ellipsis.
+       Sizing it to its contents and letting the nav shrink puts that width
+       back into the row instead of into a blank. */
     .peek-filter-caption { display:none; }
-    .peek-filter-btn { justify-content:space-between; }
+    .peek-filter-btn { justify-content:center; gap:5px; width:auto; padding:0 11px; }
+    .peek-msg-filter { flex:0 0 auto; }
+    .peek-msg-nav { flex:0 1 auto; margin-right:auto; }
   }
   .peek-filter-panel { position:absolute; top:calc(100% + 7px); left:0; width:min(320px,calc(100vw - 24px)); box-sizing:border-box; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,0.25); z-index:65; max-height:calc(100dvh - 180px); overflow-y:auto; }
   .peek-filter-panel[hidden] { display:none; }
