@@ -11422,12 +11422,57 @@ pub(crate) fn pane_is_at_boundary(raw: &str) -> bool {
 
 /// The same two signals `steer_lane_at_boundary` reads, fed into
 /// [`steer_decide`] together with the message's age.
+/// How long a queued row may wait while the lane yields NO boundary signal at
+/// all, before it is delivered anyway.
+///
+/// Separate from [`steer_max_age_s`] and much longer, because the two states
+/// are different. The 600s deadline is about a LIVE lane being slow to reach a
+/// boundary; this one is about a lane we cannot read at all, where a brief
+/// signal outage must not interrupt real work. An hour is long enough that
+/// every transient outage measured has resolved, and short enough that a
+/// message cannot sit for a day.
+pub(crate) fn steer_no_signal_max_age_s() -> f64 {
+    std::env::var("AMUX_STEER_NO_SIGNAL_MAX_AGE_S")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(3600.0)
+}
+
+/// A lane with no readable boundary MUST still bound its queue.
+///
+/// Both signal-less paths below used to return `Hold` unconditionally, and
+/// `Hold` has no age escape. Neither reaper covers the gap either:
+/// [`steer_dead_letter_verdict`] only reaps `no-env-file` and `archived`, so a
+/// lane that is RUNNING, reports idle to the dashboard, and yields no
+/// `turn_boundary_status` held its queue forever with nothing able to clear it.
+///
+/// Measured 2026-09-10: mixpeek-oss held one row for 1368 minutes and
+/// studio-plg three rows for 51, both `running=true` with `status='idle'` on
+/// /api/sessions. `queue.has_live_consumer` had been red on it for 22578s and
+/// the STALLED warning fired every two minutes — the condition was fully
+/// observed and nothing acted on it, which is what Ethan asked to change.
+fn steer_no_signal(name: &str, age_s: f64, why: &'static str) -> SteerDelivery {
+    if age_s < steer_no_signal_max_age_s() {
+        return SteerDelivery::Hold;
+    }
+    // Counted, not just narrated: a sweep grepping for this verdict sees the
+    // class recur without reading prose.
+    tracing::warn!(
+        session = %name, age_s = age_s as i64, why = %why,
+        max_age_s = steer_no_signal_max_age_s() as i64,
+        verdict = "deliver-no-signal",
+        "steering delivered WITHOUT a boundary signal: the lane has yielded none for longer than          AMUX_STEER_NO_SIGNAL_MAX_AGE_S, and holding further cannot end on its own"
+    );
+    SteerDelivery::OverdueMidTurn
+}
+
 pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64) -> SteerDelivery {
     let Some(signals) = boundary_signals(state, Some(name)).await else {
-        return SteerDelivery::Hold;
+        return steer_no_signal(name, age_s, "no-boundary-signals");
     };
     let Some(status) = signals.turn_boundary_status(name) else {
-        return SteerDelivery::Hold;
+        return steer_no_signal(name, age_s, "no-turn-boundary-status");
     };
     let (_, explain) = signals.derive_status_explain(name, true);
     let background_working = explain["subagents_working"] == true
@@ -27006,6 +27051,43 @@ mod steer_max_age_tests {
         // path refuses a selector even when overdue — answering a pending tool
         // is the user's, not amux's.)
         assert_eq!(steer_decide(Some("waiting"), None, 10.0, MAX), SteerDelivery::Hold);
+    }
+
+    /// A lane that yields no boundary signal must not hold its queue forever.
+    /// This is the 2026-09-10 stall: running lanes, `status='idle'` on the API,
+    /// no turn_boundary_status, rows held 51 and 1368 minutes. Neither the
+    /// 600s deadline nor the dead-letter reaper could reach them.
+    #[test]
+    fn a_lane_with_no_boundary_signal_still_bounds_its_queue() {
+        let max = super::steer_no_signal_max_age_s();
+        assert!(max > super::steer_max_age_s(), "the no-signal grace must be the LONGER of the two");
+
+        // Inside the grace a transient outage must not interrupt real work.
+        assert_eq!(
+            super::steer_no_signal("lane", 0.0, "no-boundary-signals"),
+            super::SteerDelivery::Hold
+        );
+        assert_eq!(
+            super::steer_no_signal("lane", max - 1.0, "no-turn-boundary-status"),
+            super::SteerDelivery::Hold
+        );
+
+        // Past it the row is delivered rather than held with nothing able to
+        // clear it. 1368 minutes is the measured stall.
+        assert_eq!(
+            super::steer_no_signal("lane", max, "no-boundary-signals"),
+            super::SteerDelivery::OverdueMidTurn
+        );
+        assert_eq!(
+            super::steer_no_signal("lane", 1368.0 * 60.0, "no-turn-boundary-status"),
+            super::SteerDelivery::OverdueMidTurn
+        );
+
+        // NEGATIVE CONTROL. The reaper cannot cover this class, which is why
+        // the escape has to live here: a running lane's block reason is
+        // neither of the two reasons it will ever act on, at any age.
+        assert_eq!(super::steer_dead_letter_verdict("not-running", 1368.0 * 60.0), None);
+        assert_eq!(super::steer_dead_letter_verdict("busy-past-deadline", 1368.0 * 60.0), None);
     }
 
     #[test]
