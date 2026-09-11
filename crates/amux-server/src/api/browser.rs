@@ -1919,6 +1919,51 @@ struct ProfilesQuery {
     sizes: Option<String>,
 }
 
+/// What a profile actually HOLDS, read from its own cookie jar.
+///
+/// Ethan, 2026-09-11: "the problem is the profiles are hard to know which to
+/// use and how to use which". Measured that day: of 27 profiles, 7 had a label
+/// and 6 had domains. Everything else was a bare name, so the only way to learn
+/// what a profile was for was to launch it and look — which is also the one
+/// thing that makes a profile unsafe to poke at, since a launch mutates the jar
+/// and can log you out.
+///
+/// Hand-maintained metadata was already available and stayed empty for 20 of
+/// 27, so asking people to fill it in harder is not the fix. These fields are
+/// DERIVED on read: the jar is the ground truth about which sites a profile can
+/// reach, it needs nobody to remember anything, and it cannot drift from what
+/// the profile actually contains.
+///
+/// Read-only and copy-first: the live DB is never opened in place, because a
+/// listing must not be able to disturb a login.
+fn profile_contents(dir: &std::path::Path) -> (Option<i64>, Vec<String>) {
+    let Some(db) = profile_cookie_db(dir) else { return (Some(0), Vec::new()) };
+    let tmp = std::env::temp_dir().join(format!("amux-profile-peek-{}.sqlite", std::process::id()));
+    if std::fs::copy(&db, &tmp).is_err() {
+        // Absent, not zero: an unreadable jar is not an empty one, and the two
+        // must not render the same (ethos rule 4).
+        return (None, Vec::new());
+    }
+    let out = (|| -> rusqlite::Result<(i64, Vec<String>)> {
+        let conn = rusqlite::Connection::open(&tmp)?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT host_key FROM cookies GROUP BY host_key ORDER BY COUNT(*) DESC LIMIT 12",
+        )?;
+        let hosts = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(Result::ok)
+            .map(|h| h.trim_start_matches('.').to_string())
+            .collect();
+        Ok((count, hosts))
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    match out {
+        Ok((c, h)) => (Some(c), h),
+        Err(_) => (None, Vec::new()),
+    }
+}
+
 async fn profiles(Query(q): Query<ProfilesQuery>) -> Response {
     let with_sizes = q.sizes.as_deref().is_some_and(|s| !s.is_empty() && s != "0");
     let home = chrome::amux_home();
@@ -1961,6 +2006,25 @@ async fn profiles(Query(q): Query<ProfilesQuery>) -> Response {
             if let Some(o) = v.as_object_mut() {
                 o.insert("age_days".into(), json!(age_days.map(|d| (d * 10.0).round() / 10.0)));
                 o.insert("reap_exempt_reason".into(), json!(exempt));
+                // DERIVED, so discovery never depends on anyone having
+                // remembered to describe a profile.
+                let dir = crate::integrations::browser::resolve_profile_dir(
+                    &chrome::amux_home(), &chrome::chrome_user_data_dir(), &p.name);
+                let (cookies, hosts) = profile_contents(&dir);
+                o.insert("cookies".into(), json!(cookies));
+                o.insert("cookies_measured".into(), json!(cookies.is_some()));
+                o.insert("signed_in_to".into(), json!(hosts));
+                o.insert("empty".into(), json!(cookies == Some(0)));
+                // One sentence a human can read in a list, without launching
+                // anything. The label stays authoritative when somebody set
+                // one; this only fills the silence.
+                o.insert("summary".into(), json!(match (cookies, hosts.first()) {
+                    (Some(0), _) => "empty — no logins, nothing to reuse".to_string(),
+                    (None, _) => "could not read this profile's cookie jar".to_string(),
+                    (Some(n), Some(top)) => format!(
+                        "{n} cookie(s) across {} site(s); mainly {top}", hosts.len()),
+                    (Some(n), None) => format!("{n} cookie(s), no host could be read"),
+                }));
                 o.insert(
                     "reap_in_days".into(),
                     json!(match (exempt, age_days) {
@@ -1981,6 +2045,11 @@ async fn profiles(Query(q): Query<ProfilesQuery>) -> Response {
                              reaper. Registered profiles (a deliberate save with domains/label) \
                              are exempt at any age, as is any profile with a browser running on \
                              it. 0 disables the arm.",
+        "field_note": "`signed_in_to`, `cookies`, `empty` and `summary` are DERIVED from each \
+                       profile's cookie jar on every read — they need no maintenance and cannot \
+                       drift from what the profile holds. `label` and `domains` are what a human \
+                       chose to record and stay authoritative where present. `cookies_measured` \
+                       is false when the jar could not be read, which is not the same as empty.",
     }))
     .into_response()
 }
@@ -3634,6 +3703,58 @@ mod tests {
     /// proves it is worth using: without this, `with_cause` could be rewritten
     /// to `format!("{e}")` and every check in the pair would stay green while
     /// the 502 went back to being undiagnosable.
+    #[test]
+    fn a_profile_describes_itself_without_being_launched() {
+        use rusqlite::Connection;
+        let tmp = tempfile::tempdir().unwrap();
+
+        // A profile that has never been opened: no Default/, so no jar.
+        let fresh = tmp.path().join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let (c, hosts) = super::profile_contents(&fresh);
+        assert_eq!(c, Some(0), "a never-opened profile holds nothing");
+        assert!(hosts.is_empty());
+
+        // A profile with logins reports them, ranked, WITHOUT launching Chrome
+        // — launching is what a listing must never do, since it mutates the jar.
+        let used = tmp.path().join("used");
+        std::fs::create_dir_all(used.join("Default")).unwrap();
+        let conn = Connection::open(used.join("Default").join("Cookies")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cookies(host_key TEXT, name TEXT, path TEXT, value TEXT);",
+        )
+        .unwrap();
+        for (host, n) in [(".netsuite.com", 5), (".google.com", 2), (".example.test", 1)] {
+            for i in 0..n {
+                conn.execute("INSERT INTO cookies VALUES(?1,?2,'/','v')",
+                    rusqlite::params![host, format!("c{i}")]).unwrap();
+            }
+        }
+        drop(conn);
+        let (count, hosts) = super::profile_contents(&used);
+        assert_eq!(count, Some(8));
+        // Ranked by cookie count, so the FIRST host is the profile's main use —
+        // that ordering is what makes the summary line meaningful.
+        assert_eq!(hosts.first().map(String::as_str), Some("netsuite.com"));
+        assert!(hosts.contains(&"google.com".to_string()));
+        // The leading dot is a cookie-domain detail, not something a human
+        // picking a profile should have to read past.
+        assert!(hosts.iter().all(|h| !h.starts_with('.')), "hosts must be presented plainly");
+
+        // The source jar is untouched: a listing must never disturb a login.
+        let after = Connection::open(used.join("Default").join("Cookies")).unwrap();
+        let still: i64 = after.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
+        assert_eq!(still, 8, "reading a profile must not mutate it");
+
+        // Unreadable is NOT empty. A corrupt jar must report absence so the
+        // caller cannot mistake it for "no logins here".
+        let broken = tmp.path().join("broken");
+        std::fs::create_dir_all(broken.join("Default")).unwrap();
+        std::fs::write(broken.join("Default").join("Cookies"), b"not a database").unwrap();
+        assert_eq!(super::profile_contents(&broken).0, None,
+            "an unreadable jar must report absence, never a comfortable zero");
+    }
+
     #[test]
     fn combining_profiles_copies_the_tree_and_merges_cookie_rows() {
         use rusqlite::Connection;
