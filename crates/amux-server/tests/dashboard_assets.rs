@@ -485,11 +485,17 @@ fn only_the_explicitly_claimed_card_is_live_without_a_synthetic_unclaimed_state(
         "const runtimeBoard = _runtimeBoardPresentation(s);",
         "runtimeBoard.cardId",
         "const displayTaskName = s.task_name || runtimeBoard.cardId || '';",
-        "runtimeBoard.syncing ? _runtimeBoardSyncBadge()",
+        "_workerExecutionBadge(s, runtimeBoard)",
         "_activeTaskLink(s.name, displayTaskBoardId, displayTaskName)",
     ] {
         assert!(render.contains(needle), "session card lost live board linkage `{needle}`");
     }
+    // Execution badges are shared with worker details; verify the call above
+    // and its implementation rather than demanding the old inline expression.
+    let badge_start = app.find("function _workerExecutionBadge(s, runtimeBoard)").unwrap();
+    let badge_tail = &app[badge_start..];
+    let badge = &badge_tail[..badge_tail.find("function updatePeekStatus()").unwrap()];
+    assert!(badge.contains("runtimeBoard.syncing") && badge.contains("_runtimeBoardSyncBadge()"));
     assert!(
         !render.contains("_cardDoingItem(s.name)"),
         "the worker card must not rebuild runtime truth from an independently refreshed boardItems snapshot"

@@ -2095,3 +2095,14 @@ CARD: AMUX-4421
 SYMPTOM: Ethan opened mixpeek-general and landed midway through old terminal output instead of at the latest output.
 COST: Each open required finding and scrolling to the worker's current output.
 FIX: Preserve bottom-follow intent through asynchronous history/live rendering and resizing, cancel it on deliberate reading/navigation, and flush buffered output on resume. Desktop/phone race tests and bottom-anchor-restored diagnostics.
+
+## Accepted details message survived as a partial card draft
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex
+CARD: AMUX-4424
+SYMPTOM: Ethan sent a message to amux from worker details, but an earlier partially typed copy remained in the worker card. The 250ms draft mirror lagged; exact-match acceptance left the partial copy alive, and lifecycle DOM harvesting could save it again. Fullscreen edits and separate browser contexts also missed draft synchronization.
+COST: User could mistake already-submitted text for unsent work and submit it twice.
+FIX: Immediate per-worker draft updates across card/details/fullscreen and same-origin tabs/grid; revision-bound acceptance preserves newer edits, lifecycle events never overwrite storage from stale DOM, and failed storage retains text with a visible warning. Server client-debug verdicts composer_locally_accepted and composer_draft_storage_failed. Regression reproduced on pre-fix source; desktop, phone and WebKit coverage alongside durable outbox tests.

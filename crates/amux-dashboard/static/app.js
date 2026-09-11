@@ -3963,9 +3963,8 @@ function stripProviderYoloFlags(flags) {
 function _restoreCardFocus(focusedId, savedInputs) {
   // Rehydrate persisted composer drafts on every render path. Done HERE rather
   // than at each of render()'s exits because it has six of them, and the one
-  // that gets missed is the one that eats your text. _draftRestore is a no-op
-  // for a composer that already has content or is focused, so a re-render
-  // mid-type never rewinds you.
+  // that gets missed is the one that eats your text. Edits commit synchronously,
+  // so the draft is authoritative even when the DOM snapshot is older.
   try {
     document.querySelectorAll('#cards textarea.send-input').forEach(inp => {
       if ((inp.id || '').startsWith('input-')) _draftRestore(inp, inp.id.slice(6));
@@ -7321,116 +7320,104 @@ async function gitPush(name, e) {
 // localStorage (not IDB): a draft is a few hundred bytes, and the synchronous
 // write is what makes the pagehide flush below reliable.
 const _DRAFT_PREFIX = 'amux_draft_';
-const _DRAFT_MAX_AGE = 14 * 86400 * 1000;
-let _draftTimers = {};
-function _draftKey(session) { return _DRAFT_PREFIX + (session || '__peek__'); }
-function _draftSave(session, text) {
+// Storage is the shared authority across tabs and embedded grid panes. Only a
+// failed write stays in memory; lifecycle events retry that write, never harvest
+// stale DOM copies. Drafts remain until the user clears or submits them.
+const _draftUnsaved = new Map();
+function _draftKey(session) { return _DRAFT_PREFIX + session; }
+function _draftRecord(session) {
+  if (!session) return {t:'', rev:null};
+  if (_draftUnsaved.has(session)) return _draftUnsaved.get(session);
   try {
-    const k = _draftKey(session);
-    if (!text || !text.trim()) localStorage.removeItem(k);
-    else _writeUserStorage(k, JSON.stringify({ t: text, ts: Date.now() }));
-  } catch (e) {}   // quota/private-mode: a lost draft must never break sending
+    const d = JSON.parse(localStorage.getItem(_draftKey(session)) || 'null');
+    if (d && typeof d.t === 'string') return {...d, rev:d.rev || String(d.ts || 0)};
+  } catch (_) {}
+  return {t:'', rev:null};
 }
-// The value the composer for `session` holds RIGHT NOW, or null if none is
-// mounted. The peek box wins when it is the one showing this session (it is the
-// active editor); otherwise the list card.
+function _draftPersist(session, record) {
+  try {
+    if (record.t) _writeUserStorage(_draftKey(session), JSON.stringify(record));
+    else localStorage.removeItem(_draftKey(session));
+    _draftUnsaved.delete(session);
+  } catch (error) {
+    const first = !_draftUnsaved.has(session);
+    _draftUnsaved.set(session, record);
+    if (first) {
+      showToast('Draft kept in this page; device storage failed. Keep this page open.');
+      _outboxDiagnostic('composer_draft_storage_failed', {session, reason:error.name});
+    }
+  }
+}
+function _draftSave(session, text) {
+  if (!session) return null;
+  text = String(text || '');
+  const previous = _draftRecord(session);
+  const record = previous.t === text ? previous : {t:text, ts:Date.now(), rev:crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()};
+  _draftPersist(session, record);
+  _draftSyncInputs(session, text);
+  return record.rev;
+}
 function _liveComposerValue(session) {
   if (typeof peekSession !== 'undefined' && peekSession === session) {
-    const pk = document.getElementById('peek-cmd-input');
+    const fs = document.getElementById('peek-input-fs');
+    const pk = document.getElementById(fs && fs.classList.contains('open') ? 'peek-input-fs-ta' : 'peek-cmd-input');
     if (pk) return pk.value;
   }
   const card = document.getElementById('input-' + session);
   return card ? card.value : null;
 }
-function _draftSaveDebounced(session, text) {
-  clearTimeout(_draftTimers[session || '_']);
-  _draftTimers[session || '_'] = setTimeout(() => {
-    // Read the LIVE composer at fire time, not the value captured 250ms ago at
-    // the keystroke. If a send cleared the box in that window, we save the
-    // CLEARED state (dropping the draft) instead of resurrecting the pre-send
-    // text — that stale-capture race is how an already-sent message came back and
-    // sat in the composer (a prefix of it, from the mid-typing snapshot). Falls
-    // back to the captured text only if the input is gone.
-    const live = _liveComposerValue(session);
-    const val = live != null ? live : text;
-    _draftSave(session, val);
-    _draftSyncInputs(session, val);   // keep the other view in step as you type
-  }, 250);
-}
-function _draftGet(session) {
-  try {
-    const raw = localStorage.getItem(_draftKey(session));
-    if (!raw) return '';
-    const d = JSON.parse(raw);
-    // Age out rather than restoring something you typed two weeks ago into a
-    // conversation that has long since moved on.
-    if (!d || !d.t || (Date.now() - (d.ts || 0)) > _DRAFT_MAX_AGE) {
-      localStorage.removeItem(_draftKey(session)); return '';
-    }
-    return d.t;
-  } catch (e) { return ''; }
-}
-function _draftClear(session) {
-  clearTimeout(_draftTimers[session || '_']);
-  try { localStorage.removeItem(_draftKey(session)); } catch (e) {}
-  // One store, so one removal. This used to have to chase two more copies
-  // (an in-memory map and the peekState snapshot's own `draft` field), and
-  // missing either put an already-sent message back in the box.
-  _draftSyncInputs(session, '');
-}
+// Keep the handler name for existing markup, but commit the actual edit now.
+// A debounce let opening/sending outrun the card's partially typed mirror.
+function _draftSaveDebounced(session, text) { return _draftSave(session, text); }
+function _draftGet(session) { return _draftRecord(session).t; }
+function _draftClear(session) { _draftSave(session, ''); }
 
-// Consume exactly the accepted draft, including a focused or re-rendered
-// textarea. Draft mirroring deliberately skips focus; submission must not.
-function _composerAcceptLocal(session, original) {
-  const inputs = [document.getElementById('input-' + session)];
-  if (peekSession === session) inputs.push(document.getElementById('peek-cmd-input'));
-  for (const input of inputs) {
-    if (input && input.value === original) {
-      input.value = ''; input.style.height = 'auto';
-      try { autoGrow(input); } catch (_) {}
-    }
-  }
-  if (_draftGet(session) === original) {
-    clearTimeout(_draftTimers[session || '_']);
-    const live = _liveComposerValue(session);
-    _draftSave(session, live == null || live === original ? '' : live);
-  }
-  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: _liveComposerValue(session) !== original, measured:true, n_considered:1}); } catch (_) {}
+// A receipt owns one revision, not whichever text happens to be in the worker
+// after an await. New edits (even retyping identical text) must survive it.
+function _composerAcceptLocal(session, original, revision) {
+  const current = _draftRecord(session);
+  const live = _liveComposerValue(session);
+  const owns = revision === undefined ? current.t === original : current.rev === revision;
+  if (owns && live != null && live !== original && live !== '') _draftSave(session, live);
+  else if (owns) _draftClear(session);
+  else _draftSyncInputs(session, current.t);
+  _outboxDiagnostic('composer_locally_accepted', {session, draft_cleared:_draftGet(session) === '', newer_draft_preserved:!owns});
 }
-
-// Push a session's draft into EVERY composer showing that session right now:
-// the card in the session list and the peek box are two views of one value, so
-// typing in one and opening the other must not lose or duplicate anything.
 function _draftSyncInputs(session, text) {
-  try {
-    const card = document.getElementById('input-' + session);
-    if (card && card.value !== text && document.activeElement !== card) {
-      card.value = text; try { autoGrow(card); } catch (e) {}
-    }
-    if (typeof peekSession !== 'undefined' && peekSession === session) {
-      const pk = document.getElementById('peek-cmd-input');
-      if (pk && pk.value !== text && document.activeElement !== pk) {
-        pk.value = text; try { autoGrow(pk); } catch (e) {}
-      }
-    }
-  } catch (e) {}
+  const inputs = [document.getElementById('input-' + session)];
+  if (typeof peekSession !== 'undefined' && peekSession === session) {
+    inputs.push(document.getElementById('peek-cmd-input'));
+    inputs.push(document.getElementById('peek-input-fs-ta'));
+  }
+  for (const input of inputs) {
+    if (!input || input.value === text) continue;
+    input.value = text;
+    try { autoGrow(input); } catch (_) {}
+  }
 }
-// Restore into a composer that has just been (re)rendered. Never clobbers text
-// the user is actively typing — a re-render mid-type must not rewind them.
 function _draftRestore(inp, session) {
-  if (!inp || inp.value || document.activeElement === inp) return;
-  const d = _draftGet(session);
-  if (d) { inp.value = d; try { autoGrow(inp); } catch (e) {} }
+  if (!inp) return;
+  const text = _draftGet(session);
+  if (inp.value !== text) { inp.value = text; try { autoGrow(inp); } catch (_) {} }
 }
-// The 250ms debounce can lose the final keystrokes to a reload or a tab kill.
-// pagehide fires on both, including iOS bfcache suspends, so flush synchronously.
+// Fullscreen is another editor of the same draft, including before collapse.
+// Input events from programmatic history/chip selection use this path too.
+function _draftInputChanged(input) {
+  if (!input) return;
+  const id = input.id || '';
+  if (id === 'peek-cmd-input' || id === 'peek-input-fs-ta') _draftSave(peekSession, input.value);
+  else if (id.startsWith('input-')) _draftSave(id.slice(6), input.value);
+}
+document.addEventListener('input', event => _draftInputChanged(event.target));
+window.addEventListener('storage', event => {
+  if (event.storageArea !== localStorage || !event.key || !event.key.startsWith(_DRAFT_PREFIX)) return;
+  const session = event.key.slice(_DRAFT_PREFIX.length);
+  // Read the current value, not an older queued event payload.
+  if (!_draftUnsaved.has(session)) _draftSyncInputs(session, _draftGet(session));
+});
 ['pagehide', 'visibilitychange'].forEach(ev => window.addEventListener(ev, () => {
   if (ev === 'visibilitychange' && document.visibilityState !== 'hidden') return;
-  document.querySelectorAll('textarea.send-input').forEach(inp => {
-    const id = inp.id || '';
-    if (id === 'peek-cmd-input') _draftSave(typeof peekSession !== 'undefined' ? peekSession : '', inp.value);
-    else if (id.startsWith('input-')) _draftSave(id.slice(6), inp.value);
-  });
+  for (const [session, record] of _draftUnsaved) _draftPersist(session, record);
 }));
 
 async function sendFromInput(name) {
@@ -7459,6 +7446,7 @@ async function sendFromInput(name) {
     // The message is pre-filled so the user can review/edit before sending.
     inp.value = '';
     inp.style.height = 'auto';
+    _draftClear(name);
     _clearCardFiles(name);
     channelOpen(name, routed.target, routed.message);
     return;
@@ -7466,7 +7454,7 @@ async function sendFromInput(name) {
   const original = inp.value;
   const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
   if (_composerPendingSends.has(name)) return;
-  _draftSave(name, original);
+  const draftRevision = _draftSave(name, original);
   _composerPendingSends.add(name);
   _syncComposerPending();
   try {
@@ -7479,7 +7467,7 @@ async function sendFromInput(name) {
       return;
     }
     cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(name, original);
+    _composerAcceptLocal(name, original, draftRevision);
     const sent = new Set(_files);
     for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
     _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
@@ -9961,7 +9949,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.907';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.908';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10301,6 +10289,8 @@ function openPeek(name, opts) {
   // the other, and the text is already there.
   const draft = _draftGet(name) || '';
   const cmdInp = document.getElementById('peek-cmd-input');
+  document.getElementById('peek-input-fs').classList.remove('open');
+  _draftSyncInputs(name, draft);
   cmdInp.value = draft;
   autoGrow(cmdInp);
   peekCmdOpen = true;
@@ -10540,11 +10530,9 @@ function closePeek() {
     _fs.classList.remove('open');
   }
   if (typeof _peekMoreClose === 'function') _peekMoreClose();
-  // Save command draft for this session
+  // Text is committed on edit; closing must not re-save a stale DOM copy
+  // while a cross-tab storage event is still queued.
   if (peekSession) {
-    const inp = document.getElementById('peek-cmd-input');
-    const val = inp ? inp.value : '';
-    _draftSave(peekSession, val);
     _peekFilesStash(peekSession);   // the other half of the same draft
   }
   _peekOpenGeneration++;   // invalidate every response issued by this open
@@ -10836,9 +10824,6 @@ function _peekGeoBeacon() {
     const vv = window.visualViewport || {};
     const o = ov.getBoundingClientRect(), b = bar.getBoundingClientRect();
     const r = row ? row.getBoundingClientRect() : { bottom: 0 };
-    const input = document.getElementById('peek-cmd-input').getBoundingClientRect();
-    const more = document.getElementById('peek-composer-more-btn').getBoundingClientRect();
-    const send = row.querySelector('.send-split').getBoundingClientRect();
     const hdrTop = hdr ? Math.round(hdr.getBoundingClientRect().top) : -1;
     const titleTop = title ? Math.round(title.getBoundingClientRect().top) : -1;
     const probe = document.createElement('div');
@@ -10934,6 +10919,9 @@ function _peekGeoDebug() {
     const vv = window.visualViewport || {};
     const o = ov.getBoundingClientRect(), b = bar.getBoundingClientRect();
     const r = row ? row.getBoundingClientRect() : { bottom: 0 };
+    const input = document.getElementById('peek-cmd-input').getBoundingClientRect();
+    const more = document.getElementById('peek-composer-more-btn').getBoundingClientRect();
+    const send = row.querySelector('.send-split').getBoundingClientRect();
     const probe = document.createElement('div');
     probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:1px;visibility:hidden;';
     document.body.appendChild(probe);
@@ -12754,7 +12742,7 @@ function _collapsePeekInput() {
   const inp = document.getElementById('peek-cmd-input');
   const fs = document.getElementById('peek-input-fs');
   const ta = document.getElementById('peek-input-fs-ta');
-  if (inp && ta) { inp.value = ta.value; if (typeof autoGrow === 'function') autoGrow(inp); }
+  if (inp && ta) { inp.value = ta.value; _draftInputChanged(inp); if (typeof autoGrow === 'function') autoGrow(inp); }
   if (fs) fs.classList.remove('open');
   if (inp) setTimeout(() => inp.focus({ preventScroll: true }), 30);
 }
@@ -12762,7 +12750,7 @@ function _fsSend() {
   const inp = document.getElementById('peek-cmd-input');
   const ta = document.getElementById('peek-input-fs-ta');
   const fs = document.getElementById('peek-input-fs');
-  if (inp && ta) { inp.value = ta.value; if (typeof autoGrow === 'function') autoGrow(inp); }
+  if (inp && ta) { inp.value = ta.value; _draftInputChanged(inp); if (typeof autoGrow === 'function') autoGrow(inp); }
   if (fs) fs.classList.remove('open');
   sendPeekCmd();
 }
@@ -12839,7 +12827,7 @@ async function _smRefresh() {
     };
     el.onclick = () => {
       const inp = document.getElementById('peek-cmd-input');
-      if (inp) { inp.value = it.text || ''; if (typeof autoGrow === 'function') autoGrow(inp); }
+      if (inp) { inp.value = it.text || ''; _draftInputChanged(inp); if (typeof autoGrow === 'function') autoGrow(inp); }
       _closeSavedMessages();
       if (inp) setTimeout(() => inp.focus({ preventScroll: true }), 40);
     };
@@ -13602,7 +13590,7 @@ async function sendPeekCmd() {
   }
   // Persist text and upload references in the local outbox before clearing.
   // A network refusal remains reviewable in Sync and pending Messages.
-  _draftSave(session, original);
+  const draftRevision = _draftSave(session, original);
   _composerPendingSends.add(session);
   _syncComposerPending();
   let result = 'failed';
@@ -13616,7 +13604,7 @@ async function sendPeekCmd() {
       return;
     }
     cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(session, original);
+    _composerAcceptLocal(session, original, draftRevision);
     // Remove only the acknowledged files, never a new attachment added while
     // waiting, or attachments belonging to a different worker's composer.
     const sent = new Set();
@@ -14062,7 +14050,7 @@ function _atGenPick(i) {
   if (!at) return;
   const name = cur.dd._atItems[i].name;
   const after = inp.value.slice(inp.selectionStart);
-  inp.value = inp.value.slice(0, at.idx) + '@' + name + ' ' + after;
+  inp.value = inp.value.slice(0, at.idx) + '@' + name + ' ' + after; _draftInputChanged(inp);
   const pos = at.idx + name.length + 2;
   inp.setSelectionRange(pos, pos);
   cur.dd.classList.remove('open');
@@ -14166,7 +14154,7 @@ function _atInsert(inp, el) {
   if (!at || !items || !items[sel]) return;
   const name = items[sel].name;
   const val = inp.value;
-  inp.value = val.slice(0, at.idx) + '@' + name + ' ' + val.slice(inp.selectionStart);
+  inp.value = val.slice(0, at.idx) + '@' + name + ' ' + val.slice(inp.selectionStart); _draftInputChanged(inp);
   const newPos = at.idx + name.length + 2;
   inp.selectionStart = inp.selectionEnd = newPos;
   el._atItems = null; el._atSel = -1;
@@ -14523,13 +14511,13 @@ function _chipAction(chip, sessionName, isPeek) {
   } else if (chip.action === 'slash') {
     if (isPeek) {
       const inp = document.getElementById('peek-cmd-input');
-      if (inp) { inp.value = chip.value; inp.focus({ preventScroll: true }); autoGrow(inp); slashAcUpdate(); }
+      if (inp) { inp.value = chip.value; _draftInputChanged(inp); inp.focus({ preventScroll: true }); autoGrow(inp); slashAcUpdate(); }
     } else {
       // Try card input first, then workspace pane input
       const cardInp = document.getElementById('input-' + sessionName);
       const gpInp = document.getElementById(_gpSafeId(sessionName) + '-input');
       const inp = cardInp || gpInp;
-      if (inp) { inp.value = chip.value; inp.focus({ preventScroll: true }); autoGrow(inp); }
+      if (inp) { inp.value = chip.value; _draftInputChanged(inp); inp.focus({ preventScroll: true }); autoGrow(inp); }
       if (cardInp) cardSlashAcUpdate(sessionName);
     }
   } else if (chip.action === 'special') {
@@ -15543,7 +15531,7 @@ function slashAcPick(i) {
     // inserting text. peekSession is the "me" side of the channel.
     if (peekSession && target !== peekSession && inp.value.trimStart().startsWith('@')) {
       const after = inp.value.replace(/^\s*@[\w][\w.-]*\s*/, '').trim();
-      inp.value = '';
+      inp.value = ''; _draftInputChanged(inp);
       inp.style.height = 'auto';
       el.classList.remove('open'); el._atItems = null; el._atSel = -1;
       channelOpen(peekSession, target, after);
@@ -15554,7 +15542,7 @@ function slashAcPick(i) {
     inp.focus({ preventScroll: true });
     return;
   } else {
-    inp.value = slashAcItems[i].cmd;
+    inp.value = slashAcItems[i].cmd; _draftInputChanged(inp);
     el.classList.remove('open');
     slashAcItems = [];
   }
@@ -17193,7 +17181,7 @@ function _focusPeekComposer() {
 function _pickCmdHistory(text) {
   const inp = document.getElementById('peek-cmd-input');
   if (inp) {
-    inp.value = _msgStripPrefix(text);
+    inp.value = _msgStripPrefix(text); _draftInputChanged(inp);
     autoGrow(inp);
     _focusPeekComposer();
   }
@@ -17218,7 +17206,7 @@ function _msgOpenInsert(sess, encText) {
   openPeek(sess);
   setTimeout(() => {
     const inp = document.getElementById('peek-cmd-input');
-    if (inp) { inp.value = text; autoGrow(inp); _focusPeekComposer(); }
+    if (inp && peekSession === sess) { inp.value = text; _draftInputChanged(inp); autoGrow(inp); _focusPeekComposer(); }
   }, 500);
 }
 
@@ -17267,6 +17255,7 @@ function cmdHistoryUp(inp, session) {
   if (_cmdHistoryIdx === -1) { _cmdHistoryDraft = inp.value; _cmdHistoryIdx = list.length - 1; }
   else if (_cmdHistoryIdx > 0) { _cmdHistoryIdx--; }
   inp.value = list[_cmdHistoryIdx] || '';
+  _draftInputChanged(inp);
   autoGrow(inp);
   requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
 }
@@ -17277,6 +17266,7 @@ function cmdHistoryDown(inp, session) {
   const list = _cmdRecallEnsure(sess);
   if (_cmdHistoryIdx < list.length - 1) { _cmdHistoryIdx++; inp.value = list[_cmdHistoryIdx] || ''; }
   else { _cmdHistoryIdx = -1; inp.value = _cmdHistoryDraft; }
+  _draftInputChanged(inp);
   autoGrow(inp);
   requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
 }
@@ -17286,6 +17276,7 @@ function chipToInput(name, text) {
   const inp = document.getElementById('input-' + name);
   if (!inp) return;
   inp.value = text;
+  _draftInputChanged(inp);
   inp.focus({ preventScroll: true });
   autoGrow(inp);
   cardSlashAcUpdate(name);
@@ -17332,7 +17323,7 @@ function cardAtPick(i) {
   // Any text already typed after "@partial" is carried as the drafted message.
   if (inp.value.trimStart().startsWith('@') && target !== name) {
     const after = inp.value.replace(/^\s*@[\w][\w.-]*\s*/, '').trim();
-    inp.value = '';
+    inp.value = ''; _draftInputChanged(inp);
     inp.style.height = 'auto';
     el.classList.remove('open'); el._atItems = null; el._atSel = -1;
     channelOpen(name, target, after);
@@ -17352,7 +17343,7 @@ function cardSlashAcPick(name, i) {
     cardAtPick(i);
     return;
   }
-  inp.value = _cardAcItems[i].cmd;
+  inp.value = _cardAcItems[i].cmd; _draftInputChanged(inp);
   if (el) el.classList.remove('open');
   _cardAcItems = [];
   inp.focus({ preventScroll: true });
@@ -31575,6 +31566,7 @@ function gpChipToInput(name, text) {
   const inp = document.getElementById(_gpSafeId(name) + '-input');
   if (!inp) return;
   inp.value = text;
+  _draftInputChanged(inp);
   inp.focus({ preventScroll: true });
   autoGrow(inp);
 }
