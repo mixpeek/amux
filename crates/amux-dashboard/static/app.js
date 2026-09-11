@@ -604,7 +604,10 @@ function _sessStatusKey(s) {
   if (!s.running) return 'stopped';
   if (s.status === 'rate_limited') return 'rate_limited';
   if (s.status === 'api_error') return 'api_error';
-  if (s.status === 'unattributed') return 'waiting';
+  if (s.status === 'unattributed') {
+    const rb = s.runtime_board || {};
+    return rb.runtime_status === 'active' ? 'working' : 'waiting';
+  }
   if (s.status === 'blocked') return 'blocked';
   if (s.status === 'active') return 'working';
   if (s.status === 'waiting') return 'waiting';
@@ -7233,7 +7236,9 @@ async function doKeys(name, keys) {
   };
 }
 
+const _fieldSizingSupported = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content');
 function autoGrow(el) {
+  if (_fieldSizingSupported) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
@@ -9901,7 +9906,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.902';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.903';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
