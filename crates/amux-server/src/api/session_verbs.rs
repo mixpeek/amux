@@ -7101,6 +7101,26 @@ static LANE_SEND_LOCKS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 > = std::sync::OnceLock::new();
 
+fn conversation_restarts() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static ACTIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    ACTIVE.get_or_init(Default::default)
+}
+struct ConversationRestart(String);
+impl ConversationRestart {
+    fn begin(name: &str) -> Self {
+        conversation_restarts().lock().unwrap_or_else(|e| e.into_inner()).insert(name.into());
+        Self(name.into())
+    }
+    fn active(name: &str) -> bool {
+        conversation_restarts().lock().unwrap_or_else(|e| e.into_inner()).contains(name)
+    }
+}
+impl Drop for ConversationRestart {
+    fn drop(&mut self) {
+        conversation_restarts().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
+}
+
 fn lane_send_lock(name: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     let map = LANE_SEND_LOCKS.get_or_init(Default::default);
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
@@ -8157,6 +8177,23 @@ pub(crate) fn start_block_reason(name: &str, cfg: &EnvFile) -> Option<String> {
     None
 }
 
+// Gemini accepts a caller-owned UUID. Its file naming uses a shortened ID,
+// so use random leading bytes, not the shared timestamp prefix of a ULID.
+fn gemini_session_flag(meta: &mut Map<String, Value>, fresh: bool) -> String {
+    let existing = meta_str(meta, "gemini_session_id");
+    if !fresh && !existing.is_empty() {
+        return format!("--resume {}", sh_quote(&existing));
+    }
+    let mut bytes = [0u8; 16];
+    getrandom_fill(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = hex::encode(bytes);
+    let id = format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]);
+    meta.insert("gemini_session_id".into(), json!(id));
+    format!("--session-id {}", sh_quote(&id))
+}
+
 async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_conv_id: bool) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
@@ -8270,7 +8307,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
         "codex" => {
             // py:24380 — codex command construction (trust-db side effect not
             // ported).
-            let codex_session_id = meta_str(&meta, "codex_session_id");
+            let codex_session_id = if skip_conv_id { String::new() } else { meta_str(&meta, "codex_session_id") };
             let mut codex_flags = flags.clone();
             let codex_yolo = PROVIDER_YOLO_FLAGS.iter().any(|f| codex_flags.contains(f));
             if codex_yolo {
@@ -8341,14 +8378,14 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             }
             let logs = logs_dir().to_string_lossy().into_owned();
             opts += &format!(" --include-directories {}", sh_quote(&logs));
-            let gemini_session_id = meta_str(&meta, "gemini_session_id");
-            if !gemini_session_id.is_empty() {
-                format!("{base_bin}{opts} --resume {}", sh_quote(&gemini_session_id))
-            } else {
-                let new_id = ulid::Ulid::new().to_string().to_lowercase();
-                meta.insert("gemini_session_id".into(), json!(new_id));
-                format!("{base_bin}{opts} --session-id {}", sh_quote(&new_id))
-            }
+            // Dashboard attachments live outside the checkout. Gemini resolves
+            // @file before submission and otherwise stops at a native read
+            // approval even in YOLO mode, which looks like a stuck composer.
+            let uploads = home().join("uploads");
+            let _ = std::fs::create_dir_all(&uploads);
+            opts += &format!(" --include-directories {}", sh_quote(&uploads.to_string_lossy()));
+            let session = gemini_session_flag(&mut meta, skip_conv_id);
+            format!("{base_bin}{opts} {session}")
         }
         "ollama" => {
             // Ollama workers run through `codex --oss --local-provider ollama`
@@ -9148,8 +9185,10 @@ fn structured_resume_prompt(context: &StructuredResumeContext, reason: &str) -> 
          The supported scoped list is `AMUX_SESSION={} amux board ls --mine`. Never choose \
          from unfiltered fleet output. Inspect assigned non-terminal cards with \
          `amux board show <ID>`; each card's source message, epic, dependencies, priority and \
-         recorded evidence are authoritative. Consult a linked message only when the card says \
-         context is missing. Do not automatically load the worker terminal log.",
+         recorded evidence are authoritative. A **Prompt:** description is only a preview: \
+         read its complete linked assignment with `amux board show <ID> --messages` before \
+         acting, including attachment paths and criteria beyond the preview. For other cards, \
+         consult linked messages only when context is missing. Do not automatically load the worker terminal log.",
         sh_quote(&context.cwd), sh_quote(name),
     )
 }
@@ -16090,7 +16129,27 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             }),
         );
     }
-    let (ok, msg) = send_text(state, name, &text, defer_busy, send_origin).await;
+    let mut queue_id = None;
+    let (ok, msg) = if ConversationRestart::active(name) {
+        // Do not hold an HTTP request through a slow provider stop. Mobile
+        // cancels/retries it, leaving a reserved identity without a receipt.
+        // Persist ordinary input now; the drain waits on the restart boundary.
+        if text.trim_start().starts_with('/') {
+            (false, "worker is still starting — interactive command not sent; retry when its terminal is ready".into())
+        } else {
+            match steer_enqueue(state, name, &text, park_guard(send_origin), &origin).await {
+                Ok(id) => {
+                    tracing::info!(session=name, queue_id=%id, verdict="send_persisted_during_restart",
+                        "message accepted into durable steering before the replacement worker is ready");
+                    queue_id = Some(id);
+                    (true, "queued (worker restarting) — accepted into durable delivery".into())
+                }
+                Err(reason) => (false, block_reason_refused(reason, name)),
+            }
+        }
+    } else {
+        send_text(state, name, &text, defer_busy, send_origin).await
+    };
     let no_effect = ok && msg == "no suggestion found";
     if no_effect {
         // A NO-OP IS NOT A SEND (ATE-75). Before this branch, the generic `ok`
@@ -16238,6 +16297,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     };
     let send_id = send_response_id(name, &msg_id);
     let mut resp = json!({"ok": ok, "message": msg, "id": send_id});
+    if let Some(id) = queue_id { resp["queue_id"] = json!(id); }
     if let Some(author) = member_actor {
         resp["authored_by"] = json!(author);
     }
@@ -16443,7 +16503,7 @@ pub(crate) async fn steer_history_verb(
     if qs_first(qs, "history", "0") == "1" {
         let mut out = vec![];
         if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, text, queued_at, delivered_at FROM steering_history \
+            "SELECT id, text, queued_at, delivered_at, COALESCE(outcome,'') FROM steering_history \
              WHERE session=? ORDER BY delivered_at DESC LIMIT 100",
         ) {
             if let Ok(rows) = stmt.query_map([name], |r| {
@@ -16452,6 +16512,8 @@ pub(crate) async fn steer_history_verb(
                     "text": r.get::<_, String>(1)?,
                     "queued_at": r.get::<_, Option<f64>>(2)?,
                     "delivered_at": r.get::<_, f64>(3)?,
+                    "outcome": r.get::<_, String>(4)?,
+                    "submit_verdict": submit_verdict_of(&r.get::<_, String>(4)?),
                 }))
             }) {
                 out = rows.flatten().collect();
@@ -19977,6 +20039,13 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
                 }),
             );
         }
+        // Own the same lane boundary as direct sends BEFORE accepting reset.
+        // Otherwise a fast next send can land in the old process during the
+        // asynchronous stop and vanish when that process is finally killed.
+        let restart_send_guard = if running {
+            Some(lane_send_lock(name).lock_owned().await)
+        } else { None };
+        let restart_notice = running.then(|| ConversationRestart::begin(name));
         let generations = conversation_generations(name);
         // Clear BEFORE the stop. Safe in this order because stop_session
         // writes only `cc_session_name`; it is `restart_for_swap` that
@@ -19985,6 +20054,8 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         let mut meta = load_meta(name);
         let previous = meta_str(&meta, "cc_conversation_id");
         meta.remove("cc_conversation_id");
+        meta.remove("gemini_session_id");
+        meta.remove("codex_session_id");
         save_meta(name, &meta);
         // Greppable, because the point of the fix is that the degradation was
         // invisible: `conversation_recycled` carries how many generations deep
@@ -19995,6 +20066,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
             generations = generations.map(|g| g as i64).unwrap_or(-1),
             restarted = running,
             previous_conv = %chars_truncate(&previous, 8),
+            provider = %provider_of(&parse_env(name)),
             "conversation_recycled: worker keeps its env/cards/memory, the conversation starts fresh"
         );
         emit_event(
@@ -20015,6 +20087,10 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         let st2 = state.clone();
         let n = name.to_string();
         tokio::spawn(async move {
+            let _restart_notice = restart_notice;
+            let _send_guard = restart_send_guard;
+            tracing::info!(session = %n, verdict = "conversation_restart_send_boundary",
+                "new sends wait for the replacement provider instead of entering the retiring process");
             let _ = stop_session(&st2, &n).await;
             kill_tmux_session(&n).await;
             // skip_conv_id=true AND the meta already cleared: belt and braces,
@@ -24328,6 +24404,86 @@ CLAUDE-POSTFIX-COMPLETE
         );
     }
 
+    #[tokio::test]
+    async fn restart_accepts_one_durable_message_without_waiting_for_the_native_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        let name = "restart-queue-fixture";
+        std::fs::write(env_path(name), "CC_PROVIDER=gemini\n").unwrap();
+        let (state, _store_dir) = state();
+        let _lane = lane_send_lock(name).lock_owned().await;
+        let restart = ConversationRestart::begin(name);
+        let body = json!({"text":"Read the complete uploaded assignment", "record_history":true, "no_board":true, "msg_id":"restart-transport-1"});
+        let response = tokio::time::timeout(Duration::from_secs(3), send_post(&state,name,&HeaderMap::new(),&body)).await
+            .expect("acceptance cannot wait for the locked native process");
+        assert_eq!(response.status(),StatusCode::OK);
+        let value: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),1<<20).await.unwrap()).unwrap();
+        assert_eq!(value["submission"],"deferred", "{value}");
+        let queue_id = value["queue_id"].as_str().expect("receipt must identify its durable queue row").to_string();
+        let retry = send_post(&state,name,&HeaderMap::new(),&body).await;
+        assert_eq!(retry.status(),StatusCode::OK);
+        let value: Value = serde_json::from_slice(&axum::body::to_bytes(retry.into_body(),1<<20).await.unwrap()).unwrap();
+        assert_eq!(value["deduped"],true, "{value}");
+        let conn=state.store.read().unwrap();
+        let count:i64=conn.query_row("SELECT COUNT(*) FROM steering_queue WHERE session=?1",[name],|r|r.get(0)).unwrap();
+        assert_eq!(count,1,"retry must not enqueue a second copy");
+        assert_eq!(conn.query_row("SELECT id FROM steering_queue WHERE session=?1",[name],|r|r.get::<_,String>(0)).unwrap(),queue_id);
+        drop(conn);
+        // Delivery history includes dead-letter outcomes too. Only a verified
+        // submission may count as delivery; timestamps alone are insufficient.
+        state.store.write_async(move |conn| {
+            for (id,outcome) in [("landed","sent"),("discarded","dead:archived"),("retry","sent (Enter was dropped; submitted on retry)")] {
+                conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) VALUES(?1,?2,'payload',1,2,?3)",rusqlite::params![id,name,outcome])?;
+            }
+            Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
+        }).await.unwrap();
+        let history = steer_history_verb(&state,name,&[("history".into(),"1".into())]).await;
+        let rows: Value = serde_json::from_slice(&axum::body::to_bytes(history.into_body(),1<<20).await.unwrap()).unwrap();
+        for (id,verdict) in [("landed",json!("confirmed")),("discarded",Value::Null),("retry",json!("retried"))] {
+            assert_eq!(rows.as_array().unwrap().iter().find(|r|r["id"]==id).unwrap()["submit_verdict"],verdict);
+        }
+        assert!(!ConversationRestart::active("unrelated-lane"));
+        drop(restart);
+        assert!(!ConversationRestart::active(name));
+    }
+
+    #[test]
+    fn gemini_fresh_launch_replaces_stale_resume_identity() {
+        let mut meta = json!({"gemini_session_id":"01m28pjd0td7kejrd895p9wmdv"}).as_object().unwrap().clone();
+        let resume = gemini_session_flag(&mut meta, false);
+        assert!(resume.contains("--resume 01m28pjd0td7kejrd895p9wmdv"), "ordinary starts preserve identity");
+        let fresh = gemini_session_flag(&mut meta, true);
+        let id = meta_str(&meta, "gemini_session_id");
+        assert!(fresh.starts_with("--session-id ") && !fresh.contains("--resume"), "{fresh}");
+        assert!(cached_re!(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$").is_match(&id), "{id}");
+        assert!(gemini_session_flag(&mut meta, false).contains(&id), "the next ordinary start must resume this exact conversation");
+        let mut second = Map::new();
+        gemini_session_flag(&mut second, false);
+        assert_ne!(&id[..8], &meta_str(&second, "gemini_session_id")[..8], "peers must not share a time-derived filename prefix");
+    }
+
+    #[tokio::test]
+    async fn gemini_fresh_config_clears_all_provider_resume_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        let name = "gemini-fresh-stopped-fixture";
+        std::fs::write(env_path(name), format!("CC_PROVIDER=gemini\nCC_DIR={}\n", dir.path().display())).unwrap();
+        let original = json!({"gemini_session_id":"old-gemini", "codex_session_id":"old-codex",
+            "cc_conversation_id":"old-claude", "cc_task":"keep my task"});
+        save_meta(name, original.as_object().unwrap());
+        let (state, _store_dir) = state();
+        let response = config_patch_with_liveness(&state, name, &json!({"new_conversation":true}), false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let meta = load_meta(name);
+        for key in ["gemini_session_id", "codex_session_id", "cc_conversation_id"] {
+            assert!(!meta.contains_key(key), "fresh conversation retained {key}");
+        }
+        assert_eq!(meta["cc_task"], "keep my task");
+        assert_eq!(parse_env(name).get("CC_PROVIDER"), Some("gemini"));
+    }
+
     #[test]
     fn provider_resume_uses_structured_state_not_terminal_replay() {
         let context = StructuredResumeContext { session: "lane-a".into(), card: Some("ATE-92".into()), cwd: "/tmp/exact-worktree".into() };
@@ -24338,6 +24494,7 @@ CLAUDE-POSTFIX-COMPLETE
         assert!(prompt.contains("cd --") && prompt.contains("/tmp/exact-worktree") && prompt.contains("amux board show ATE-92"), "{prompt}");
         assert!(prompt.contains("amux board show <ID>"), "{prompt}");
         assert!(prompt.contains("source message") && prompt.contains("dependencies"), "{prompt}");
+        assert!(prompt.contains("amux board show <ID> --messages") && prompt.contains("only a preview"), "captured assignments must recover their untruncated source: {prompt}");
         assert!(!prompt.contains(".amux/logs"), "{prompt}");
         assert!(!prompt.contains("terminal history"), "{prompt}");
     }

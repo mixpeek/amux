@@ -344,6 +344,8 @@ jobs:
           python3 scripts/test-send-retry-identity.py
       - name: board help never registers an artifact
         run: python3 scripts/test-board-help.py
+      - name: Board linked source messages
+        run: python3 scripts/test-board-show-messages.py
       - name: the shared-checkout guard attributes a block to the real actor
         run: |
           set -uo pipefail

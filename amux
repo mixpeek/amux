@@ -2971,7 +2971,16 @@ Names the peer this card is handed off to, without moving it onto their board."
       # curl, which is how attribution gets lost (AMUX-2325 / AMUX-2140).
       local id="${1:-}"
       _board_id_guard "show" "$id"
-      [[ -n "$id" ]] || die "Usage: amux board show <ISSUE-ID>"
+      [[ -n "$id" ]] || die "Usage: amux board show <ISSUE-ID> [--messages]"
+      shift
+      local include_messages=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --messages) include_messages=1 ;;
+          *) die "Usage: amux board show <ISSUE-ID> [--messages]" ;;
+        esac
+        shift
+      done
       _curl -sk "$AMUX_API/api/board/$id" | python3 -c '
 import json, sys
 raw = sys.stdin.read()
@@ -2998,7 +3007,15 @@ if log:
     print()
     print("--- log ---")
     print(log)
-'
+messages = d.get("messages") or []
+if messages:
+    print()
+    print("--- linked messages (full request: amux board show %s --messages) ---" % d["id"])
+    for message in messages:
+        print("MSG-%s [%s] %s" % (message.get("id"), message.get("type", "message"), message.get("origin") or "User"))
+        if sys.argv[1] == "1":
+            print(message.get("text") or "")
+' "$include_messages"
       return $?
       ;;
     retitle)

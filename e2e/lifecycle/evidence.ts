@@ -94,12 +94,22 @@ export async function expectDelivered(page: Page, response: Response) {
   expect(sent.text.length).toBeGreaterThan(0);
   const name = decodeURIComponent(new URL(response.url()).pathname.split('/').at(-2)!);
   const headers = await auth(page);
+  const startedAt = response.request().timing().startTime / 1000;
   await expect.poll(async () => {
     const history = await page.request.get(`/api/history?session=${encodeURIComponent(name)}&limit=250`, { headers });
     if (!history.ok()) return false;
-    return (await history.json()).some((message: any) =>
+    if ((await history.json()).some((message: any) =>
       String(message.text).includes(sent.text) && message.delivered_at > 0
-      && message.submit_verdict === 'confirmed');
+      && ['confirmed', 'retried'].includes(message.submit_verdict))) return true;
+    // Queued submissions are stamped by the drain in steering history, not
+    // cmd_history. Dead-letter rows also have timestamps, so require a real
+    // submission verdict and match this send's identity (or exact unique text).
+    const steering = await page.request.get(`/api/sessions/${encodeURIComponent(name)}/steer?history=1`, { headers });
+    if (!steering.ok()) return false;
+    return (await steering.json()).some((message: any) =>
+      (receipt.queue_id ? message.id === receipt.queue_id :
+        message.text === sent.text && message.queued_at >= startedAt - 2) &&
+      message.delivered_at > 0 && ['confirmed', 'retried'].includes(message.submit_verdict));
   }, { timeout: 180_000, intervals: [1000, 3000, 5000],
     message: `${name}: accepted message must actually reach the terminal` }).toBe(true);
   await expect(page.locator('#peek-cmd-input')).toHaveValue('');

@@ -1946,3 +1946,59 @@ CARD: AMUX-4417
 SYMPTOM: Production watchdog logs explicitly issued kickstart -k at 13:16:19 and 13:29:32 on September 11 after three health responses with measured:false / probe_deadline_exceeded. launchd recorded SIGTERM, not an application crash. The 250 ms health deadline detached its ongoing writer/read probe but discarded its later success, so each slow sample could imply a hung store despite intervening progress.
 COST: The monitor itself disconnected clients and restarted the server; both restarts were followed by more slow probes rather than durable recovery.
 FIX: Retain monotonic completion and in-flight ages for real probes after HTTP timeout. Readiness remains unmeasured/503; the watchdog defers a restart only with recent successful progress or bounded initial work. Real writer failures, pool exhaustion, absent listeners and stale progress retain recovery. slow_probe_completed and watchdog restart-deferred logs expose the decision. Rust exercises a blocked writer twice and requires the detached first probe's receipt during the second timeout; Python tests cover actual HTTP 503 classification and both restart/no-restart loop controls.
+
+## Gemini New conversation restarts the old provider conversation
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini upload acceptance run clicked New conversation and received a successful config response, but the native terminal exited with Invalid session identifier. The handler cleared only the Claude conversation key, and Gemini/Codex launch paths ignored skip_conv_id, so the supposedly fresh launch still used --resume.
+COST: Upload acceptance could not start; the worker remained at a shell while the UI reported a reset.
+FIX: Fresh resets clear all provider resume keys and both hookless launch paths respect the fresh flag. New Gemini identities are UUIDs with random leading bytes, matching the CLI's documented --session-id contract and avoiding time-derived filename prefixes. conversation_recycled now logs provider identity. Tests exercise the config handler and a stale Gemini identity followed by fresh launch and exact subsequent resume.
+
+## Gemini uploads stop at native read approval before submission
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real UI upload launched a fresh Gemini session, then its @uploaded-file prompt opened a native read approval outside the checkout. Amux's send verifier returned stuck. Gemini was launched with the log directory included but not the uploads directory.
+COST: The user-uploaded file could not reach a completed receipt task and the composer reported a send failure.
+FIX: Include the Amux uploads directory in the Gemini workspace, using its supported repeated --include-directories option. The real upload case must read the attached bytes, produce a matching JSON receipt, finish its board card and expose the delivered message and terminal on desktop and mobile.
+
+## Fresh conversation accepts a message into the retiring process
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini upload run received reset acceptance at 18:18:24Z, delivered its prompt at 18:18:26Z, and only launched the replacement process at 18:18:46Z. The test saw the previous terminal's banner while reset was still stopping that process.
+COST: A following send could appear accepted and then lose its native conversation when the asynchronous reset killed the old process.
+FIX: Acquire the existing per-lane send boundary before accepting a running reset and retain it through stop/start. Ordinary sends during that interval persist immediately into steering, with an acceptance receipt; interactive commands refuse without an effect. Holding the HTTP request itself through restart was disproven by a mobile timeout and pending duplicate receipt. Other lanes remain independent. conversation_restart_send_boundary and existing lane-send-serialised logs expose the ordering. The live upload scenario deliberately sends through the UI immediately after reset, then requires real attachment data and completed board evidence.
+
+## Board recovery hides the full assignment from the sanctioned CLI
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Gemini recovered an auto-captured upload task through amux board show. The card preview ended at `row`, before `row_count` and the attachment path. The API already returned the full linked source message, but the Bash CLI dropped messages entirely. The worker searched logs and produced `rows` rather than the required `row_count`.
+COST: A completed receipt had the wrong schema despite the original request remaining in durable history; recovery spent tokens searching terminal logs for context the API already provided.
+FIX: Board show exposes linked message IDs and a supported --messages option for full assignments. Structured recovery explicitly reads that option for captured prompt previews, while ordinary board reads remain compact. A fake-transport regression uses the real CLI with a requirement beyond the 300-character preview and requires it only on the explicit full-message read.
+
+
+## Queued delivery observation reads an unstamped command receipt
+AREA: testing
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini upload reached steering history with outcome sent, produced its correct file and completed LG1A-7, but the acceptance helper timed out waiting for cmd_history.delivered_at, which the steering drain does not stamp.
+COST: A delivered message was reported as undelivered, stopping the remaining acceptance cases.
+FIX: Expose the existing steering outcome and submission verdict, and the exact queue ID for restart acceptance. The observer checks this delivery instrument and excludes dead-letter rows despite their timestamps. The real handler regression covers confirmed, retried and discarded histories; existing steering-delivered logs remain the operational signal.
