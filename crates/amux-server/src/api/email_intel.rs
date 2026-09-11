@@ -409,7 +409,7 @@ async fn ranked(
     // keep in step.
     let fetched = ctx
         .client
-        .inbox_messages(&account, count, "", days)
+        .inbox_messages(&account, count, "", days, None)
         .await
         .map(|v| v.get("messages").and_then(Value::as_array).cloned().unwrap_or_default());
     let msgs = match fetched {

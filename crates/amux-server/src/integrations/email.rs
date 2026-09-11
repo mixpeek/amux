@@ -1537,12 +1537,21 @@ impl GmailClient {
     /// shape with the RFC822 Message-ID as `message_id` so it round-trips
     /// into /reply. `days` is AUTHORITATIVE when set (an `after:` filter,
     /// AMUX-1886); `truncated` distinguishes a real 0 from a capped slice.
+    ///
+    /// AF-704: `resume_from` is Gmail's own opaque `nextPageToken`, not a
+    /// date or offset — there is nothing else to hand a caller, since Gmail
+    /// never exposes the underlying cursor as a timestamp. Pass `None` for a
+    /// fresh window; pass back the `next_page_token` a prior call returned to
+    /// continue past a `truncated: true` slice IN THE SAME ACCOUNT. A token
+    /// is meaningless against a different account or a different query and
+    /// the caller is trusted not to mix them, same as Gmail's own contract.
     pub async fn inbox_messages(
         &self,
         account: &str,
         count: usize,
         q: &str,
         days: f64,
+        resume_from: Option<&str>,
     ) -> Result<Value, String> {
         let want = count.max(1);
         let mut query = q.to_string();
@@ -1554,7 +1563,7 @@ impl GmailClient {
             }
         }
         let mut ids: Vec<Value> = Vec::new();
-        let mut page_token: Option<String> = None;
+        let mut page_token: Option<String> = resume_from.map(str::to_string);
         loop {
             if ids.len() >= want {
                 break;
@@ -1648,7 +1657,12 @@ impl GmailClient {
                 "body": full.get("snippet").cloned().unwrap_or(json!("")),
             }));
         }
-        Ok(json!({ "messages": out, "truncated": truncated }))
+        // AF-704: `page_token` here is whatever the loop's LAST list_ids call
+        // returned — None once Gmail has no more pages, Some(...) exactly
+        // when `truncated` is also true. Publishing it beside `truncated`
+        // gives a caller the one thing needed to walk a window in slices
+        // instead of hitting the same 500-cap on every retry.
+        Ok(json!({ "messages": out, "truncated": truncated, "next_page_token": page_token }))
     }
 
     /// Python `_gmail_latest_matching`: resolve "the latest message
@@ -2897,9 +2911,12 @@ mod tests {
             ("GET", "/messages/g2", 200, meta("g2", "<m2@x>")),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", 2, "", 3.0).await.unwrap();
+        let res = client.inbox_messages("acct@example.com", 2, "", 3.0, None).await.unwrap();
         // Window held more than the cap: a caller can tell 0 from capped.
         assert_eq!(res["truncated"], json!(true));
+        // AF-704: the cursor to resume past the cap rides beside `truncated`,
+        // not just a bare boolean saying more exists with no way to get it.
+        assert_eq!(res["next_page_token"], json!("more"));
         let msgs = res["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["message_id"], json!("<m1@x>"));
@@ -2910,6 +2927,45 @@ mod tests {
         let calls = http.calls.lock().unwrap();
         let url = &calls.iter().find(|(m, u, _)| m == "GET" && u.contains("/messages?q=")).unwrap().1;
         assert!(url.contains(&urlencode("in:inbox after:")[..20]), "{url}");
+    }
+
+    /// AF-704: `resume_from` must reach Gmail's own `pageToken` param, and the
+    /// NEW cursor Gmail hands back for the page after that must come back out
+    /// — this is the whole mechanism a caller needs to walk a window in
+    /// slices instead of re-hitting the same capped page on every retry.
+    #[tokio::test]
+    async fn inbox_messages_resumes_from_a_prior_page_token_and_reports_the_next_one() {
+        let home = temp_home_with_token("acct@example.com", true);
+        let meta = |mid: &str, msgid: &str| {
+            json!({
+                "id": mid, "threadId": "T", "snippet": "snip", "labelIds": ["INBOX"],
+                "payload": { "headers": [
+                    { "name": "From", "value": "a@ext.com" },
+                    { "name": "To", "value": "acct@example.com" },
+                    { "name": "Subject", "value": "s" },
+                    { "name": "Date", "value": "Sun, 09 Aug 2026 10:00:00 -0400" },
+                    { "name": "Message-ID", "value": msgid },
+                ]},
+            })
+        };
+        let http = MockHttp::new(vec![
+            // Matched on the pageToken alone: proves resume_from reached the
+            // real request rather than a fresh, tokenless one.
+            ("GET", "pageToken=resume-tok-1", 200, json!({
+                "messages": [{ "id": "g3" }],
+                "nextPageToken": "resume-tok-2",
+            })),
+            ("GET", "/messages/g3", 200, meta("g3", "<m3@x>")),
+        ]);
+        let client = GmailClient::new(http.clone(), home.path().to_path_buf());
+        let res = client
+            .inbox_messages("acct@example.com", 1, "in:inbox", 0.0, Some("resume-tok-1"))
+            .await
+            .unwrap();
+        assert_eq!(res["next_page_token"], json!("resume-tok-2"), "{res}");
+        let msgs = res["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["message_id"], json!("<m3@x>"));
     }
 
     /// AMUX-3495 — a 429 must RETRY, not silently drop the message. The
@@ -2936,7 +2992,7 @@ mod tests {
             ("GET", "/messages/g1", 200, meta),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", 1, "", 3.0).await.unwrap();
+        let res = client.inbox_messages("acct@example.com", 1, "", 3.0, None).await.unwrap();
         let msgs = res["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1, "the 429'd message must be retried into the response");
         assert_eq!(msgs[0]["message_id"], json!("<m1@x>"));
@@ -2997,7 +3053,7 @@ mod tests {
             ("GET", "/messages/g7", 200, meta7),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", n, "", 3.0).await.unwrap();
+        let res = client.inbox_messages("acct@example.com", n, "", 3.0, None).await.unwrap();
         let msgs = res["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), n, "batch + hole-fallback must deliver every message");
         assert_eq!(msgs[7]["message_id"], json!("<m7@x>"), "the hole came via fallback, in place");
@@ -3026,7 +3082,7 @@ mod tests {
             ("GET", "/messages/g2", 200, meta),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", 2, "", 3.0).await.unwrap();
+        let res = client.inbox_messages("acct@example.com", 2, "", 3.0, None).await.unwrap();
         let msgs = res["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1, "g2 must survive g1's sustained quota failure");
         assert_eq!(msgs[0]["message_id"], json!("<m2@x>"));

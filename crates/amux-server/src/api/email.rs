@@ -1122,11 +1122,28 @@ pub async fn inbox(
         qs.get("envelope").map(String::as_str),
         Some("1") | Some("true") | Some("yes")
     );
-    let reply_shape = |msgs: Vec<Value>, truncated: bool| -> Response {
+    // AF-704: opaque Gmail cursor, only meaningful against the SAME account
+    // and query that produced it (see inbox_messages' own doc comment) — so
+    // it only makes sense paired with `account`, never against the unified,
+    // multi-account fan-out below.
+    let page_token = qs.get("page_token").cloned().filter(|s| !s.is_empty());
+    if page_token.is_some() && account_filter.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "page_token requires account",
+                "why": "the token is a single Gmail account's opaque cursor; the unified \
+                        inbox merges and re-sorts multiple accounts per call, so there is \
+                        no single cursor a combined page could resume from.",
+            }),
+        );
+    }
+    let reply_shape = |msgs: Vec<Value>, truncated: bool, next_page_token: Option<String>| -> Response {
         if envelope {
             Json(json!({
                 "messages": msgs, "returned": msgs.len(),
                 "truncated": truncated, "window_days": lookback_days,
+                "next_page_token": next_page_token,
             }))
             .into_response()
         } else {
@@ -1135,13 +1152,17 @@ pub async fn inbox(
     };
     let connected = ctx.client.connected_accounts();
     if !account_filter.is_empty() && connected.contains(&account_filter) {
-        let res = ctx.client.inbox_messages(&account_filter, count, "", lookback_days).await;
+        let res = ctx
+            .client
+            .inbox_messages(&account_filter, count, "", lookback_days, page_token.as_deref())
+            .await;
         report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
         return match res {
             Err(e) => email_err(&e),
             Ok(v) => reply_shape(
                 v.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(),
                 v.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+                v.get("next_page_token").and_then(Value::as_str).map(String::from),
             ),
         };
     }
@@ -1154,7 +1175,7 @@ pub async fn inbox(
             async move {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(20),
-                    client.inbox_messages(&a, count, "", lookback_days),
+                    client.inbox_messages(&a, count, "", lookback_days, None),
                 )
                 .await
                 .ok()
@@ -1183,7 +1204,7 @@ pub async fn inbox(
             any_trunc = true;
         }
         msgs.truncate(count);
-        return reply_shape(msgs, any_trunc);
+        return reply_shape(msgs, any_trunc, None);
     }
     applescript_not_ported(&account_filter)
 }
@@ -1381,7 +1402,7 @@ pub async fn search(
 
     let connected = ctx.client.connected_accounts();
     if !account.is_empty() && connected.contains(&account) {
-        let res = ctx.client.inbox_messages(&account, limit, &gq, 0.0).await;
+        let res = ctx.client.inbox_messages(&account, limit, &gq, 0.0, None).await;
         report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
         return match res {
             Err(e) => email_err(&e),
@@ -1392,7 +1413,7 @@ pub async fn search(
         let futs = connected.iter().map(|a| {
             let client = ctx.client.clone();
             let (a, gq) = (a.clone(), gq.clone());
-            async move { client.inbox_messages(&a, limit, &gq, 0.0).await.ok() }
+            async move { client.inbox_messages(&a, limit, &gq, 0.0, None).await.ok() }
         });
         let results = futures::future::join_all(futs).await;
         let mut merged: Vec<Value> = Vec::new();
@@ -1785,6 +1806,20 @@ mod tests {
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
+    }
+
+    /// AF-704: a page_token is a single Gmail account's opaque cursor, and
+    /// the unified inbox merges + re-sorts several accounts per call, so
+    /// there is no combined cursor a resumed fan-out could mean. Refused
+    /// rather than silently ignored, which would have looked like paging
+    /// worked while quietly re-running the same unified page every time.
+    #[tokio::test]
+    async fn page_token_without_account_is_refused_not_silently_ignored() {
+        let home = tempfile::tempdir().unwrap();
+        let (app, _d, _r) = app_with(MockHttp::new(vec![]), home.path());
+        let (st, v) = send_req(&app, "GET", "/api/email/inbox?page_token=abc", None, &[]).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["error"], json!("page_token requires account"));
     }
 
     /// AMUX-3809: a dead credential is a REFUSAL (403), a real upstream fault is
