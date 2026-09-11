@@ -2106,3 +2106,37 @@ CARD: AMUX-4424
 SYMPTOM: Ethan sent a message to amux from worker details, but an earlier partially typed copy remained in the worker card. The 250ms draft mirror lagged; exact-match acceptance left the partial copy alive, and lifecycle DOM harvesting could save it again. Fullscreen edits and separate browser contexts also missed draft synchronization.
 COST: User could mistake already-submitted text for unsent work and submit it twice.
 FIX: Immediate per-worker draft updates across card/details/fullscreen and same-origin tabs/grid; revision-bound acceptance preserves newer edits, lifecycle events never overwrite storage from stale DOM, and failed storage retains text with a visible warning. Server client-debug verdicts composer_locally_accepted and composer_draft_storage_failed. Regression reproduced on pre-fix source; desktop, phone and WebKit coverage alongside durable outbox tests.
+
+## Offline banner promised to retry permanently failed edits
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: A blocked 409 board edit displayed as queued and promised to send on reconnect while offline. The regression reproduced that exact text before the fix.
+COST: The user could wait for an automatic retry that will never occur.
+FIX: This commit separates failed and pending counts in offline mode, preserves review/dismiss actions for failed-only queues, and adds LC-BLOCKED-OUTBOX across desktop/mobile/WebKit. The final focused run passed 9 cases including gate revisions and linked records; screenshots were opened.
+
+## Stale failed-row dismissal deleted an edit resumed in another tab
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: A stale failed-row action removed its operation by ID even after durable storage changed its state to pending. The regression lost the resumed entry before the fix.
+COST: Potential loss of a pending edit when two tabs act on the same outbox.
+FIX: This commit checks blocked state inside the shared storage lock, refreshes the UI and emits outbox_dismiss_ignored when the action is stale. The contract verifies pending work survives both individual and bulk failed-only dismissal. All 34 outbox contracts passed.
+
+
+## More-specific mobile flex rule narrowed the composer again
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: After integrating the latest toolbar change, LC-COMPOSER-LAYOUT failed on all three projects: the 320px phone input shrank to 155px instead of its available 308px.
+COST: Long drafts become difficult to read beside More and Queue.
+FIX: Remove the conflicting ac-wrap flex override, retain compact chrome and aligned action controls, and preserve the full-width mobile writing row. Existing composer-layout diagnostics record inputW and actionDelta; the browser case checks short/long drafts, Send/Queue, narrow/landscape viewports and attachment-menu reachability.

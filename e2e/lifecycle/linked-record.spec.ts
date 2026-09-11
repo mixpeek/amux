@@ -54,6 +54,8 @@ test('LC-LINKED-RECORD: epic, children, criteria, evidence and real file/URL/com
     await expect(page.locator('.bd-evidence-section')).toContainText('Report total equals 42');
     await expect(page.locator('.bd-evidence-section')).toContainText('PASS total=42');
     await checkpoint(page, info, 'linked-task-details');
+    await page.locator('.bd-evidence-section').scrollIntoViewIfNeeded();
+    await checkpoint(page, info, 'linked-task-evidence');
     await page.locator('#bd-tab-related').click();
     await page.locator('#bd-meta button').filter({hasText: `MSG-${message.id}`}).click();
     await expect(page.locator('#msgs-search')).toHaveValue(`MSG-${message.id}`);

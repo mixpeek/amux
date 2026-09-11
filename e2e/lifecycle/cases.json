@@ -736,5 +736,15 @@
       "scripts/test-board-show-messages.py",
       "e2e/lifecycle/sonnet-upload.ts"
     ]
+  },
+  {
+    "id": "LC-BLOCKED-OUTBOX",
+    "surface": "Failed and retryable offline edits",
+    "actions": "Create a real board revision conflict, go offline, inspect its review link, enqueue a second edit, dismiss only the failed change, then reconnect. Exercise all browser projects and a stale failed-row dismissal after another tab resumes the operation.",
+    "expected": "Blocked edits never promise automatic retry. Mixed queues count failed and retryable changes separately. Dismissal preserves resumed/pending work; reconnect applies only the pending edit and leaves the newer peer revision intact.",
+    "sources": [
+      "e2e/lifecycle/blocked-outbox.spec.ts",
+      "tests/dashboard-outage-recovery.mjs"
+    ]
   }
 ]

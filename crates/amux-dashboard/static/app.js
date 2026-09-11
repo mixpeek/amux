@@ -2109,36 +2109,35 @@ function updateConnectionStatus() {
   banner.classList.add('active');
   const blockedOps = offlineQueue.filter(q => q.state === 'blocked');
   const pendingOps = offlineQueue.filter(q => q.state !== 'blocked');
-  if (online) {
-    if (blockedOps.length && !pendingOps.length && !drafts.length) {
-      title.innerHTML = '&#x26A0; ' + blockedOps.length + ' failed op' + (blockedOps.length === 1 ? '' : 's') +
-        ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
-        ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
-    } else {
-      const stalledOps = pendingOps.filter(_outboxIsStalled);
-      const movingOps = pendingOps.filter(q => !_outboxIsStalled(q));
-      const parts = [];
-      if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
-      if (movingOps.length) parts.push(movingOps.length + ' sending');
-      // Named by how long it has been stuck, because "sending" for 3.5 hours is
-      // the claim that stopped anyone acting on it.
-      if (stalledOps.length) {
-        const oldest = stalledOps.reduce((a, b) => (_outboxAgeMs(a) > _outboxAgeMs(b) ? a : b));
-        parts.push(stalledOps.length + ' stalled ' + _outboxAgeLabel(oldest));
-      }
-      if (blockedOps.length) parts.push(blockedOps.length + ' failed');
-      const needsDecision = stalledOps.length || blockedOps.length;
-      title.innerHTML = (needsDecision ? '&#x26A0; ' : '&#x21BB; ') + parts.join(', ')
-        + (needsDecision
-            ? ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>'
-              + ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>'
-            : '');
+  if (blockedOps.length && !pendingOps.length && !drafts.length) {
+    title.innerHTML = '&#x26A0; ' + (online ? '' : 'Offline &mdash; ') + blockedOps.length + ' failed op' + (blockedOps.length === 1 ? '' : 's') +
+      ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
+      ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
+  } else if (online) {
+    const stalledOps = pendingOps.filter(_outboxIsStalled);
+    const movingOps = pendingOps.filter(q => !_outboxIsStalled(q));
+    const parts = [];
+    if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
+    if (movingOps.length) parts.push(movingOps.length + ' sending');
+    // Named by how long it has been stuck, because "sending" for 3.5 hours is
+    // the claim that stopped anyone acting on it.
+    if (stalledOps.length) {
+      const oldest = stalledOps.reduce((a, b) => (_outboxAgeMs(a) > _outboxAgeMs(b) ? a : b));
+      parts.push(stalledOps.length + ' stalled ' + _outboxAgeLabel(oldest));
     }
+    if (blockedOps.length) parts.push(blockedOps.length + ' failed');
+    const needsDecision = stalledOps.length || blockedOps.length;
+    title.innerHTML = (needsDecision ? '&#x26A0; ' : '&#x21BB; ') + parts.join(', ')
+      + (needsDecision
+          ? ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>'
+            + (blockedOps.length ? ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss failed</a>' : '')
+          : '');
   } else {
     const parts = [];
     if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
-    if (offlineQueue.length) parts.push(offlineQueue.length + ' op' + (offlineQueue.length === 1 ? '' : 's'));
-    title.innerHTML = '&#x26A0; Offline &mdash; ' + parts.join(', ') + ' queued, will send on reconnect';
+    if (pendingOps.length) parts.push(pendingOps.length + ' queued, will send on reconnect');
+    if (blockedOps.length) parts.push(blockedOps.length + ' failed');
+    title.innerHTML = '&#x26A0; Offline &mdash; ' + parts.join(' &middot; ');
   }
   const rows = [];
   drafts.forEach(d => {
@@ -2152,7 +2151,7 @@ function updateConnectionStatus() {
     const timeStr = age < 1 ? 'just now' : age + 'm ago';
     const isBlocked = item.state === 'blocked';
     const dismissBtn = isBlocked
-      ? ' <button type="button" onclick="_dismissQueuedOp(\'' + escJs(item.id) + '\')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px;" title="Dismiss">&#x2715;</button>'
+      ? ' <button type="button" class="offline-op-dismiss" onclick="_dismissQueuedOp(\'' + escJs(item.id) + '\')" aria-label="Dismiss failed change" title="Dismiss">&#x2715;</button>'
       : '';
     rows.push('<div class="offline-op' + (isBlocked ? ' blocked' : '') + '">' +
       '<span class="op-action">' + esc(describeOp(item)) + (item.error ? ' <span style="color:var(--red,#e55)">[' + esc(item.error).substring(0, 80) + ']</span>' : '') + '</span>' +
@@ -2566,7 +2565,16 @@ async function _removeQueuedOperation(id) {
 }
 
 async function _dismissQueuedOp(id) {
-  await _mutateQueue(current => { const at = current.findIndex(q => q.id === id); if (at >= 0) current.splice(at, 1); });
+  let removed = false;
+  await _mutateQueue(current => {
+    // A different tab may have retried this operation since the row rendered.
+    const at = current.findIndex(q => q.id === id && q.state === 'blocked');
+    if (at >= 0) { current.splice(at, 1); removed = true; }
+  });
+  if (!removed) {
+    amuxTrack('outbox_dismiss_ignored', {reason:'no_longer_blocked'});
+    showToast('This change is no longer failed.');
+  }
   if (!offlineQueue.length && !drafts.length) _writeError = '';
   updateConnectionStatus();
 }
@@ -10195,7 +10203,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.910';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.911';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

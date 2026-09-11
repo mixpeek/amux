@@ -2042,30 +2042,15 @@
      page (device traces show zero events). Keep the controls clear of that
      zone; the installed PWA has no Safari chrome and stays flush. */
   body.safari-tab .peek-cmd-bar { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
-  /* THE COMMAND BAR TOOK A FIFTH OF THE PHONE (Ethan: "fix the toolbar at
-     ... bottom"). Measured at 390x844: 168px tall, 20% of the viewport, and
-     20px of that was a row holding nothing but the words "Send command" above
-     a composer that is already obviously a composer. On a screen where the
-     terminal is the product, that row is rent with no tenant.
-     Reclaimed on phones only; the label still reads normally on a desktop
-     where the space is free. */
+  /* Keep phone chrome compact without narrowing the writing field. The input
+     owns a full row; More and Send share the 44px toolbar below it. */
   @media (max-width: 600px) {
-    /* ONE COMPOSER LINE, NOT THREE. Measured at 390x844 the bar was 170px, a
-       fifth of the phone, and the shape was the cause: .peek-cmd-row wraps, and
-       the input (44), the ⋮ (44) and Send (44) each took their own line because
-       they could not fit together. The chips row above them is 35 more.
-       Letting the input flex and pinning the two buttons to their touch size
-       puts all three on one line — the buttons were never the problem, the
-       input's intrinsic width was. */
     .peek-cmd-toggle { font-size: 0.7rem; padding: 0; min-height: 0; line-height: 1.1; opacity: 0.75; }
     .peek-cmd-bar { padding-top: 2px; }
     .peek-cmd-row { gap: 4px; align-items: flex-end; }
     #peek-chips { margin-bottom: 4px; }
-    .peek-cmd-row .ac-wrap { flex: 1 1 0; min-width: 0; }
     .peek-cmd-row .peek-more-wrap { flex: 0 0 44px; }
     .peek-cmd-row .send-split { flex: 0 0 auto; }
-    /* Send keeps its 44px touch height and loses only the padding that was
-       pushing it onto its own line. */
     .peek-cmd-row .send-split .btn { padding-left: 10px; padding-right: 6px; }
   }
   .peek-cmd-toggle {
@@ -3067,6 +3052,10 @@
   }
   .offline-op .op-action { color: var(--text); font-weight: 500; }
   .offline-op .op-time { color: var(--yellow); font-size: 0.65rem; }
+  .offline-op-dismiss { display: inline-flex; align-items: center; justify-content: center;
+    min-width: 44px; min-height: 44px; padding: 0; vertical-align: middle;
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--dim); cursor: pointer; font-size: 1rem; }
   .offline-op .op-stale { color: var(--red); font-size: 0.65rem; font-style: italic; }
   /* Offline-queue accordion (AMUX-2976) */
   .offline-queue-toggle {

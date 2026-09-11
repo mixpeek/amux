@@ -28,10 +28,10 @@ function fixture(names = [], shared = {}) {
     localStorage: {setItem(k,v) { stored.set(k,v); }, getItem(k) { return stored.get(k) ?? null; },
       removeItem(k) { stored.delete(k); }, key(i) { return [...stored.keys()][i] ?? null; }, get length() { return stored.size; }},
     setTimeout(fn, delay) { timers.set(++tid, fn); timerDelays.set(tid, delay); return tid; }, clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
-    API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null, _syncBackoffMs: 0, _SYNC_MIN_MS: 2000, _SYNC_MAX_MS: 60000,
+    API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null, _syncBackoffMs: 0, _SYNC_MIN_MS: 2000, _SYNC_MAX_MS: 60000, _OUTBOX_STALLED_MS:600000,
     _localWriteError: '', window:{isSecureContext:true}, APP_VER:'test', _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
     _OUTBOX_SKIP: /\/api\/client-debug/, _OUTBOX_METHODS: {POST:1,PATCH:1,PUT:1,DELETE:1},
-    _authHeaders: h => h, esc: s => s, describeOp: q => q.url,
+    _authHeaders: h => h, esc: s => s, escJs: s => s, describeOp: q => q.url,
     showToast() {}, amuxTrack() {}, updateConnectionStatus() {}, fetchSessions() {}, fetchBoard() {},
     _loadCmdHistoryFromServer: () => Promise.resolve(), _peekMessagesBadge() {}, _outboxBoardAcknowledged() {},
     _waitForMessageReceipt: () => new Promise(() => {}),
@@ -39,7 +39,7 @@ function fixture(names = [], shared = {}) {
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
   const ctx = vm.createContext(sandbox);
-  for (const name of ['_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
+  for (const name of ['_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -385,7 +385,7 @@ test('a newly queued send stays quiet while a stuck send shows its waiting state
   ctx.offlineQueue[0].timestamp -= 21000;
   ctx.updateConnectionStatus();
   assert.equal(classes.has('active'), true);
-  assert.match(element('offline-banner-title').innerHTML, /Still sending/);
+  assert.match(element('offline-banner-title').innerHTML, /1 sending/);
   ctx.online = false;
   ctx.updateConnectionStatus();
   assert.match(element('offline-banner-title').innerHTML, /will send on reconnect/);
@@ -522,4 +522,47 @@ test('distinct fast taps fire while synthetic click echoes remain suppressed', (
   ctx._btnFire(event('click'),()=>calls++);assert.equal(calls,2);
   now+=40;ctx._btnTouchStart({...event('touchstart'),touches:[{clientX:1,clientY:1}]});
   ctx._btnFire(event('touchend'),()=>calls++);ctx._btnFire(event('click'),()=>calls++);assert.equal(calls,3);
+});
+
+
+test('offline banner distinguishes blocked work from changes that will retry', () => {
+  const {ctx, element} = fixture(['updateConnectionStatus']);
+  ctx.document.querySelectorAll = () => [];
+  Object.assign(ctx, {_sessionLoadError:null, _boardReadError:'', _syncReadError:'',
+    _liveSSE:false, _recordConnState() {}, _sessionReadNotice:() => '', online:false});
+  ctx.offlineQueue = [{id:'blocked',state:'blocked',error:'409: revision conflict',url:'/api/board/TASK-1',timestamp:Date.now()}];
+  ctx.updateConnectionStatus();
+  let title = element('offline-banner-title').innerHTML;
+  assert.match(title, /Offline/);
+  assert.match(title, /1 failed op/);
+  assert.match(title, /review/);
+  assert.doesNotMatch(title, /will send on reconnect/);
+  ctx.offlineQueue.push({id:'pending',url:'/api/board/TASK-2',timestamp:Date.now()});
+  ctx.updateConnectionStatus();
+  title = element('offline-banner-title').innerHTML;
+  assert.match(title, /1 queued, will send on reconnect/);
+  assert.match(title, /1 failed/);
+  assert.doesNotMatch(title, /2 (ops|queued)/);
+  ctx.online = true;
+  ctx.updateConnectionStatus();
+  assert.match(element('offline-banner-title').innerHTML, /1 sending, 1 failed/);
+  ctx.offlineQueue = [{id:'stalled',url:'/api/board/TASK-2',timestamp:Date.now()-3*60*60*1000}];
+  ctx.updateConnectionStatus();
+  title = element('offline-banner-title').innerHTML;
+  assert.match(title, /1 stalled 3h/);
+  assert.match(title, /review/);
+  assert.doesNotMatch(title, /sending|_clearBlockedOps/);
+});
+
+test('a stale failed-row dismiss cannot remove work another tab has resumed', async () => {
+  const {ctx, stored} = fixture(['_dismissQueuedOp', '_clearBlockedOps']);
+  const old = {id:'resumed',state:'blocked',url:'/api/board/TASK-1'};
+  ctx.offlineQueue = [old];
+  stored.set('amux_offline_queue',JSON.stringify([{...old,state:'pending'},{id:'still-blocked',state:'blocked',url:'/api/board/TASK-2'}]));
+  const events=[];ctx.amuxTrack=(...args)=>events.push(args);
+  await ctx._dismissQueuedOp('resumed');
+  assert.deepEqual(JSON.parse(stored.get('amux_offline_queue')).map(q=>q.id),['resumed','still-blocked']);
+  assert.equal(events[0][0],'outbox_dismiss_ignored');
+  await ctx._clearBlockedOps();
+  assert.deepEqual(JSON.parse(stored.get('amux_offline_queue')).map(q=>q.id),['resumed']);
 });
