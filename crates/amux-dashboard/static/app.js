@@ -9901,7 +9901,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.902';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.903';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -15598,7 +15598,7 @@ async function _loadCmdHistoryFromServer() {
     }
     // A response may have been read before a new local send was accepted.
     // Preserve unechoed local entries just like the scoped Messages views do.
-    const serverRows = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id, origin: r.origin || '', card_id: r.card_id || '' }));
+    const serverRows = rows.reverse().map(_msgNorm);
     _cmdHistory = _mergeUnechoed(serverRows, '').slice(-500);
     _peekReclassifyPrompts();
     localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
@@ -16141,7 +16141,9 @@ function _msgNorm(x) {
   const t = (x.time !== undefined && x.time !== null) ? x.time : x.ts;
   return { id: x.id, text: x.text, type: x.type, session: x.session,
            time: t, ts: t, origin: x.origin || '', kind: x.kind,
-           queued: x.queued, card_id: x.card_id || '',
+           queued: x.queued, delivery: x.delivery, queued_at: x.queued_at,
+           delivered_at: x.delivered_at, queue_wait_ms: x.queue_wait_ms,
+           submit_verdict: x.submit_verdict, card_id: x.card_id || '',
            card_title: x.card_title, card_status: x.card_status,
            card_archived: x.card_archived, card_deleted: x.card_deleted,
            linked_cards: Array.isArray(x.linked_cards) ? x.linked_cards : [] };

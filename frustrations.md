@@ -2002,3 +2002,15 @@ CARD: AMUX-4417
 SYMPTOM: The real Gemini upload reached steering history with outcome sent, produced its correct file and completed LG1A-7, but the acceptance helper timed out waiting for cmd_history.delivered_at, which the steering drain does not stamp.
 COST: A delivered message was reported as undelivered, stopping the remaining acceptance cases.
 FIX: Expose the existing steering outcome and submission verdict, and the exact queue ID for restart acceptance. The observer checks this delivery instrument and excludes dead-letter rows despite their timestamps. The real handler regression covers confirmed, retried and discarded histories; existing steering-delivered logs remain the operational signal.
+
+
+## Messages normalization discards recorded delivery metadata
+AREA: ui
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini mobile upload screenshot showed direct? on MSG-80 although its API receipt recorded queued. Both the shared history cache mapping and _msgNorm discarded delivery metadata before the shared renderer read it.
+COST: New messages looked like legacy records, and failed submission indicators could disappear from all three message surfaces.
+FIX: Preserve recorded delivery, queue timestamps, wait duration and submission verdict through the shared normalizer, and use it for initial history loading too. A browser regression fetches controlled direct, queued and stuck API rows through the actual scoped loader, renders all three message surfaces and requires their real labels. The existing server delivery logs and exposed steering outcome remain the diagnostic signal.
