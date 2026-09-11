@@ -584,7 +584,7 @@
     "id": "LC-60",
     "surface": "Dependent integration and callback",
     "actions": "Consumer reads author/reviewer tasks, creates its own dependent integration task, waits for approval, tests the artifact, and sends HANDOFF_DONE.",
-    "expected": "Integration finishes after approval; linked task IDs belong to the correct peers; callback wakes requester and all three workers reach evidenced terminal states.",
+    "expected": "Integration finishes after approval; linked task IDs belong to the correct peers; callback wakes requester and all three workers reach evidenced terminal states. A completion callback must not request another acknowledgement or manufacture another review task solely to process its receipt.",
     "sources": [
       "e2e/lifecycle/coordination.spec.ts",
       "e2e/lifecycle/live-coordination.spec.ts",
@@ -679,13 +679,14 @@
   {
     "id": "LC-LOCAL-OUTBOX",
     "surface": "Durable local message acceptance",
-    "actions": "Send multiline text and an uploaded file; delay the server response, type a newer draft, reload, lose the response after delivery, retry, refuse submission and simulate full device storage. Inspect terminal and pending Messages.",
-    "expected": "Local persistence clears only the accepted draft immediately; attachment paths and one stable message ID survive retry/reload. Delivery requires a confirmed/deferred/deduplicated receipt. Refused or ambiguous operations remain reviewable and preserve ordering. Failed local storage keeps the draft and sends nothing.",
+    "actions": "Send multiline text and an uploaded file; delay the server response, type a newer draft, reload, lose the response after delivery, retry, refuse submission and simulate full device storage. Inspect terminal and pending Messages. Fill the real browser storage quota with disposable caches, keep another draft and a pending message, then send a large message. Repeat with unrecoverable storage failure and inspect Sync diagnostics.",
+    "expected": "Local persistence clears only the accepted draft immediately; attachment paths and one stable message ID survive retry/reload. Delivery requires a confirmed/deferred/deduplicated receipt. Refused or ambiguous operations remain reviewable and preserve ordering. Failed local storage keeps the draft and sends nothing. Cache pressure is reclaimed before local refusal, without discarding user intent. Normal sends keep Send stable and emit no queue/sync completion flash. Irrecoverable storage failures have precise, content-free diagnostics.",
     "sources": [
       "e2e/lifecycle/composer.spec.ts",
       "tests/dashboard-outage-recovery.mjs",
       "e2e/lifecycle/live-complex-verified.spec.ts",
-      "e2e/lifecycle/composer-cards.spec.ts"
+      "e2e/lifecycle/composer-cards.spec.ts",
+      "e2e/mobile-offline-ux.spec.ts"
     ]
   },
   {

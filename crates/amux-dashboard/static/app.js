@@ -913,6 +913,7 @@ document.addEventListener('keydown', function(e) {
 // Connection & offline state
 let online = true;
 let _writeError = '';
+let _localWriteError = '';
 let _boardReadError = '';
 let _syncReadError = '';
 let _syncFlight = null;
@@ -941,7 +942,9 @@ try { offlineQueue = _readQueue(); } catch (error) { _writeError = error.message
 // slow server never holds up a new local edit. Always reread under the lock:
 // a tab's in-memory queue is a view, not authority to overwrite another tab.
 function _readQueue() {
-  const value = JSON.parse(localStorage.getItem('amux_offline_queue') || '[]');
+  let value;
+  try { value = JSON.parse(localStorage.getItem('amux_offline_queue') || '[]'); }
+  catch (_) { throw new Error('Pending changes need recovery: invalid queue'); }
   if (!Array.isArray(value)) throw new Error('Pending changes need recovery: invalid queue');
   return value;
 }
@@ -949,12 +952,52 @@ function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
   return navigator.locks.request(name, work);
 }
+// User intent has priority over reproducible offline caches. Safari's measured
+// 5.19 MB of caches left ~50 KB for the mandatory local send (AMUX-4417).
+// Retry the SAME atomic setItem after reclaiming caches; never prune drafts,
+// pending operations, attachment journals, credentials or command history.
+function _localStorageBytes() {
+  let bytes = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    bytes += 2 * (key.length + (localStorage.getItem(key) || '').length);
+  }
+  return bytes;
+}
+function _outboxDiagnostic(verdict, fields) {
+  try {
+    fetch(API + '/api/client-debug', {method:'POST', _skipOutbox:true,
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'outbox-storage', verdict, ...fields,
+        measured:true, n_considered:1, ver:APP_VER})}).catch(() => {});
+  } catch (_) {}
+}
+function _writeUserStorage(key, value) {
+  try { localStorage.setItem(key, value); return; }
+  catch (error) { if (error.name !== 'QuotaExceededError') throw error; }
+  const before = _localStorageBytes();
+  let removed = 0;
+  // Preserve the fleet's offline worker list; its cache is not a candidate.
+  for (const cache of ['amux_app_html', 'amux_board_cache', 'amux_schedules_cache', 'amux_sched_runs_cache']) {
+    if (localStorage.getItem(cache) === null) continue;
+    localStorage.removeItem(cache);
+    removed++;
+    try {
+      localStorage.setItem(key, value);
+      _outboxDiagnostic('cache_reclaimed', {storage_bytes_before:before,
+        write_bytes:value.length * 2, caches_removed:removed});
+      return;
+    } catch (error) { if (error.name !== 'QuotaExceededError') throw error; }
+  }
+  // Re-throw the browser's real failure after exhausting disposable data.
+  localStorage.setItem(key, value);
+}
 async function _mutateQueue(change) {
   return _outboxLock('amux-outbox-storage', () => {
     const current = _readQueue();
     for (const entry of current) if (!entry.id) entry.id = crypto.randomUUID();
     const result = change(current);
-    localStorage.setItem('amux_offline_queue', JSON.stringify(current));
+    _writeUserStorage('amux_offline_queue', JSON.stringify(current));
     offlineQueue = current;
     if (typeof _idb !== 'undefined') _idb.set('offline_queue', current);
     try { _peekMessagesBadge(); } catch (_) {}
@@ -1100,6 +1143,10 @@ async function _runPing(n) {
   }
 }
 
+function _localWriteNotice() {
+  return _localWriteError ? '<div role="alert" style="padding:10px 0;color:var(--red);">'
+    + esc(_localWriteError) + '. The message has not left this device. Keep the draft and retry Send.</div>' : '';
+}
 function showConnHistory() {
   const eps = _connEpisodes();
   const stateLabel = { live: '● Live', polling: '● Polling', offline: '● Offline', auth: '● Access required', error: '● Sync error' }[_connState] || '● —';
@@ -1167,7 +1214,7 @@ function showConnHistory() {
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
     + '<span id="conn-modal-status" style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
     + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Connection interruptions on this device (this browser)</div>'
-    + _pingWidgetHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
+    + _pingWidgetHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div><div id="conn-modal-write-notice">' + _localWriteNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
   modal.querySelector('#conn-modal-read-notice')._noticeHTML = _sessionReadNotice();
 }
@@ -1953,6 +2000,11 @@ function describeOp(item) {
   return method + ' ' + name + (action ? '/' + action : '');
 }
 
+// Normal outbox transport stays in Messages; connection warnings describe a
+// delayed or refused operation, not every brief local acceptance.
+function _outboxNeedsAttention(q) {
+  return q.state === 'blocked' || !!q.error || Date.now() - (q.timestamp || 0) > 20000;
+}
 // Connection status
 function updateConnectionStatus() {
   // Log the state transition (for the click-to-view disconnection history).
@@ -1964,14 +2016,14 @@ function updateConnectionStatus() {
   // Update all connection status indicators (main + peek)
   document.querySelectorAll('#conn-status, #conn-modal-status').forEach(el => {
     if (el.id === 'conn-modal-status') el.style.color = '';
-    if (readState) {
+    if (readState || _localWriteError) {
       el.className = 'conn-status offline';
       el.textContent = readState === 'auth' ? 'Access required' : 'Sync error';
     } else if (!online) {
       el.className = 'conn-status offline';
       const total = offlineQueue.length + drafts.length;
       el.textContent = total ? total + ' pending' : 'Offline';
-    } else if (offlineQueue.length) {
+    } else if (offlineQueue.some(_outboxNeedsAttention)) {
       el.className = 'conn-status polling';
       el.textContent = offlineQueue.length + ' pending';
     } else if (_liveSSE) {
@@ -1994,6 +2046,8 @@ function updateConnectionStatus() {
     }
     modalNotice._noticeHTML = html;
   }
+  const writeNotice = document.getElementById('conn-modal-write-notice');
+  if (writeNotice) writeNotice.innerHTML = _localWriteNotice();
   // Update offline banner
   const banner = document.getElementById('offline-banner');
   const ops = document.getElementById('offline-ops');
@@ -2010,9 +2064,7 @@ function updateConnectionStatus() {
   // Announce only what the user can actually act on: we are offline, an op
   // failed, or an op has been waiting long enough that it is no longer "about
   // to send". Anything younger is in flight and stays silent.
-  const STUCK_MS = 20000;
-  const stuck = offlineQueue.filter(q =>
-    q.state === 'blocked' || q.error || (Date.now() - (q.timestamp || 0)) > STUCK_MS);
+  const stuck = offlineQueue.filter(_outboxNeedsAttention);
   const worthShowing = !online || stuck.length || drafts.length;
   if (!hasPending || !worthShowing) {
     banner.classList.remove('active');
@@ -2395,7 +2447,7 @@ async function _runSyncBanner(quiet = false) {
   // Pending messages just flushed — clear the amber pending UI and re-pull the
   // server-side history so the Messages tab flips ⏳pending → delivered.
   try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
-  if (doneCount) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
+  if (doneCount && !quiet) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
   // Auto-dismiss: immediately if failures (the offline-banner already shows
   // the pending ops, so two banners for the same thing is redundant), or after
   // 2s on full success so the user sees the completion flash.
@@ -2638,10 +2690,21 @@ async function _queueOp(url, options) {
   } catch (e) {
     _writeError = e.name === 'QuotaExceededError'
       ? 'Device storage full — change is not safely queued; keep the draft' : e.message;
+    _localWriteError = _writeError;
     showToast(_writeError); updateConnectionStatus();
-    try { amuxTrack('outbox_storage_failed', {error: _writeError}); } catch (_) {}
+    let storageBytes = null;
+    try { storageBytes = _localStorageBytes(); } catch (_) {}
+    _outboxDiagnostic('write_failed', {error_name:e.name || 'Error',
+      reason:e.name === 'QuotaExceededError' ? 'quota_exceeded' :
+        !navigator.locks ? 'locks_unavailable' :
+        /Queue full/.test(e.message) ? 'queue_full' :
+        /invalid queue/.test(e.message) ? 'invalid_queue' : 'storage_failure',
+      storage_bytes:storageBytes, write_bytes:typeof body === 'string' ? body.length * 2 : 0,
+      queue_count:offlineQueue.length, secure_context:window.isSecureContext,
+      web_locks:!!navigator.locks});
     return false;
   }
+  _localWriteError = '';
   _scheduleSyncRetry();
   updateConnectionStatus();
   if (!options._outboxId && !_localMessageRequest(url, options)) showToast('Queued (' + offlineQueue.length + ' pending)');
@@ -7110,10 +7173,14 @@ async function doSend(name, text) {
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
   const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
+  // Ordinary messages return after durable local acceptance. The outbox owns
+  // network delivery and retry; only interactive slash commands await the API.
   const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
   const sendOpts = { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, _authHeaders()), body: sendBody };
   try {
-    const r = await _origFetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
+    const r = await fetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
+    if (_isLocallyQueued(r)) return 'queued';
+    if (!isSlashCmd && r.status === 507) return 'local-failed';
     if (r.ok) return 'sent';
     if (r.status === 409) {
       const d = await r.json().catch(() => ({}));
@@ -7146,7 +7213,7 @@ async function doSend(name, text) {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: sendBody, _outboxId
   });
-  if (!queued) return 'failed';
+  if (!queued) return 'local-failed';
   try { _scheduleSyncRetry(); } catch (e) {}
   return 'queued';
 }
@@ -7201,7 +7268,7 @@ function _draftSave(session, text) {
   try {
     const k = _draftKey(session);
     if (!text || !text.trim()) localStorage.removeItem(k);
-    else localStorage.setItem(k, JSON.stringify({ t: text, ts: Date.now() }));
+    else _writeUserStorage(k, JSON.stringify({ t: text, ts: Date.now() }));
   } catch (e) {}   // quota/private-mode: a lost draft must never break sending
 }
 // The value the composer for `session` holds RIGHT NOW, or null if none is
@@ -7255,17 +7322,20 @@ function _draftClear(session) {
 // Consume exactly the accepted draft, including a focused or re-rendered
 // textarea. Draft mirroring deliberately skips focus; submission must not.
 function _composerAcceptLocal(session, original) {
-  clearTimeout(_draftTimers[session || '_']);
   const inputs = [document.getElementById('input-' + session)];
   if (peekSession === session) inputs.push(document.getElementById('peek-cmd-input'));
   for (const input of inputs) {
-    if (input && (input.value === original || input.value)) {
+    if (input && input.value === original) {
       input.value = ''; input.style.height = 'auto';
       try { autoGrow(input); } catch (_) {}
     }
   }
-  _draftClear(session);
-  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: true, measured:true, n_considered:1}); } catch (_) {}
+  if (_draftGet(session) === original) {
+    clearTimeout(_draftTimers[session || '_']);
+    const live = _liveComposerValue(session);
+    _draftSave(session, live == null || live === original ? '' : live);
+  }
+  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: _liveComposerValue(session) !== original, measured:true, n_considered:1}); } catch (_) {}
 }
 
 // Push a session's draft into EVERY composer showing that session right now:
@@ -7335,39 +7405,37 @@ async function sendFromInput(name) {
   }
   const original = inp.value;
   const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
-  const message = _expandAtMentions(msg);
-  cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-  _composerAcceptLocal(name, original);
-  const sent = new Set(_files);
-  for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-  _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
-  renderCardFiles(name);
-  (async () => {
-    try {
-      const result = queued
-        ? (await steerSession(name, message) ? 'queued' : 'failed')
-        : await doSend(name, message);
-      if (!['sent', 'queued'].includes(result) && result !== 'declined') {
-        _composerUnconfirmed(name, result, _files.length);
-        showToast('Send failed — use message history to retry');
-      }
-    } catch (e) {
-      _composerUnconfirmed(name, 'exception', _files.length);
-      showToast('Send failed — use message history to retry');
+  if (_composerPendingSends.has(name)) return;
+  _draftSave(name, original);
+  _composerPendingSends.add(name);
+  _syncComposerPending();
+  try {
+    const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
+      : await doSend(name, _expandAtMentions(msg));
+    if (!['sent', 'queued'].includes(result)) {
+      _composerUnconfirmed(name, result, _files.length);
+      showToast(result === 'local-failed' ? _writeError + ' — draft and attachments kept'
+        : 'Message not confirmed — draft and attachments kept');
+      return;
     }
-  })();
+    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
+    _composerAcceptLocal(name, original);
+    const sent = new Set(_files);
+    for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
+    renderCardFiles(name);
+    if (result === 'sent') showToast('Sent to ' + name);
+  } catch (e) {
+    _composerUnconfirmed(name, 'exception', _files.length);
+    showToast('Message not confirmed — draft and attachments kept');
+  } finally {
+    _composerPendingSends.delete(name);
+    _syncComposerPending();
+  }
 }
 
-// Mirror the peek's "queued" pill onto the card, so a worker with locally-queued
-// messages looks the same in both places rather than only in the peek.
-function _cardQueuedBadge(name) {
-  try {
-    const n = (offlineQueue || []).filter(op =>
-      (op.url || '').indexOf('/api/sessions/' + encodeURIComponent(name) + '/send') !== -1).length;
-    const btn = document.querySelector('#input-' + CSS.escape(name) + ' ~ button, .card[data-session="' + CSS.escape(name) + '"] .send-row button');
-    if (btn) btn.textContent = n ? ('\u23F3 ' + n) : 'Send';
-  } catch (e) {}
-}
+// Composer labels describe the selected action, never background transport.
+function _cardQueuedBadge() { _syncComposerPending(); }
 
 let _peekTab = 'terminal';
 let _peekGitData = null;
@@ -9833,7 +9901,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.901';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.902';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11329,8 +11397,12 @@ const _NON_HUMAN_PROMPT_MARKS = [
 
 // Normalize terminal wrapping without losing provenance. A different worker's
 // "continue" must never classify this worker's command.
+function _peekGeminiPrompts() {
+  return sessionProvider(sessions.find(worker => worker.name === peekSession)) === 'gemini';
+}
 function _peekPromptNormalized(text) {
-  return String(text || '').replace(/^[ \t\u00a0]*[❯›][ \t\u00a0]*/, '')
+  const glyph = _peekGeminiPrompts() ? /^[ \t\u00a0]*[❯›>][ \t\u00a0]*/ : /^[ \t\u00a0]*[❯›][ \t\u00a0]*/;
+  return String(text || '').replace(glyph, '')
     .replace(/^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*/i, '').replace(/\s+/g, ' ').trim();
 }
 // CLASSIFICATION MUST NOT WAIT ON THE MESSAGES TAB'S FULL PAGE.
@@ -11389,6 +11461,8 @@ function _classifyPromptKind(promptText) {
   return 'unknown';
 }
 function highlightPrompts(html) {
+  const gemini = _peekGeminiPrompts();
+  const promptStart = gemini ? /^[ \t]{0,2}[❯›>](?:[ \t]+|$)/ : /^[ \t]{0,2}[❯›](?:[ \t]+|$)/;
   const lines = html.split('\n');
   const decoder = document.createElement('textarea');
   const plain = lines.map(line => {
@@ -11397,13 +11471,13 @@ function highlightPrompts(html) {
   });
   const out = [];
   for (let i = 0; i < lines.length;) {
-    const start = /^[ \t]{0,2}[❯›](?:[ \t]+|$)/.test(plain[i]);
+    const start = promptStart.test(plain[i]);
     const content = _peekPromptNormalized(plain[i]);
     // Empty composers and numbered selectors are controls, not messages.
     if (!start || !content || /^\d+\.\s/.test(content)) { out.push(lines[i++]); continue; }
     let end = i + 1;
     while (end < lines.length) {
-      if (/^[ \t]{0,2}[❯›](?:[ \t]+|$)/.test(plain[end])) break;
+      if (promptStart.test(plain[end])) break;
       if (/^\s*(?:gpt-[\w.-]+|o[1-9][\w.-]*)\s.*(?:·|context left)/i.test(plain[end])) break;
       if (/^[ \t]{2,}\S/.test(plain[end]) && !/^\s*[│┃⏵]/.test(plain[end])) { end++; continue; }
       // Paragraph breaks belong to a message only when followed by another
@@ -11412,7 +11486,7 @@ function highlightPrompts(html) {
         let next = end + 1;
         while (next < lines.length && !plain[next].trim()) next++;
         if (next < lines.length && /^[ \t]{2,}\S/.test(plain[next])
-            && !/^\s*[│┃⏵❯›]/.test(plain[next])) { end = next; continue; }
+            && !promptStart.test(plain[next]) && !/^\s*[│┃⏵❯›]/.test(plain[next])) { end = next; continue; }
       }
       break;
     }
@@ -11423,7 +11497,9 @@ function highlightPrompts(html) {
     // frames. Only the adjacent footer matters; a recorded message still wins.
     const tail = plain.slice(end).filter(line => line.trim());
     const composer = kind === 'unknown' && tail.length > 0 &&
-      /^\s*(?:gpt-[\w.-]+|o[1-9][\w.-]*)\s.*(?:·|context left)/i.test(tail[0]);
+      (/^\s*(?:gpt-[\w.-]+|o[1-9][\w.-]*)\s.*(?:·|context left)/i.test(tail[0])
+        || (gemini && content === 'Type your message or @path/to/file'
+          && tail.slice(0, 4).some(line => line.includes('workspace (/directory)') && line.includes('sandbox') && line.includes('/model'))));
     if (composer) { out.push('<span class="peek-composer-hint">' + lines.slice(i, end).join('\n') + '</span>'); i = end; continue; }
     const label = (_MSG_KIND[kind] || _MSG_KIND.unknown).label;
     // Close each block before opening its successor. Nested prompt wrappers
@@ -12411,6 +12487,7 @@ function _peekNavBeacon(verdict, prompts, target) {
   try {
     fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'peek-message-nav', verdict, session: peekSession, ver: APP_VER,
+        provider: sessionProvider(sessions.find(worker => worker.name === peekSession)),
         measured: true, n_considered: prompts.length, filter: _peekMsgNavKind, content_filter: _peekMsgNavContent,
         mode: searching ? 'search' : 'messages',
         index: searching ? peekSearchIndex : _peekMsgIndex, target_kind: target?.closest('.peek-prompt')?.dataset.msgKind || null,
@@ -12755,7 +12832,7 @@ function removePeekFile(idx) {
   // Cancel BEFORE splicing. Removing the chip no longer stops the transfer by
   // itself — that was the membership inference this fix removed — so the intent
   // has to be stated (AF-235).
-  _cancelUpload(f);
+  if (!_cancelUpload(f)) return;
   if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   peekFiles.splice(idx, 1);
   renderPeekFiles();
@@ -12764,12 +12841,24 @@ function removePeekFile(idx) {
 // Say "stop" explicitly, and abort the in-flight request so a large chunk is not
 // still on the wire after the chip is gone.
 function _cancelUpload(f) {
-  if (!f) return;
+  if (!f) return true;
+  // Persist the small cancellation intent synchronously. The IndexedDB delete
+  // can be interrupted by a reload immediately after this click (AMUX-4417).
+  // Per-ID keys avoid losing another tab's cancellation in an array rewrite.
+  try { if (f.id) _writeUserStorage(_attachmentCancelKey(f.id), '1'); }
+  catch (error) {
+    _uploadStorageError('cancel-intent-failed', error);
+    showToast('Could not save attachment removal — attachment kept. Retry removal.');
+    return false;
+  }
   f.cancelled = true;
-  if (f.id) _persistAttachment(f).then(() => _durableAttachments.delete(f.id))
-    .catch(error => _uploadStorageError('remove-failed', error));
+  if (f.id) _persistAttachment(f).then(() => {
+    _durableAttachments.delete(f.id);
+    localStorage.removeItem(_attachmentCancelKey(f.id));
+  }).catch(error => _uploadStorageError('remove-failed', error));
   try { if (f.aborter) f.aborter.abort(); } catch (e) {}
   f.inflight = false;
+  return true;
 }
 
 function retryPeekFile(idx) {
@@ -12808,6 +12897,7 @@ function _peekClearInput() {
   inp.style.height = 'auto';
   _draftClear(peekSession);
   if (nFiles) clearPeekFiles();
+  if (peekFiles.length) { showToast('Text cleared; attachment removal was not saved. Retry removal.'); return; }
   try { inp.focus(); } catch (e) {}
   showToast(
     nFiles
@@ -12817,11 +12907,17 @@ function _peekClearInput() {
 }
 
 function clearPeekFiles() {
-  peekFiles.forEach(f => { _cancelUpload(f); if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
-  peekFiles = [];
+  peekFiles = peekFiles.filter(f => {
+    if (!_cancelUpload(f)) return true;
+    if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    return false;
+  });
   // Drop the stash too, or a send would clear the bar and the next open would
   // resurrect the files that were just sent.
-  try { if (peekSession) delete _peekFilesBySession[peekSession]; } catch (e) {}
+  if (peekSession) {
+    if (peekFiles.length) _peekFilesBySession[peekSession] = peekFiles;
+    else delete _peekFilesBySession[peekSession];
+  }
   renderPeekFiles();
 }
 
@@ -12901,14 +12997,18 @@ function removeCardFile(name, idx) {
   const a = _cardFiles[name] || [];
   const f = a[idx];
   if (!f) return;
-  _cancelUpload(f);
+  if (!_cancelUpload(f)) return;
   if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   a.splice(idx, 1);
   renderCardFiles(name);
 }
 function _clearCardFiles(name) {
-  (_cardFiles[name] || []).forEach(f => { _cancelUpload(f); if (f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
-  delete _cardFiles[name];
+  _cardFiles[name] = (_cardFiles[name] || []).filter(f => {
+    if (!_cancelUpload(f)) return true;
+    if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    return false;
+  });
+  if (!_cardFiles[name].length) delete _cardFiles[name];
   renderCardFiles(name);
 }
 // Drop files onto a card's composer. Scoped to the send-row, not the whole card,
@@ -13015,6 +13115,8 @@ async function _queueAttachment(f, sink) {
 
 // Bytes and destination survive reload. Persist each attachment independently;
 // whole-array writes lose concurrent additions and repeatedly copy every blob.
+const _attachmentCancelPrefix = 'amux_attachment_cancel:';
+const _attachmentCancelKey = id => _attachmentCancelPrefix + id;
 const _durableAttachments = new Map();
 let _attachmentRestorePromise = null;
 function _storedUploadFile(row) {
@@ -13042,7 +13144,17 @@ function _persistAttachment(f) {
 function _restoreAttachments() {
   if (_attachmentRestorePromise) return _attachmentRestorePromise;
   _attachmentRestorePromise = _idb.getUploads().then(rows => {
+    // Recover IDs even when only partial byte chunks remain, or deletion
+    // committed before the old page could clear its cancellation journal.
+    const cancelled = new Set(Object.keys(localStorage).filter(key => key.startsWith(_attachmentCancelPrefix))
+      .map(key => key.slice(_attachmentCancelPrefix.length)));
+    for (const id of cancelled) {
+      _idb.deleteUpload(id).then(() => localStorage.removeItem(_attachmentCancelKey(id)))
+        .catch(error => _uploadStorageError('cancel-recovery-failed', error));
+    }
     for (const row of rows) {
+      // Never restore or retransmit cancelled bytes while cleaning up.
+      if (cancelled.has(row.id)) continue;
       if (row.surface === 'directory' || _durableAttachments.has(row.id)) continue;
       const files = row.surface === 'card' ? (_cardFiles[row.session] ||= [])
         : row.session === peekSession ? peekFiles : (_peekFilesBySession[row.session] ||= []);
@@ -13335,7 +13447,7 @@ function _composerUnconfirmed(session, result, attachments) {
   // The local log is available even with analytics disabled. Never send message
   // contents, upload paths or credentials in a failure beacon.
   fetch(API + '/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({kind: 'composer-delivery', verdict: 'unconfirmed', session,
+    body: JSON.stringify({kind: 'composer-delivery', verdict: result === 'local-failed' ? 'local_storage_failed' : 'unconfirmed', session,
       result, attachments, draft_retained: true, measured: true, n_considered: 1, ver: APP_VER})
   }).catch(() => {});
 }
@@ -13376,37 +13488,48 @@ async function sendPeekCmd() {
     }
     message = _expandAtMentions(message);
   }
-  cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
-  _composerAcceptLocal(session, original);
-  const sent = new Set(files);
-  for (const f of files) {
-    _cancelUpload(f);
-    if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-  }
-  if (peekSession === session) {
-    peekFiles = peekFiles.filter(f => !sent.has(f));
-    _peekFilesStash(session);
-    renderPeekFiles();
-    inp.style.borderColor = 'var(--green)';
-    setTimeout(() => { inp.style.borderColor = ''; }, 400);
-  } else if (_peekFilesBySession[session]) {
-    _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
-  }
-  (async () => {
-    try {
-      const result = queued
-        ? (await steerSession(session, message) ? 'queued' : 'failed')
-        : await doSend(session, message);
-      if (!['sent', 'queued'].includes(result) && result !== 'declined') {
-        _composerUnconfirmed(session, result, files.length);
-        showToast('Send failed — use message history to retry');
-      }
-      if (peekSession === session) _refreshPeekSoon();
-    } catch (e) {
-      _composerUnconfirmed(session, 'exception', files.length);
-      showToast('Send failed — use message history to retry');
+  // Persist text and upload references in the local outbox before clearing.
+  // A network refusal remains reviewable in Sync and pending Messages.
+  _draftSave(session, original);
+  _composerPendingSends.add(session);
+  _syncComposerPending();
+  let result = 'failed';
+  try {
+    result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
+      : await doSend(session, message);
+    if (!['sent', 'queued'].includes(result)) {
+      _composerUnconfirmed(session, result, files.length);
+      showToast(result === 'local-failed' ? _writeError + ' — draft and attachments kept'
+        : 'Message not confirmed — draft and attachments kept');
+      return;
     }
-  })();
+    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
+    _composerAcceptLocal(session, original);
+    // Remove only the acknowledged files, never a new attachment added while
+    // waiting, or attachments belonging to a different worker's composer.
+    const sent = new Set();
+    for (const f of files) {
+      if (!_cancelUpload(f)) continue;
+      sent.add(f);
+      if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    }
+    if (peekSession === session) {
+      peekFiles = peekFiles.filter(f => !sent.has(f));
+      _peekFilesStash(session);
+      renderPeekFiles();
+      inp.style.borderColor = 'var(--green)';
+      setTimeout(() => { inp.style.borderColor = ''; }, 400);
+      _refreshPeekSoon();
+    } else if (_peekFilesBySession[session]) {
+      _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
+    }
+  } catch (e) {
+    _composerUnconfirmed(session, 'exception', files.length);
+    showToast('Message not confirmed — draft and attachments kept');
+  } finally {
+    _composerPendingSends.delete(session);
+    _syncComposerPending();
+  }
 }
 // Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
 // Claude repaints a picker/selection in <50ms and the peek endpoint serves in
@@ -13496,11 +13619,11 @@ function _showSteerPrompt(text) {
 async function steerSession(name, text) {
   if (!text) return;
   const msgId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
+  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text, record_history: true, msg_id: msgId }),
-    signal: AbortSignal.timeout(10000)
+    body: JSON.stringify({ text, record_history: true, msg_id: msgId })
   });
+  if (_isLocallyQueued(r)) return true;
   if (r && r.ok) {
     const d = await r.json().catch(() => ({}));
     const newEntry = { id: d.id || ('steer-' + Date.now()), text, queued_at: Date.now() / 1000, guard: '' };
@@ -16133,14 +16256,16 @@ async function _pendingCancel(idx) {
   _peekMessagesRender();
   showToast('Removed from queue');
 }
-// Amber "⏳ N queued" pill above the composer — visible whenever this session has
-// unsent messages, so pending work is obvious without opening the Messages tab.
+// Normal delivery is visible in Messages. Only offline or delayed messages
+// need a notice above the composer; do not flash a queued pill on every Send.
 function _updatePendingPill() {
   const pill = document.getElementById('peek-pending-pill');
   if (!pill) return;
-  const n = peekSession ? _pendingSendsFor(peekSession).length : 0;
+  const n = peekSession ? _pendingSendsFor(peekSession)
+    .filter(message => !online || _outboxNeedsAttention(offlineQueue[message.idx])).length : 0;
   pill.style.display = n ? '' : 'none';
-  if (n) pill.innerHTML = '&#x23F3; ' + n + ' queued ' + (online ? '(sending soon)' : '&middot; offline') + ' &mdash; tap to view';
+  if (n) pill.innerHTML = '&#x23F3; ' + n + ' message' + (n === 1 ? '' : 's')
+    + (online ? ' waiting' : ' saved offline') + ' &mdash; view details';
 }
 function _peekMessagesBadge() {
   const badge = document.getElementById('peek-tab-messages-count');

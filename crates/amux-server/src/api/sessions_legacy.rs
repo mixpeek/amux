@@ -760,6 +760,9 @@ fn sessions_with_codex_tool_children(
 }
 
 pub struct FleetSignals {
+    /// Gemini has no structured report/rollout bridge; its idle UI is its only
+    /// boundary signal and must still be sampled after it stops repainting.
+    pub(crate) hookless_workers: BTreeSet<String>,
     /// tmux session name (`amux-<n>`) -> when its pane last PAINTED, i.e.
     /// `max(#{session_activity}, #{window_activity})`.
     ///
@@ -1193,7 +1196,12 @@ impl FleetSignals {
                     .map(|signal| (name.to_string(), signal))
             })
             .collect();
+        let hookless_workers = running.iter().filter_map(|tmux| tmux.strip_prefix("amux-"))
+            .filter(|name| crate::config::parse_env_file(&amux_home().join("sessions").join(format!("{name}.env")))
+                .get("CC_PROVIDER").is_some_and(|provider| provider == "gemini"))
+            .map(str::to_string).collect();
         FleetSignals {
+            hookless_workers,
             activity,
             created,
             running,
@@ -1223,6 +1231,12 @@ impl FleetSignals {
         let pane_boundary = self.pane_of(name).map(crate::api::session_verbs::pane_is_at_boundary);
         let measured = structured || pane_boundary.is_some();
         if !structured && status == "idle" && pane_boundary != Some(true) {
+            let key = format!("unrecognized-idle-boundary:{name}");
+            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now)) {
+                tracing::warn!(target: "status_truth", session = name, measured = pane_boundary.is_some(),
+                    verdict = "idle_display_without_delivery_boundary",
+                    "worker displays idle but no recognized terminal boundary permits queued delivery; inspect provider UI drift");
+            }
             return None;
         }
         if measured && ex["decided_by"] == "codex_stale_active_refused" {
@@ -1296,7 +1310,12 @@ impl FleetSignals {
     /// scrollback count as evidence by stuffing the map.
     pub fn pane_probe_candidate(&self, name: &str) -> bool {
         let act = self.activity.get(&format!("amux-{name}")).copied().unwrap_or(0) as f64;
-        self.now - act < self.contradiction_window()
+        // Hookless providers have no structured turn-boundary signal. An idle
+        // Gemini terminal stops painting; aging out its only observable signal
+        // makes a future queued task permanently ineligible for delivery.
+        // Keep measuring these lanes. A nonempty recognized composer is still
+        // required by turn_boundary_status; silence itself never permits sends.
+        self.now - act < self.contradiction_window() || self.hookless_workers.contains(name)
     }
 
     /// Raw pane for a lane whose evidence is admissible: recently painted and
@@ -4867,6 +4886,7 @@ pub(crate) mod tests {
 
     pub(crate) fn signals() -> FleetSignals {
         FleetSignals {
+            hookless_workers: BTreeSet::new(),
             activity: BTreeMap::new(),
             created: BTreeMap::new(),
             running: BTreeSet::new(),
@@ -5511,6 +5531,25 @@ Claude usage limit reached. Your limit will reset at 3pm.
     }
 
     #[test]
+    fn quiet_hookless_gemini_still_has_a_measurable_boundary() {
+        let mut s = signals();
+        let lane = "gemini-boundary";
+        s.hookless_workers.insert(lane.into());
+        let frame = include_str!("../../tests/fixtures/boundary/gemini-0.58-idle.txt");
+        s.running.insert(format!("amux-{lane}"));
+        s.activity.insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
+        s.panes.insert(lane.into(), frame.into());
+        assert!(s.pane_probe_candidate(lane), "a quiet hookless worker must still be probed");
+        assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
+        s.panes.insert(lane.into(), format!("⠙ Thinking... (esc to cancel, 9s)\n{frame}"));
+        assert_ne!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
+        s.panes.insert(lane.into(), String::new());
+        assert!(s.turn_boundary_status(lane).is_none());
+        s.panes.clear();
+        assert!(s.turn_boundary_status(lane).is_none());
+    }
+
+    #[test]
     fn boundary_and_workers_share_structured_codex_truth_and_fail_closed() {
         let mut s = signals();
         let lane = "boundary";
@@ -5906,7 +5945,7 @@ CLAUDE-POSTFIX-COMPLETE
             format!(
                 "  {glyph} Mystifying\u{2026} ({secs}s \u{b7} \u{2193} 1.2k tokens)\n\
                  \u{2500}\u{2500}\u{2500}\u{2500}\n\u{276f}\u{a0}\n\u{2500}\u{2500}\u{2500}\u{2500}\n  \
-                 \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} esc to interrupt \u{b7} \u{2190} 2 agents\n"
+                 \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 2 agents\n"
             )
         };
         let mut s = signals();

@@ -1191,20 +1191,12 @@ fn claude_ui_visible(clean_output: &str) -> bool {
             }
         }
     }
-    let head20: Vec<&str> = lines.iter().take(20).copied().collect();
-    let tail12: Vec<&str> = lines[n.saturating_sub(12)..].to_vec();
-    let has_gemini =
-        head20.iter().chain(tail12.iter()).any(|l| l.to_lowercase().contains("gemini"));
-    if has_gemini {
-        for l in &lines[n.saturating_sub(8)..] {
-            let ls = l.trim().to_lowercase();
-            if ls == ">" || ls.starts_with("> ") || ls.starts_with('\u{203a}') {
-                return true;
-            }
-            if ls.contains("gemini-") || ls.contains("yolo") || ls.contains("approval") {
-                return true;
-            }
-        }
+    // Launch commands mention `gemini --yolo`; those are shell echoes,
+    // not a ready provider. Require the actual input box and Gemini footer.
+    let raw_lines: Vec<&str> = clean_output.lines().filter(|l| !strip_ansi(l).trim().is_empty()).collect();
+    let stripped: Vec<String> = raw_lines.iter().map(|l| strip_ansi(l)).collect();
+    if gemini_composer_state(&raw_lines, &stripped).is_some() {
+        return true;
     }
     false
 }
@@ -1647,6 +1639,12 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
                 return "active".into();
             }
         }
+    } else {
+        // The agent-count badge also remains after agents finish. Only the
+        // live interrupt footer or structured background-work row is activity.
+        if status_bar.contains("esc to interrupt") {
+            return "active".into();
+        }
     }
     // 2. Bottom-up scan of the last 12 lines.
     let completed_re = cached_re!(r" for \d+\s*[hms]\b");
@@ -1699,6 +1697,11 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // anchor prose cannot fake (same trick as the `│ ❯ 1.` claude form).
     if clean.contains("\u{2502} \u{25cf} 1.") {
         return "waiting".into();
+    }
+    let raw_lines: Vec<&str> = raw_output.lines().filter(|l| !strip_ansi(l).trim().is_empty()).collect();
+    let stripped: Vec<String> = raw_lines.iter().map(|l| strip_ansi(l)).collect();
+    if gemini_composer_state(&raw_lines, &stripped).is_some() {
+        return "idle".into();
     }
     if clean.contains('\u{276f}') {
         // About to settle on idle: if a generating-shaped line sits in frame
@@ -4405,12 +4408,9 @@ fn arm_peer_callback(
         row.callback_session = Some(requester.to_string());
         newly_armed = true;
     }
-    if row.callback_prompt.as_deref().is_none_or(str::is_empty) {
-        row.callback_prompt = Some(
-            "Notify the requesting worker with the terminal outcome and every produced asset."
-                .to_string(),
-        );
-    }
+    // The callback itself notifies the requester. A default instruction to
+    // notify them again creates acknowledgement loops and fresh capture cards.
+    // Preserve an explicitly authored callback prompt; no default is needed.
     // An identical transport retry can reuse the open capture card.  Preserve
     // an already pending/dispatching/queued callback rather than rewinding its
     // durable outbox state and sending the completion twice.
@@ -5812,9 +5812,22 @@ fn gemini_composer_state(raw_lines: &[&str], stripped: &[String]) -> Option<Comp
         let t = l.trim();
         t.chars().filter(|c| *c == ch).count() >= 4 && t.chars().all(|c| c == ch)
     };
-    // The LAST box in the frame: scrollback can hold an older one.
-    let top = stripped.iter().rposition(|l| is_run(l, '\u{2584}'))?;
-    let bottom = stripped.iter().skip(top + 1).position(|l| is_run(l, '\u{2580}'))? + top + 1;
+    // v0.58 uses thin rules and a `>` prompt. Anchor on Gemini's own
+    // directory/model footer, not a generic rule or prose mentioning Gemini.
+    // The old half-block frame remains supported for already running clients.
+    let thin_box = stripped.iter().rposition(|l| {
+        l.contains("workspace (/directory)") && l.contains("sandbox") && l.contains("/model")
+    }).and_then(|footer| {
+        let bottom = footer.checked_sub(1)?;
+        if !is_run(&stripped[bottom], '\u{2500}') { return None; }
+        let top = stripped[..bottom].iter().rposition(|l| is_run(l, '\u{2500}'))?;
+        matches!(stripped.get(top + 1)?.trim_start().chars().next(), Some('>' | '*')).then_some((top, bottom))
+    });
+    let (top, bottom) = thin_box.or_else(|| {
+        let top = stripped.iter().rposition(|l| is_run(l, '\u{2584}'))?;
+        let bottom = stripped.iter().skip(top + 1).position(|l| is_run(l, '\u{2580}'))? + top + 1;
+        Some((top, bottom))
+    })?;
     if bottom <= top + 1 {
         // A drawn box with no body line: painted, and empty.
         return Some(ComposerState::Empty);
@@ -5825,7 +5838,9 @@ fn gemini_composer_state(raw_lines: &[&str], stripped: &[String]) -> Option<Comp
         if n == 0 {
             // Drop the prompt glyph and the reverse-video cursor cell: chrome,
             // never content.
-            p = p.trim_start().trim_start_matches(['*', ' ', '\u{a0}', '\t']).to_string();
+            let prompt = if p.trim_start().starts_with('>') { '>' } else { '*' };
+            p = p.trim_start().strip_prefix(prompt)
+                .unwrap_or(p.trim_start()).trim_start().to_string();
         }
         plain.extend(p.split_whitespace());
     }
@@ -27212,6 +27227,31 @@ mod composer_state_tests {
     }
 
     #[test]
+    fn gemini_058_composer_and_boundary_follow_actual_terminal() {
+        for frame in [
+            include_str!("../../tests/fixtures/boundary/gemini-0.58-idle.txt"),
+            include_str!("../../tests/fixtures/boundary/gemini-0.59-yolo-idle.txt"),
+        ] {
+            assert!(claude_ui_visible(frame));
+            assert!(!claude_ui_visible("cd /tmp && gemini --model auto --yolo --skip-trust"));
+            assert!(!claude_ui_visible("Gemini CLI v0.59.0\n│ ● 1. Yes\n│   2. Yes, and remember the directories as trusted"));
+            assert_eq!(detect_claude_status(frame), "idle");
+            assert!(pane_is_at_boundary(frame));
+            assert!(matches!(composer_state(frame), ComposerState::Placeholder(_)));
+            assert_eq!(read_frame(frame, "testpayload"), FrameRead::Cleared);
+            let typed = frame.replace("Type your message or @path/to/file", "testpayload");
+            assert_eq!(composer_state(&typed).typed(), Some("testpayload"));
+            assert_eq!(read_frame(&typed, "testpayload"), FrameRead::StillThereIdle);
+            assert!(!final_frame_confirms(read_frame(&typed, "testpayload")));
+            let active = format!("⠙ Thinking... (esc to cancel, 9s)\n{frame}");
+            assert!(!pane_is_at_boundary(&active));
+            let picker = format!("│ ● 1. Yes\n{frame}");
+            assert!(!pane_is_at_boundary(&picker));
+            assert_eq!(composer_state("A report about Gemini\n──────\n> testpayload\n──────\n"), ComposerState::NotVisible);
+        }
+    }
+
+    #[test]
     fn a_gemini_composer_is_read_rather_than_reported_as_no_ui() {
         // 1. THE BUG. An empty gemini composer is a composer, not an absence.
         assert_ne!(
@@ -28426,8 +28466,8 @@ mod gate_agreement_tests {
         assert!(pane_bar_says_generating(BUSY_BAR), "the send path reads this as mid-turn");
         assert_eq!(
             detect_claude_status(BUSY_BAR),
-            "idle",
-            "…while detect_claude_status still reads it as idle — the disagreement"
+            "active",
+            "the shared status detector must agree with the provider's busy footer"
         );
         assert!(
             !pane_is_at_boundary(BUSY_BAR),

@@ -1,5 +1,6 @@
+import { lifecycleProvider, expectLifecycleWorker } from './provider';
 import { test, expect, Page } from '@playwright/test';
-import { boot, auth, checkpoint } from './evidence';
+import { expectDelivered, boot, auth, checkpoint } from './evidence';
 
 async function send(page: Page, name: string, text: string) {
   await page.goto('/');
@@ -13,7 +14,7 @@ async function send(page: Page, name: string, text: string) {
   await page.locator('#peek-overlay .send-split-main').getByText('Send', { exact: true }).click();
   const response = await delivered;
   expect(response.ok()).toBe(true);
-  expect((await response.json()).submitted).toBe(true);
+  await expectDelivered(page, response);
 }
 
 for (const crossGroup of [false, true]) {
@@ -24,18 +25,21 @@ for (const crossGroup of [false, true]) {
     expect(cwd).toBeTruthy();
     await boot(page);
     const headers = await auth(page);
-    const run = `coord-${crossGroup ? 'cross' : 'same'}-${Date.now()}`;
+    const observe = process.env.AMUX_LIFECYCLE_COORD_OBSERVE === '1';
+    const run = process.env.AMUX_LIFECYCLE_COORD_RUN || `coord-${crossGroup ? 'cross' : 'same'}-${Date.now()}`;
+    expect(run.startsWith(`coord-${crossGroup ? 'cross' : 'same'}-`)).toBe(true);
     const author = `${run}-author`, reviewer = `${run}-reviewer`, consumer = `${run}-consumer`;
     const names = [author, reviewer, consumer];
     const healthResponse = await request.get('/health');
     expect(healthResponse.ok()).toBeTruthy();
     const health = await healthResponse.json();
     const source = `${run}.mjs`, reviewed = `${run}-review.json`, integrated = `${run}-integrated.json`;
-    const provider = process.env.AMUX_LIFECYCLE_PROVIDER || 'claude';
-    for (const name of names) {
+    const provider = lifecycleProvider;
+    if (!observe) for (const name of names) {
       const group = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       const made = await request.post('/api/sessions', { headers, data: { name, dir: cwd,
-        tags: [group], provider, ...(provider === 'claude' ? { flags: '--model sonnet' } : {}) } });
+        tags: [group], provider, ...(provider === 'claude' ? { flags: '--model sonnet --dangerously-skip-permissions' }
+          : provider === 'gemini' ? { flags: '--yolo' } : {}) } });
       expect(made.status()).toBe(201);
     }
     const rosterResponse = await request.get('/api/sessions', { headers });
@@ -44,13 +48,17 @@ for (const crossGroup of [false, true]) {
     for (const name of names) {
       const expectedGroup = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       expect(roster.find((row: any) => row.name === name)?.tags).toContain(expectedGroup);
-      if (provider === 'claude') expect(`${roster.find((row: any) => row.name === name)?.flags}`).toMatch(/sonnet/);
+      expectLifecycleWorker(roster.find((row: any) => row.name === name));
     }
     const common = `This is an authorized coordination acceptance run ${run}. Work only in ${cwd},
 only with ${names.join(', ')}. Use Bash amux send for peer messages (not Claude native SendMessage), and your own board tasks.
 Read peers' actual board tasks for context; preserve ownership, link dependencies, and record IDs,
 commands/results and artifacts. Follow existing gates. Never forge another worker's review or output.
-No external email or unrelated peers. Drive owned tasks to done/verified when honestly complete.`;
+No external email or unrelated peers. Drive owned tasks to done/verified when honestly complete.
+Use chore tasks with scratch-work gates, never claim production deployment or CI.
+Discard only redundant FYI capture shells with truthful links to the actual completed task;
+never discard an unfinished deliverable. Do not repeatedly acknowledge approval notifications.`;
+    if (!observe) {
     await send(page, reviewer, `${common}
 You are the independent reviewer. Wait for ${author}'s review request. Discover and read its actual
 board task and ${source}. Independently test mean([]); the initial implementation intentionally has
@@ -75,6 +83,7 @@ Do not fix the bug before receiving REVIEW_CHANGES. Then make mean([]) return 0,
 tests, record revision evidence and request re-review. After REVIEW_APPROVED, hand off to ${consumer}
 with the source/review task IDs and artifact. Wait for HANDOFF_DONE, then finish your own task.
 Do not complete any peer's task or write their review/integration files.`);
+    }
     const timeline: any[] = [];
     let cards: any[] = [], histories: any[] = [];
     try {
@@ -91,8 +100,8 @@ Do not complete any peer's task or write their review/integration files.`);
         timeline.push({ at: new Date().toISOString(), cards, histories });
         const peerMessage = (from: string, to: string, marker: string) => histories.some(row =>
           row.origin === from && row.session === to && String(row.text).includes(marker));
-        return names.every(name => cards.some(card => card.session === name)) &&
-          cards.every(card => ['done', 'verified'].includes(card.status)) &&
+        return names.every(name => cards.some(card => card.session === name && ['done', 'verified'].includes(card.status))) &&
+          cards.every(card => ['done', 'verified', 'discarded'].includes(card.status)) &&
           peerMessage(author, reviewer, source) && peerMessage(author, consumer, source) &&
           peerMessage(reviewer, author, 'REVIEW_CHANGES') &&
           peerMessage(reviewer, author, 'REVIEW_APPROVED') &&

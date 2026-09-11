@@ -34,11 +34,17 @@ for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const)
       const send = page.locator('#peek-overlay .send-split-main');
       const message = `Preserve this ${outcome} message ${name}`;
       await input.fill(message);
+      await page.evaluate(() => {
+        const w = window as any, show = w.showToast; w.__composerToasts = [];
+        w.showToast = (text: string) => { w.__composerToasts.push(text); return show(text); };
+      });
       await send.click();
       await expect(input, 'durable local acceptance clears before the server answers').toHaveValue('');
       await expect(send).toBeEnabled();
       await expect(send).toHaveText('Send');
+      await expect(page.locator('#conn-status').first()).not.toHaveText(/pending/);
       await expect(page.locator('#sync-banner')).not.toHaveClass(/active/);
+      await expect(page.locator('#peek-pending-pill')).not.toBeVisible();
       await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(0);
       const saved = await entries();
       expect(saved).toHaveLength(1);
@@ -57,6 +63,8 @@ for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const)
         expect((await entries())[0].state).toBe(outcome === 'queued' ? 'pending' : 'blocked');
       }
       await expect(input).toHaveValue('A newer draft must survive the old delivery receipt');
+      if (outcome === 'accepted') expect(await page.evaluate(() => (window as any).__composerToasts)).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/queued operation|syncing|sending/i)]));
       await page.reload();
       const persisted = await entries();
       if (outcome !== 'accepted') {
@@ -101,6 +109,12 @@ test('LC-COMPOSER: failed local persistence retains draft and sends nothing', as
   const name = `lc-storage-${Date.now()}`;
   expect((await request.post('/api/sessions', {headers, data:{name, dir:'/tmp'}})).status()).toBe(201);
   let sends = 0;
+  const storageFailures: any[] = [];
+  await page.route('**/api/client-debug', route => {
+    const body = route.request().postDataJSON();
+    if (body.kind === 'outbox-storage') storageFailures.push(body);
+    return route.continue();
+  });
   // Zero requests is the required outcome when durable local storage fails.
   allowUnusedRoute(page, `**/api/sessions/${name}/send`);
   await page.route(`**/api/sessions/${name}/send`, route => { sends++; return route.fulfill({json:{ok:true, submitted:true}}); });
@@ -121,6 +135,13 @@ test('LC-COMPOSER: failed local persistence retains draft and sends nothing', as
     await expect(page.locator('#peek-cmd-input')).toHaveValue('Storage failure must keep this draft');
     await expect(page.locator('#peek-overlay .send-split-main')).toBeEnabled();
     expect(sends).toBe(0);
+    await expect.poll(() => storageFailures.length).toBe(1);
+    expect(storageFailures[0]).toMatchObject({verdict:'write_failed',reason:'quota_exceeded',web_locks:true});
+    expect(JSON.stringify(storageFailures)).not.toContain('Storage failure must keep this draft');
+    await expect(page.locator('#toast')).toContainText('Device storage full');
+    await page.evaluate(() => (window as any).showConnHistory());
+    await expect(page.locator('#conn-modal-write-notice')).toContainText('Device storage full');
+    await expect(page.locator('#conn-modal-write-notice')).toContainText('has not left this device');
   } finally {
     await page.evaluate(() => (window as any).__restoreStorage?.());
     await deleteOwnedWorkers(page, request, headers, [name]);

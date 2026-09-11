@@ -1,7 +1,8 @@
 import { defineConfig } from '@playwright/test';
 import path from 'node:path';
+import { lifecyclePrefix } from './provider';
 // One identity shared by the pair and its follow-on upload scenario.
-process.env.AMUX_LIFECYCLE_PAIR_RUN ||= `lc-sonnet-${Date.now()}`;
+process.env.AMUX_LIFECYCLE_PAIR_RUN ||= `${lifecyclePrefix}${Date.now()}`;
 const output = path.resolve(process.env.AMUX_LIFECYCLE_OUTPUT || 'test-results/lifecycle');
 export default defineConfig({
   testDir: '.', testMatch: 'live-*.spec.ts', workers: 1, retries: 0,

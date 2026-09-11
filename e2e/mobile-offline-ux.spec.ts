@@ -82,8 +82,67 @@ test('mobile composer restores attachment bytes after reload and can remove them
     return new TextDecoder().decode(await _idb.uploadChunk(row.id, 0));
   })).toBe('durable attachment bytes');
   await page.screenshot({path:info.outputPath('mobile-restored-attachment.png')});
+  // Force the crash window: cancellation is accepted, but the old page's
+  // IndexedDB deletion never completes before navigation.
+  await page.evaluate(() => { _idb.deleteUpload = () => new Promise(() => {}); });
   await chips.locator('.chip-remove').click();
   await page.reload();
   await page.evaluate(() => (window as any).openPeek('mobile-upload'));
   await expect(chips).toHaveCount(0);
+  await expect.poll(() => page.evaluate(async () => (await _idb.getUploads()).length)).toBe(0);
+});
+
+test('attachment removal keeps the file when cancellation intent cannot be persisted', async ({page}) => {
+  await page.route(/\/api\/upload\//, r => r.abort('internetdisconnected'));
+  await composer(page);
+  await page.locator('#peek-file-input').setInputFiles({name:'keep-me.txt',mimeType:'text/plain',buffer:Buffer.from('keep the only copy')});
+  const chip = page.locator('#peek-attach-bar .peek-attach-chip');
+  await expect(chip.locator('.chip-retry')).toBeVisible();
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith('amux_attachment_cancel:')) throw new DOMException('storage full', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+  await chip.locator('.chip-remove').click();
+  await expect(chip).toContainText('keep-me.txt');
+  expect(await page.evaluate(async () => (await _idb.getUploads()).length)).toBe(1);
+});
+
+test('text outbox reclaims disposable cache space without losing drafts or pending messages', async ({page, context}) => {
+  await composer(page);
+  await context.setOffline(true);
+  const result = await page.evaluate(async () => {
+    const w = window as any;
+    const sentinel = JSON.stringify({t:'another worker unsent draft',ts:Date.now()});
+    localStorage.setItem('amux_draft_other-worker', sentinel);
+    const existing = {id:'earlier-send',url:'/api/sessions/other-worker/send',timestamp:Date.now(),state:'pending',
+      options:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'earlier pending message',msg_id:'earlier-message'})}};
+    localStorage.setItem('amux_offline_queue', JSON.stringify([existing]));
+    // Fill the real browser quota, rather than mocking setItem to always fail.
+    // This is the observed Safari state: reproducible caches consume the room
+    // that the newly mandatory local send needs.
+    let low = 0, high = 12 * 1024 * 1024;
+    while (high - low > 512) {
+      const size = Math.floor((low + high) / 2);
+      try { localStorage.setItem('amux_app_html', 'x'.repeat(size)); low = size; }
+      catch (error) { if ((error as DOMException).name !== 'QuotaExceededError') throw error; high = size; }
+    }
+    const text = 'large mobile message '.repeat(3500);
+    const accepted = await w.doSend('mobile-upload', text);
+    const queue = JSON.parse(localStorage.getItem('amux_offline_queue') || '[]');
+    return {accepted,cacheBytes:low,queueLength:queue.length,
+      oldPreserved:JSON.stringify(queue[0]) === JSON.stringify(existing),
+      draftPreserved:localStorage.getItem('amux_draft_other-worker') === sentinel,
+      newText:queue[1] ? JSON.parse(queue[1].options.body).text : null,
+      newId:queue[1] ? JSON.parse(queue[1].options.body).msg_id : null};
+  });
+  expect(result.cacheBytes).toBeGreaterThan(1000000);
+  expect(result.accepted).toBe('queued');
+  expect(result.queueLength).toBe(2);
+  expect(result.oldPreserved).toBe(true);
+  expect(result.draftPreserved).toBe(true);
+  expect(result.newText).toContain('large mobile message '.repeat(3500));
+  expect(result.newId).toBeTruthy();
 });

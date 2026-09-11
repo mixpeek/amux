@@ -622,6 +622,21 @@ a stable run of this checkout cannot certify concurrent drafts. The inherited
 Playwright startup banner describes configured browser targets; the report’s
 Selection field and executed test counts are the authoritative scope of this run.
 
+## Running the same lifecycle with Gemini
+
+Set `AMUX_LIFECYCLE_PROVIDER=gemini` for the live command. All live scenarios,
+including the historical `LC-SONNET-*` pair IDs, now use the selected provider;
+those IDs remain stable for the acceptance ledger. The default remains Claude
+Sonnet. The runner records and asserts the actual worker provider, and checks the
+provider identity visible in its terminal before sending pair/complex prompts.
+Gemini uses its configured model (the default is `auto`), not a Sonnet model flag.
+Use a fresh dedicated lab, real Gemini authentication, an empty scratch workspace,
+and the normal board driver. Configure tool approvals deliberately in that lab;
+unanswered provider permission prompts are blocked coverage, not passing tests.
+A worker that merely boots, queues its prompt, or writes a progress claim does not
+pass: task states, real files, tests, peer receipts, and current verification gates
+are still asserted by the same scenarios.
+
 ## Two Sonnet workers and uploads
 
 Run the focused real-provider scenario with:
@@ -827,3 +842,24 @@ identical messages sent to different peers, full phone Verified headers, and
 worker menus surviving scroll events from unrelated panels. Queue unit contracts
 execute the shipped functions and check automatic replay while connectivity is
 believed offline, plus quiet normal sends and visible stuck-send status.
+
+### Mobile storage and Gemini terminal regressions (2026-09-11)
+
+`LC-LOCAL-OUTBOX` now fills the actual browser localStorage quota using
+reproducible cache data before sending a large message. The prior queued message
+and another worker's draft must survive. A recoverable quota failure must reclaim
+cache space and accept the message locally. An unrecoverable write must send
+nothing, retain the draft, and expose its specific cause in Sync and
+`outbox-storage` diagnostics without message contents. The normal path keeps the
+Send button stable and avoids queue/sync completion toasts and connection-badge
+flashes. Run this on all three browser projects.
+
+Attachment cancellation is tested across immediate reload while its IndexedDB
+delete is deliberately held open. A cancelled file must not return; if the
+cancellation journal cannot persist, the file must remain available.
+
+Gemini peer prompts must remain searchable through the real Workers filter,
+including multiline input and the current `>` glyph. Claude/Codex output that
+starts with `>` must remain unclassified. Completion callbacks must not instruct
+the requester to notify themselves again; the integration regression inspects
+the durable callback rather than a fabricated reply.

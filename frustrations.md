@@ -1880,3 +1880,58 @@ CARD: AMUX-4416
 SYMPTOM: Send/Queue bypassed local persistence and waited on the API, then fell back into Queued/Syncing. An optimistic follow-up cleared draft text and uploads before durable acceptance.
 COST: A slow mobile connection became a composer delay; failed local storage could lose the working draft. Automatic retries opened delivery progress during ordinary sends.
 FIX: Restore both modes through the existing durable local outbox, clear only the accepted draft/files, retain newer edits, and run automatic replay quietly. Tests exercise held responses, refusal, quota failure, reload and retry on desktop/mobile/WebKit. Two contract controls reproduce the old behavior on 091bc3a9. Historical causes are recorded in docs/incidents/2026-09-11-offline-sync.md.
+
+## Gemini idle terminal cannot receive the worker's first queued task
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Fresh Gemini CLI 0.58 authenticated and displayed an empty composer, but /api/debug/steering held its first task at not-at-turn-boundary. Workers displayed idle. The captured-frame regression returns empty status rather than idle; the thin-rule input box is also unknown to the delivery verifier.
+COST: The new worker's lifecycle acceptance could not begin for more than ten minutes; no deliverables were produced.
+FIX: Recognize Gemini's provider-owned footer and current input box, preserve active/picker/pending-input controls, and emit idle_display_without_delivery_boundary when the display and delivery disagree. Rerun the live provider suite before closing.
+
+## Completion callbacks ask the requester to notify themselves again
+AREA: coordination
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Gemini's same-group run completed implementation, review and handoff but kept creating review/capture tasks after completion receipts. The server appended its default "Notify the requesting worker" instruction to the callback already addressed to that requester.
+COST: Repeated reviews, acknowledgement messages and capture cleanup consumed turns while the complete-board acceptance remained red.
+FIX: The automatic callback is the notification. Do not add another notify instruction; suppress the old generated instruction on existing rows, preserve explicit custom callbacks, and identify receipts that need no acknowledgement. callback_echo_instruction_suppressed logs legacy rows. The regression inspects the real durable callback queue. Live loop reduction is not yet claimed.
+
+## Removed attachment reappears after immediate mobile reload
+AREA: messaging
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The consolidated mobile regression failed on desktop and mobile Chromium: a removed attachment returned after immediate reload. The chip vanished before its asynchronous IndexedDB deletion committed.
+COST: Cancelled files could be unintentionally reattached. Two of 33 mobile/offline checks failed; the 256 MiB interrupted upload and checksum checks passed.
+FIX: Save a per-attachment cancellation intent before removing the chip; suppress restoration and recover deletion after reload. Keep the attachment when saving cancellation fails. upload-storage reports cancellation-intent and recovery failures. The regression holds deletion forever before reloading and checks actual stored bytes are then removed.
+
+## Gemini peer messages disappear from the terminal Workers filter
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini pair finished the review/revision cycle and its tasks, but terminal search for REVIEW_APPROVED with the Workers filter returned zero. Messages history contained the confirmed receipt. The renderer only recognized Claude/Codex prompt glyphs, while Gemini echoes input with >.
+COST: The live pair case failed after 9.9 minutes; three dependent upload/cross-group/queue cases could not run.
+FIX: Recognize Gemini input glyphs only for Gemini workers, preserve multiline provenance and exclude the actual input placeholder. The regression uses the real terminal filter/search buttons and verifies non-Gemini > lines remain unclassified. Navigation diagnostics now include provider beside considered prompts and match results.
+
+## Browser caches leave no room for the mandatory local message outbox
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Seven studio-plg composer failures on Safari 0.9.900 reported only unconfirmed. The live Safari WebApp localStorage held 5,193,082 bytes, chiefly command history and reproducible board/schedule/HTML caches; its outbox was empty. The client attempted the failed local write twice and replaced the specific quota error with a terminal-confirmation message.
+COST: Messages could fail before reaching the server despite a healthy connection. A real WebKit quota reproduction against pre-fix source returned failed instead of queued.
+FIX: User-intent writes reclaim only reproducible HTML/board/schedule caches and retry the same atomic write, preserving other drafts, operations, attachment journals and the offline worker list. Local refusal returns once with its storage reason; outbox-storage logs measured byte counts, browser capabilities and the failure category without content. Quiet background replay no longer announces queued-operation completion. The original seven failures lacked a reason field, so their exact exception cannot be recovered retrospectively; quota is reproduced against the observed storage condition.

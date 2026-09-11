@@ -1,8 +1,9 @@
+import { lifecyclePrefix, expectLifecycleWorker, selectLifecycleProvider, createLifecycleWorker, expectLifecycleTerminal } from './provider';
 import { test, expect, Page } from '@playwright/test';
 import { runSonnetUpload } from './sonnet-upload';
 import { runSonnetCrossgroup } from './sonnet-crossgroup';
 import { runSonnetQueue } from './sonnet-queue';
-import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
+import { expectDelivered, boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -22,11 +23,11 @@ async function send(page: Page, name: string, text: string) {
   await page.locator('#peek-overlay .send-split-main').click();
   const response = await delivered;
   expect(response.ok(), await response.text()).toBeTruthy();
-  expect((await response.json()).submitted).toBe(true);
+  await expectDelivered(page, response);
   await expect(page.locator('#peek-cmd-input')).toHaveValue('', { timeout: 60_000 });
 }
 
-// Two actual Sonnet processes, one group, real review/revision and actual terminal
+// Two actual selected-provider processes, one group, real review/revision and actual terminal
 // output. No route stubs and no operator advancing cards or writing peer evidence.
 test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are navigable on desktop and mobile', async ({ page, request }, info) => {
   test.setTimeout(1_800_000);
@@ -35,7 +36,7 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
   expect(cwd).toBeTruthy();
   const observeOnly = process.env.AMUX_LIFECYCLE_PAIR_OBSERVE === '1';
   if (observeOnly) expect(process.env.AMUX_LIFECYCLE_PAIR_RUN).toBeTruthy();
-  const run = process.env.AMUX_LIFECYCLE_PAIR_RUN || `lc-sonnet-${Date.now()}`;
+  const run = process.env.AMUX_LIFECYCLE_PAIR_RUN || `${lifecyclePrefix}${Date.now()}`;
   const author = `${run}-author`, reviewer = `${run}-reviewer`, group = `${run}-team`;
   const names = [author, reviewer];
   const source = `${run}.mjs`, review = `${run}-review.json`;
@@ -54,13 +55,10 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
     await page.locator('[onclick*="toggleAddMenu"]').click();
     await page.locator('.card-menu-item', { hasText: 'New worker' }).click();
     await page.locator('#create-name').fill(name);
-    await page.locator('#create-provider-claude').click();
-    await expect(page.locator('#create-model option[value="sonnet"]')).toBeAttached();
-    await page.locator('#create-model').selectOption('sonnet');
+    await selectLifecycleProvider(page);
     await page.locator('#create-dir').fill(cwd);
     await checkpoint(page, info, `create-${name}`);
-    await page.locator('#create-overlay').getByRole('button', { name: 'Create', exact: true }).click();
-    await expect(page.locator('#create-overlay')).not.toHaveClass(/active/, { timeout: 60_000 });
+    await createLifecycleWorker(page);
     await workerAction(page, name, 'groups');
     await page.locator('#edit-input').fill(group);
     await page.locator('#edit-overlay').getByRole('button', { name: 'Save', exact: true }).click();
@@ -77,11 +75,10 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
   for (const name of names) {
     const row = (await roster.json()).find((r: any) => r.name === name);
     expect(row.tags).toContain(group);
-    expect(row.provider || 'claude').toBe('claude');
-    expect(`${row.model} ${row.flags}`).toMatch(/sonnet/i);
+    expectLifecycleWorker(row);
     await workerAction(page, name, 'peek-terminal');
-    await expect(page.locator('#peek-body')).toContainText(/Sonnet [0-9.]+(?: with [^\n]+)?[·•]/i, { timeout: 90_000 });
-    await checkpoint(page, info, `running-sonnet-${name}`);
+    await expectLifecycleTerminal(page);
+    await checkpoint(page, info, `running-provider-${name}`);
   }
   const common = `Authorized test ${run}. Work only in ${cwd}, and communicate only with ${names.join(' and ')}.
 Use the amux CLI and board workflow. Send all peer messages with amux send through Bash;
@@ -211,7 +208,7 @@ Send PAIR_DONE with your task ID to ${reviewer}. Do not write the review JSON yo
   }
 });
 
-test('LC-SONNET-UPLOAD: same Sonnet worker reads a real UI upload and finishes its receipt task', runSonnetUpload);
+test('LC-SONNET-UPLOAD: same selected-provider worker reads a real UI upload and finishes its receipt task', runSonnetUpload);
 
 test('LC-SONNET-CROSSGROUP: the same pair discovers peer tasks and exchanges messages across groups', runSonnetCrossgroup);
 

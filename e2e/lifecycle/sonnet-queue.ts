@@ -1,3 +1,4 @@
+import { lifecyclePrefix, expectLifecycleWorker } from './provider';
 import { test, expect, Page, APIRequestContext, TestInfo } from '@playwright/test';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
@@ -8,7 +9,7 @@ export async function runSonnetQueue({ page, request }: { page: Page, request: A
   expect(process.env.AMUX_LIFECYCLE_LAB_ACK).toBe('dedicated-test-instance');
   const run = process.env.AMUX_LIFECYCLE_PAIR_RUN!;
   const cwd = process.env.AMUX_LIFECYCLE_LAB_WORKSPACE!;
-  expect(run).toMatch(/^lc-sonnet-/);
+  expect(run.startsWith(lifecyclePrefix)).toBe(true);
   expect(cwd).toBeTruthy();
   const observeOnly = process.env.AMUX_LIFECYCLE_QUEUE_OBSERVE === '1';
   const health = await (await request.get('/health')).json();
@@ -20,7 +21,7 @@ export async function runSonnetQueue({ page, request }: { page: Page, request: A
   const rows = await roster.json();
   for (const name of names) {
     const row = rows.find((r: any) => r.name === name);
-    expect(`${row?.model} ${row?.flags}`).toMatch(/sonnet/i);
+    expectLifecycleWorker(row);
     expect(row?.auto_drain_backlog, 'default backlog dispatch must be enabled').toBe(true);
     expect(row?.auto_pickup, 'default todo dispatch must be enabled').toBe(true);
   }
