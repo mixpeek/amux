@@ -1,5 +1,59 @@
 [
   {
+    "hash": "ce1e91b0",
+    "short": "ce1e91b0",
+    "title": "Email inbox paginates past the 500-message cap",
+    "date": "2026-09-11",
+    "type": "feat",
+    "tags": ["email", "inbox"],
+    "description": "GET /api/email/inbox now supports a cursor parameter and paginates through inboxes with more than 500 messages. Previously the endpoint silently returned only the most recent 500, with no indication that messages were missing."
+  },
+  {
+    "hash": "f58964ae",
+    "short": "f58964ae",
+    "title": "Scheduler reclaims memory when amux is under pressure",
+    "date": "2026-09-11",
+    "type": "feat",
+    "tags": ["scheduler", "health", "mac"],
+    "description": "On macOS, the scheduler now monitors amux's own memory footprint and triggers a compaction pass when it exceeds the configured threshold. Keeps the server running cleanly on machines where agent fleets accumulate state over long overnight runs."
+  },
+  {
+    "hash": "3fc9ee30",
+    "short": "3fc9ee30",
+    "title": "Composer recovers chunked uploads across reloads",
+    "date": "2026-09-11",
+    "type": "fix",
+    "tags": ["mobile", "composer", "uploads"],
+    "description": "Chunked file uploads from the mobile composer are now persisted in IndexedDB and recovered automatically if the page reloads mid-upload. Previously a reload would silently discard the in-progress upload with no recovery path."
+  },
+  {
+    "hash": "e480cb29",
+    "short": "e480cb29",
+    "title": "Typed needsyou asks are exempt from age-based auto-discard",
+    "date": "2026-09-11",
+    "type": "fix",
+    "tags": ["board", "hygiene"],
+    "description": "Cards created via a typed needsyou ask (question + unblocking sentence) are now flagged as owner-gated and excluded from the board hygiene job's age-based auto-discard pass. A card that is genuinely waiting on a decision should not be discarded for being old."
+  },
+  {
+    "hash": "8a130c0b",
+    "short": "8a130c0b",
+    "title": "Dashboard sends messages directly, queues only on failure",
+    "date": "2026-09-10",
+    "type": "fix",
+    "tags": ["dashboard", "messages"],
+    "description": "Message sends from the web dashboard now go directly over SSE. The local queue is used only as a fallback when the direct path fails, rather than as the default path. Reduces latency and eliminates the double-delivery edge case when a queued message also arrived via SSE."
+  },
+  {
+    "hash": "31292617",
+    "short": "31292617",
+    "title": "amux board shepherd: escape hatch for stuck cards",
+    "date": "2026-09-10",
+    "type": "feat",
+    "tags": ["cli", "board"],
+    "description": "New command: amux board shepherd. Scans for cards in invalid states (doing with no active session, blocked by a session that no longer exists, done without evidence on a gated card) and offers targeted fixes. Replaces the previous approach of manual state inspection and curl patches."
+  },
+  {
     "hash": "69490b05",
     "short": "69490b05",
     "title": "Mobile terminal renders diffs and streams incrementally",

@@ -39,7 +39,7 @@
     "description": "How to run an AI engineering team in 2026: choosing your agent runtimes, setting up a control plane, distributing tasks, enabling overnight operation, and managing everything from your phone.",
     "url": "https://amux.io/guides/run-ai-engineering-team/",
     "datePublished": "2026-07-28",
-    "dateModified": "2026-07-28",
+    "dateModified": "2026-09-11",
     "author": {"@type":"Organization","name":"amux","url":"https://amux.io/"},
     "publisher": {"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "mainEntityOfPage": "https://amux.io/guides/run-ai-engineering-team/",
@@ -63,7 +63,7 @@
         "@type": "HowToStep",
         "position": 2,
         "name": "Set up an agent control plane",
-        "text": "Install a control plane like amux to launch, monitor, and coordinate your agents from a single dashboard. Run: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh. The control plane gives you a web dashboard, mobile PWA, self-healing watchdog, and a shared kanban board — replacing the manual tmux juggling that breaks down past 3-4 agents."
+        "text": "Install a control plane like amux to launch, monitor, and coordinate your agents from a single dashboard. Run: brew install mixpeek/amux/amux. The control plane gives you a web dashboard, mobile PWA, self-healing watchdog, and a shared kanban board, replacing the manual tmux juggling that breaks down past 3-4 agents."
       },
       {
         "@type": "HowToStep",
@@ -167,7 +167,13 @@
 
     <h1>How to Run an AI Engineering Team</h1>
     <p class="subtitle">Running an AI engineering team means coordinating a fleet of parallel AI coding agents — each working on different tasks simultaneously — from a single dashboard. One developer managing 10-50 agents can ship more than a traditional 5-person team. This guide covers the stack, the workflow, and how to make it run overnight unattended.</p>
-    <p style="font-size:0.82rem;color:var(--muted);margin-top:-0.5rem">Updated July 2026 &middot; 15 min read</p>
+    <p style="font-size:0.82rem;color:var(--muted);margin-top:-0.5rem">Updated September 2026 &middot; 15 min read</p>
+
+    <!-- EXP-088: top-of-page CTA on run-ai-engineering-team guide (Sept 2026) -->
+    <div style="background:#0d7c42;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <span style="font-size:.9rem;color:#fff">Open-source control plane for AI agent teams. Run dozens of parallel coding agents from your phone or browser with self-healing, kanban, CRM, and email built in.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp088_raiet_topofpage_cta_click')" style="background:#fff;color:#0d7c42;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
+    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -286,11 +292,10 @@
 
     <p>The control plane is what transforms a collection of terminal sessions into an actual team. Without it, you're manually watching tmux windows and hoping nothing crashes. With it, you have a real-time view of every agent, automatic crash recovery, and a shared task board.</p>
 
-    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the leading open-source control plane for AI agent fleets (315★, MIT licensed, single Rust binary):</p>
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the leading open-source control plane for AI agent fleets (440★, MIT licensed, single Rust binary):</p>
 
     <pre><code><span class="dim"># Install amux</span>
-git clone https://github.com/mixpeek/amux
-cd amux && ./install.sh
+brew install mixpeek/amux/amux
 
 <span class="dim"># Register your project and start 5 agents</span>
 amux register myproject --dir ~/Dev/myproject --yolo
@@ -300,6 +305,8 @@ amux scale myproject --count 5
 amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
 
     <p>Once the control plane is running, you get: a web dashboard showing all agents and their live output, a mobile PWA so you can check in from your phone, a shared kanban board for task distribution, and a watchdog that detects stalls and crashes and recovers automatically.</p>
+
+    <p><strong>New in September 2026:</strong> Auto-drain lets idle workers pull from the backlog automatically when their todo queue empties (set <code>AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1</code> in worker scope). The board hygiene runtime job ages and auto-archives stale cards, keeping large fleets from accumulating noise. The new <code>amux board shepherd</code> command is the escape hatch for cards stuck in bad states.</p>
 
     <h3>Step 3 — Distribute tasks through a shared board</h3>
 
@@ -438,7 +445,7 @@ git worktree add ../agent-2 main
     <!-- EXP-014 GitHub CTA -->
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the open-source control plane for AI engineering teams (315★ GitHub)</div>
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the open-source control plane for AI engineering teams (440★ GitHub)</div>
         <div style="color:var(--muted);font-size:.9rem">Launch, monitor, and self-heal your Claude Code, Codex, or Antigravity CLI fleet. Shared kanban board, mobile PWA, offline scrollback, voice dictation. MIT licensed, single Rust binary, zero external dependencies.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
