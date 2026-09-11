@@ -37,7 +37,7 @@ function fixture(names = [], shared = {}) {
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
   const ctx = vm.createContext(sandbox);
-  for (const name of ['_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
+  for (const name of ['_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -387,4 +387,36 @@ test('a newly queued send stays quiet while a stuck send shows its waiting state
   ctx.online = false;
   ctx.updateConnectionStatus();
   assert.match(element('offline-banner-title').innerHTML, /will send on reconnect/);
+});
+
+
+test('Send and Queue use durable local acceptance before any network attempt', async () => {
+  const {ctx, stored} = fixture(['_isLocallyQueued', 'doSend', 'steerSession']);
+  let direct = 0;
+  ctx._origFetch = async () => { direct++; return new Response('{"ok":true,"submitted":true,"id":"server-steer"}'); };
+  ctx.showSendingIndicator = () => {};
+  ctx._stampSendTime = text => text;
+  ctx._cloudEmail = ''; ctx._localMemberEmail = '';
+  ctx.sessions = []; ctx.peekSession = null; ctx._steeringUpdateBadge = () => {}; ctx.render = () => {};
+  ctx.fetch = async (url, options) => {
+    assert.equal(await ctx._queueOp(url, options), true);
+    return new Response('{"ok":true,"queued":true}', {status:202, headers:{'X-Amux-Outbox':'queued'}});
+  };
+  assert.equal(await ctx.doSend('worker', 'durable send'), 'queued');
+  assert.equal(await ctx.steerSession('worker', 'durable steer'), true);
+  assert.equal(direct, 0, 'neither mode may bypass the outbox');
+  const saved = JSON.parse(stored.get('amux_offline_queue'));
+  assert.equal(saved.length, 2);
+  assert.ok(saved.every(q => JSON.parse(q.options.body).msg_id));
+});
+
+test('ordinary message acceptance and automatic retries do not open delivery progress', async () => {
+  const {ctx, timers} = fixture();
+  const toasts = []; ctx.showToast = value => toasts.push(value);
+  assert.equal(await ctx._queueOp('/api/sessions/worker/send', {method:'POST', body:'{"text":"local intent"}'}), true);
+  assert.deepEqual(toasts, []);
+  let quiet;
+  ctx.runSyncBanner = value => { quiet = value; };
+  [...timers.values()].at(-1)();
+  assert.equal(quiet, true, 'automatic replay must leave the progress banner closed');
 });

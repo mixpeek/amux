@@ -34,6 +34,8 @@ for (const mode of ['send', 'steer'] as const) {
       await send.click();
       await expect.poll(() => calls).toBe(1);
       await expect(send).toBeEnabled();
+      await expect(send).toHaveText(mode === 'steer' ? 'Queue' : 'Send');
+      await expect(page.locator('#sync-banner')).not.toHaveClass(/active/);
       await expect(input).toHaveValue('');
       expect(await entries()).toHaveLength(1);
       await input.fill('New text written while the previous request is pending');
@@ -48,6 +50,8 @@ for (const mode of ['send', 'steer'] as const) {
       release();
       await expect.poll(async()=>(await entries()).length).toBe(0);
       await expect(send).toBeEnabled();
+      await expect(send).toHaveText(mode === 'steer' ? 'Queue' : 'Send');
+      await expect(page.locator('#sync-banner')).not.toHaveClass(/active/);
       await expect(input).toHaveValue('New text written while the previous request is pending');
     } finally {
       release();

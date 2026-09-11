@@ -3648,3 +3648,14 @@ CARD: AMUX-4416
 SYMPTOM: During host ENOSPC, heartbeat repeatedly reported "writer thread is gone" and request-log rows were dropped, while /health returned store:"ok" from a read-only probe. The browser retained 26 queued operations. Failure injection also showed journal and COMMIT errors poisoning the next transaction.
 COST: Hours of failed writes could look healthy to the watchdog and an empty request-log analysis; cache deletion did not free snapshot-retained blocks. Recovery required explicit snapshot-reclamation approval and an API restart. Separate reader-pool exhaustion during recovery is not attributed to a specific borrower by these tests.
 FIX: Guard every write transaction through commit, catch mutation unwinding without killing the writer, emit failure verdicts, and include a bounded no-op writer transaction in health. Four baseline regressions failed before the change; panic, journal, commit, unwritable-writer and stalled-writer cases now cover recovery. Keep the detailed read failure in the Sync error modal and update it on recovery. See docs/incidents/2026-09-11-offline-sync.md for the causal limits.
+
+## Network-first bypass reintroduced a blocking composer and noisy sync sequence
+AREA: ux
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4416
+SYMPTOM: Send/Queue bypassed local persistence and waited on the API, then fell back into Queued/Syncing. An optimistic follow-up cleared draft text and uploads before durable acceptance.
+COST: A slow mobile connection became a composer delay; failed local storage could lose the working draft. Automatic retries opened delivery progress during ordinary sends.
+FIX: Restore both modes through the existing durable local outbox, clear only the accepted draft/files, retain newer edits, and run automatic replay quietly. Tests exercise held responses, refusal, quota failure, reload and retry on desktop/mobile/WebKit. Two contract controls reproduce the old behavior on 091bc3a9. Historical causes are recorded in docs/incidents/2026-09-11-offline-sync.md.

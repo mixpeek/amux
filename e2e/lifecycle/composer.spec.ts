@@ -37,6 +37,8 @@ for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const)
       await send.click();
       await expect(input, 'durable local acceptance clears before the server answers').toHaveValue('');
       await expect(send).toBeEnabled();
+      await expect(send).toHaveText('Send');
+      await expect(page.locator('#sync-banner')).not.toHaveClass(/active/);
       await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(0);
       const saved = await entries();
       expect(saved).toHaveLength(1);
