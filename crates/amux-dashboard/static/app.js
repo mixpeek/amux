@@ -1861,9 +1861,10 @@ async function bulkSendContinue(cappedOnly) {
   let sent = 0;
   for (const s of matched) {
     try {
-      await fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+      await _origFetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({text: 'continue'})
+        body: JSON.stringify({text: 'continue'}),
+        signal: AbortSignal.timeout(10000)
       });
       sent++;
     } catch(e) {}
@@ -1881,9 +1882,10 @@ async function bulkSendContinueApiErr() {
   let sent = 0, failed = 0;
   for (const s of matched) {
     try {
-      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+      const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
         method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
-        body: JSON.stringify({text: 'continue'})
+        body: JSON.stringify({text: 'continue'}),
+        signal: AbortSignal.timeout(10000)
       });
       const d = await r.json().catch(() => ({}));
       // Count what the SERVER accepted, not what we attempted — a bulk action
@@ -8503,9 +8505,10 @@ async function _steeringSendNow(msgId) {
   const btn = document.querySelector(`[onclick*="_steeringSendNow('${msgId}')"]`);
   if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+    const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: msg.text, deliver_now: true})
+      body: JSON.stringify({text: msg.text, deliver_now: true}),
+      signal: AbortSignal.timeout(10000)
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok || String(d.message || '').startsWith('queued')) {
@@ -8513,7 +8516,7 @@ async function _steeringSendNow(msgId) {
       showToast(d.message ? ('Not sent: ' + d.message) : 'Not sent — kept in queue');
       return;
     }
-    await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
+    await _origFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: msgId, sent: true})
     });
@@ -27196,9 +27199,10 @@ async function _focusPatch(id, body) {
   catch (e) { return null; }
 }
 async function _focusSend(name, text) {
-  try { const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send',
+  try { const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send',
     { method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
-      body: JSON.stringify({ text, record_history: true }) }); return r.ok; }
+      body: JSON.stringify({ text, record_history: true }),
+      signal: AbortSignal.timeout(10000) }); return r.ok; }
   catch (e) { return false; }
 }
 async function _focusResolveTag(item) {
@@ -37330,9 +37334,10 @@ async function _resendRows(rows) {
   let sent = 0, failed = 0;
   for (const r of rows) {
     try {
-      const resp = await fetch(API + '/api/sessions/' + encodeURIComponent(r.session) + '/send', {
+      const resp = await _origFetch(API + '/api/sessions/' + encodeURIComponent(r.session) + '/send', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: r.text }),
+        signal: AbortSignal.timeout(10000)
       });
       if (resp.ok) sent++; else failed++;
     } catch (e) { failed++; }
