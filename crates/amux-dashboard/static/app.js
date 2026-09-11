@@ -7110,13 +7110,10 @@ async function doSend(name, text) {
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
   const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
-  // Ordinary messages return after durable local acceptance. The outbox owns
-  // network delivery and retry; only interactive slash commands await the API.
   const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
   const sendOpts = { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, _authHeaders()), body: sendBody };
   try {
-    const r = await fetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
-    if (_isLocallyQueued(r)) return 'queued';
+    const r = await _origFetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
     if (r.ok) return 'sent';
     if (r.status === 409) {
       const d = await r.json().catch(() => ({}));
@@ -7258,20 +7255,17 @@ function _draftClear(session) {
 // Consume exactly the accepted draft, including a focused or re-rendered
 // textarea. Draft mirroring deliberately skips focus; submission must not.
 function _composerAcceptLocal(session, original) {
+  clearTimeout(_draftTimers[session || '_']);
   const inputs = [document.getElementById('input-' + session)];
   if (peekSession === session) inputs.push(document.getElementById('peek-cmd-input'));
   for (const input of inputs) {
-    if (input && input.value === original) {
+    if (input && (input.value === original || input.value)) {
       input.value = ''; input.style.height = 'auto';
       try { autoGrow(input); } catch (_) {}
     }
   }
-  if (_draftGet(session) === original) {
-    clearTimeout(_draftTimers[session || '_']);
-    const live = _liveComposerValue(session);
-    _draftSave(session, live == null || live === original ? '' : live);
-  }
-  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: _liveComposerValue(session) !== original, measured:true, n_considered:1}); } catch (_) {}
+  _draftClear(session);
+  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: true, measured:true, n_considered:1}); } catch (_) {}
 }
 
 // Push a session's draft into EVERY composer showing that session right now:
@@ -7341,32 +7335,27 @@ async function sendFromInput(name) {
   }
   const original = inp.value;
   const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
-  if (_composerPendingSends.has(name)) return;
-  _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _syncComposerPending();
-  try {
-    const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
-      : await doSend(name, _expandAtMentions(msg));
-    if (!['sent', 'queued'].includes(result)) {
-      _composerUnconfirmed(name, result, _files.length);
-      showToast('Message not confirmed — draft and attachments kept');
-      return;
+  const message = _expandAtMentions(msg);
+  cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
+  _composerAcceptLocal(name, original);
+  const sent = new Set(_files);
+  for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
+  renderCardFiles(name);
+  (async () => {
+    try {
+      const result = queued
+        ? (await steerSession(name, message) ? 'queued' : 'failed')
+        : await doSend(name, message);
+      if (!['sent', 'queued'].includes(result) && result !== 'declined') {
+        _composerUnconfirmed(name, result, _files.length);
+        showToast('Send failed — use message history to retry');
+      }
+    } catch (e) {
+      _composerUnconfirmed(name, 'exception', _files.length);
+      showToast('Send failed — use message history to retry');
     }
-    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(name, original);
-    const sent = new Set(_files);
-    for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-    _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
-    renderCardFiles(name);
-    if (result === 'sent') showToast('Sent to ' + name);
-  } catch (e) {
-    _composerUnconfirmed(name, 'exception', _files.length);
-    showToast('Message not confirmed — draft and attachments kept');
-  } finally {
-    _composerPendingSends.delete(name);
-    _syncComposerPending();
-  }
+  })();
 }
 
 // Mirror the peek's "queued" pill onto the card, so a worker with locally-queued
@@ -9844,7 +9833,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.900';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.901';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13387,46 +13376,37 @@ async function sendPeekCmd() {
     }
     message = _expandAtMentions(message);
   }
-  // Persist text and upload references in the local outbox before clearing.
-  // A network refusal remains reviewable in Sync and pending Messages.
-  _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _syncComposerPending();
-  let result = 'failed';
-  try {
-    result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
-      : await doSend(session, message);
-    if (!['sent', 'queued'].includes(result)) {
-      _composerUnconfirmed(session, result, files.length);
-      showToast('Message not confirmed — draft and attachments kept');
-      return;
-    }
-    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(session, original);
-    // Remove only the acknowledged files, never a new attachment added while
-    // waiting, or attachments belonging to a different worker's composer.
-    const sent = new Set(files);
-    for (const f of files) {
-      _cancelUpload(f);
-      if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-    }
-    if (peekSession === session) {
-      peekFiles = peekFiles.filter(f => !sent.has(f));
-      _peekFilesStash(session);
-      renderPeekFiles();
-      inp.style.borderColor = 'var(--green)';
-      setTimeout(() => { inp.style.borderColor = ''; }, 400);
-      _refreshPeekSoon();
-    } else if (_peekFilesBySession[session]) {
-      _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
-    }
-  } catch (e) {
-    _composerUnconfirmed(session, 'exception', files.length);
-    showToast('Message not confirmed — draft and attachments kept');
-  } finally {
-    _composerPendingSends.delete(session);
-    _syncComposerPending();
+  cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
+  _composerAcceptLocal(session, original);
+  const sent = new Set(files);
+  for (const f of files) {
+    _cancelUpload(f);
+    if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   }
+  if (peekSession === session) {
+    peekFiles = peekFiles.filter(f => !sent.has(f));
+    _peekFilesStash(session);
+    renderPeekFiles();
+    inp.style.borderColor = 'var(--green)';
+    setTimeout(() => { inp.style.borderColor = ''; }, 400);
+  } else if (_peekFilesBySession[session]) {
+    _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
+  }
+  (async () => {
+    try {
+      const result = queued
+        ? (await steerSession(session, message) ? 'queued' : 'failed')
+        : await doSend(session, message);
+      if (!['sent', 'queued'].includes(result) && result !== 'declined') {
+        _composerUnconfirmed(session, result, files.length);
+        showToast('Send failed — use message history to retry');
+      }
+      if (peekSession === session) _refreshPeekSoon();
+    } catch (e) {
+      _composerUnconfirmed(session, 'exception', files.length);
+      showToast('Send failed — use message history to retry');
+    }
+  })();
 }
 // Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
 // Claude repaints a picker/selection in <50ms and the peek endpoint serves in
@@ -13516,11 +13496,11 @@ function _showSteerPrompt(text) {
 async function steerSession(name, text) {
   if (!text) return;
   const msgId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
+  const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text, record_history: true, msg_id: msgId })
+    body: JSON.stringify({ text, record_history: true, msg_id: msgId }),
+    signal: AbortSignal.timeout(10000)
   });
-  if (_isLocallyQueued(r)) return true;
   if (r && r.ok) {
     const d = await r.json().catch(() => ({}));
     const newEntry = { id: d.id || ('steer-' + Date.now()), text, queued_at: Date.now() / 1000, guard: '' };
