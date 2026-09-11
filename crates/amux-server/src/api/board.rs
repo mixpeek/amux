@@ -8336,6 +8336,41 @@ pub async fn patch_item(
                 if t != next.title {
                     next.title = t;
                     changed.push("title".into());
+                    // AF-703: a title correction lands on the card you edited
+                    // and never on the cards that CITE it — gtm-engine measured
+                    // three same-evening instances (a cost overstated in one
+                    // title, a count understated in another, a third card's
+                    // `blocked_on` quoting the first FIGURE an hour after it was
+                    // corrected). Surfacing every citing card at edit time is
+                    // the cheapest fix named: it does not rewrite anyone else's
+                    // text (ethos rule 8 — whose data is this), it lets the
+                    // author of the change see what they just orphaned.
+                    if let Ok(mut stmt) = conn.prepare(
+                        "SELECT id, title FROM issues WHERE deleted IS NULL AND id != ?1 \
+                         AND (title LIKE '%'||?1||'%' OR \"desc\" LIKE '%'||?1||'%' \
+                         OR COALESCE(blocked_on,'') LIKE '%'||?1||'%') LIMIT 20",
+                    ) {
+                        if let Ok(rows) = stmt.query_map(rusqlite::params![&next.id], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        }) {
+                            let citing: Vec<Value> = rows
+                                .flatten()
+                                .map(|(cid, ctitle)| json!({ "id": cid, "title": ctitle }))
+                                .collect();
+                            if !citing.is_empty() {
+                                advisories.push(json!({
+                                    "field": "title",
+                                    "why": format!(
+                                        "{} card(s) mention {} in their own title/desc/blocked_on \
+                                         — a correction here may need to reach them too",
+                                        citing.len(),
+                                        next.id
+                                    ),
+                                    "citing_cards": citing,
+                                }));
+                            }
+                        }
+                    }
                 }
             }
             // `desc_append` appends instead of the destructive replace (Python
@@ -11868,6 +11903,135 @@ mod af701_archive_guard_tests {
             patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(current(&store, &id).archived, 1);
+    }
+}
+
+#[cfg(test)]
+mod af703_citing_cards_tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::HeaderValue;
+
+    fn fixture() -> (AppState, crate::db::SharedStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(
+            crate::db::Store::open(&dir.path().join("af703-citing-cards.db")).expect("open store"),
+        );
+        std::mem::forget(dir);
+        let state = AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "af703-citing-cards-test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        (state, store)
+    }
+
+    fn seed(store: &crate::db::SharedStore, title: &str, desc: &str) -> String {
+        let slot = Arc::new(Mutex::new(None));
+        let slot_w = slot.clone();
+        let title = title.to_string();
+        let desc = desc.to_string();
+        store
+            .write(move |conn| {
+                let row = bs::create_issue(
+                    conn,
+                    &bs::NewIssue {
+                        title,
+                        desc,
+                        status: "todo".into(),
+                        session: Some("gtm-engine".into()),
+                        item_type: "chore".into(),
+                        creator: "test".into(),
+                        owner_type: "agent".into(),
+                        due: None,
+                        due_time: None,
+                        reviewer: None,
+                        shepherd: None,
+                        gate: vec![],
+                        depends_on: vec![],
+                        tags: vec![],
+                        ask_type: None,
+                        ask_question: None,
+                        ask_unblocks: None,
+                        ask_actor: None,
+                        source: Some("test".into()),
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
+                    },
+                    1_700_000_000,
+                )?;
+                *slot_w.lock().unwrap() = Some(row.id);
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .expect("seed");
+        let id = slot.lock().unwrap().clone().unwrap();
+        id
+    }
+
+    fn owner_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amux-session", HeaderValue::from_static("gtm-engine"));
+        headers
+    }
+
+    async fn patch_as(state: &AppState, id: &str, body: Value) -> (StatusCode, Value) {
+        let response =
+            patch_item(State(state.clone()), Path(id.to_string()), owner_headers(), Json(body)).await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("read response");
+        (status, serde_json::from_slice(&bytes).expect("json response"))
+    }
+
+    /// AF-703, the GE-607/GE-610 specimen: GE-610's title overstated a cost,
+    /// GE-607's `blocked_on` quoted the same figure an hour after GE-610 was
+    /// corrected. This pins that the correction NAMES the citing card instead
+    /// of landing silently on GE-610 alone.
+    #[tokio::test]
+    async fn renaming_a_card_surfaces_other_cards_that_cite_its_id() {
+        let (state, store) = fixture();
+        let cited = seed(&store, "GTM spend needs ~$810 to close", "original estimate");
+        let citing = seed(&store, "Follow-up decision", &format!("blocked_on: waiting on {cited}'s ~$810 approval"));
+
+        let (status, body) =
+            patch_as(&state, &cited, json!({"title": "GTM spend needs ~$520 to close"})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let advisories = body["advisories"].as_array().expect("advisories array");
+        let title_advisory = advisories
+            .iter()
+            .find(|a| a["field"] == json!("title"))
+            .expect("a title advisory must be present");
+        let cited_ids: Vec<&str> = title_advisory["citing_cards"]
+            .as_array()
+            .expect("citing_cards array")
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert!(cited_ids.contains(&citing.as_str()), "{cited_ids:?}");
+    }
+
+    #[tokio::test]
+    async fn renaming_a_card_nobody_cites_adds_no_advisory() {
+        let (state, store) = fixture();
+        let lonely = seed(&store, "Nobody references this one", "desc");
+        let (status, body) =
+            patch_as(&state, &lonely, json!({"title": "Still nobody references this one"})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["advisories"].is_null() || body["advisories"].as_array().unwrap().is_empty());
+    }
+
+    /// CONTROL: writing the SAME title is a no-op per the existing `t !=
+    /// next.title` guard, and must not run the citation search at all.
+    #[tokio::test]
+    async fn writing_the_identical_title_does_not_search_for_citations() {
+        let (state, store) = fixture();
+        let cited = seed(&store, "Unchanged title", "desc");
+        let _citing = seed(&store, "Cites it", &format!("see {cited}"));
+        let (status, body) = patch_as(&state, &cited, json!({"title": "Unchanged title"})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["advisories"].is_null() || body["advisories"].as_array().unwrap().is_empty());
     }
 }
 
