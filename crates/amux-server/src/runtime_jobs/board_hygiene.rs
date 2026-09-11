@@ -30,6 +30,15 @@ struct NeedsyouCard {
     id: String,
     title: String,
     age_days: i64,
+    /// Non-empty means a TYPED ask naming a specific human (the
+    /// `needsyou_requires_typed_ask` gate, AF-318/AMUX-3929). AF-702: this
+    /// sweep used to age-out a typed ask exactly like an untyped one, so a
+    /// card correctly waiting on Ethan for 46 days was penalised for HIS
+    /// response time and discarded with "no resolution" — a sentence that
+    /// reads as the lane's failure when the lane did everything it could.
+    /// A typed ask is a decision only a human can make; the sweep cannot
+    /// manufacture that decision by discarding the question.
+    ask_actor: String,
 }
 
 struct StaleAutofixCard {
@@ -54,7 +63,7 @@ fn find_needsyou_cards(conn: &rusqlite::Connection, now_secs: i64) -> Vec<Needsy
     let cutoff = now_secs - (NEEDSYOU_WARN_DAYS * 86_400);
     let mut out = Vec::new();
     let Ok(mut st) = conn.prepare(
-        "SELECT id, title, created FROM issues \
+        "SELECT id, title, created, COALESCE(ask_actor, '') FROM issues \
          WHERE status = 'needsyou' AND deleted IS NULL \
          AND COALESCE(archived, 0) = 0 AND created < ?1 \
          ORDER BY created ASC",
@@ -67,6 +76,7 @@ fn find_needsyou_cards(conn: &rusqlite::Connection, now_secs: i64) -> Vec<Needsy
             id: r.get(0)?,
             title: r.get(1)?,
             age_days: (now_secs - created) / 86_400,
+            ask_actor: r.get(3)?,
         })
     }) {
         out.extend(rows.flatten());
@@ -194,7 +204,64 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
     let mut discarded = 0usize;
 
     for card in &cards {
-        if card.age_days >= NEEDSYOU_DISCARD_DAYS {
+        let typed_ask = !card.ask_actor.trim().is_empty();
+        if card.age_days >= NEEDSYOU_DISCARD_DAYS && typed_ask {
+            // AF-702: a typed ask names a specific human and the age is HIS
+            // response time, not the lane's. GE-408 was auto-discarded at 46
+            // days waiting on Ethan, worded as though the lane had failed to
+            // resolve something it had no power to resolve. Falls through to
+            // the warn branch below instead — same aging note every other
+            // needsyou card gets, deduplicated by strip_prior_auto_aged_lines
+            // so it does not accumulate. No discard ceiling for a typed ask:
+            // the exit is an answer, not a clock.
+            let id = card.id.clone();
+            let age = card.age_days;
+            let actor = card.ask_actor.clone();
+            let note = format!(
+                "Auto-aged: this card has been in needsyou for {age} days, waiting on {actor} \
+                 (typed ask — exempt from auto-discard, AF-702)"
+            );
+            let hhmm = chrono::Utc::now().format("%H:%M").to_string();
+            let _ = state
+                .store
+                .write_async(move |conn| {
+                    let old_desc: String = conn
+                        .query_row(
+                            "SELECT COALESCE(\"desc\", '') FROM issues WHERE id = ?1",
+                            rusqlite::params![&id],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or_default();
+                    let stripped = strip_prior_auto_aged_lines(&old_desc);
+                    let new_desc = if stripped.trim().is_empty() {
+                        note.clone()
+                    } else {
+                        format!("{}\n{note}", stripped.trim_end())
+                    };
+                    let old_log: Option<String> = conn
+                        .query_row(
+                            "SELECT log FROM issues WHERE id = ?1",
+                            rusqlite::params![&id],
+                            |r| r.get(0),
+                        )
+                        .ok();
+                    let new_log = bs::append_log(old_log.as_deref(), &hhmm, &note);
+                    conn.execute(
+                        "UPDATE issues SET \"desc\" = ?1, log = ?2, updated = ?3 WHERE id = ?4",
+                        rusqlite::params![new_desc, new_log, now_secs, &id],
+                    )?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                })
+                .await;
+            tracing::info!(
+                card_id = %card.id,
+                age_days = card.age_days,
+                ask_actor = %card.ask_actor,
+                title = %card.title,
+                "board_hygiene: typed-ask needsyou card exempted from auto-discard"
+            );
+            warned += 1;
+        } else if card.age_days >= NEEDSYOU_DISCARD_DAYS {
             let id = card.id.clone();
             let age = card.age_days;
             let note = format!(
@@ -591,5 +658,131 @@ mod tests {
         assert_eq!(cards.len(), 1, "expected 1 card, got {}", cards.len());
         assert_eq!(cards[0].id, "BL-1");
         assert_eq!(cards[0].age_days, 35);
+    }
+
+    #[test]
+    fn find_needsyou_cards_carries_ask_actor_through() {
+        let conn = crate::db::migrate::test_memdb();
+        let now = 1_000_000i64;
+        conn.execute(
+            "INSERT INTO issues (id, title, status, created, updated, ask_actor, owner_type) \
+             VALUES (?1, ?2, 'needsyou', ?3, ?4, ?5, 'agent')",
+            rusqlite::params!["NY-5", "typed", now - 20 * 86_400, now, "ethan"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO issues (id, title, status, created, updated, owner_type) \
+             VALUES (?1, ?2, 'needsyou', ?3, ?4, 'agent')",
+            rusqlite::params!["NY-6", "untyped legacy", now - 20 * 86_400, now],
+        )
+        .unwrap();
+        let cards = find_needsyou_cards(&conn, now);
+        let typed = cards.iter().find(|c| c.id == "NY-5").expect("NY-5 found");
+        assert_eq!(typed.ask_actor, "ethan");
+        let untyped = cards.iter().find(|c| c.id == "NY-6").expect("NY-6 found");
+        assert_eq!(untyped.ask_actor, "", "a NULL ask_actor must read as empty, not error");
+    }
+
+    fn hygiene_state() -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        (
+            AppState {
+                store,
+                started: std::time::Instant::now(),
+                build_hash: "test".into(),
+                auth_token: None,
+                reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            },
+            dir,
+        )
+    }
+
+    fn seed_needsyou(state: &AppState, id: &str, age_days: i64, ask_actor: Option<&str>, now: i64) {
+        let id = id.to_string();
+        let ask_actor = ask_actor.map(str::to_string);
+        state
+            .store
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO issues (id, title, status, created, updated, ask_actor, owner_type) \
+                     VALUES (?1, 'fixture', 'needsyou', ?2, ?2, ?3, 'agent')",
+                    rusqlite::params![id, now - age_days * 86_400, ask_actor],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+    }
+
+    fn card_status(state: &AppState, id: &str) -> String {
+        state
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT status FROM issues WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn card_desc(state: &AppState, id: &str) -> String {
+        state
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT COALESCE(\"desc\",'') FROM issues WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// AF-702, the GE-408 specimen: a card correctly waiting 46 days on a
+    /// NAMED human must not be auto-discarded just because a discard-age
+    /// clock ran out. The clock measures the lane's inaction; here the lane
+    /// has none to answer for.
+    #[tokio::test]
+    async fn a_typed_ask_past_the_discard_age_is_exempted_not_discarded() {
+        let (state, _dir) = hygiene_state();
+        LAST_NEEDSYOU_RUN.store(0, std::sync::atomic::Ordering::Relaxed);
+        let now = 2_000_000i64;
+        seed_needsyou(&state, "GE-408", 46, Some("ethan"), now);
+
+        let (warned, discarded) = needsyou_sweep(&state, now).await;
+        assert_eq!(discarded, 0, "a typed ask must never be counted as discarded");
+        assert_eq!(warned, 1);
+        assert_eq!(card_status(&state, "GE-408"), "needsyou", "must stay open, not discarded");
+        let desc = card_desc(&state, "GE-408");
+        assert!(desc.contains("waiting on ethan"), "{desc}");
+        assert!(desc.contains("AF-702"), "{desc}");
+        assert!(!desc.contains("no resolution"), "must not blame the lane: {desc}");
+    }
+
+    /// CONTROL: an untyped legacy ask (predates the needsyou_requires_typed_ask
+    /// gate) must still discard at the same age as before this change — the
+    /// exemption is for a NAMED human waiting, not a blanket amnesty.
+    #[tokio::test]
+    async fn an_untyped_legacy_ask_past_the_discard_age_is_still_discarded() {
+        let (state, _dir) = hygiene_state();
+        LAST_NEEDSYOU_RUN.store(0, std::sync::atomic::Ordering::Relaxed);
+        let now = 2_000_000i64;
+        seed_needsyou(&state, "OLD-1", 35, None, now);
+
+        let (warned, discarded) = needsyou_sweep(&state, now).await;
+        assert_eq!(discarded, 1);
+        assert_eq!(warned, 0);
+        assert_eq!(card_status(&state, "OLD-1"), "discarded");
+    }
+
+    /// A typed ask well under the discard age still gets the ordinary warn
+    /// note — this fix must not change behavior for the common case.
+    #[tokio::test]
+    async fn a_typed_ask_under_the_discard_age_gets_the_ordinary_warn() {
+        let (state, _dir) = hygiene_state();
+        LAST_NEEDSYOU_RUN.store(0, std::sync::atomic::Ordering::Relaxed);
+        let now = 2_000_000i64;
+        seed_needsyou(&state, "NY-7", 20, Some("ethan"), now);
+
+        let (warned, discarded) = needsyou_sweep(&state, now).await;
+        assert_eq!(discarded, 0);
+        assert_eq!(warned, 1);
+        assert_eq!(card_status(&state, "NY-7"), "needsyou");
+        let desc = card_desc(&state, "NY-7");
+        assert!(desc.contains("Auto-aged: this card has been in needsyou for 20 days"), "{desc}");
     }
 }
