@@ -10158,7 +10158,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.910';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.908';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -16608,6 +16608,13 @@ function _peekMsgRenderChips(items) {
   // when no messages of that kind exist (unstamped/unknown were missing).
   const counts = _MSG_KIND_ORDER.reduce((a, k) => (a[k] = 0, a), { all: 0 });
   items.forEach(e => { const k = _msgKind(e); if (k in counts) counts[k]++; counts.all++; });
+  // Same rule as the body: a chip reading "Human 0" while the fetch is still
+  // running is a measurement that has not run, rendered as a result. An
+  // ellipsis is the honest placeholder — it cannot be mistaken for a count.
+  const _countsUnknown = _peekMsgLoading
+    || _peekMsgRowsFor !== peekSession
+    || !Array.isArray(_peekMsgRows);   // unmeasured covers both loading and failed
+  const _n = k => (_countsUnknown && !counts[k] ? '\u2026' : String(counts[k]));
   // Every kind chip is ALWAYS shown, even at zero. Hiding empty ones made the
   // filter row change shape as you moved between sessions, and an absent chip
   // reads as "this kind does not exist" rather than "none here".
@@ -16617,7 +16624,7 @@ function _peekMsgRenderChips(items) {
     const on = _peekMsgFilter === k;
     const km = _MSG_KIND[k];
     const col = km ? km.color : 'var(--accent)';
-    return `<button class="msg-kind-chip" onclick="_peekMsgSetFilter('${k}')" style="border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'rgba(88,166,255,0.14)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl} ${counts[k]}</button>`;
+    return `<button class="msg-kind-chip" onclick="_peekMsgSetFilter('${k}')" style="border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'rgba(88,166,255,0.14)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl} ${_n(k)}</button>`;
   }).join('');
 }
 function _peekMessagesRender() {
@@ -16698,9 +16705,28 @@ function _peekMessagesRender() {
   const moreHTML = _peekMsgDone ? '' :
     '<button class="btn" id="peek-msgs-more-btn" style="align-self:center;margin:8px auto;font-size:0.78rem;min-height:36px;" onclick="_peekMessagesLoad(true)">Load older</button>';
   const _body = pendingHTML + histHTML;
-  list.innerHTML = (_body
-    || `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${_empty}</div>`)
-    + moreHTML;
+  // NOTHING LOADED YET IS NOT NOTHING THERE.
+  //
+  // The count line already says "(loading…)" from _peekMsgLoading, but the body
+  // asserted the empty state regardless — so this tab rendered "0 messages
+  // (loading…)" directly above "No human messages for this worker." on a worker
+  // with a full history (Ethan's screenshot, 2026-09-11). On this host
+  // /api/history takes 12-26s under read-pool contention (AMUX-4348), so that
+  // false statement is what you look at for most of the wait.
+  //
+  // Say which one is true: still measuring, or measured and empty.
+  // Three states, not two: measuring, measured-and-empty, and could-not-measure.
+  const _loaded = _peekMsgRowsFor === peekSession && Array.isArray(_peekMsgRows);
+  const _stillLoading = _peekMsgLoading || (!_loaded && !_peekMsgError);
+  const _note = t => `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${t}</div>`;
+  const _placeholder = _stillLoading ? _note('Loading messages…')
+    : (!_loaded && _peekMsgError)
+      ? _note('Could not load messages — ' + esc(_peekMsgError) +
+              '<br><button class="btn" style="margin-top:10px;min-height:36px;" ' +
+              'onclick="_peekMessagesLoad(false)">Retry</button>')
+      : _note(_empty);
+  list.innerHTML = (_body || _placeholder)
+    + (!_body && !_loaded ? '' : moreHTML);
   _peekMessagesBadge();
 }
 // Jump the per-worker Messages list to a chosen day. Unlike the global timeline
@@ -16743,6 +16769,7 @@ async function _peekMsgsJumpToDate(dateStr) {
 // Fetch a SESSION-SCOPED window instead, so each session gets its own 500.
 let _peekMsgRows = null;      // MERGED display rows (server + pending), oldest-first, or null
 let _peekMsgRowsFor = '';     // which session _peekMsgRows belongs to
+let _peekMsgError = '';       // last load failure, '' when the last load succeeded
 // Pagination for the per-worker Messages tab (AMUX: paginate worker like global).
 // The view used to load ONE 500-row session window with no way to reach older
 // messages; it now pages by offset like the global timeline (_messagesLoad).
@@ -16793,6 +16820,7 @@ async function _peekMessagesLoad(more) {
   const prevDone = _peekMsgDone;
   if (!more) { _peekMsgServerRows = []; _peekMsgOffset = 0; _peekMsgDone = false; }
   _peekMsgLoading = true;
+  _peekMsgError = '';
   _peekMessagesRender();                        // paint what we have instantly (with loading indicator)
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, _peekMsgOffset);
@@ -16806,6 +16834,11 @@ async function _peekMessagesLoad(more) {
     else _peekMsgDone = rows.length < _PEEK_MSG_PAGE;
     _peekMsgRows = _mergeUnechoed(_peekMsgServerRows, sess); // pending merge + time sort, once, on the full set
   } catch(e) {
+    // A FAILED LOAD IS ITS OWN STATE. Without this the view can only say
+    // "loading" or "empty", and a fetch that died leaves it claiming one of
+    // them forever — the first cut of this fix replaced a false "no messages"
+    // with a false "Loading messages…" that never cleared.
+    _peekMsgError = String((e && e.message) || e || 'request failed');
     if (!more) { try { await _loadCmdHistoryFromServer(); } catch(e2) {} } // fall back to the shared cache on first load only
   }
   _peekMsgLoading = false;
