@@ -669,10 +669,11 @@
   {
     "id": "LC-SEMANTIC-INTAKE",
     "surface": "Semantic task intake",
-    "actions": "Submit paraphrased duplicate work, a refined requirement, a related independent outcome, and a different-domain task. Repeat through captured worker messages. Inspect actual model decisions, survivor IDs, retained context and task history.",
-    "expected": "Same work appends or updates one existing task; distinct outcomes get distinct tasks. No task content is lost; unavailable comparison is explicit.",
+    "actions": "Create tasks through both the direct board API and six actual composer messages to a real worker: initial request, paraphrase, added context, revised requirements, independent UI outcome and separate-domain output. Use the real helper model and inspect task/message links in desktop and phone views.",
+    "expected": "The six messages produce exactly three tasks. Paraphrase/context/refinement preserve one survivor ID, increasing revision, all four linked full source messages and original requirements. Logs must record measured create/append/update decisions. Distinct outcomes remain separate. No explicit task IDs, mocked classifier, observer board/history writes or manual completion can manufacture the result; unavailable comparison fails the live case.",
     "sources": [
       "e2e/lifecycle/live-semantic-intake.spec.ts",
+      "e2e/lifecycle/live-semantic-messages.spec.ts",
       "crates/amux-server/src/api/board_intake.rs"
     ]
   },
@@ -714,6 +715,26 @@
     "expected": "The previous task overlay no longer intercepts worker actions, and the unsaved task edit survives.",
     "sources": [
       "e2e/lifecycle/deeplink-surfaces.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-PROVIDER-FRESH",
+    "surface": "Provider conversation reset",
+    "actions": "On a real Gemini worker with existing peer messages, choose New conversation, upload a file and submit a task. Restart normally afterward. Repeat the fresh reset contract for Codex.",
+    "expected": "A fresh launch never resumes the prior provider ID. Uploaded input reaches the actual provider and its receipt task reaches an evidenced terminal state. A normal restart retains the newly created conversation identity. A following ordinary message is durably accepted during restart, retries produce one queue copy, and delivery waits for the replacement process.",
+    "sources": [
+      "e2e/lifecycle/sonnet-upload.ts",
+      "crates/amux-server/src/api/session_verbs.rs"
+    ]
+  },
+  {
+    "id": "LC-BOARD-SOURCE-MESSAGE",
+    "surface": "Task recovery and linked assignment",
+    "actions": "Capture an assignment with required file paths and schema beyond its 300-character card preview. Read it through board show, then its --messages option, and recover the worker after restart.",
+    "expected": "The compact view exposes source message IDs and a supported full-read command. Full linked assignments preserve attachment paths and acceptance criteria; recovery does not guess from truncated text or search terminal logs.",
+    "sources": [
+      "scripts/test-board-show-messages.py",
+      "e2e/lifecycle/sonnet-upload.ts"
     ]
   }
 ]

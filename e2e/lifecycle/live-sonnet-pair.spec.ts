@@ -77,7 +77,10 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
     expect(row.tags).toContain(group);
     expectLifecycleWorker(row);
     await workerAction(page, name, 'peek-terminal');
-    await expectLifecycleTerminal(page);
+    // Resumed observation starts after work has scrolled the startup banner away.
+    // Provider identity is still checked against the real roster above.
+    if (!observeOnly) await expectLifecycleTerminal(page);
+    else await expect(page.locator('#peek-body')).not.toBeEmpty();
     await checkpoint(page, info, `running-provider-${name}`);
   }
   const common = `Authorized test ${run}. Work only in ${cwd}, and communicate only with ${names.join(' and ')}.

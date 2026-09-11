@@ -1946,3 +1946,119 @@ CARD: AMUX-4417
 SYMPTOM: Production watchdog logs explicitly issued kickstart -k at 13:16:19 and 13:29:32 on September 11 after three health responses with measured:false / probe_deadline_exceeded. launchd recorded SIGTERM, not an application crash. The 250 ms health deadline detached its ongoing writer/read probe but discarded its later success, so each slow sample could imply a hung store despite intervening progress.
 COST: The monitor itself disconnected clients and restarted the server; both restarts were followed by more slow probes rather than durable recovery.
 FIX: Retain monotonic completion and in-flight ages for real probes after HTTP timeout. Readiness remains unmeasured/503; the watchdog defers a restart only with recent successful progress or bounded initial work. Real writer failures, pool exhaustion, absent listeners and stale progress retain recovery. slow_probe_completed and watchdog restart-deferred logs expose the decision. Rust exercises a blocked writer twice and requires the detached first probe's receipt during the second timeout; Python tests cover actual HTTP 503 classification and both restart/no-restart loop controls.
+
+## Gemini New conversation restarts the old provider conversation
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini upload acceptance run clicked New conversation and received a successful config response, but the native terminal exited with Invalid session identifier. The handler cleared only the Claude conversation key, and Gemini/Codex launch paths ignored skip_conv_id, so the supposedly fresh launch still used --resume.
+COST: Upload acceptance could not start; the worker remained at a shell while the UI reported a reset.
+FIX: Fresh resets clear all provider resume keys and both hookless launch paths respect the fresh flag. New Gemini identities are UUIDs with random leading bytes, matching the CLI's documented --session-id contract and avoiding time-derived filename prefixes. conversation_recycled now logs provider identity. Tests exercise the config handler and a stale Gemini identity followed by fresh launch and exact subsequent resume.
+
+## Gemini uploads stop at native read approval before submission
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real UI upload launched a fresh Gemini session, then its @uploaded-file prompt opened a native read approval outside the checkout. Amux's send verifier returned stuck. Gemini was launched with the log directory included but not the uploads directory.
+COST: The user-uploaded file could not reach a completed receipt task and the composer reported a send failure.
+FIX: Include the Amux uploads directory in the Gemini workspace, using its supported repeated --include-directories option. The real upload case must read the attached bytes, produce a matching JSON receipt, finish its board card and expose the delivered message and terminal on desktop and mobile.
+
+## Fresh conversation accepts a message into the retiring process
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini upload run received reset acceptance at 18:18:24Z, delivered its prompt at 18:18:26Z, and only launched the replacement process at 18:18:46Z. The test saw the previous terminal's banner while reset was still stopping that process.
+COST: A following send could appear accepted and then lose its native conversation when the asynchronous reset killed the old process.
+FIX: Acquire the existing per-lane send boundary before accepting a running reset and retain it through stop/start. Ordinary sends during that interval persist immediately into steering, with an acceptance receipt; interactive commands refuse without an effect. Holding the HTTP request itself through restart was disproven by a mobile timeout and pending duplicate receipt. Other lanes remain independent. conversation_restart_send_boundary and existing lane-send-serialised logs expose the ordering. The live upload scenario deliberately sends through the UI immediately after reset, then requires real attachment data and completed board evidence.
+
+## Board recovery hides the full assignment from the sanctioned CLI
+AREA: workers
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Gemini recovered an auto-captured upload task through amux board show. The card preview ended at `row`, before `row_count` and the attachment path. The API already returned the full linked source message, but the Bash CLI dropped messages entirely. The worker searched logs and produced `rows` rather than the required `row_count`.
+COST: A completed receipt had the wrong schema despite the original request remaining in durable history; recovery spent tokens searching terminal logs for context the API already provided.
+FIX: Board show exposes linked message IDs and a supported --messages option for full assignments. Structured recovery explicitly reads that option for captured prompt previews, while ordinary board reads remain compact. A fake-transport regression uses the real CLI with a requirement beyond the 300-character preview and requires it only on the explicit full-message read.
+
+
+## Queued delivery observation reads an unstamped command receipt
+AREA: testing
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini upload reached steering history with outcome sent, produced its correct file and completed LG1A-7, but the acceptance helper timed out waiting for cmd_history.delivered_at, which the steering drain does not stamp.
+COST: A delivered message was reported as undelivered, stopping the remaining acceptance cases.
+FIX: Expose the existing steering outcome and submission verdict, and the exact queue ID for restart acceptance. The observer checks this delivery instrument and excludes dead-letter rows despite their timestamps. The real handler regression covers confirmed, retried and discarded histories; existing steering-delivered logs remain the operational signal.
+
+
+## Messages normalization discards recorded delivery metadata
+AREA: ui
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real Gemini mobile upload screenshot showed direct? on MSG-80 although its API receipt recorded queued. Both the shared history cache mapping and _msgNorm discarded delivery metadata before the shared renderer read it.
+COST: New messages looked like legacy records, and failed submission indicators could disappear from all three message surfaces.
+FIX: Preserve recorded delivery, queue timestamps, wait duration and submission verdict through the shared normalizer, and use it for initial history loading too. A browser regression fetches controlled direct, queued and stuck API rows through the actual scoped loader, renders all three message surfaces and requires their real labels. The existing server delivery logs and exposed steering outcome remain the diagnostic signal.
+
+
+## Delivered message still appears locally unsent while its response is pending
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The user's 11:55:17 screenshot showed a homepage request in Claude's native queue while Messages said not yet delivered. Its exact MSG-55405 server record had direct/confirmed delivery at 11:55:12. Local pending state was tied to the entire POST response, including downstream board processing, instead of the durable acceptance already recorded.
+COST: The client contradicted the terminal and offered cancellation as if an already-attempted message could still be prevented from sending.
+FIX: Expose a read-only, non-cacheable receipt lookup scoped by session and msg_id. During an in-flight send, a bounded lookup can acknowledge the exact durable receipt without repeating delivery or cancelling the original handler's board work. Persist attempted state before transport, label uncertainty as Awaiting confirmation, and refuse local cancellation once attempted; legacy entries without attempt provenance are conservative. acceptance_receipt_read and outbox_acceptance_receipt expose reconciliation. Tests hold the original POST open, reject wrong-ID/unaccepted receipts, and check the real handler never reserves or sends on a lookup.
+
+
+## Rapid input inherits retry backoff and full-history terminal refreshes
+AREA: messaging
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: After confirming the stale queued banner was gone, the user reported a slight delay before input appeared in the terminal. A message appended during an in-flight replay missed its snapshot and inherited retry backoff. The deterministic counterexample selected an 8000 ms timer. The post-input UI also launched two full-history refreshes; five read-only production samples were approximately 128 KB each versus 5 KB for a live frame.
+COST: Rapid messages waited unnecessarily and mobile terminal updates transferred scrollback to display newly arrived input.
+FIX: Newly added, unattempted operations resume on the next tick after the active replay, retaining FIFO delivery and receipt checks. Replace overlapping full refreshes with one bounded live-frame loop: first tick at 40 ms, then 100 ms intervals for 1.5 seconds, with normal cadence afterward. Remember pending turn-end history refreshes. The executable latency regression and its attached dispatch/render measurements detect recurrence; disabling immediate continuation makes the counterexample fail.
+
+
+## Send button mistakes a second rapid press for the first tap's click echo
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The rapid-send lifecycle case failed on desktop, mobile and iPhone WebKit: the first local send cleared, but the second distinct message remained in the composer after Send. _btnFire suppressed every activation within 350 ms instead of only the synthesized echo of one gesture.
+COST: A legitimate new message required another tap and made the local-first composer appear stuck.
+FIX: Reset per-button echo suppression on a new pointerdown/touchstart and allow distinct keyboard activation. Keep the same gesture's pointerup/touchend/click echoes deduplicated. The rapid-send UI case exercises two different messages and verifies two unique IDs, immediate continuation and terminal rendering; the event contract verifies duplicate echoes still fire once. Existing send-fire diagnostics retain the pre/post composer length and event sequence.
+
+
+## Semantic intake acceptance listed worker-message coverage but only exercised the board API
+AREA: testing
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: LC-SEMANTIC-INTAKE posted candidate tasks directly to /api/board. The canonical case also promised captured worker messages, but no executable scenario sent those messages through a composer and checked their surviving task links.
+COST: A direct-board semantic pass could be mistaken for proof that ordinary new messages avoid near-duplicate board tasks.
+FIX: Add LC-SEMANTIC-MESSAGES to live discovery: six composer messages must produce three tasks, four linked source messages on one survivor, measured append/update decisions and preserved requirements. Follow source links in desktop/mobile details. Record live prerequisites separately: the first attempt failed worker admission under host memory pressure before sending, so it is not a semantic pass. Preserve the dedicated run's health and trace evidence.

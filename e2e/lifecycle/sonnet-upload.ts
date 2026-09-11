@@ -1,4 +1,4 @@
-import { lifecyclePrefix, expectLifecycleWorker } from './provider';
+import { lifecyclePrefix, expectLifecycleWorker, expectLifecycleTerminal } from './provider';
 import { test, expect, Page, APIRequestContext, TestInfo } from '@playwright/test';
 import { expectDelivered, boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
@@ -31,7 +31,17 @@ export async function runSonnetUpload({ page, request }: { page: Page, request: 
     await action('new-conversation');
     const reset = page.waitForResponse(r => r.url().endsWith(`/${author}/config`) && r.request().method() === 'PATCH', { timeout: 90_000 });
     await page.locator('#modal-btns').getByRole('button', { name: 'Reset', exact: true }).click();
-    expect((await reset).ok()).toBe(true);
+    const resetResponse = await reset;
+    expect(resetResponse.ok()).toBe(true);
+    if (!(await resetResponse.json()).restarted) {
+      // A stopped worker is reset for its next start; this is a supported UI
+      // state, including recovery after a provider process exited.
+      await page.goto('/');
+      const started = page.waitForResponse(r => r.url().endsWith(`/${author}/start`) && r.request().method() === 'POST', { timeout: 90_000 });
+      await page.locator(`.card[data-session="${author}"]`).locator('visible=true').first().getByRole('button', {name:'Start', exact:false}).click();
+      const response = await started;
+      expect(response.ok(), await response.text()).toBe(true);
+    }
     await action('peek-terminal');
     await expectLifecycleTerminal(page);
     await page.locator('#peek-composer-more-btn').click();

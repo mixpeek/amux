@@ -758,6 +758,15 @@ The suite also includes these connected acceptance cases:
   verification of each other's work. Every real deliverable and epic must reach
   Verified with current criteria and no remaining open run-owned work. The
   observer never supplies completion evidence or advances those cards.
+- **LC-SEMANTIC-MESSAGES** sends six actual composer messages to a real worker:
+  initial work, a paraphrase, added context, refined requirements, an independent
+  UI outcome and a separate-domain deliverable. Exactly three tasks must result,
+  with four full source messages linked to one surviving task. It checks increasing
+  revisions, retained requirements, measured create/append/update decisions and
+  desktop/mobile task details without observer board/history writes. No explicit
+  task IDs in the messages can bypass semantic comparison. Unavailable comparison
+  fails the live case. This consolidates incoming requests into an existing task;
+  it does not delete independent subtasks or merge ambiguous existing candidates.
 - **LC-SEMANTIC-INTAKE** uses the real configured helper model to append a
   paraphrase, update refined requirements and create distinct deliverables.
   It checks the resulting IDs and preserved context, not only the classifier's
@@ -863,3 +872,14 @@ including multiline input and the current `>` glyph. Claude/Codex output that
 starts with `>` must remain unclassified. Completion callbacks must not instruct
 the requester to notify themselves again; the integration regression inspects
 the durable callback rather than a fabricated reply.
+
+
+Message-driven semantic intake can be selected independently in the dedicated lab:
+
+```bash
+python3 scripts/lifecycle/run.py live --grep LC-SEMANTIC-MESSAGES
+```
+
+This case is discovered automatically by `live`/`full`. The earlier direct-board
+`LC-SEMANTIC-INTAKE` case remains a separate API test and cannot substitute for it.
+The canonical scenarios and expected task/message counts are in `cases.json`.
