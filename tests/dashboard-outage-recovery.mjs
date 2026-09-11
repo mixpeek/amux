@@ -15,7 +15,7 @@ function code(name) {
 }
 function fixture(names = [], shared = {}) {
   const stored = shared.stored || new Map();
-  const timers = new Map(); let tid = 0;
+  const timers = new Map(); const timerDelays = new Map(); let tid = 0;
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, {value: '', textContent: '', innerHTML: '', style: {}, scrollHeight: 0, classList: {add() {}, remove() {}, contains() {return false;}}});
@@ -27,7 +27,7 @@ function fixture(names = [], shared = {}) {
     document: {getElementById: element},
     localStorage: {setItem(k,v) { stored.set(k,v); }, getItem(k) { return stored.get(k) ?? null; },
       removeItem(k) { stored.delete(k); }, key(i) { return [...stored.keys()][i] ?? null; }, get length() { return stored.size; }},
-    setTimeout(fn) { timers.set(++tid, fn); return tid; }, clearTimeout(id) { timers.delete(id); },
+    setTimeout(fn, delay) { timers.set(++tid, fn); timerDelays.set(tid, delay); return tid; }, clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
     API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null, _syncBackoffMs: 0, _SYNC_MIN_MS: 2000, _SYNC_MAX_MS: 60000,
     _localWriteError: '', window:{isSecureContext:true}, APP_VER:'test', _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
     _OUTBOX_SKIP: /\/api\/client-debug/, _OUTBOX_METHODS: {POST:1,PATCH:1,PUT:1,DELETE:1},
@@ -40,7 +40,7 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   for (const name of ['_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
-  return {ctx, stored, timers, element};
+  return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
 async function enqueue(ctx) { assert.equal(await ctx._queueOp('/api/board/TASK-1', patch), true); }
@@ -474,4 +474,52 @@ test('an attempted local send cannot be cancelled as though it never reached the
   await ctx._pendingCancel(ctx.offlineQueue[0].id);assert.equal(JSON.parse(stored.get('amux_offline_queue')).length,1);
   await ctx._mutateQueue(rows=>{delete rows[0].attempted_at});
   await ctx._pendingCancel(ctx.offlineQueue[0].id);assert.equal(ctx.offlineQueue.length,0);
+});
+
+
+test('new input during a replay starts next tick instead of waiting for outage backoff', async () => {
+  const {ctx,timers,timerDelays}=fixture();
+  await ctx._queueOp('/api/sessions/worker/send',{method:'POST',body:'{"text":"first","msg_id":"one"}'});
+  let release;const posts=[];
+  ctx._origFetch=(_url,init)=>{
+    posts.push(JSON.parse(init.body).msg_id);
+    return posts.length===1 ? new Promise(resolve=>release=resolve)
+      : Promise.resolve(new Response('{"ok":true,"submitted":true}'));
+  };
+  const replay=ctx.runSyncBanner();await new Promise(setImmediate);
+  await ctx._queueOp('/api/sessions/worker/send',{method:'POST',body:'{"text":"second","msg_id":"two"}'});
+  assert.equal(ctx.runSyncBanner(),replay);
+  release(new Response('{"ok":true,"submitted":true}'));await replay;
+  assert.equal(timerDelays.get(ctx._syncRetryTimer),0);
+  timers.get(ctx._syncRetryTimer)();await ctx._syncFlight;
+  assert.deepEqual(posts,['one','two']);assert.equal(ctx.offlineQueue.length,0);
+});
+
+test('post-input terminal polling is lightweight, serial and bounded', async () => {
+  const {ctx,timers,timerDelays}=fixture(['_peekPollInterval','_stopPeekPoll','_schedulePeekPoll','_peekKickFast','_refreshPeekSoon']);
+  let now=1000;const refreshes=[];
+  Object.assign(ctx,{performance:{now:()=>now},peekSession:'lane',peekTimer:null,_peekUrgentUntil:0,_peekLastChangeMs:0,
+    _peekPollGen:0,_peekPollActive:false,_peekPollSession:null,_peekPrevStatus:'active',_peekFullPending:false,_peekLastFullMs:900,_PEEK_HISTORY_REFRESH_MS:30000,
+    sessions:[{name:'lane',status:'waiting'}],_peekPollBeacon(){},_peekUpdateBranch(){},refreshPeek:async live=>refreshes.push(live)});
+  ctx._refreshPeekSoon();assert.equal(timerDelays.get(ctx.peekTimer),40);
+  await timers.get(ctx.peekTimer)();assert.deepEqual(refreshes,[true]);
+  assert.equal(timerDelays.get(ctx.peekTimer),100);
+  now=3000;await timers.get(ctx.peekTimer)();assert.deepEqual(refreshes,[true,false]);
+  assert.ok(timerDelays.get(ctx.peekTimer)>100);
+  ctx.document.hidden=true;ctx._schedulePeekPoll();assert.equal(ctx.peekTimer,null);
+});
+
+
+test('distinct fast taps fire while synthetic click echoes remain suppressed', () => {
+  const {ctx}=fixture(['_btnGestureStart','_btnFire','_btnTouchStart']);
+  let now=1000;let calls=0;
+  const button={closest:()=>button};
+  Object.assign(ctx,{performance:{now:()=>now},_tapTrace:[],_tapTraceEv(){},_btnDbg(){},_btnTouchX:0,_btnTouchY:0});
+  const event=type=>({type,target:button,currentTarget:button,detail:1});
+  ctx._btnGestureStart(event('pointerdown'));ctx._btnFire(event('pointerup'),()=>calls++);
+  ctx._btnFire(event('click'),()=>calls++);assert.equal(calls,1);
+  now+=40;ctx._btnGestureStart(event('pointerdown'));ctx._btnFire(event('pointerup'),()=>calls++);
+  ctx._btnFire(event('click'),()=>calls++);assert.equal(calls,2);
+  now+=40;ctx._btnTouchStart({...event('touchstart'),touches:[{clientX:1,clientY:1}]});
+  ctx._btnFire(event('touchend'),()=>calls++);ctx._btnFire(event('click'),()=>calls++);assert.equal(calls,3);
 });

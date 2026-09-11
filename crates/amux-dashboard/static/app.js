@@ -776,8 +776,10 @@ let _peekEtag = null;    // ETag of last FULL peek response — enables conditio
 let _peekLiveEtag = null; // ETag of last live=1 response — keeps idle polls a cheap 304
 // Adaptive peek polling: fast while the session generates, back off when idle
 // (each idle poll is a cheap 304 anyway), and pause entirely when the tab is hidden.
+let _peekUrgentUntil = 0;    // bounded low-latency window after local input
 let _peekLastChangeMs = 0;   // performance.now() of the last time the live frame ACTUALLY changed
 function _peekPollInterval() {
+  if (performance.now() < _peekUrgentUntil) return 100;
   const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
   const st = s && s.status;
   // CHANGE-DRIVEN cadence. A live=1 poll is ~650B (trimmed frame) / ~33ms server
@@ -798,7 +800,8 @@ function _peekPollInterval() {
 // without waiting for the ~2s-stale SSE status to flip to 'active'.
 function _peekKickFast() {
   _peekLastChangeMs = performance.now();
-  if (peekSession && !document.hidden) _schedulePeekPoll();
+  _peekUrgentUntil = _peekLastChangeMs + 1500;
+  if (peekSession && !document.hidden) _schedulePeekPoll(40);
 }
 let _peekPollGen = 0;
 // Raw timer clear, used on every reschedule, so it must stay beacon-free.
@@ -831,9 +834,10 @@ function _peekPollStop(reason) {
   if (_peekPollActive) { _peekPollBeacon('stop', _peekPollSession, { reason: reason || 'stop' }); _peekPollActive = false; _peekPollSession = null; }
 }
 let _peekLastFullMs = 0;    // when the FULL payload (history) was last fetched
+let _peekFullPending = false; // retain a turn-end history refresh through the input burst
 let _peekPrevStatus = '';   // peeked session's status on the previous poll tick
 const _PEEK_HISTORY_REFRESH_MS = 30000;  // fallback full-refresh cadence while open
-function _schedulePeekPoll() {
+function _schedulePeekPoll(delay) {
   _stopPeekPoll();
   if (!peekSession || document.hidden) {
     // Winding down (no open peek, or tab backgrounded): close out the lifecycle
@@ -851,7 +855,10 @@ function _schedulePeekPoll() {
       const _st = (_s && _s.status) || '';
       const turnEnded = _peekPrevStatus === 'active' && _st !== 'active';
       _peekPrevStatus = _st;
-      const needFull = turnEnded || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS);
+      if (turnEnded) _peekFullPending = true;
+      const needFull = performance.now() >= _peekUrgentUntil
+        && (_peekFullPending || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS));
+      if (needFull) _peekFullPending = false;
       await refreshPeek(!needFull);
       _peekUpdateBranch();
       // Keep the open view's STATUS indicator live too, not just the log. The
@@ -862,7 +869,7 @@ function _schedulePeekPoll() {
     } catch(e) {}
     if (gen !== _peekPollGen) return;
     _schedulePeekPoll();
-  }, _peekPollInterval());
+  }, delay ?? _peekPollInterval());
 }
 // Composer drafts live in ONE place: _draftGet/_draftSave, keyed by session.
 // There used to be three stores (this in-memory map, the peekState snapshot's
@@ -2320,6 +2327,7 @@ function _scheduleSyncRetry() {
 function runSyncBanner(quiet = false) {
   if (_syncFlight) return _syncFlight;
   const before = offlineQueue.length, draftsBefore = drafts.length;
+  const queuedAtStart = new Set(offlineQueue.map(q => q.id));
   const run = async () => { await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
   _syncFlight = (navigator.locks
     ? navigator.locks.request('amux-outbox-replay', run) : run())
@@ -2330,7 +2338,14 @@ function runSyncBanner(quiet = false) {
       // not persist into a working server.
       if (offlineQueue.length < before || drafts.length < draftsBefore) _syncBackoffReset();
       updateConnectionStatus();
-      _scheduleSyncRetry();
+      // New input missed the in-flight snapshot: dispatch on the next tick,
+      // preserving order and the delivery lock without earning outage backoff.
+      const freshInput = offlineQueue.some(q => !queuedAtStart.has(q.id)
+        && q.not_attempted && !q.attempted_at && q.state !== 'blocked');
+      if (freshInput) {
+        clearTimeout(_syncRetryTimer);
+        _syncRetryTimer = setTimeout(() => runSyncBanner(true), 0);
+      } else _scheduleSyncRetry();
     });
   return _syncFlight;
 }
@@ -9939,7 +9954,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.904';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.905';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13569,17 +13584,11 @@ async function sendPeekCmd() {
     _syncComposerPending();
   }
 }
-// Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
-// Claude repaints a picker/selection in <50ms and the peek endpoint serves in
-// ~8ms, so a 90ms refresh + one catch-up feels instant. Coalesced so holding an
-// arrow key (or rapid selection) doesn't storm the endpoint.
-let _peekSoonA = null, _peekSoonB = null;
+// One bounded live-frame poll loop after input. Full history can be hundreds
+// of KB; it must not delay seeing the bytes that just reached the terminal.
 function _refreshPeekSoon() {
-  if (!peekSession) return;
-  clearTimeout(_peekSoonA); clearTimeout(_peekSoonB);
-  _peekSoonA = setTimeout(() => refreshPeek(), 90);
-  _peekSoonB = setTimeout(() => refreshPeek(), 320);
-  _peekKickFast();   // run the poll loop fast so the streaming response is picked up promptly
+  if (!peekSession || document.hidden) return;
+  _peekKickFast();
 }
 async function peekQuickSend(text) {
   if (!peekSession) return;
@@ -15519,10 +15528,16 @@ function _btnDbg(obj) {
       body: JSON.stringify(Object.assign({ ver: APP_VER }, obj)) }).catch(() => {});
   } catch (e) {}
 }
+function _btnGestureStart(e) {
+  const button = e.target?.closest?.('button');
+  if (button) button._fireTs = 0;
+}
+// A distinct press is not an echo of the previous press, even within 350 ms.
+document.addEventListener('pointerdown', _btnGestureStart, true);
 function _btnFire(e, fn) {
   const t = e.currentTarget;
   const now = performance.now();
-  if (t._fireTs && now - t._fireTs < 350) { _tapTraceEv('DEDUP'); return; }   // click echo of the same tap
+  if (!(e.type === 'click' && e.detail === 0) && t._fireTs && now - t._fireTs < 350) { _tapTraceEv('DEDUP'); return; }   // click echo of the same tap
   t._fireTs = now;
   _tapTraceEv('FIRE');
   // Mobile diagnostic: no dead-tap beacon means events DO reach the button, so
@@ -15552,6 +15567,7 @@ function _btnFire(e, fn) {
 // click duplicates when they do arrive.
 let _btnTouchX = 0, _btnTouchY = 0;
 function _btnTouchStart(e) {
+  _btnGestureStart(e);
   const t = e.touches && e.touches[0];
   if (t) { _btnTouchX = t.clientX; _btnTouchY = t.clientY; }
   _tapTraceEv('touchstart');

@@ -2026,3 +2026,27 @@ CARD: AMUX-4417
 SYMPTOM: The user's 11:55:17 screenshot showed a homepage request in Claude's native queue while Messages said not yet delivered. Its exact MSG-55405 server record had direct/confirmed delivery at 11:55:12. Local pending state was tied to the entire POST response, including downstream board processing, instead of the durable acceptance already recorded.
 COST: The client contradicted the terminal and offered cancellation as if an already-attempted message could still be prevented from sending.
 FIX: Expose a read-only, non-cacheable receipt lookup scoped by session and msg_id. During an in-flight send, a bounded lookup can acknowledge the exact durable receipt without repeating delivery or cancelling the original handler's board work. Persist attempted state before transport, label uncertainty as Awaiting confirmation, and refuse local cancellation once attempted; legacy entries without attempt provenance are conservative. acceptance_receipt_read and outbox_acceptance_receipt expose reconciliation. Tests hold the original POST open, reject wrong-ID/unaccepted receipts, and check the real handler never reserves or sends on a lookup.
+
+
+## Rapid input inherits retry backoff and full-history terminal refreshes
+AREA: messaging
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: After confirming the stale queued banner was gone, the user reported a slight delay before input appeared in the terminal. A message appended during an in-flight replay missed its snapshot and inherited retry backoff. The deterministic counterexample selected an 8000 ms timer. The post-input UI also launched two full-history refreshes; five read-only production samples were approximately 128 KB each versus 5 KB for a live frame.
+COST: Rapid messages waited unnecessarily and mobile terminal updates transferred scrollback to display newly arrived input.
+FIX: Newly added, unattempted operations resume on the next tick after the active replay, retaining FIFO delivery and receipt checks. Replace overlapping full refreshes with one bounded live-frame loop: first tick at 40 ms, then 100 ms intervals for 1.5 seconds, with normal cadence afterward. Remember pending turn-end history refreshes. The executable latency regression and its attached dispatch/render measurements detect recurrence; disabling immediate continuation makes the counterexample fail.
+
+
+## Send button mistakes a second rapid press for the first tap's click echo
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The rapid-send lifecycle case failed on desktop, mobile and iPhone WebKit: the first local send cleared, but the second distinct message remained in the composer after Send. _btnFire suppressed every activation within 350 ms instead of only the synthesized echo of one gesture.
+COST: A legitimate new message required another tap and made the local-first composer appear stuck.
+FIX: Reset per-button echo suppression on a new pointerdown/touchstart and allow distinct keyboard activation. Keep the same gesture's pointerup/touchend/click echoes deduplicated. The rapid-send UI case exercises two different messages and verifies two unique IDs, immediate continuation and terminal rendering; the event contract verifies duplicate echoes still fire once. Existing send-fire diagnostics retain the pre/post composer length and event sequence.
