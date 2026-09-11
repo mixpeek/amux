@@ -7250,20 +7250,17 @@ function _draftClear(session) {
 // Consume exactly the accepted draft, including a focused or re-rendered
 // textarea. Draft mirroring deliberately skips focus; submission must not.
 function _composerAcceptLocal(session, original) {
+  clearTimeout(_draftTimers[session || '_']);
   const inputs = [document.getElementById('input-' + session)];
   if (peekSession === session) inputs.push(document.getElementById('peek-cmd-input'));
   for (const input of inputs) {
-    if (input && input.value === original) {
+    if (input && (input.value === original || input.value)) {
       input.value = ''; input.style.height = 'auto';
       try { autoGrow(input); } catch (_) {}
     }
   }
-  if (_draftGet(session) === original) {
-    clearTimeout(_draftTimers[session || '_']);
-    const live = _liveComposerValue(session);
-    _draftSave(session, live == null || live === original ? '' : live);
-  }
-  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: _liveComposerValue(session) !== original, measured:true, n_considered:1}); } catch (_) {}
+  _draftClear(session);
+  try { amuxTrack('composer_locally_accepted', {session, draft_cleared: true, measured:true, n_considered:1}); } catch (_) {}
 }
 
 // Push a session's draft into EVERY composer showing that session right now:
@@ -9837,7 +9834,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.897';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.898';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12561,6 +12558,7 @@ function _expandPeekInput() {
   const ta = document.getElementById('peek-input-fs-ta');
   if (!inp || !fs || !ta) return;
   ta.value = inp.value;
+  _atAttach(ta);
   fs.classList.add('open');
   setTimeout(() => { ta.focus(); try { ta.selectionStart = ta.selectionEnd = ta.value.length; } catch (e) {} }, 50);
 }
@@ -13508,11 +13506,11 @@ function _showSteerPrompt(text) {
 async function steerSession(name, text) {
   if (!text) return;
   const msgId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
+  const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text, record_history: true, msg_id: msgId })
+    body: JSON.stringify({ text, record_history: true, msg_id: msgId }),
+    signal: AbortSignal.timeout(10000)
   });
-  if (_isLocallyQueued(r)) return true;
   if (r && r.ok) {
     const d = await r.json().catch(() => ({}));
     const newEntry = { id: d.id || ('steer-' + Date.now()), text, queued_at: Date.now() / 1000, guard: '' };

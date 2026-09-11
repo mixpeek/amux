@@ -612,6 +612,11 @@ PYIDENTITY
     if cmp -s "$INSTALL_TMP" "$INSTALL"; then
       echo "== ACTIVATION IDENTICAL BINARY sha=$built_sha action=skip_install — keeping executable inode and mtime; no self-adoption"
       rm -f "$INSTALL_TMP"
+      # The live binary may still carry com.apple.provenance from a prior
+      # install that predates the stripping above. Strip it here too so the
+      # skip path doesn't leave a stale provenance that Gatekeeper re-verifies
+      # on every launch (root cause of the recurring TCC dialog, AMUX-3527).
+      xattr -d com.apple.provenance "$INSTALL" 2>/dev/null || true
       install_action=unchanged
     else
       mv -f "$INSTALL_TMP" "$INSTALL"
