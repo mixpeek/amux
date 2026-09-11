@@ -4466,7 +4466,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onpaste="handleCardPaste('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
-          <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" ${_composerPendingSends.has(s.name) ? 'disabled' : ''} onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_composerPendingSends.has(s.name) ? 'Sending…' : (_sendMode === 'queue' ? 'Queue' : 'Send')}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
+          <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" ${_composerPendingSends.has(s.name) ? 'disabled' : ''} onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_composerPendingSends.has(s.name) ? (_sendMode === 'queue' ? 'Queuing…' : 'Sending…') : (_sendMode === 'queue' ? 'Queue' : 'Send')}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
         </div>` : ''}
       </div>
     </div>`;
@@ -13346,7 +13346,7 @@ function _syncComposerPending() {
     if (!btn) return;
     const pending = _composerPendingSends.has(session);
     btn.disabled = pending;
-    btn.textContent = pending ? 'Saving…' : (_sendMode === 'queue' ? 'Queue' : 'Send');
+    btn.textContent = pending ? (_sendMode === 'queue' ? 'Queuing…' : 'Sending…') : (_sendMode === 'queue' ? 'Queue' : 'Send');
   };
   sync(document.querySelector('#peek-overlay .send-split-main'), peekSession);
   document.querySelectorAll('.card[data-session]').forEach(card =>
