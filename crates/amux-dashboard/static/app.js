@@ -1165,10 +1165,11 @@ function showConnHistory() {
   modal.onclick = e => { if (e.target === modal) modal.remove(); };
   modal.innerHTML = '<div onclick="event.stopPropagation()" style="background:var(--bg);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;max-height:80dvh;overflow:auto;padding:1.2rem;box-shadow:0 8px 32px rgba(0,0,0,0.4);">'
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
-    + '<span style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
+    + '<span id="conn-modal-status" style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
     + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Connection interruptions on this device (this browser)</div>'
-    + _pingWidgetHtml() + _sessionReadNotice() + rows + blipHtml + pendingHtml + clearHtml + '</div>';
+    + _pingWidgetHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
+  modal.querySelector('#conn-modal-read-notice')._noticeHTML = _sessionReadNotice();
 }
 
 // ═══════ DEVICE NAME / CLOUD IDENTITY ═══════
@@ -1959,7 +1960,8 @@ function updateConnectionStatus() {
     : (_boardReadError || _syncReadError ? 'error' : null);
   _recordConnState(readState || (!online ? 'offline' : (_liveSSE ? 'live' : 'polling')));
   // Update all connection status indicators (main + peek)
-  document.querySelectorAll('#conn-status').forEach(el => {
+  document.querySelectorAll('#conn-status, #conn-modal-status').forEach(el => {
+    if (el.id === 'conn-modal-status') el.style.color = '';
     if (readState) {
       el.className = 'conn-status offline';
       el.textContent = readState === 'auth' ? 'Access required' : 'Sync error';
@@ -1980,6 +1982,16 @@ function updateConnectionStatus() {
   });
   const notice = document.getElementById('session-read-notice');
   if (notice && notice.innerHTML) { notice.innerHTML = ''; notice._noticeHTML = ''; }
+  // Keep an open error modal current, including successful Retry. Preserve
+  // expanded details while the error is unchanged.
+  const modalNotice = document.getElementById('conn-modal-read-notice');
+  if (modalNotice) {
+    const html = _sessionReadNotice();
+    if (modalNotice.innerHTML !== html && modalNotice._noticeHTML !== html) {
+      modalNotice.innerHTML = html;
+    }
+    modalNotice._noticeHTML = html;
+  }
   // Update offline banner
   const banner = document.getElementById('offline-banner');
   const ops = document.getElementById('offline-ops');
@@ -3316,7 +3328,7 @@ function _sessionReadNotice() {
   const auth = _sessionLoadError.status === 401;
   const pending = offlineQueue.length + drafts.length;
   const offlineCaps = sessions.length
-    ? ' The workers shown below are the last saved copy.' + (pending
+    ? ' The worker list is showing the last saved copy.' + (pending
         ? ' ' + pending + ' queued operation' + (pending === 1 ? '' : 's') + ' will sync automatically when the server returns.'
         : ' Commands you send will be queued and delivered when the server returns.')
     : '';
@@ -9828,7 +9840,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.898';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.899';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

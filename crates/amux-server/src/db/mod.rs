@@ -378,7 +378,20 @@ fn writer_loop(
     events_tx: tokio::sync::broadcast::Sender<StateEvent>,
 ) {
     while let Ok(req) = rx.recv() {
-        let result = apply_write(&conn, req.work, &events_tx);
+        // A panicking caller must not kill the sole writer and strand every
+        // later mutation. The transaction guard rolls back during unwinding.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            apply_write(&conn, req.work, &events_tx)
+        })).unwrap_or_else(|_| {
+            tracing::error!(target: "store", verdict = "writer_mutation_panicked",
+                "mutation panicked; transaction rolled back, writer remains available");
+            Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::other("writer mutation panicked; transaction rolled back"))))
+        });
+        if let Err(error) = &result {
+            tracing::warn!(target: "store", verdict = "writer_mutation_failed", %error,
+                autocommit = conn.is_autocommit(), "mutation failed; no acknowledgement was issued");
+        }
         // A dropped reply receiver just means the caller gave up waiting;
         // the write itself has already committed either way.
         let _ = req.reply.send(result);
@@ -392,14 +405,11 @@ fn apply_write(
     work: WriteFn,
     events_tx: &tokio::sync::broadcast::Sender<StateEvent>,
 ) -> rusqlite::Result<WriteReply> {
-    conn.execute_batch("BEGIN IMMEDIATE")?;
-    let outcome = match work(conn) {
-        Ok(o) => o,
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            return Err(e);
-        }
-    };
+    // Roll back EVERY failure path, including revision/event writes, failed
+    // COMMIT and unwinding. A bare BEGIN left the connection in a transaction
+    // after those errors, making all later mutations fail until restart.
+    let transaction = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let outcome = work(&transaction)?;
     let mut committed_events = Vec::new();
     let rev = if outcome.applied {
         // Bump the global revision once per applied transaction; every event
@@ -451,7 +461,7 @@ fn apply_write(
         let rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
         StateRevision(rev)
     };
-    conn.execute_batch("COMMIT")?;
+    transaction.commit()?;
     // Publish only after commit: a subscriber must never see an event whose
     // transaction later rolled back.
     for ev in &committed_events {

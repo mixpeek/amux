@@ -31,7 +31,9 @@ for (const cached of [false, true]) {
       return route.fulfill({status:401,json:{error:'unauthorized',reason:'missing_credential'}});
     });
     await page.goto('/');
-    const notice = page.locator('#session-read-notice');
+    await expect(page.locator('#session-read-notice')).toBeEmpty();
+    await page.locator('#conn-status').first().click();
+    const notice = page.locator('#conn-modal-read-notice');
     await expect(notice).toContainText('Access to this workspace needs to be renewed');
     await expect(page.locator('#conn-status').first()).toHaveText('Access required');
     await expect(page.locator('#cards')).not.toContainText('Connecting to server');
@@ -68,7 +70,9 @@ for (const failure of [
     await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({status:failure.status,
       contentType:'application/json',body:failure.body}));
     await page.goto('/');
-    await expect(page.locator('#session-read-notice')).toContainText('Worker updates are unavailable');
+    await expect(page.locator('#session-read-notice')).toBeEmpty();
+    await page.locator('#conn-status').first().click();
+    await expect(page.locator('#conn-modal-read-notice')).toContainText('Worker updates are unavailable');
     await expect(page.locator('#conn-status').first()).toHaveText('Sync error');
     await expect(page.locator('#cards')).not.toContainText('Connecting to server');
     const evidence = await page.evaluate(() => JSON.parse(sessionStorage.getItem('amux_session_load_failure') || '{}'));
@@ -97,7 +101,9 @@ test('a transient worker-list overload heals without making the user click Retry
     return route.fulfill({status:200, contentType:'application/json', body:'[]'});
   });
   await page.goto('/#view=workers');
-  const notice = page.locator('#session-read-notice');
+  await expect(page.locator('#session-read-notice')).toBeEmpty();
+  await page.locator('#conn-status').first().click();
+  const notice = page.locator('#conn-modal-read-notice');
   await expect(notice).toContainText('Worker updates are unavailable');
   await expect.poll(() => attempts).toBe(2);
   await expect(notice).toBeEmpty();
@@ -121,7 +127,9 @@ test('an authorization failure does not start the transient-error retry loop', a
       body:'{"error":"unauthorized","reason":"invalid_bearer"}'});
   });
   await page.goto('/#view=workers');
-  await expect(page.locator('#session-read-notice')).toContainText('Access to this workspace needs to be renewed');
+  await expect(page.locator('#session-read-notice')).toBeEmpty();
+  await page.locator('#conn-status').first().click();
+  await expect(page.locator('#conn-modal-read-notice')).toContainText('Access to this workspace needs to be renewed');
   await page.waitForTimeout(1500);
   expect(attempts).toBe(1);
 });
@@ -139,9 +147,12 @@ for (const initial of ['', 'obsolete-test-credential']) {
     const statuses: number[] = [];
     page.on('response', r => { if (new URL(r.url()).pathname === '/api/sessions') statuses.push(r.status()); });
     await page.goto('/#view=workers');
-    await expect(page).toHaveURL(/\?_fresh=auth#view=workers/);
+    // URL equality can become true before the replacement document loads.
+    // Wait for that document before evaluating its roster (AMUX-4416).
+    await page.waitForURL(/\?_fresh=auth#view=workers/, {waitUntil:'load'});
     await expect.poll(() => statuses.some(s => s === 401)).toBe(true);
-    await expect.poll(() => statuses.some(s => s === 200)).toBe(true);
+    // Bootstrap recovery itself has a 12s deadline; a 5s assertion truncated it.
+    await expect.poll(() => statuses.some(s => s === 200), {timeout:15000}).toBe(true);
     await expect(page.locator('#session-read-notice')).toBeEmpty();
     // Recovery must display the server's real roster. This project may already
     // contain workers created by earlier scenarios; bootstrap is not a reset.

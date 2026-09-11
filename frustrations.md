@@ -3637,3 +3637,14 @@ CARD: AMUX-4409
 SYMPTOM: Two archive fixtures omitted the now-required authorizer; the Python boundary capture still expected env-only group membership. The browser error guard also found a new profile-merge join error rendered without the shared cause formatter, and the tmux target audit found a stale-pane cleanup using prefix matching.
 COST: Five integration failures obscured the mobile acceptance verdict; a stale cleanup target could match a sibling session. Mobile subagent fixtures also used 1970 timestamps despite the current freshness filter, and repeated large-file fixtures consumed test disk space.
 FIX: Name the fixture owner for intentional archive actions, retain the historical capture while explicitly pinning the evolved native-worker group contracts, use with_cause for the join error, and build the cleanup target with session_target for exact matching. Refresh active-agent fixture timestamps, keep a stale-agent negative control, and release generated large uploads after recording their hashes. Existing denial, error-chain and target-audit controls remain in place.
+
+## A dead database writer left health green while browser sync failed
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4416
+SYMPTOM: During host ENOSPC, heartbeat repeatedly reported "writer thread is gone" and request-log rows were dropped, while /health returned store:"ok" from a read-only probe. The browser retained 26 queued operations. Failure injection also showed journal and COMMIT errors poisoning the next transaction.
+COST: Hours of failed writes could look healthy to the watchdog and an empty request-log analysis; cache deletion did not free snapshot-retained blocks. Recovery required explicit snapshot-reclamation approval and an API restart. Separate reader-pool exhaustion during recovery is not attributed to a specific borrower by these tests.
+FIX: Guard every write transaction through commit, catch mutation unwinding without killing the writer, emit failure verdicts, and include a bounded no-op writer transaction in health. Four baseline regressions failed before the change; panic, journal, commit, unwritable-writer and stalled-writer cases now cover recovery. Keep the detailed read failure in the Sync error modal and update it on recovery. See docs/incidents/2026-09-11-offline-sync.md for the causal limits.

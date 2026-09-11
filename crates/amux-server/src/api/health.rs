@@ -493,6 +493,11 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             let task = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 phase.store(1, std::sync::atomic::Ordering::Relaxed);
+                // Readability alone concealed a dead writer for hours while
+                // every queued mutation failed. Exercise the serialized write
+                // path without changing the revision or creating an event.
+                store.write(|_| Ok(crate::db::WriteOutcome { applied: false, events: vec![] }))
+                    .map_err(|_| "writer_probe_failed")?;
                 let conn = store.try_read().ok_or("read_pool_exhausted")?;
                 phase.store(2, std::sync::atomic::Ordering::Relaxed);
                 let rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))
