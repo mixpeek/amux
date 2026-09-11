@@ -391,7 +391,7 @@ impl TerminalAdapter {
                 })];
             }
         }
-        match self.provider.as_str() {
+        let mut events = match self.provider.as_str() {
             "claude" | "claude-code" => scan_claude(&clean, &self.provider),
             "gemini" => scan_gemini(&clean, &self.provider),
             "codex" => scan_codex(&clean, &self.provider),
@@ -401,7 +401,21 @@ impl TerminalAdapter {
             // (Invariant 8 / Invariant 20's rule generalized: never report
             // what was not observed through a pattern we actually hold).
             _ => Vec::new(),
+        };
+        // Events are applied in order. A resting composer beneath an error or
+        // quota warning is chrome, not a later state transition to Waiting.
+        if events.iter().any(|e| matches!(e, WorkerEvent::RateLimited(_) | WorkerEvent::Failed(_))) {
+            events.retain(|e| !matches!(e, WorkerEvent::Waiting(w) if w.reason == "idle_prompt"));
+            // Credit menus can also expose a real selector. Keep that evidence,
+            // but apply the provider failure after it so the durable state does
+            // not depend on the incidental order of screen rows.
+            events.sort_by_key(|e| match e {
+                WorkerEvent::RateLimited(_) => 1,
+                WorkerEvent::Failed(_) => 2,
+                _ => 0,
+            });
         }
+        events
     }
 
     /// Does the pane show the worker actively GENERATING, by scrape?
@@ -522,6 +536,31 @@ fn auth_failure_state(clean: &str) -> Option<String> {
 /// marker. A ❯ with transcript markers BELOW it is an echoed message, not
 /// the input box — cutting there blinded every banner class on manual-mode
 /// panes (py 6958-6963, AMUX-2111 respecimen).
+/// Claude's native automatic-resume warning lives BELOW the composer. It is
+/// infrastructure, not a selector, and survives the completed-turn row above it.
+/// Require provider chrome and a warning in the current footer, never transcript
+/// prose or an earlier prompt. The caller may pass ANSI-decorated captures.
+pub(crate) fn claude_auto_resume_banner(raw: &str) -> Option<String> {
+    let clean = strip_ansi(raw);
+    let lines = nonempty_trimmed(&clean);
+    let bar = lines.iter().rposition(|line| {
+        line.contains("⏵⏵") || line.contains("bypass permissions on")
+    })?;
+    if lines.len() - bar > 5 || lines[bar].contains("esc to interrupt") {
+        return None;
+    }
+    let start = lines[..bar].iter().rposition(|line| *line == "❯")
+        .map(|i| i + 1).unwrap_or_else(|| bar.saturating_sub(8));
+    let footer = lines[start..bar].join(" ");
+    let warning = footer.find("⚠ Usage limit reached")?;
+    let warning = &footer[warning..];
+    if warning.contains("· continuing automatically at ") && warning.contains("esc to cancel") {
+        Some(warning.to_string())
+    } else {
+        None
+    }
+}
+
 fn live_limit_region(clean: &str) -> String {
     let all: Vec<&str> = clean.lines().collect();
     let start = all.len().saturating_sub(30);
@@ -725,7 +764,8 @@ fn claude_tui_state(clean: &str) -> TuiState {
 
     // Step 2: last 12 lines bottom-up for the most recent signal
     // (py 18540-18578).
-    for s in ne.iter().rev().take(12) {
+    let current = ne.iter().rposition(|s| *s == "❯").map(|i| &ne[i..]).unwrap_or(&ne);
+    for s in current.iter().rev().take(12) {
         let sl = s.to_lowercase();
         if !is_prompt_line(s) && is_dingbat_lead(s) {
             if s.contains('…') {
@@ -842,6 +882,9 @@ fn scan_claude(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     let tail12 = last_n_raw_lines(clean, 12);
     let tail30 = last_n_raw_lines(clean, 30);
+    if let Some(banner) = claude_auto_resume_banner(clean) {
+        return vec![rate_limited(RateLimitKind::SubscriptionCap, None, provider, banner)];
+    }
     let state = claude_tui_state(clean);
 
     // Activity veto (py 7117-7154): an actively-generating session is, by
@@ -983,6 +1026,36 @@ fn scan_claude(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
     events
 }
 
+/// Current provider-owned picker, excluding quoted options above a newer
+/// composer. Model names/effort do not determine whether input is required.
+fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
+    let lines = nonempty_trimmed(clean);
+    let lines = &lines[lines.len().saturating_sub(12)..];
+    let selected = lines.iter().rposition(|line| match provider {
+        "codex" | "ollama" => codex_picker_option(line),
+        "gemini" => line.strip_prefix("│ ● ").and_then(|rest| rest.split_once('.'))
+            .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())),
+        _ => false,
+    })?;
+    if lines[selected + 1..].iter().any(|line| {
+        is_prompt_line(line) || line.contains("Type your message")
+    }) { return None; }
+    let tail = lines.join(" ").to_lowercase();
+    if provider != "gemini" && !tail.contains("press enter to continue")
+        && !tail.contains("enter to select") && !tail.contains("esc to cancel") {
+        return None;
+    }
+    Some(if tail.contains("trust") && tail.contains("directory") { "trust_prompt" }
+        else if tail.contains("allow execution") || tail.contains("approve") || tail.contains("do you want to proceed") { "permission_prompt" }
+        else { "user_input" })
+}
+
+fn codex_picker_option(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("› ") else { return false; };
+    let Some((number, _)) = rest.split_once('.') else { return false; };
+    !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+}
+
 fn scan_gemini(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     let tail30 = last_n_raw_lines(clean, 30);
@@ -1003,6 +1076,10 @@ fn scan_gemini(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
             provider,
             m.as_str().trim().to_string(),
         ));
+    }
+    if let Some(reason) = provider_picker_reason(clean, "gemini") {
+        events.push(WorkerEvent::Waiting(WaitReason { reason: reason.into(), detail: None }));
+        return events;
     }
     // Status (py 18694-18709): "esc to cancel" renders only DURING
     // generation; "Type your message" only at an empty, resting input.
@@ -1119,6 +1196,7 @@ fn codex_background_status_line(line: &str) -> bool {
 }
 
 fn codex_generating(clean: &str) -> bool {
+    if provider_picker_reason(clean, "codex").is_some() { return false; }
     codex_generation_state_clean(clean).unwrap_or(false)
 }
 
@@ -1161,6 +1239,10 @@ fn scan_codex(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
             provider,
             m.as_str().trim().to_string(),
         ));
+    }
+    if let Some(reason) = provider_picker_reason(clean, "codex") {
+        events.push(WorkerEvent::Waiting(WaitReason { reason: reason.into(), detail: None }));
+        return events;
     }
     // Active: "• Working (Xs • esc to interrupt)" (py 18591-18599). The active
     // STATE is applied by the caller via `TerminalAdapter::generating` (Active

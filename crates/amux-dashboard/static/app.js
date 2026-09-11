@@ -601,9 +601,11 @@ let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
 let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle' | 'stopped'
 // Stable status key for filtering: card WORKING = 'active' internally.
 function _sessStatusKey(s) {
+  if (s.status === 'starting') return 'starting';
   if (!s.running) return 'stopped';
   if (s.status === 'rate_limited') return 'rate_limited';
   if (s.status === 'api_error') return 'api_error';
+  if (s.status === 'error') return 'error';
   if (s.status === 'unattributed') {
     const rb = s.runtime_board || {};
     return rb.runtime_status === 'active' ? 'working' : 'waiting';
@@ -3323,8 +3325,8 @@ function _checkSessionTransitions(newData) {
       if (s.status === 'blocked') {
         _fireSessionNotif(s.name, s.name + ' blocked on permission', s.task_name || 'Waiting on a permission dialog');
         amuxTrack('session_blocked', { session: s.name, task: s.task_name || '' });
-      } else if (s.status === 'waiting') {
-        _fireSessionNotif(s.name, s.name + ' needs input', s.task_name || 'Waiting for a response');
+      } else if (s.status === 'waiting' && s.waiting_reason !== 'rate_limit') {
+        _fireSessionNotif(s.name, s.name + ' ' + _waitingLabel(s), s.task_name || 'Worker is waiting');
         amuxTrack('session_waiting', { session: s.name, task: s.task_name || '', auto_continue: !!s.auto_continue });
       } else if (s.status === 'active' && prev.status !== 'active') {
         _fireSessionNotif(s.name, s.name + ' started working', s.task_name || '');
@@ -3628,7 +3630,7 @@ function _waitingLabel(s) {
   // because the remedy is different: look at the composer, not a picker.
   if (s.composer_stuck_since) return 'unsubmitted text';
   if (wr === 'user_input') return 'needs input';
-  return 'needs input';
+  return 'waiting';
 }
 // Tooltip for a waiting badge: the stuck composer text, when that is the reason.
 function _waitingTitle(s) {
@@ -3822,6 +3824,25 @@ function _stalledChip(s) {
     + w.ready + ' ready</span>';
 }
 
+function _workerExecutionBadge(s, runtimeBoard) {
+  let badge = '';
+  if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
+  else if (!s.running) badge = '<span class="status-badge idle">stopped</span>';
+  else if (s.status === 'error') badge = '<span class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '">error</span>';
+  else if (s.status === 'active')  badge = runtimeBoard.syncing
+    ? _runtimeBoardSyncBadge()
+    : '<span class="status-badge active">working</span>' + _agentsChip(s)
+      + (runtimeBoard.cardless ? _runtimeBoardCardlessBadge() : '');
+  else if (s.status === 'unattributed') badge = _runtimeBoardSplitBadge(s);
+  else if (s.status === 'blocked') badge = '<span class="status-badge blocked" title="Agent is waiting on a permission decision. Do not send automated messages.">blocked</span>';
+  else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
+  else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
+  else if (s.status === 'api_error') badge = `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;.">API ${esc(s.api_error_code || '5xx')}</span>`;
+  else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>';
+
+  return badge;
+}
+
 function updatePeekStatus() {
   const el = document.getElementById('peek-session-status');
   if (!el || !peekSession) { if (el) el.innerHTML = ''; return; }
@@ -3851,18 +3872,9 @@ function updatePeekStatus() {
   // the same output live, so this was a lossy 60-char summary of something
   // already on screen. amux is mobile-first — when the phone and a nice-to-have
   // trade off, the phone wins.
-  if (s.status === 'active')  badge = runtimeBoard.syncing
-    ? _runtimeBoardSyncBadge()
-    : '<span class="status-badge active">working</span>' + _agentsChip(s)
-      + (runtimeBoard.cardless ? _runtimeBoardCardlessBadge() : '');
-  else if (s.status === 'unattributed') badge = _runtimeBoardSplitBadge(s);
-  else if (s.status === 'blocked') badge = '<span class="status-badge blocked" title="Agent is waiting on a permission decision. Do not send automated messages.">blocked</span>';
-  else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
-  else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
-  else if (s.status === 'api_error') badge = `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;.">API ${esc(s.api_error_code || '5xx')}</span>`;
-  else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>' + _stalledChip(s);
-  else if (!s.running)             badge = '<span class="status-badge" style="background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);">stopped</span>';
-  if (s.rate_limited_until) {
+  badge = _workerExecutionBadge(s, runtimeBoard);
+  if (s.running && s.status === 'idle') badge += _stalledChip(s);
+  if (s.running && s.rate_limited_until) {
     const _lbl = s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until';
     badge += `<span class="status-badge rate-limited" style="margin-left:6px;">${_lbl} ${_fmtResetTime(s.rate_limited_until)}</span>`;
   }
@@ -4497,20 +4509,10 @@ function render() {
         </div>
         </div>
         ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || s.credit_limited || s.sched_on || s.sched_off || !online) ? `<div class="card-header-meta">
-${/* A lane at a limit banner is not WORKING, and a working lane is not
-              limited — showing both asserts a contradiction (Ethan's screenshot:
-              three lanes wearing WORKING + RATE-LIMITED at once, because a turn
-              that hits the banner never fires Stop and the active latch keeps
-              claiming work). The payload now only reports FUTURE limits, so when
-              rate_limited_until is set it is the true state and it supersedes
-              the status badge outright (AMUX-2566). */ ''}          ${s.rate_limited_until ? '' : `${s.status === 'rate_limited' ? '<span class="status-badge rate-limited" title="Hit a usage limit (on credits or waiting for reset)">rate limited</span>' : ''}${s.status === 'active' ? (runtimeBoard.syncing ? _runtimeBoardSyncBadge() : '<span class="status-badge active">working</span>' + _agentsChip(s) + (runtimeBoard.cardless ? _runtimeBoardCardlessBadge() : '')) : ''}
-          ${s.status === 'unattributed' ? _runtimeBoardSplitBadge(s) : ''}
-          ${s.status === 'blocked' ? '<span class="status-badge blocked" title="Agent is waiting on a permission decision. Do not send automated messages.">blocked</span>' : ''}
-          ${s.status === 'waiting' ? `<span class="status-badge waiting"${_waitingTitle(s)}>${_waitingLabel(s)}</span>${_stalledFor(s)}` : ''}
-          ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}`}
-          ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
-          ${s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
-          ${s.api_error ? `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot; (Bulk actions).">API ${esc(s.api_error_code || '5xx')}${s.api_error_count > 1 ? ' &times;' + s.api_error_count : ''}</span>` : ''}
+          ${!s.running || !s.rate_limited_until ? _workerExecutionBadge(s, runtimeBoard) : ''}
+          ${s.running && s.status === 'waiting' ? _stalledFor(s) : ''}
+          ${s.running && s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
+          ${s.running && s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
           ${_steerHumanCount(s) ? `<span class="status-badge steering" title="${_steerHumanCount(s)} steering message${_steerHumanCount(s)>1?'s':''} queued">${_steerHumanCount(s)} queued</span>` : ''}
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
           ${(() => {
@@ -9959,7 +9961,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.906';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.907';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10239,6 +10241,8 @@ function openPeek(name, opts) {
   }
   _lastPeekedSession = name;   // remembered for the Messages view's default filter
   _peekScrollLocked = false;
+  _peekFollowBottom = !(opts && opts.query);
+  _peekWatchBottom();
   _peekBufferedOutput = false;
   _hideScrollLockBadge(document.getElementById('peek-body'));
   // Reset the Plan strip so it reloads for the new session (no stale flash).
@@ -10386,7 +10390,7 @@ function openPeek(name, opts) {
       if (!lastPeekHTML) {
         if (_paintCachedPeek(cached)) {
           const body = document.getElementById('peek-body');
-          body.scrollTop = body.scrollHeight;
+          if (_peekFollowBottom) body.scrollTop = body.scrollHeight;
         }
       }
     }, 30);
@@ -10520,6 +10524,8 @@ function copyPeekContent() {
 }
 
 function closePeek() {
+  _peekFollowBottom = false;
+  _peekStopBottomWatch();
   _peekAgentsReset();
   _closePeekFilters();
   _peekLeaseStop();   // AMUX-2634: stop holding the worker's pane at our width
@@ -11624,6 +11630,44 @@ function wrapBoxBlocks(html) {
 let peekSelecting = false;
 let _peekScrollLocked = false;
 let _peekBufferedOutput = false;
+let _peekFollowBottom = false;
+let _peekBottomResize = null, _peekBottomMutation = null, _peekBottomFrame = 0;
+
+function _peekKeepBottom() {
+  if (!_peekFollowBottom || _peekScrollLocked || peekSearchQuery.trim() || _peekAgents.selected || peekSelecting) return;
+  const body = document.getElementById('peek-body');
+  if (!document.getElementById('peek-overlay').classList.contains('active')) return;
+  const gap = body.scrollHeight - body.scrollTop - body.clientHeight;
+  body.scrollTop = body.scrollHeight;
+  if (gap > 40) _peekPollBeacon('bottom-anchor-restored', peekSession, { gap_px: Math.round(gap), verdict: 'following_latest' });
+}
+function _peekWatchBottom() {
+  _peekStopBottomWatch();
+  const body = document.getElementById('peek-body');
+  const schedule = () => {
+    if (_peekBottomFrame) return;
+    _peekBottomFrame = requestAnimationFrame(() => { _peekBottomFrame = 0; _peekKeepBottom(); });
+  };
+  // Content and viewport change independently: history/cache paints, font
+  // wrapping, the plan strip, and the phone keyboard all move the bottom.
+  _peekBottomResize = new ResizeObserver(schedule);
+  _peekBottomResize.observe(body);
+  _peekBottomMutation = new MutationObserver(() => {
+    _peekBottomResize.disconnect();
+    _peekBottomResize.observe(body);
+    for (const child of body.children) _peekBottomResize.observe(child);
+    schedule();
+  });
+  _peekBottomMutation.observe(body, { childList: true, subtree: true, characterData: true });
+  schedule();
+}
+function _peekStopBottomWatch() {
+  if (_peekBottomResize) _peekBottomResize.disconnect();
+  if (_peekBottomMutation) _peekBottomMutation.disconnect();
+  cancelAnimationFrame(_peekBottomFrame); _peekBottomFrame = 0;
+}
+function _peekStopFollowing() { _peekFollowBottom = false; }
+
 
 function _isScrolledToBottom(el, threshold) {
   return el.scrollHeight - el.scrollTop - el.clientHeight < (threshold || 40);
@@ -11668,6 +11712,9 @@ function _peekScrollAffordance() {
   if (_isScrolledToBottom(body)) { _hideScrollLockBadge(body); return; }
   _showScrollLockBadge(body, () => {
     _peekScrollLocked = false;
+    _peekFollowBottom = true;
+    _peekBufferedOutput = false;
+    applyPeekSearch(false, false);
     body.scrollTop = body.scrollHeight;
     _hideScrollLockBadge(body);
   }, _peekBufferedOutput);
@@ -12110,13 +12157,14 @@ async function refreshPeek(liveOnly, bypassTrim) {
       if (!histChanged && _liveEl) { _liveEl.innerHTML = _lastLiveHTML; _peekReclassifyPrompts(); }   // live tick → swap the small region only
       else applyPeekSearch(false);
     }
-    if (!_peekScrollLocked && atBottom && !hasSearch) {
+    if (!_peekScrollLocked && (atBottom || _peekFollowBottom) && !hasSearch) {
       body.scrollTop = body.scrollHeight;
       _peekBufferedOutput = false;
       _hideScrollLockBadge(body);
     } else if (_peekBufferedOutput) {
       _showScrollLockBadge(body, () => {
         _peekScrollLocked = false;
+        _peekFollowBottom = true;
         _peekBufferedOutput = false;
         applyPeekSearch(false, false);
         body.scrollTop = body.scrollHeight;
@@ -12531,6 +12579,7 @@ function _peekJumpGeometry(el) {
       && rect.right > bounds.left && rect.left < bounds.right};
 }
 function _peekJumpTo(el) {
+  _peekFollowBottom = false;
   const g = _peekJumpGeometry(el);
   _peekScrollLocked = true;
   // A search match inside a wide terminal table also needs its own horizontal
@@ -17420,7 +17469,7 @@ function closeFiltersModal() {
 const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
-const _STATUS_LABELS = { working: 'Working', blocked: 'Blocked', waiting: 'Needs input', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped' };
+const _STATUS_LABELS = { starting: 'Starting', error: 'Error', working: 'Working', blocked: 'Blocked', waiting: 'Waiting', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped' };
 function renderFilterOptions() {
   const live = sessions.filter(s => !s.archived);
   // Status chips — fixed order, only states that exist (or are selected)
@@ -22183,13 +22232,27 @@ function peekCheckSelection() {
     peekSelecting = false;
   }
 }
-document.getElementById('peek-body').addEventListener('mousedown', () => { peekSelecting = true; clearTimeout(peekSelectTimer); });
+document.getElementById('peek-body').addEventListener('mousedown', () => { _peekStopFollowing(); peekSelecting = true; clearTimeout(peekSelectTimer); });
 document.getElementById('peek-body').addEventListener('touchstart', () => { peekSelecting = true; clearTimeout(peekSelectTimer); }, {passive: true});
+const _peekScrollBody = document.getElementById('peek-body');
+_peekScrollBody.addEventListener('wheel', _peekStopFollowing, {passive: true});
+_peekScrollBody.addEventListener('touchmove', _peekStopFollowing, {passive: true});
+_peekScrollBody.addEventListener('keydown', e => {
+  if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(e.key)) _peekStopFollowing();
+});
+_peekScrollBody.addEventListener('pointerdown', e => {
+  const bounds = _peekScrollBody.getBoundingClientRect();
+  if (e.clientX >= bounds.right - 18) _peekStopFollowing();
+});
 document.getElementById('peek-body').addEventListener('scroll', function() {
+  // A layout-generated scroll is not a request to read history. User gestures
+  // and explicit navigation relinquish following before their scroll occurs.
+  if (_peekFollowBottom) { _peekKeepBottom(); return; }
   // Programmatic message/search jumps can land at the finite scroll boundary.
   // That scroll event is still navigation, not a request to resume live output.
   if (_isScrolledToBottom(this) && !this.querySelector('.peek-msg-current, .peek-highlight.current')) {
     _peekScrollLocked = false;
+    _peekFollowBottom = true;
     _peekBufferedOutput = false;
     _hideScrollLockBadge(this);
   } else {
@@ -22620,7 +22683,10 @@ const _STATUS_PRI = {active: 0, waiting: 0, idle: 1, '': 1};
 // Pins cannot move an idle worker into the working group (AMUX-4237).
 const _WORKER_STATUS_GROUPS = [
   { key: 'working', label: 'Working', defaultOpen: true },
-  { key: 'waiting', label: 'Needs Input', defaultOpen: true },
+  { key: 'waiting', label: 'Waiting', defaultOpen: true },
+  { key: 'blocked', label: 'Blocked', defaultOpen: true },
+  { key: 'error', label: 'Error', defaultOpen: true },
+  { key: 'starting', label: 'Starting', defaultOpen: true },
   { key: 'api_error', label: 'API Error', defaultOpen: true },
   { key: 'rate_limited', label: 'Rate Limited', defaultOpen: true },
   { key: 'idle', label: 'Idle', defaultOpen: true },

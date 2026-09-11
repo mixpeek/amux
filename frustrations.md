@@ -2073,3 +2073,25 @@ CARD: AMUX-4417
 SYMPTOM: The phone composer put the textarea, top-aligned more button and bottom-aligned Queue button on one row. Removing the corrected full-width rule reproduces a 204px input in a 363px row. The expanded test also found the attachment menu 16px above the viewport in landscape.
 COST: Another user screenshot and a failed landscape acceptance run before the clipping was corrected.
 FIX: This commit gives phones a full-width input and a separate aligned 44px toolbar, bounds the long draft and attachment menu, and adds inputW/actionDelta to the existing layout diagnostic. Source-built LC-COMPOSER-LAYOUT, LC-LATENCY and LC-RECEIPT: 9 passed across desktop, mobile and iPhone WebKit; 32 outbox contracts passed. The CSS negative control fails on input width (204.34375px versus at least 362px).
+
+## Automatic quota resumption was labelled needs input
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex
+CARD: AMUX-4420
+SYMPTOM: Ethan's mixpeek-frustrations screenshot showed NEEDS INPUT over Claude's usage limit with automatic resumption at 6:10pm. Preview cancellation text overwrote the provider state; the sweep discarded this banner's reset clock. The wider audit found ready-composer events overwriting quota/error states and missing Starting/Error badges.
+COST: User had to inspect the terminal and report a question that did not exist; independent state projections disagreed.
+FIX: Current provider-footer classification, clock-preserving observation, typed state projection, idle-prompt event semantics, and explicit dashboard badges. Controlled provider/model and browser chaos regressions; diagnostic verdicts preview_quota_over_input, provider_auto_resume_quota, and ready_composer_idle.
+
+## Worker terminal opened in the middle of its history
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex
+CARD: AMUX-4421
+SYMPTOM: Ethan opened mixpeek-general and landed midway through old terminal output instead of at the latest output.
+COST: Each open required finding and scrolling to the worker's current output.
+FIX: Preserve bottom-follow intent through asynchronous history/live rendering and resizing, cancel it on deliberate reading/navigation, and flush buffered output on resume. Desktop/phone race tests and bottom-anchor-restored diagnostics.

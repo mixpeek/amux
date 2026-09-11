@@ -283,7 +283,21 @@ pub fn apply_event(
         WorkerEvent::Waiting(w) => {
             // Invariant 11's table includes Waiting; it costs one line here
             // and its absence would leave the worker frozen at "active".
-            let state = WorkerState::Waiting { reason: w.reason.clone() };
+            let state = if w.reason == "idle_prompt" {
+                // A provider's ready composer asks for no response. Preserve the
+                // existing idle timestamp on replay rather than manufacturing activity.
+                let since = match prior_state.as_ref() {
+                    Some(WorkerState::Idle { since }) => *since,
+                    _ => now,
+                };
+                if !matches!(prior_state, Some(WorkerState::Idle { .. })) {
+                    tracing::info!(target: "amux::status", worker = wid,
+                        verdict = "ready_composer_idle", "idle prompt is not a human-input wait");
+                }
+                WorkerState::Idle { since }
+            } else {
+                WorkerState::Waiting { reason: w.reason.clone() }
+            };
             write_state(conn, prior_state.as_ref(), wid, &state, &now_s, &mut events)?;
         }
 
@@ -1270,4 +1284,39 @@ mod tests {
         supervise_once(&store, &protocol, &mut procs).await.unwrap();
         assert!(procs.is_empty(), "ended session -> processor reaped");
     }
+    #[test]
+    fn status_chaos_provider_events_keep_quota_error_idle_and_input_distinct() {
+        use crate::backend::adapter::TerminalAdapter;
+        for (provider, model, idle, limited) in [
+            ("claude", "claude-sonnet-4-6 low", "❯\n? for shortcuts", "You've hit your session limit · resets 6:10pm\n❯\n? for shortcuts"),
+            ("claude", "claude-haiku-4-5", "❯\n? for shortcuts", "You've hit your session limit · resets 6:10pm\n❯\n? for shortcuts"),
+            ("codex", "gpt-5 low", "›", "■ You've hit your usage limit. Try again later in Codex.\n›"),
+            ("codex", "gpt-5.6-luna low", "›", "■ You've hit your usage limit. Try again later in Codex.\n›"),
+            ("gemini", "gemini-2.5-flash-lite", "│ Type your message", "✦ You have reached your daily quota limit for Gemini 2.5 Flash Lite.\n│ Type your message"),
+            ("gemini", "gemini-2.5-flash", "│ Type your message", "✦ Quota exceeded for quota metric 'Requests' of Gemini.\n│ Type your message"),
+        ] {
+            let store = store(); seed(&store);
+            let adapter = TerminalAdapter::new(ProviderId::new(provider));
+            for _ in 0..3 {
+                for event in adapter.scan(&format!("{model}\n{limited}")) { apply(&store, event); }
+                assert!(matches!(worker_state(&store), WorkerState::RateLimited {..}), "{provider}/{model}: {:?}", worker_state(&store));
+                for event in adapter.scan(&format!("{model}\n{idle}")) { apply(&store, event); }
+                assert!(matches!(worker_state(&store), WorkerState::Idle {..}), "{provider}/{model}: {:?}", worker_state(&store));
+                let question = match provider {
+                    "claude" => "Which format?\n❯ 1. JSON\n2. Text\nEnter to select · Esc to cancel",
+                    "codex" => "Which format?\n› 1. JSON\n2. Text\nPress enter to continue",
+                    _ => "│ Which format?\n│ ● 1. JSON\n│   2. Text\n╰ Enter to select",
+                };
+                for event in adapter.scan(question) { apply(&store, event); }
+                assert!(matches!(worker_state(&store), WorkerState::Waiting {ref reason} if reason == "user_input"), "{provider}: {:?}", worker_state(&store));
+                for event in adapter.scan(&format!("{question}\n{idle}")) { apply(&store, event); }
+                assert!(matches!(worker_state(&store), WorkerState::Idle {..}), "{provider} recovered question: {:?}", worker_state(&store));
+            }
+        }
+        let store = store(); seed(&store);
+        let adapter = TerminalAdapter::new(ProviderId::new("claude"));
+        for event in adapter.scan("⏺ API Error: 529 Overloaded\n❯\n? for shortcuts") { apply(&store, event); }
+        assert!(matches!(worker_state(&store), WorkerState::Error {..}));
+    }
+
 }
