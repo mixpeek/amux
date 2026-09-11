@@ -735,14 +735,27 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
         return vec![InvariantResult::unknown(ID, "could not read the store")];
     };
     let cutoff = chrono::Utc::now().timestamp() - window_h * 3600;
-    let rows: Vec<(String, i64)> = conn
+    // AF-582 follow-up (gtm-ticker): a count with no names sends a reader
+    // back to /api/schedules/runs to re-derive exactly this join. LEFT JOIN
+    // because a schedule can be deleted after firing; a row must still be
+    // reported, just without a title/session to show for it.
+    let rows: Vec<checks::UnrecordedScheduleOutcome> = conn
         .prepare(
-            "SELECT schedule_id, COUNT(*) FROM schedule_runs \
-             WHERE delivery='unknown' AND ran_at > ?1 GROUP BY schedule_id",
+            "SELECT r.schedule_id, COUNT(*), COALESCE(s.title,''), COALESCE(s.session,'') \
+             FROM schedule_runs r LEFT JOIN schedules s ON s.id = r.schedule_id \
+             WHERE r.delivery='unknown' AND r.ran_at > ?1 \
+             GROUP BY r.schedule_id",
         )
         .and_then(|mut st| {
-            st.query_map([cutoff], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map(|it| it.flatten().collect::<Vec<_>>())
+            st.query_map([cutoff], |r| {
+                Ok(checks::UnrecordedScheduleOutcome {
+                    schedule_id: r.get(0)?,
+                    count: r.get(1)?,
+                    title: r.get(2)?,
+                    session: r.get(3)?,
+                })
+            })
+            .map(|it| it.flatten().collect::<Vec<_>>())
         })
         .unwrap_or_default();
     checks::unrecorded_schedule_outcomes_are_visible(window_h, &rows)
