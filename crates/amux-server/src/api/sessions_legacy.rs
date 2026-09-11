@@ -1223,6 +1223,12 @@ impl FleetSignals {
         let pane_boundary = self.pane_of(name).map(crate::api::session_verbs::pane_is_at_boundary);
         let measured = structured || pane_boundary.is_some();
         if !structured && status == "idle" && pane_boundary != Some(true) {
+            let key = format!("unrecognized-idle-boundary:{name}");
+            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now)) {
+                tracing::warn!(target: "status_truth", session = name, measured = pane_boundary.is_some(),
+                    verdict = "idle_display_without_delivery_boundary",
+                    "worker displays idle but no recognized terminal boundary permits queued delivery; inspect provider UI drift");
+            }
             return None;
         }
         if measured && ex["decided_by"] == "codex_stale_active_refused" {
@@ -1296,7 +1302,13 @@ impl FleetSignals {
     /// scrollback count as evidence by stuffing the map.
     pub fn pane_probe_candidate(&self, name: &str) -> bool {
         let act = self.activity.get(&format!("amux-{name}")).copied().unwrap_or(0) as f64;
-        self.now - act < self.contradiction_window()
+        // Hookless providers have no structured turn-boundary signal. An idle
+        // Gemini terminal stops painting; aging out its only observable signal
+        // makes a future queued task permanently ineligible for delivery.
+        // Keep measuring these lanes. A nonempty recognized composer is still
+        // required by turn_boundary_status; silence itself never permits sends.
+        let hookless = self.reports.get(name).is_none() && !self.codex_turns.contains_key(name);
+        self.now - act < self.contradiction_window() || hookless
     }
 
     /// Raw pane for a lane whose evidence is admissible: recently painted and
@@ -5508,6 +5520,24 @@ Claude usage limit reached. Your limit will reset at 3pm.
         let (status, ex) = s.derive_status_explain(lane, true);
         assert_eq!(status, "active", "a real tool descendant is positive live evidence: {ex}");
         assert_eq!(ex["codex_rollout"]["tool_child_running"], json!(true), "{ex}");
+    }
+
+    #[test]
+    fn quiet_hookless_gemini_still_has_a_measurable_boundary() {
+        let mut s = signals();
+        let lane = "gemini-boundary";
+        let frame = include_str!("../../tests/fixtures/boundary/gemini-0.58-idle.txt");
+        s.running.insert(format!("amux-{lane}"));
+        s.activity.insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
+        s.panes.insert(lane.into(), frame.into());
+        assert!(s.pane_probe_candidate(lane), "a quiet hookless worker must still be probed");
+        assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
+        s.panes.insert(lane.into(), format!("⠙ Thinking... (esc to cancel, 9s)\n{frame}"));
+        assert_ne!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
+        s.panes.insert(lane.into(), String::new());
+        assert!(s.turn_boundary_status(lane).is_none());
+        s.panes.clear();
+        assert!(s.turn_boundary_status(lane).is_none());
     }
 
     #[test]

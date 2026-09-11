@@ -1,3 +1,4 @@
+import { lifecyclePrefix, expectLifecycleWorker } from './provider';
 import { test, expect, Page, APIRequestContext, TestInfo } from '@playwright/test';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
@@ -9,7 +10,7 @@ export async function runSonnetUpload({ page, request }: { page: Page, request: 
   expect(process.env.AMUX_LIFECYCLE_LAB_ACK).toBe('dedicated-test-instance');
   const run = process.env.AMUX_LIFECYCLE_PAIR_RUN!;
   const cwd = process.env.AMUX_LIFECYCLE_LAB_WORKSPACE!;
-  expect(run).toMatch(/^lc-sonnet-/);
+  expect(run.startsWith(lifecyclePrefix)).toBe(true);
   expect(cwd).toBeTruthy();
   const author = `${run}-author`;
   const observeOnly = process.env.AMUX_LIFECYCLE_UPLOAD_OBSERVE === '1';
@@ -19,7 +20,7 @@ export async function runSonnetUpload({ page, request }: { page: Page, request: 
   const headers = await auth(page);
   const rows = await (await getSessionsResilient(request, headers)).json();
   const worker = rows.find((row: any) => row.name === author);
-  expect(`${worker?.model} ${worker?.flags}`).toMatch(/sonnet/i);
+  expectLifecycleWorker(worker);
   const action = async (verb: string) => {
     await page.goto('/');
     await page.locator(`.card[data-session="${author}"]`).locator('visible=true').first().locator('.card-menu-btn').click();
@@ -32,7 +33,7 @@ export async function runSonnetUpload({ page, request }: { page: Page, request: 
     await page.locator('#modal-btns').getByRole('button', { name: 'Reset', exact: true }).click();
     expect((await reset).ok()).toBe(true);
     await action('peek-terminal');
-    await expect(page.locator('#peek-body')).toContainText(/Sonnet [0-9.]+(?: with [^\n]+)?[·•]/i, { timeout: 90_000 });
+    await expectLifecycleTerminal(page);
     await page.locator('#peek-composer-more-btn').click();
     const choose = page.waitForEvent('filechooser');
     await page.locator('#peek-more-menu').getByRole('button', { name: 'Attach file', exact: false }).click();

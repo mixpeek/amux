@@ -1,3 +1,4 @@
+import { lifecycleProvider, expectLifecycleWorker } from './provider';
 import { test, expect, Page } from '@playwright/test';
 import { boot, auth, checkpoint } from './evidence';
 
@@ -31,7 +32,7 @@ for (const crossGroup of [false, true]) {
     expect(healthResponse.ok()).toBeTruthy();
     const health = await healthResponse.json();
     const source = `${run}.mjs`, reviewed = `${run}-review.json`, integrated = `${run}-integrated.json`;
-    const provider = process.env.AMUX_LIFECYCLE_PROVIDER || 'claude';
+    const provider = lifecycleProvider;
     for (const name of names) {
       const group = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       const made = await request.post('/api/sessions', { headers, data: { name, dir: cwd,
@@ -44,7 +45,7 @@ for (const crossGroup of [false, true]) {
     for (const name of names) {
       const expectedGroup = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       expect(roster.find((row: any) => row.name === name)?.tags).toContain(expectedGroup);
-      if (provider === 'claude') expect(`${roster.find((row: any) => row.name === name)?.flags}`).toMatch(/sonnet/);
+      expectLifecycleWorker(roster.find((row: any) => row.name === name));
     }
     const common = `This is an authorized coordination acceptance run ${run}. Work only in ${cwd},
 only with ${names.join(', ')}. Use Bash amux send for peer messages (not Claude native SendMessage), and your own board tasks.

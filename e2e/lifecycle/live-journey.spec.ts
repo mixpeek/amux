@@ -1,3 +1,4 @@
+import { lifecycleProvider, expectLifecycleWorker, selectLifecycleProvider } from './provider';
 import { test, expect } from '@playwright/test';
 import { boot, auth, checkpoint } from './evidence';
 
@@ -32,13 +33,14 @@ test passed without running it. Finish with every deliverable task in done or ve
   await page.locator('.card-menu-item', { hasText: 'New worker' }).click();
   await page.locator('#create-name').fill(name);
   await page.locator('#create-dir').fill(cwd!);
-  const provider = process.env.AMUX_LIFECYCLE_PROVIDER || 'claude';
-  await page.locator(`#create-provider-${provider}`).click();
-  if (provider === 'claude') await page.locator('#create-model').selectOption('sonnet');
+  await selectLifecycleProvider(page);
   await page.locator('#create-prompt').fill(prompt);
   await checkpoint(page, info, 'live-01-worker-and-prompt');
   await page.locator('#create-overlay').getByRole('button', { name: 'Create', exact: true }).click();
   await expect(page.locator('#create-overlay')).not.toHaveClass(/active/, { timeout: 60_000 });
+  const roster = await request.get('/api/sessions', { headers });
+  expect(roster.ok()).toBeTruthy();
+  expectLifecycleWorker((await roster.json()).find((row: any) => row.name === name));
   const samples: any[] = [];
   let cards: any[] = [];
   try {
@@ -103,7 +105,7 @@ test passed without running it. Finish with every deliverable task in done or ve
     const after = await request.get('/health');
     expect((await after.json()).build, 'build changed during measurement').toEqual(health.build);
   } finally {
-    await info.attach('observation-timeline', { body: JSON.stringify({ worker: name, workspace: cwd, health, samples }, null, 2), contentType: 'application/json' });
+    await info.attach('observation-timeline', { body: JSON.stringify({ worker: name, provider: lifecycleProvider, workspace: cwd, health, samples }, null, 2), contentType: 'application/json' });
     // Retain this run's IDs and files for inspection; no broad cleanup or fleet mutation.
   }
 });

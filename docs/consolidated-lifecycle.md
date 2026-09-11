@@ -622,6 +622,21 @@ a stable run of this checkout cannot certify concurrent drafts. The inherited
 Playwright startup banner describes configured browser targets; the report’s
 Selection field and executed test counts are the authoritative scope of this run.
 
+## Running the same lifecycle with Gemini
+
+Set `AMUX_LIFECYCLE_PROVIDER=gemini` for the live command. All live scenarios,
+including the historical `LC-SONNET-*` pair IDs, now use the selected provider;
+those IDs remain stable for the acceptance ledger. The default remains Claude
+Sonnet. The runner records and asserts the actual worker provider, and checks the
+provider identity visible in its terminal before sending pair/complex prompts.
+Gemini uses its configured model (the default is `auto`), not a Sonnet model flag.
+Use a fresh dedicated lab, real Gemini authentication, an empty scratch workspace,
+and the normal board driver. Configure tool approvals deliberately in that lab;
+unanswered provider permission prompts are blocked coverage, not passing tests.
+A worker that merely boots, queues its prompt, or writes a progress claim does not
+pass: task states, real files, tests, peer receipts, and current verification gates
+are still asserted by the same scenarios.
+
 ## Two Sonnet workers and uploads
 
 Run the focused real-provider scenario with:

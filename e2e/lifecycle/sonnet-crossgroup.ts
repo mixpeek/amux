@@ -1,3 +1,4 @@
+import { lifecyclePrefix, lifecycleProvider } from './provider';
 import { test, expect, Page, APIRequestContext, TestInfo } from '@playwright/test';
 import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
@@ -7,7 +8,7 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
   expect(process.env.AMUX_LIFECYCLE_LAB_ACK).toBe('dedicated-test-instance');
   const run = process.env.AMUX_LIFECYCLE_PAIR_RUN!;
   const cwd = process.env.AMUX_LIFECYCLE_LAB_WORKSPACE!;
-  expect(run).toMatch(/^lc-sonnet-/);
+  expect(run.startsWith(lifecyclePrefix)).toBe(true);
   expect(cwd).toBeTruthy();
   const author = `${run}-author`, reviewer = `${run}-reviewer`;
   const observeOnly = process.env.AMUX_LIFECYCLE_CROSSGROUP_OBSERVE === '1';
@@ -42,7 +43,7 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
     const rows = await response.json();
     const a = rows.find((r: any) => r.name === author), b = rows.find((r: any) => r.name === reviewer);
     return a?.tags.includes(`${run}-team`) && b?.tags.includes(`${run}-quality`) &&
-      !b.tags.includes(`${run}-team`) && [a, b].every(r => /sonnet/i.test(`${r.model} ${r.flags}`));
+      !b.tags.includes(`${run}-team`) && [a, b].every(r => (r.provider || 'claude') === lifecycleProvider && (lifecycleProvider !== 'claude' || /sonnet/i.test(`${r.model} ${r.flags}`)));
   }).toBe(true);
   await checkpoint(page, info, 'crossgroup-membership');
   if (!observeOnly) {

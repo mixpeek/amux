@@ -1880,3 +1880,14 @@ CARD: AMUX-4416
 SYMPTOM: Send/Queue bypassed local persistence and waited on the API, then fell back into Queued/Syncing. An optimistic follow-up cleared draft text and uploads before durable acceptance.
 COST: A slow mobile connection became a composer delay; failed local storage could lose the working draft. Automatic retries opened delivery progress during ordinary sends.
 FIX: Restore both modes through the existing durable local outbox, clear only the accepted draft/files, retain newer edits, and run automatic replay quietly. Tests exercise held responses, refusal, quota failure, reload and retry on desktop/mobile/WebKit. Two contract controls reproduce the old behavior on 091bc3a9. Historical causes are recorded in docs/incidents/2026-09-11-offline-sync.md.
+
+## Gemini idle terminal cannot receive the worker's first queued task
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Fresh Gemini CLI 0.58 authenticated and displayed an empty composer, but /api/debug/steering held its first task at not-at-turn-boundary. Workers displayed idle. The captured-frame regression returns empty status rather than idle; the thin-rule input box is also unknown to the delivery verifier.
+COST: The new worker's lifecycle acceptance could not begin for more than ten minutes; no deliverables were produced.
+FIX: Recognize Gemini's provider-owned footer and current input box, preserve active/picker/pending-input controls, and emit idle_display_without_delivery_boundary when the display and delivery disagree. Rerun the live provider suite before closing.
