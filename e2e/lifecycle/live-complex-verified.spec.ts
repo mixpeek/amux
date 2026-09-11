@@ -1,7 +1,7 @@
-import { lifecyclePrefix, lifecycleProvider, expectLifecycleWorker, selectLifecycleProvider, expectLifecycleTerminal } from './provider';
+import { lifecyclePrefix, lifecycleProvider, expectLifecycleWorker, selectLifecycleProvider, createLifecycleWorker, expectLifecycleTerminal } from './provider';
 import { test, expect } from '../fixtures';
 import type { Page } from '@playwright/test';
-import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
+import { expectDelivered, boot, auth, checkpoint, getSessionsResilient } from './evidence';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -22,7 +22,7 @@ async function send(page: Page, name: string, text: string) {
   const response = page.waitForResponse(r => r.url().endsWith(`/${name}/send`) && r.request().method()==='POST', {timeout:180_000});
   await page.locator('#peek-overlay .send-split-main').click();
   const r = await response; expect(r.ok(),await r.text()).toBe(true);
-  expect((await r.json()).submitted).toBe(true);
+  await expectDelivered(page, r);
 }
 
 // The observer supplies the initial request and one deliberate criteria amendment.
@@ -55,8 +55,7 @@ test('LC-COMPLEX-VERIFIED: selected-provider peers decompose linked work, adapt 
     await page.locator('#create-dir').fill(cwd);
     await expect(page.locator('#create-name')).toHaveValue(name);
     await expect(page.locator('#create-dir')).toHaveValue(cwd);
-    await page.locator('#create-overlay').getByRole('button',{name:'Create',exact:true}).click();
-    await expect(page.locator('#create-overlay')).not.toHaveClass(/active/,{timeout:60_000});
+    await createLifecycleWorker(page);
     await menu(page,name,'groups'); await page.locator('#edit-input').fill(group);
     await page.locator('#edit-overlay').getByRole('button',{name:'Save',exact:true}).click();
     await expect(page.locator('#edit-overlay')).not.toHaveClass(/active/);
@@ -85,6 +84,7 @@ test('LC-COMPLEX-VERIFIED: selected-provider peers decompose linked work, adapt 
     timeline.push({at:new Date().toISOString(),cards:details.map(c=>({id:c.id,status:c.status,epic:c.epic,type:c.type,verification:c.verification}))});
     return true;
   };
+  let originalGate: string[] | undefined;
   try {
     if (!observe) {
       await expect.poll(async()=>await read() && messages.some(m=>m.origin===author && m.session===reviewer && m.text.startsWith('COMPLEX_PHASE1')),
@@ -93,6 +93,9 @@ test('LC-COMPLEX-VERIFIED: selected-provider peers decompose linked work, adapt 
       const authorEpic=epics.find(c=>c.session===author); expect(authorEpic.children.length).toBeGreaterThanOrEqual(3);
       expect(authorEpic.messages.length).toBeGreaterThan(0);
       const gate=amendedGate;
+      const statuses = await request.get('/api/board/statuses', { headers });
+      expect(statuses.ok()).toBe(true);
+      originalGate = (await statuses.json()).find((status: any) => status.id === 'verified').gate || [];
       await page.goto('/'); await page.locator('#tab-board').click(); await page.locator('#bv-status').click();
       const edit=page.locator('[onclick*="editStatusGate(\'verified\')"]');
       await edit.click(); await page.locator('#_gate-edit-ta').fill(gate.join('\n')); await page.locator('#_gate-edit-save').click();
@@ -161,6 +164,12 @@ test('LC-COMPLEX-VERIFIED: selected-provider peers decompose linked work, adapt 
     }
     await outputPage.close();
   } finally {
+    // A failed amendment send must not leave invoice gates on unrelated cases.
+    // Observe-only runs remain read-only and preserve the original measurement.
+    if (originalGate !== undefined) {
+      const restored = await request.patch('/api/board/statuses/verified', { headers, data: { gate: originalGate } });
+      expect(restored.ok(), 'restore the lab column after measuring the changed gate').toBe(true);
+    }
     await info.attach('complex-proof',{body:JSON.stringify({run,names,group,cwd,health,observe,resumePhase1,observer_actions:'initial requests and one explicit gate amendment; resumed phase 1 sends continue to existing workers; no worker code/evidence/completion writes',operator_interventions:process.env.AMUX_LIFECYCLE_INTERVENTIONS ? JSON.parse(await readFile(process.env.AMUX_LIFECYCLE_INTERVENTIONS,'utf8')) : [],timeline,details,messages},null,2),contentType:'application/json'});
   }
 });

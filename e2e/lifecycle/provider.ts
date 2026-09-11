@@ -19,3 +19,15 @@ export async function expectLifecycleTerminal(page: Page) {
     : lifecycleProvider === 'gemini' ? /Gemini CLI v[0-9.]+/i : /OpenAI Codex/i;
   await expect(page.locator('#peek-body')).toContainText(identity, { timeout: 120_000 });
 }
+
+// Closing the create form is optimistic; navigating away before the remaining
+// config/start requests finish aborts creation, particularly with YOLO enabled.
+export async function createLifecycleWorker(page: Page) {
+  const name = await page.locator('#create-name').inputValue();
+  const started = page.waitForResponse(r => r.url().endsWith(`/api/sessions/${encodeURIComponent(name)}/start`)
+    && r.request().method() === 'POST', { timeout: 90_000 });
+  await page.locator('#create-overlay').getByRole('button', { name: 'Create', exact: true }).click();
+  const response = await started;
+  expect(response.ok(), `${name} startup: ${await response.text()}`).toBe(true);
+  await expect(page.locator('#create-overlay')).not.toHaveClass(/active/);
+}

@@ -1,4 +1,4 @@
-import { lifecycleProvider, expectLifecycleWorker, selectLifecycleProvider } from './provider';
+import { lifecycleProvider, expectLifecycleWorker, selectLifecycleProvider, createLifecycleWorker } from './provider';
 import { test, expect } from '@playwright/test';
 import { boot, auth, checkpoint } from './evidence';
 
@@ -19,15 +19,19 @@ test('LC-LIVE: a new worker changes code, tests it, and drives its tasks to evid
   const name = `lifecycle-${Date.now()}`;
   const marker = `${name}-complete`;
   const prompt = `Work only in ${cwd}. This is an acceptance test with three deliverables.
-Create three separate board tasks assigned to your own worker; link their dependencies.
+Create three separate chore board tasks assigned to your own worker; link their dependencies.
 1. Implement sum.mjs exporting sum(a,b), with a meaningful automated test covering positive,
-negative and zero inputs. 2. Run the tests, then change sum.mjs to reject non-finite inputs
+negative and zero inputs in sum.test.mjs, run with node --test sum.test.mjs. 2. Run the tests, then change sum.mjs to reject non-finite inputs
 and extend and rerun the tests. 3. Produce result.html visibly showing ${marker} and a short
 summary of the actual changes and test results; also write result.md with those results.
+The HTML must fit 375px and 1280px without horizontal overflow, including the long completion marker.
 Drive every task through its configured lifecycle and gates, attach real artifact paths,
 and store the exact test command and result in each task's evidence. Do not bypass gates.
 Do not send email or peer messages or work outside this scratch workspace. Do not claim a
-test passed without running it. Finish with every deliverable task in done or verified.`;
+test passed without running it. This is scratch work, with no production deployment or CI pipeline.
+Finish every deliverable at Done using its legitimate chore gates. Never acknowledge production,
+merge or CI checks that did not happen. Include node --test sum.test.mjs and its actual result
+in each deliverable's evidence. Verified is reserved for independent harness verification.`;
   await page.locator('#tab-sessions').click();
   await page.locator('[onclick*="toggleAddMenu"]').click();
   await page.locator('.card-menu-item', { hasText: 'New worker' }).click();
@@ -36,8 +40,7 @@ test passed without running it. Finish with every deliverable task in done or ve
   await selectLifecycleProvider(page);
   await page.locator('#create-prompt').fill(prompt);
   await checkpoint(page, info, 'live-01-worker-and-prompt');
-  await page.locator('#create-overlay').getByRole('button', { name: 'Create', exact: true }).click();
-  await expect(page.locator('#create-overlay')).not.toHaveClass(/active/, { timeout: 60_000 });
+  await createLifecycleWorker(page);
   const roster = await request.get('/api/sessions', { headers });
   expect(roster.ok()).toBeTruthy();
   expectLifecycleWorker((await roster.json()).find((row: any) => row.name === name));
@@ -62,6 +65,11 @@ test passed without running it. Finish with every deliverable task in done or ve
     }, { timeout: 1_050_000, intervals: [5000, 15000, 30000], message: 'worker must finish its own tasks, without observer intervention' }).toBe(true);
     for (const card of cards) {
       expect(String(card.evidence || '').length, `${card.id} must carry command/result evidence`).toBeGreaterThan(20);
+      if (!['epic', 'prompt'].includes(card.type)) expect(card.evidence).toContain('node --test sum.test.mjs');
+      if (card.status === 'verified') {
+        expect(card.verification?.state).toBe('current');
+        expect(card.verification?.method, 'checkbox acknowledgement alone is not independent proof').toBe('independent_harness');
+      }
       await page.goto(`/#issue=${encodeURIComponent(card.id)}`);
       await expect(page.locator('#bd-key')).toHaveText(card.id);
       await checkpoint(page, info, `live-final-${card.id}`);
@@ -98,7 +106,10 @@ test passed without running it. Finish with every deliverable task in done or ve
           await output.route('**/*', route => route.abort());
           await output.setContent(body.content);
           await expect(output.getByText(marker, { exact: false })).toBeVisible();
-          await info.attach('rendered-result', { body: await output.screenshot(), contentType: 'image/png' });
+          for (const width of [1280, 375]) {
+            await output.setViewportSize({ width, height: 800 });
+            await checkpoint(output, info, `rendered-result-${width}`);
+          }
         } finally { await preview.close(); }
       }
     }

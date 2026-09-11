@@ -1,9 +1,9 @@
-import { lifecyclePrefix, expectLifecycleWorker, selectLifecycleProvider, expectLifecycleTerminal } from './provider';
+import { lifecyclePrefix, expectLifecycleWorker, selectLifecycleProvider, createLifecycleWorker, expectLifecycleTerminal } from './provider';
 import { test, expect, Page } from '@playwright/test';
 import { runSonnetUpload } from './sonnet-upload';
 import { runSonnetCrossgroup } from './sonnet-crossgroup';
 import { runSonnetQueue } from './sonnet-queue';
-import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
+import { expectDelivered, boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -23,7 +23,7 @@ async function send(page: Page, name: string, text: string) {
   await page.locator('#peek-overlay .send-split-main').click();
   const response = await delivered;
   expect(response.ok(), await response.text()).toBeTruthy();
-  expect((await response.json()).submitted).toBe(true);
+  await expectDelivered(page, response);
   await expect(page.locator('#peek-cmd-input')).toHaveValue('', { timeout: 60_000 });
 }
 
@@ -58,8 +58,7 @@ test('LC-SONNET-PAIR: two same-group workers coordinate and their messages are n
     await selectLifecycleProvider(page);
     await page.locator('#create-dir').fill(cwd);
     await checkpoint(page, info, `create-${name}`);
-    await page.locator('#create-overlay').getByRole('button', { name: 'Create', exact: true }).click();
-    await expect(page.locator('#create-overlay')).not.toHaveClass(/active/, { timeout: 60_000 });
+    await createLifecycleWorker(page);
     await workerAction(page, name, 'groups');
     await page.locator('#edit-input').fill(group);
     await page.locator('#edit-overlay').getByRole('button', { name: 'Save', exact: true }).click();

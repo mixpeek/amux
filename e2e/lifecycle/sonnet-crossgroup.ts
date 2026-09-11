@@ -1,6 +1,6 @@
 import { lifecyclePrefix, lifecycleProvider } from './provider';
 import { test, expect, Page, APIRequestContext, TestInfo } from '@playwright/test';
-import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
+import { expectDelivered, boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
 // Reuse the completed pair; this phase must not create a third worker.
 export async function runSonnetCrossgroup({ page, request }: { page: Page, request: APIRequestContext }, info: TestInfo) {
@@ -55,7 +55,7 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
       await page.locator('#peek-overlay .send-split-main').click();
       const response = await sent;
       expect(response.ok()).toBe(true);
-      expect((await response.json()).submitted).toBe(true);
+      await expectDelivered(page, response);
       await checkpoint(page, info, `crossgroup-prompt-${marker}`);
     }
   }

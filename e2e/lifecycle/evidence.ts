@@ -1,4 +1,4 @@
-import { expect, Page, TestInfo, APIRequestContext } from '@playwright/test';
+import { expect, Page, TestInfo, APIRequestContext, Response } from '@playwright/test';
 import { captureState } from '../ux-discovery/crawler';
 
 export async function boot(page: Page) {
@@ -80,4 +80,27 @@ export async function deleteOwnedWorkers(page: Page, request: APIRequestContext,
       return (await rows.json()).some((row: any) => row.name === name);
     }, { message: `UI deletion must actually unregister ${name}`, timeout: 15_000 }).toBe(false);
   }
+}
+
+// A mobile retry can return a durable dedupe receipt, or a queued acceptance.
+// Neither promises immediate submission. Verify the original request reached
+// history with a confirmed terminal outcome instead of resending it.
+export async function expectDelivered(page: Page, response: Response) {
+  expect(response.ok(), await response.text()).toBe(true);
+  const receipt = await response.json();
+  expect(receipt.ok).toBe(true);
+  const sent = response.request().postDataJSON();
+  expect(typeof sent.text).toBe('string');
+  expect(sent.text.length).toBeGreaterThan(0);
+  const name = decodeURIComponent(new URL(response.url()).pathname.split('/').at(-2)!);
+  const headers = await auth(page);
+  await expect.poll(async () => {
+    const history = await page.request.get(`/api/history?session=${encodeURIComponent(name)}&limit=250`, { headers });
+    if (!history.ok()) return false;
+    return (await history.json()).some((message: any) =>
+      String(message.text).includes(sent.text) && message.delivered_at > 0
+      && message.submit_verdict === 'confirmed');
+  }, { timeout: 180_000, intervals: [1000, 3000, 5000],
+    message: `${name}: accepted message must actually reach the terminal` }).toBe(true);
+  await expect(page.locator('#peek-cmd-input')).toHaveValue('');
 }

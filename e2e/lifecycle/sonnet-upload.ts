@@ -1,6 +1,6 @@
 import { lifecyclePrefix, expectLifecycleWorker } from './provider';
 import { test, expect, Page, APIRequestContext, TestInfo } from '@playwright/test';
-import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
+import { expectDelivered, boot, auth, checkpoint, getSessionsResilient } from './evidence';
 
 // Runs after the pair scenario, reusing its author rather than adding a third
 // worker. A fresh conversation makes the attachment test independent of the
@@ -47,7 +47,7 @@ export async function runSonnetUpload({ page, request }: { page: Page, request: 
     await page.locator('#peek-overlay .send-split-main').click();
     const response = await delivered;
     expect(response.ok()).toBe(true);
-    expect((await response.json()).submitted).toBe(true);
+    await expectDelivered(page, response);
   }
   let result: any, cards: any[] = [];
   await expect.poll(async () => {

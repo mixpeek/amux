@@ -1640,9 +1640,9 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
             }
         }
     } else {
-        if status_bar.contains("esc to interrupt")
-            || cached_re!(r"← \d+ agents?").is_match(&status_bar)
-        {
+        // The agent-count badge also remains after agents finish. Only the
+        // live interrupt footer or structured background-work row is activity.
+        if status_bar.contains("esc to interrupt") {
             return "active".into();
         }
     }
@@ -26780,13 +26780,13 @@ mod submission_gate_tests {
     }
 
     /// Idle composer holding `text` — the frame the pane actually showed for
-    /// ten minutes. Omit the background-agent activity footer for this idle control.
+    /// ten minutes.
     fn frame_stuck_idle(text: &str) -> String {
         format!(
             "\u{2500}\u{2500}\u{2500}\u{2500} amux-rust \u{2500}\u{2500}\n\
              \u{276f} {text}\n\
              \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n\
-             \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)\n"
+             \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 2 agents\n"
         )
     }
     /// Same text still in the box, but the lane is generating: this IS queued
@@ -27389,11 +27389,7 @@ mod composer_state_tests {
         assert_eq!(read_frame(LIVE_PLACEHOLDER, &tail), FrameRead::Cleared);
         // Same words, actually typed → the real stuck state.
         let typed = LIVE_PLACEHOLDER.replace("\u{1b}[2mcontinue with the queue\u{1b}[0m", "continue with the queue");
-        // This live specimen has a `← 2 agents` footer: its queued input
-        // belongs to an active turn. Remove that signal to test idle input.
-        assert_eq!(read_frame(&typed, &tail), FrameRead::StillThereGenerating);
-        let idle = typed.replace(" \u{b7} \u{2190} 2 agents", "");
-        assert_eq!(read_frame(&idle, &tail), FrameRead::StillThereIdle);
+        assert_eq!(read_frame(&typed, &tail), FrameRead::StillThereIdle);
     }
 
     #[test]
