@@ -1935,3 +1935,14 @@ CARD: AMUX-4417
 SYMPTOM: Seven studio-plg composer failures on Safari 0.9.900 reported only unconfirmed. The live Safari WebApp localStorage held 5,193,082 bytes, chiefly command history and reproducible board/schedule/HTML caches; its outbox was empty. The client attempted the failed local write twice and replaced the specific quota error with a terminal-confirmation message.
 COST: Messages could fail before reaching the server despite a healthy connection. A real WebKit quota reproduction against pre-fix source returned failed instead of queued.
 FIX: User-intent writes reclaim only reproducible HTML/board/schedule caches and retry the same atomic write, preserving other drafts, operations, attachment journals and the offline worker list. Local refusal returns once with its storage reason; outbox-storage logs measured byte counts, browser capabilities and the failure category without content. Quiet background replay no longer announces queued-operation completion. The original seven failures lacked a reason field, so their exact exception cannot be recovered retrospectively; quota is reproduced against the observed storage condition.
+
+## Watchdog restarts a progressing database after short health deadlines
+AREA: server
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Production watchdog logs explicitly issued kickstart -k at 13:16:19 and 13:29:32 on September 11 after three health responses with measured:false / probe_deadline_exceeded. launchd recorded SIGTERM, not an application crash. The 250 ms health deadline detached its ongoing writer/read probe but discarded its later success, so each slow sample could imply a hung store despite intervening progress.
+COST: The monitor itself disconnected clients and restarted the server; both restarts were followed by more slow probes rather than durable recovery.
+FIX: Retain monotonic completion and in-flight ages for real probes after HTTP timeout. Readiness remains unmeasured/503; the watchdog defers a restart only with recent successful progress or bounded initial work. Real writer failures, pool exhaustion, absent listeners and stale progress retain recovery. slow_probe_completed and watchdog restart-deferred logs expose the decision. Rust exercises a blocked writer twice and requires the detached first probe's receipt during the second timeout; Python tests cover actual HTTP 503 classification and both restart/no-restart loop controls.

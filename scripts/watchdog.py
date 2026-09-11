@@ -210,6 +210,29 @@ def _port_is_open() -> bool:
     return False
 
 
+def classify_health(data: dict) -> str:
+    """Separate unmeasured readiness from a stalled store.
+
+    The server keeps the 250 ms HTTP deadline and reports late probe progress.
+    Only recent *measured success*, or the initial bounded in-flight probe,
+    defers a restart. A dead writer, exhausted pool, absent listener, and a
+    probe without progress for the existing hung budget retain recovery.
+    Older servers without this evidence keep the prior degraded behavior.
+    """
+    board = data.get("board") or {}
+    progress = data.get("store_probe") or {}
+    unknown = board.get("measured") is False and board.get("error") in {
+        "probe_deadline_exceeded", "probe_already_in_flight"
+    }
+    budget_ms = HUNG_THRESHOLD * CHECK_INTERVAL * 1000
+    recent = progress.get("last_success_age_ms")
+    initial = progress.get("in_flight_age_ms")
+    valid_age = lambda age: isinstance(age, (int, float)) and not isinstance(age, bool) and 0 <= age < budget_ms
+    if unknown and (valid_age(recent) or (recent is None and valid_age(initial))):
+        return "busy"
+    return "ok" if data.get("store") == "ok" and data.get("status") == "ok" else "degraded"
+
+
 def probe() -> tuple[str, object]:
     """Return (verdict, detail) where verdict is one of:
 
@@ -235,7 +258,7 @@ def probe() -> tuple[str, object]:
             data = json.loads(e.read())
         except Exception:
             data = {}
-        return "degraded", data or f"HTTP {e.code}"
+        return classify_health(data), data or f"HTTP {e.code}"
     except Exception as e:
         return "hung", f"port open, /health did not answer: {e}"
 
@@ -244,9 +267,7 @@ def probe() -> tuple[str, object]:
     except Exception as e:
         return "hung", f"/health returned unparseable body: {e}"
 
-    if data.get("store") != "ok" or data.get("status") != "ok":
-        return "degraded", data
-    return "ok", data
+    return classify_health(data), data
 
 
 def _find_server_pid() -> int | None:
@@ -464,6 +485,11 @@ def run():
                 log("recovered — healthy")
             _consecutive_hung = 0
             _consecutive_down = 0
+
+        elif verdict == "busy":
+            _consecutive_hung = 0
+            _consecutive_down = 0
+            log(f"probe slow, recovery window not exhausted — restart deferred: {detail.get('store_probe')}")
 
         elif verdict == "down":
             _consecutive_down += 1

@@ -106,6 +106,8 @@ pub struct Store {
     read_pool: ReadPool,
     db_path: Arc<std::path::PathBuf>,
     pub(crate) health_probe: Arc<tokio::sync::Semaphore>,
+    pub(crate) health_probe_started: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) health_probe_last_success: Arc<std::sync::atomic::AtomicU64>,
     /// Broadcast of committed StateEvents for SSE fan-out.
     events_tx: tokio::sync::broadcast::Sender<StateEvent>,
 }
@@ -174,6 +176,8 @@ impl Store {
             read_pool,
             db_path: Arc::new(db_path.to_path_buf()),
             health_probe: Arc::new(tokio::sync::Semaphore::new(1)),
+            health_probe_started: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            health_probe_last_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             events_tx,
         })
     }
