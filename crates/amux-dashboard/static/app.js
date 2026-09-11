@@ -2789,6 +2789,166 @@ function _isLocallyQueued(r) {
   try { return !!(r && r.status === 202 && r.headers && r.headers.get('X-Amux-Outbox') === 'queued'); }
   catch (e) { return false; }
 }
+
+// ── Interaction receipts: first slice of the AI-native command contract ──
+//
+// This ledger is deliberately browser-local for now. It gives humans, e2e, and
+// agents one inspectable answer to "what happened to my command?" while the
+// durable server-side interaction/effects table lands in a later slice.
+const _INTERACTION_MAX = 200;
+let _interactionReceipts = [];
+
+function _interactionId() {
+  return 'int_' + (crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+}
+function _interactionHeaders(headers) {
+  try {
+    if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+    if (Array.isArray(headers)) return Object.fromEntries(headers);
+  } catch (_) {}
+  return headers ? { ...headers } : {};
+}
+function _interactionPath(url) {
+  try { return new URL(url, location.origin).pathname; }
+  catch (_) { return String(url || '').split('?')[0]; }
+}
+function _interactionTarget(path) {
+  const clean = String(path || '');
+  if (/\/api\/sessions\/[^/]+\/(send|steer)/.test(clean)) return {primitive:'message', id:decodeURIComponent((clean.match(/\/api\/sessions\/([^/]+)/)||[])[1] || '')};
+  if (/\/api\/(sessions|workers)\b/.test(clean)) return {primitive:'worker', id:decodeURIComponent((clean.match(/\/api\/(?:sessions|workers)\/([^/]+)/)||[])[1] || '')};
+  if (/\/api\/board\b/.test(clean)) return {primitive:'board', id:decodeURIComponent((clean.match(/\/api\/board\/([^/]+)/)||[])[1] || '')};
+  if (/\/api\/schedules\b/.test(clean)) return {primitive:'scheduler', id:decodeURIComponent((clean.match(/\/api\/schedules\/([^/]+)/)||[])[1] || '')};
+  if (/\/api\/(fs|file|files|uploads?)\b/.test(clean)) return {primitive:'filesystem'};
+  if (/\/api\/(groups|tags)\b/.test(clean)) return {primitive:'group'};
+  if (/\/api\/(memories|memory)\b/.test(clean)) return {primitive:'memory'};
+  if (/\/api\/(prefs|settings|config|scope|env|branding)\b/.test(clean)) return {primitive:'environment'};
+  return {primitive:'environment'};
+}
+function _interactionKind(method, path) {
+  const p = String(path || '');
+  if (/\/api\/sessions\/[^/]+\/send$/.test(p)) return 'message.send';
+  if (/\/api\/sessions\/[^/]+\/steer$/.test(p)) return 'message.steer';
+  if (/\/api\/sessions\/[^/]+\/start$/.test(p)) return 'worker.start';
+  if (/\/api\/sessions\/[^/]+\/stop$/.test(p)) return 'worker.stop';
+  if (/\/api\/(sessions|workers)\b/.test(p)) return 'worker.' + method.toLowerCase();
+  if (/\/api\/board\b/.test(p)) return 'board.' + method.toLowerCase();
+  if (/\/api\/schedules\b/.test(p)) return 'scheduler.' + method.toLowerCase();
+  if (/\/api\/(fs|file|files|uploads?)\b/.test(p)) return 'filesystem.' + method.toLowerCase();
+  if (/\/api\/(groups|tags)\b/.test(p)) return 'group.' + method.toLowerCase();
+  if (/\/api\/(memories|memory)\b/.test(p)) return 'memory.' + method.toLowerCase();
+  return 'environment.' + method.toLowerCase();
+}
+function _interactionAccept(url, init) {
+  const path = _interactionPath(url);
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  const receipt = {
+    id: _interactionId(),
+    command: {
+      id: _interactionId(),
+      kind: _interactionKind(method, path),
+      target: _interactionTarget(path),
+    },
+    origin: {actor:'human', surface:'dashboard'},
+    phase: 'accepted',
+    feedback: {required:true, persistence:'until-settled', severity:'info'},
+    request: {method, path},
+    acknowledgement: {},
+    effects: [],
+    measured: true,
+    n_considered: 1,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  };
+  _interactionReceipts.push(receipt);
+  if (_interactionReceipts.length > _INTERACTION_MAX) _interactionReceipts = _interactionReceipts.slice(-_INTERACTION_MAX);
+  return receipt;
+}
+function _interactionSet(id, patch) {
+  const r = _interactionReceipts.find(x => x.id === id);
+  if (!r) return null;
+  Object.assign(r, patch || {});
+  r.updated_at = Date.now();
+  return r;
+}
+function _interactionRequestOptions(receipt, init) {
+  const headers = _interactionHeaders(init && init.headers);
+  headers['X-Amux-Interaction-Id'] = receipt.id;
+  headers['X-Amux-Command-Kind'] = receipt.command.kind;
+  return { ...(init || {}), headers };
+}
+function _interactionAddEffect(receipt, effect) {
+  if (!receipt || !effect) return;
+  receipt.effects.push(Object.assign({id:_interactionId()}, effect));
+  receipt.updated_at = Date.now();
+}
+function _interactionAcknowledge(id, response) {
+  const receipt = _interactionReceipts.find(x => x.id === id);
+  if (!receipt) return;
+  const status = response ? response.status : 0;
+  if (_isLocallyQueued(response)) {
+    _interactionSet(id, {phase:'queued', acknowledgement:{status, queued:true}, feedback:{required:true, persistence:'until-settled', severity:'info', message:'Queued'}});
+    return;
+  }
+  if (!response || !response.ok) {
+    const phase = status >= 400 && status < 500 ? 'refused' : 'failed';
+    _interactionSet(id, {phase, acknowledgement:{status}, feedback:{required:true, persistence:'durable', severity:'error'}});
+    return;
+  }
+  _interactionSet(id, {phase:'applied', acknowledgement:{status}, feedback:{required:true, persistence:'until-settled', severity:'success'}});
+  response.clone().json().then(body => {
+    if (!body || typeof body !== 'object') return;
+    const phase = body.applied === false ? 'noop' : 'applied';
+    const ack = {
+      status,
+      applied: body.applied,
+      rev: body.rev,
+      version: body.version,
+      ignored_fields: Array.isArray(body.ignored_fields) ? body.ignored_fields : [],
+      entity_id: body.entity_id || body.id || '',
+    };
+    _interactionSet(id, {phase, acknowledgement: ack});
+    const entityId = body.entity_id || body.id;
+    if (entityId || body.rev) {
+      _interactionAddEffect(receipt, {
+        kind: receipt.command.kind + '.acknowledged',
+        entity: {primitive: receipt.command.target.primitive, id: String(entityId || receipt.command.target.id || receipt.request.path)},
+        rev: body.rev,
+      });
+    }
+  }).catch(() => {});
+}
+function _interactionFail(id, error, queued) {
+  _interactionSet(id, {
+    phase: queued ? 'queued' : 'failed',
+    acknowledgement: {queued: !!queued, error:String((error && error.message) || error || '')},
+    feedback: {required:true, persistence:queued ? 'until-settled' : 'durable', severity:queued ? 'info' : 'error', message:queued ? 'Queued' : 'Failed'},
+  });
+  if (!queued) {
+    try {
+      fetch(API + '/api/client-debug', {method:'POST', _skipOutbox:true,
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({kind:'interaction-receipt', verdict:'failed',
+          interaction_id:id, error:String((error && error.message) || error || ''),
+          measured:true, n_considered:1, ver:APP_VER})}).catch(() => {});
+    } catch (_) {}
+  }
+}
+function _installAmuxStateProbe() {
+  window.__amuxInteractions = {
+    recent: (n = 50) => _interactionReceipts.slice(-n).map(r => JSON.parse(JSON.stringify(r))),
+    get: id => {
+      const r = _interactionReceipts.find(x => x.id === id);
+      return r ? JSON.parse(JSON.stringify(r)) : null;
+    },
+  };
+  window.__amuxState = Object.assign(window.__amuxState || {}, {
+    interactions: window.__amuxInteractions,
+    effects: { forInteraction: id => (window.__amuxInteractions.get(id)?.effects || []) },
+    connection: () => ({online, conn_state:_connState, pending:offlineQueue.length + drafts.length}),
+  });
+}
+_installAmuxStateProbe();
+
 function _outboxRequestOptions(url, init) {
   // Assign the server's deduplication key before the FIRST attempt. Creating
   // it only after a lost response makes the retry a second message.
@@ -2873,28 +3033,43 @@ async function _boundedMutationFetch(input, init) {
 window.fetch = async function(input, init) {
   const url = typeof input === 'string' ? input : (input && input.url) || '';
   if (!_outboxQueueable(url, init)) return _origFetch(input, init);
-  init = _outboxRequestOptions(url, init);
+  init = _outboxRequestOptions(url, init || {});
+  const receipt = _interactionAccept(url, init);
+  init = _interactionRequestOptions(receipt, init);
   if (_localMessageRequest(url, init)) {
-    if (!await _queueOp(url, init)) return new Response('Queue unavailable', {status:507});
+    if (!await _queueOp(url, init)) {
+      _interactionFail(receipt.id, 'Queue unavailable', false);
+      return new Response('Queue unavailable', {status:507});
+    }
     // Return after durable local acceptance. The composer must never wait for
     // terminal submission verification or the server's model-backed intake.
+    _interactionFail(receipt.id, null, true);
     if (online) setTimeout(() => runSyncBanner(true), 0);
     return _outboxAccepted();
   }
   if (!online) {
-    return Promise.resolve(await _queueOp(url, init || {}) ? _outboxAccepted() : new Response('Queue unavailable', {status: 507}));
+    const queued = await _queueOp(url, init || {});
+    _interactionFail(receipt.id, queued ? null : 'Queue unavailable', queued);
+    return Promise.resolve(queued ? _outboxAccepted() : new Response('Queue unavailable', {status: 507}));
   }
-  const durableId = /\/api\/board\/[^/?]+$/.test(url) && (init?.method || '').toUpperCase() === 'PATCH' ? crypto.randomUUID() : null;
+  _interactionSet(receipt.id, {phase:'sending'});
+  const durableId = /\/api\/board\/[^/?]+$/.test(url) && (init?.method || '').toUpperCase() === 'PATCH' ? receipt.id : null;
   const deliver = async () => {
   if (durableId) {
     init = { ...init, _outboxId: durableId };
-    if (!await _queueOp(url, init)) return Promise.resolve(new Response('Queue unavailable', {status: 507}));
+    if (!await _queueOp(url, init)) {
+      _interactionFail(receipt.id, 'Queue unavailable', false);
+      return Promise.resolve(new Response('Queue unavailable', {status: 507}));
+    }
     _outboxActive.add(durableId);
   }
   return _boundedMutationFetch(input, init).then(async r => {
     if (r.status >= 500 || [401, 408, 429].includes(r.status)) {
       _writeError = 'Server did not save the change (' + r.status + ')';
-      if (await _queueOp(url, init || {})) return _outboxAccepted();
+      if (await _queueOp(url, init || {})) {
+        _interactionFail(receipt.id, null, true);
+        return _outboxAccepted();
+      }
     }
     if (durableId) {
       const q = offlineQueue.find(q => q.id === durableId);
@@ -2910,6 +3085,7 @@ window.fetch = async function(input, init) {
       }
       updateConnectionStatus();
     }
+    _interactionAcknowledge(receipt.id, r);
     return r;
   }).catch(async e => {
     if (durableId && e.outboxBlocked) {
@@ -2917,6 +3093,7 @@ window.fetch = async function(input, init) {
       await _mutateQueue(current => { const q = current.find(q => q.id === durableId); if (q) Object.assign(q, {state:'blocked', error:e.message}); });
       updateConnectionStatus();
       try { amuxTrack('outbox_acknowledgement_refused', {id:durableId, error:e.message}); } catch (_) {}
+      _interactionSet(receipt.id, {phase:'refused', acknowledgement:{status:409, error:e.message}, feedback:{required:true, persistence:'durable', severity:'error', message:e.message}});
       return new Response(e.message, {status:409});
     }
     consecutiveFailures++;
@@ -2937,7 +3114,9 @@ window.fetch = async function(input, init) {
       });
     } catch (_) {}
     _writeError = 'Server unreachable; changes are pending';
-    return await _queueOp(url, init || {}) ? _outboxAccepted() : new Response('Queue unavailable', {status: 507});
+    const queued = await _queueOp(url, init || {});
+    _interactionFail(receipt.id, e, queued);
+    return queued ? _outboxAccepted() : new Response('Queue unavailable', {status: 507});
   }).finally(() => { if (durableId) _outboxActive.delete(durableId); });
   };
   return durableId ? _outboxLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
@@ -9949,7 +10128,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.908';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.909';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
