@@ -314,6 +314,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-board-shepherd.sh
+      - name: board archive --archive-outcome sends the field and composes with --authorized-by
+        run: |
+          set -uo pipefail
+          bash scripts/test-board-archive-outcome.sh
       - name: push-consent names who must be asked and who cannot be
         run: |
           set -uo pipefail
