@@ -23576,7 +23576,7 @@ function switchView(view) {
     ['files', 'files', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
-    ['cost', 'cost', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
+    ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'],
   ];
@@ -23594,6 +23594,7 @@ function switchView(view) {
   if (view === 'map') { _mapLoad(); _mapInit(); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
   if (view === 'cost') _costLoad();
+  if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
@@ -35695,7 +35696,7 @@ function _metricsRender() {
     const cls = _metricsGaugeCls(sys.disk_percent || 0);
     // Free space is the number you act on, so it leads. Clicking through to
     // Disk Cleanup is the point: a red gauge with no next step is just anxiety.
-    html += `<div class="metrics-card reclaim-catcard" onclick="_metricsSetMode('disk')" title="Open Disk Cleanup">
+    html += `<div class="metrics-card reclaim-catcard" onclick="switchView('disk')" title="Open Disk Cleanup">
       <div class="metrics-card-title">Disk</div>
       <div class="metrics-card-value">${sys.disk_free_gb != null ? sys.disk_free_gb : (sys.disk_total_gb - sys.disk_used_gb).toFixed(1)}<span> GB free</span></div>
       <div class="metrics-card-sub">${sys.disk_used_gb} of ${sys.disk_total_gb} GB used &mdash; ${(sys.disk_percent || 0).toFixed(0)}%</div>
@@ -35840,6 +35841,7 @@ let _reclaimCat = null;
 
 const _RECLAIM_CATS = {
   build:     { label: 'Build artifacts', hint: 'Regenerable. Costs a rebuild, not data.', safe: true },
+  'tmp-orphan': { label: 'Orphaned tmp snapshots', hint: 'Single-use gate/build snapshot dirs left behind in /private/tmp or $TMPDIR, untouched for hours. Regenerable — nothing else on the fleet reuses them.', safe: true },
   cache:     { label: 'Caches',          hint: 'Regenerable. Apps refill these on demand.', safe: true },
   devtool:   { label: 'Dev tool stores', hint: 'Models, images, registries. Re-download can be slow.', safe: true },
   large:     { label: 'Large files',     hint: 'Recently touched. Review individually.', safe: false },
@@ -35981,7 +35983,7 @@ function _hostRender() {
     </div>`;
   }
   if (disk.total_gb) {
-    html += `<div class="metrics-card reclaim-catcard" onclick="_metricsSetMode('disk')" title="Open Disk Cleanup">
+    html += `<div class="metrics-card reclaim-catcard" onclick="switchView('disk')" title="Open Disk Cleanup">
       <div class="metrics-card-title">Disk${disk.path ? ' (' + esc(String(disk.path)) + ')' : ''}</div>
       <div class="metrics-card-value">${num(disk.free_gb, 1)}<span> GB free</span></div>
       <div class="metrics-card-sub">${num(disk.used_gb, 1)} of ${num(disk.total_gb, 1)} GB — ${num(disk.percent, 0)}%</div>
@@ -36385,7 +36387,7 @@ function _reclaimRender() {
     // the box agree and nothing is letterboxed. Measured from the scroll pane
     // (minus its 16px padding either side) rather than assumed.
     const _mapW = Math.round(Math.max(300, Math.min(1200,
-      (document.getElementById('metrics-main')?.clientWidth || 900) - 32)));
+      (document.getElementById('disk-view')?.clientWidth || document.getElementById('metrics-main')?.clientWidth || 900) - 32)));
     const _mapH = window.innerWidth < 600 ? 300 : 340;
     html += '<div class="reclaim-map">' + _reclaimTreemapSvg(_reclaimTree.children || [], _mapW, _mapH) + '</div>';
     html += '<div class="reclaim-legend">' + Object.entries(_KIND_COLORS).map(([k, c]) =>

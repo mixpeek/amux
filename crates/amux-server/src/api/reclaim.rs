@@ -485,6 +485,46 @@ pub(crate) fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into()))
 }
 
+/// The two roots whose direct children are, by OS convention, meant to be
+/// single-use scratch space: `/private/tmp` and the per-user Darwin temp dir
+/// (`$TMPDIR`, e.g. `/private/var/folders/xx/.../T`). Compared with the
+/// trailing slash trimmed since `std::env::temp_dir()` returns one and a
+/// walked directory path never does.
+fn ephemeral_tmp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from("/private/tmp")];
+    let t = std::env::temp_dir();
+    let trimmed = t.to_string_lossy().trim_end_matches('/').to_string();
+    if !trimmed.is_empty() {
+        roots.push(PathBuf::from(trimmed));
+    }
+    roots
+}
+
+fn is_ephemeral_tmp_root(p: &FsPath) -> bool {
+    ephemeral_tmp_roots().iter().any(|r| r == p)
+}
+
+/// A directory sitting directly in `/private/tmp` or `$TMPDIR` must be
+/// orphaned after this long untouched, measured in HOURS rather than the
+/// 90-day default `stale_age_secs` used everywhere else.
+///
+/// Measured 2026-09-11: 590GB+ across both roots, from mktemp-style snapshot
+/// dirs that pre-push gates and graft-push create per invocation
+/// (`pushed-tree-guards-*`, `*tgt.*`, `tmp.*`, `treeguard.*`, naming varies by
+/// script and is not worth enumerating — see CLAUDE.md's own record of the
+/// fleet inventing a new suffix rather than reusing a documented one). Each is
+/// single-use: a gate run finishes in minutes or it crashed, so unlike a
+/// shared persistent cache (the fleet's cargo target dir, `~/.cache`) that is
+/// "hot" somewhere on the fleet every day and must not be swept on an hours
+/// timescale, a uniquely-named directory made by exactly one invocation has no
+/// "still in use" case past a few hours. `0` disables this arm entirely.
+fn tmp_orphan_stale_secs() -> i64 {
+    std::env::var("AMUX_RECLAIM_TMP_ORPHAN_STALE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(3 * 3600)
+}
+
 /// Coarse file-type bucket, used to color the treemap.
 fn kind_of(name: &str) -> &'static str {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
@@ -553,6 +593,15 @@ fn guard_path(p: &FsPath) -> Result<(), String> {
     }
     if s.contains("/.git/") || s.ends_with("/.git") {
         return Err("git metadata".into());
+    }
+    // Live scratchpad space for every currently-running Claude Code session on
+    // this machine, not a cleanup target. Its own top-level mtime can look
+    // stale for hours while sessions write deep inside their own subdirs
+    // (APFS only bumps a directory's mtime when its direct entries change),
+    // so age-based heuristics over it are unreliable in exactly the direction
+    // that would move someone's live working files.
+    if s == "/private/tmp/claude-501" || s.starts_with("/private/tmp/claude-501/") {
+        return Err("live Claude Code session scratchpad (claude-501)".into());
     }
     Ok(())
 }
@@ -796,6 +845,39 @@ fn walk(
                                 mtime: sub.newest_mtime,
                                 regenerable: true,
                                 detail: format!("{name} · untouched {age_d}d · rebuildable"),
+                            });
+                        }
+                        continue;
+                    }
+                    // Prune at a direct child of an ephemeral tmp root: see
+                    // `tmp_orphan_stale_secs` for why this needs its own,
+                    // much shorter staleness bar than BUILD_DIRS above.
+                    if is_ephemeral_tmp_root(&dir) {
+                        let sub = subtree_totals(&path, root_dev, cancel, pos);
+                        pos.set(&dir, "entries"); // back out of the pruned subtree
+                        out.bytes += sub.bytes;
+                        out.files += sub.files;
+                        local.bytes += sub.bytes;
+                        local.files += sub.files;
+                        *local.kinds.entry("build").or_default() += sub.bytes;
+                        let age = (now - sub.newest_mtime).max(0);
+                        let threshold = tmp_orphan_stale_secs();
+                        if threshold > 0
+                            && sub.bytes >= 100 * 1024 * 1024
+                            && age >= threshold
+                            && guard_path(&path).is_ok()
+                        {
+                            let age_h = age / 3600;
+                            out.findings.push(Finding {
+                                category: "tmp-orphan",
+                                path: path.clone(),
+                                bytes: sub.bytes,
+                                file_count: sub.files,
+                                mtime: sub.newest_mtime,
+                                regenerable: true,
+                                detail: format!(
+                                    "{name} · untouched {age_h}h · orphaned gate/build snapshot"
+                                ),
                             });
                         }
                         continue;
@@ -2180,6 +2262,8 @@ mod tests {
             PathBuf::from("/Volumes/Backup"),
             PathBuf::from("relative/path"),
             PathBuf::from("/Users/ethan/Dev/../../etc"),
+            PathBuf::from("/private/tmp/claude-501"),
+            PathBuf::from("/private/tmp/claude-501/-Users-ethan-Dev/some-session/scratchpad/file.txt"),
         ];
         for p in must_refuse {
             assert!(
@@ -2215,6 +2299,18 @@ mod tests {
                 guard_path(&p)
             );
         }
+    }
+
+    /// Only the two literal roots match — a child, a sibling, or a
+    /// look-alike path must not, or every orphan-classification decision
+    /// downstream is built on a predicate that is quietly too broad.
+    #[test]
+    fn ephemeral_tmp_root_matches_only_the_roots_themselves() {
+        assert!(is_ephemeral_tmp_root(FsPath::new("/private/tmp")));
+        assert!(is_ephemeral_tmp_root(&std::env::temp_dir()));
+        assert!(!is_ephemeral_tmp_root(FsPath::new("/private/tmp/some-orphan-dir")));
+        assert!(!is_ephemeral_tmp_root(FsPath::new("/private")));
+        assert!(!is_ephemeral_tmp_root(&home_dir()));
     }
 
     /// `df_bytes` is the honest-reclaim measurement. If it silently returns

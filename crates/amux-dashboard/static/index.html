@@ -536,6 +536,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-sql" onclick="switchView('sql')"><span class="tab-ico">⛁</span><span class="tab-lbl">Database</span></button>
   <button id="tab-map" onclick="switchView('map')"><span class="tab-ico">◈</span><span class="tab-lbl">Map</span></button>
   <button id="tab-metrics" onclick="switchView('metrics')"><span class="tab-ico">↗</span><span class="tab-lbl">Metrics</span></button>
+  <button id="tab-disk" onclick="switchView('disk')"><span class="tab-ico">🖴</span><span class="tab-lbl">Disk</span></button>
   <button id="tab-cost" onclick="switchView('cost')"><span class="tab-ico">$</span><span class="tab-lbl">Cost</span></button>
   <button id="tab-torrents" onclick="switchView('torrents')"><span class="tab-ico">↓</span><span class="tab-lbl">Torrents</span></button>
   <button id="tab-terminal" onclick="switchView('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
@@ -1159,12 +1160,21 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="metrics-modebar">
       <button class="metrics-modebtn active" id="metricsmode-system" onclick="_metricsSetMode('system')">System</button>
       <button class="metrics-modebtn" id="metricsmode-host" onclick="_metricsSetMode('host')">Host</button>
-      <button class="metrics-modebtn" id="metricsmode-disk" onclick="_metricsSetMode('disk')">Disk Cleanup</button>
+      <button class="metrics-modebtn" id="metricsmode-disk" onclick="switchView('disk')">Disk Cleanup</button>
     </div>
     <div id="metrics-content"><div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Loading metrics&hellip;</div></div>
-    <div id="reclaim-content" style="display:none;"></div>
     <div id="host-content" style="display:none;"></div>
   </div>
+</div>
+
+<!-- Disk view: promoted out of Metrics ▸ Disk Cleanup (AMUX system-tab request,
+     2026-09-11) into its own top-level tab so disk cleanup is one click, not
+     three (Metrics → sidebar collapse → Disk Cleanup submode). The submode
+     button/cards still exist for muscle memory and now just call
+     switchView('disk'); #reclaim-content itself and every _reclaim* function
+     are unchanged. -->
+<div id="disk-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
+  <div id="reclaim-content" style="display:flex;flex-direction:column;flex:1;min-height:0;"></div>
 </div>
 
 <!-- Torrents view -->
