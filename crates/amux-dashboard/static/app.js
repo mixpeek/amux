@@ -3903,19 +3903,26 @@ function providerLabel(provider) {
   if (provider === 'codex') return 'Codex';
   if (provider === 'gemini') return 'Gemini';
   if (provider === 'ollama') return 'Ollama';
+  if (provider === 'muse') return 'Muse Code';
   if (provider === 'iterm2') return 'iTerm2';
   return 'Claude';
 }
 
 function sessionProvider(s) {
   const p = ((s && s.provider) || 'claude').toLowerCase();
-  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'iterm2') ? p : 'claude';
+  // A provider missing from this list does not render as itself — it renders as
+  // CLAUDE, silently, because the fallback is a value rather than a failure. A
+  // muse lane would have shown a Claude badge, a Claude model and Claude's yolo
+  // flag while running `muse`. Anything added to SESSION_PROVIDERS server-side
+  // belongs here too.
+  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'iterm2') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
   if (provider === 'codex') return 'gpt-5.5';
   if (provider === 'gemini') return 'auto';
   if (provider === 'ollama') return 'qwen3.8:27b';
+  if (provider === 'muse') return 'muse-spark-1.3-contributor';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
 
@@ -3926,7 +3933,10 @@ function sessionConfiguredModel(s) {
 
 function providerYoloFlag(provider) {
   if (provider === 'codex' || provider === 'ollama') return '--dangerously-bypass-approvals-and-sandbox';
-  if (provider === 'gemini') return '--yolo';
+  // muse spells it like gemini, NOT like codex: `--yolo` (it also accepts
+  // --disable-approval/--disable-sandbox separately). Sending codex's
+  // --dangerously-bypass-approvals-and-sandbox to muse is an unknown flag.
+  if (provider === 'gemini' || provider === 'muse') return '--yolo';
   return '--dangerously-skip-permissions';
 }
 
@@ -6449,7 +6459,8 @@ function editField(session, field, current, provider) {
       {v:'claude',l:'Claude Code'},
       {v:'codex',l:'Codex'},
       {v:'gemini',l:'Gemini'},
-      {v:'ollama',l:'Ollama (local)'}
+      {v:'ollama',l:'Ollama (local)'},
+      {v:'muse',l:'Muse Code'}
     ];
     sel.innerHTML = '';
     providers.forEach(p => { const o = document.createElement('option'); o.value = p.v; o.textContent = p.l; sel.appendChild(o); });
@@ -9954,7 +9965,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.905';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.906';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -21608,6 +21619,8 @@ function _selectProvider(p) {
   document.getElementById('create-provider-gemini').classList.toggle('selected', p === 'gemini');
   const _ollamaBtn = document.getElementById('create-provider-ollama');
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
+  const _museBtn = document.getElementById('create-provider-muse');
+  if (_museBtn) _museBtn.classList.toggle('selected', p === 'muse');
   // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
   const isClaude = p === 'claude';
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude ? '' : 'none';
@@ -21645,6 +21658,8 @@ function openCreate() {
   if (_iso0) { _iso0.checked = false; _toggleIsolated(false); }
   const _ollamaBtn0 = document.getElementById('create-provider-ollama');
   if (_ollamaBtn0) _ollamaBtn0.classList.remove('selected');
+  const _museBtn0 = document.getElementById('create-provider-muse');
+  if (_museBtn0) _museBtn0.classList.remove('selected');
   _loadModelsForCreate('claude');
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = '';
   document.getElementById('create-template-field').style.display = '';
@@ -33565,8 +33580,13 @@ async function loadUsage() {
       const windows = Array.isArray(provider.windows) ? provider.windows : [];
       const minimum = windows.length ? Math.min(...windows.map(w => Number(w.remaining_percent) || 0)) : null;
       const pending = !provider.available && (provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause));
+      // `usage_unknown` is opt-in, so no existing provider's chip changes: a metered
+      // provider with no readable quota (muse) must not borrow ollama's "Unlimited" or
+      // the "No active limits" that means "we looked and there were none". It means we
+      // could not look.
       const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account')
         : provider.metered === false ? 'Unlimited'
+        : provider.usage_unknown ? 'Usage unknown'
         : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
       const detail = !provider.available

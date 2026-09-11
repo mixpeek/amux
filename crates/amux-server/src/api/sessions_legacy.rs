@@ -4635,6 +4635,22 @@ pub(crate) mod tests {
         assert_eq!(cflags, "--model qwen3.8:27b");
         assert!(cmodel.is_empty(), "agent CLIs have no CC_MODEL");
         assert_eq!(cresolved, "qwen3.8:27b");
+        // Muse: an agent CLI, so the model rides in CC_FLAGS and CC_MODEL stays
+        // empty (the ollama CC_MODEL path is ollama-only).
+        let (mflags, mmodel, mresolved) = worker_model_env("muse", "muse-spark-1.2", "", "opus");
+        assert_eq!(mflags, "--model muse-spark-1.2");
+        assert!(mmodel.is_empty(), "muse must not use the ollama CC_MODEL path");
+        assert_eq!(mresolved, "muse-spark-1.2");
+        // THE CLAUDE DEFAULT MUST NOT LEAK (the gtm-researcher-gemini defect one
+        // provider over). An unspecified model leaves CC_FLAGS EMPTY so muse's
+        // own CLI decides; `default_model_for_provider("muse")` supplies
+        // muse-spark-1.3-contributor at launch. "opus" is not a model Meta can
+        // be asked for, and a worker created with it would be dead on arrival.
+        let (mflags2, mmodel2, mresolved2) = worker_model_env("muse", "", "", "opus");
+        assert!(mflags2.is_empty(), "empty muse model must not become --model opus: {mflags2}");
+        assert!(!mflags2.contains("opus"));
+        assert!(mmodel2.is_empty());
+        assert!(mresolved2.is_empty());
 
         // Ollama + NO model -> CC_MODEL empty (start uses the ollama default),
         // and the CLAUDE default ("opus") must appear NOWHERE. This is the exact

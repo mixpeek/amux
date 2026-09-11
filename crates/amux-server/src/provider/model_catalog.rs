@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-pub const CATALOG_UPDATED_AT: &str = "2026-09-06";
+pub const CATALOG_UPDATED_AT: &str = "2026-09-08";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ModelDescriptor {
@@ -47,8 +47,8 @@ fn add(
     }));
 }
 
-/// Every model exposed by the official OpenAI and Gemini catalogs, plus the
-/// current/legacy Claude ids and provider aliases already supported by amux.
+/// Every model exposed by the official OpenAI, Gemini and Muse catalogs, plus
+/// the current/legacy Claude ids and provider aliases already supported by amux.
 /// Non-agent modalities are represented (and typed) but deliberately not
 /// offered to coding workers.
 pub fn catalog() -> Vec<ModelDescriptor> {
@@ -532,6 +532,24 @@ pub fn catalog() -> Vec<ModelDescriptor> {
             "gemini-robotics-er-2-streaming-preview",
             "gemini-robotics-er-1.6-preview",
             "gemini-robotics-er-1.5-preview",
+        ],
+    );
+
+    // Meta / Muse Code. Ids and the default come from the catalog the CLI itself
+    // writes (~/.local/share/muse/model-catalog/*.json), where
+    // muse-spark-1.3-contributor carries is_default AND is_current — so it leads
+    // here too, and `providerDefaultModel` in app.js names the same id. All three
+    // are coding models, so all three are worker_selectable.
+    add(
+        &mut out,
+        "meta",
+        "muse",
+        "spark",
+        true,
+        &[
+            "muse-spark-1.3-contributor",
+            "muse-spark-1.3",
+            "muse-spark-1.2",
         ],
     );
 
