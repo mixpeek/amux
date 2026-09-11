@@ -2886,16 +2886,28 @@ print(json.dumps(b))')
       local _av=1; [[ "$subcmd" == "unarchive" ]] && _av=0
       local id="${1:-}"
       _board_id_guard "archive" "$id"
-      [[ -n "$id" ]] || die "Usage: amux board $sub <ISSUE-ID>
+      [[ -n "$id" ]] || die "Usage: amux board $sub <ISSUE-ID> [--authorized-by <who>] [--archive-outcome <why>]
 archive   hides a card from every board view AND every autonomy loop (advance, pickup, rot)
-unarchive brings it back — this is the un-do that did not exist before AMUX-2492"
+unarchive brings it back — this is the un-do that did not exist before AMUX-2492
+--authorized-by   required to archive a card owned by a DIFFERENT lane (AMUX-2492)
+--archive-outcome required to archive a card whose status is still needsyou (AF-701) —
+                  someone is owed an answer, so archiving it needs to say what the answer was"
       shift
-      local _auth=""
-      [[ "${1:-}" == "--authorized-by" ]] && { _auth="${2:-}"; shift 2; }
+      local _auth="" _outcome=""
+      # AF-701: order-independent, since a needsyou card owned by another lane
+      # can need BOTH flags at once (cross-lane AND the outcome gate).
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --authorized-by) _auth="${2:-}"; shift 2 ;;
+          --archive-outcome) _outcome="${2:-}"; shift 2 ;;
+          *) break ;;
+        esac
+      done
       local result
-      result=$(A="$_av" W="$_auth" python3 -c 'import json,os
+      result=$(A="$_av" W="$_auth" O="$_outcome" python3 -c 'import json,os
 b={"archived": int(os.environ["A"])}
 if os.environ.get("W"): b["authorized_by"]=os.environ["W"]
+if os.environ.get("O"): b["archive_outcome"]=os.environ["O"]
 print(json.dumps(b))' \
         | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")

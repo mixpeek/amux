@@ -8209,11 +8209,25 @@ pub async fn patch_item(
         );
     }
     let force_actor = actor_name.clone();
+    // AF-701: a VERIFIED local member (Ethan, from the dashboard) is always
+    // allowed and stays exempt from the cross-lane archive guard below —
+    // captured separately from `caller_lane` so the exemption survives while
+    // the next comment's bug does not.
+    let is_local_member = super::org::is_verified_local_member(&headers);
     // Python `_hdr_worker`: "" when the header is absent — the cross-lane
-    // archive guard only fires for a NAMED caller (AMUX-2492).
-    let caller_lane = if actor_name == "api-anonymous"
-        || super::org::is_verified_local_member(&headers)
-    {
+    // archive guard used to ALSO exempt a truly anonymous caller this way
+    // (AMUX-2492's original text: "only fires for a NAMED caller"), which
+    // reads as a design choice and was actually the hole: an unnamed caller
+    // is the one that most needs the guard, not the one that should skip it.
+    // Measured by mixpeek-orchestrator 2026-09-10/11: a 62-card anonymous
+    // PATCH sweep (zero X-Amux-Session/Worker header, 14-15 byte bodies,
+    // one card per request over 6 minutes) archived cards across at least
+    // seven OTHER lanes' namespaces with no resistance, because `caller_lane`
+    // was empty and the guard below only checked `!caller_lane.is_empty()`.
+    // Fixed at the guard site (AF-701), not here: `caller_lane` still needs
+    // to read "" for every other caller (notify targets, log lines) that
+    // legitimately treats an anonymous/local-member caller as unnamed.
+    let caller_lane = if actor_name == "api-anonymous" || is_local_member {
         String::new()
     } else {
         actor_name.clone()
@@ -8917,9 +8931,19 @@ pub async fn patch_item(
                         .and_then(Value::as_str)
                         .map(str::trim)
                         .unwrap_or("");
-                    if !caller_lane.is_empty() && !owner.is_empty() && owner != caller_lane
+                    // AF-701: `is_local_member` outranks the identity check — a
+                    // verified local member (Ethan) is always allowed, same as
+                    // before. What changed is that a caller who is NEITHER named
+                    // NOR the local member (a truly anonymous request) no longer
+                    // gets waved through just because `caller_lane` reads "".
+                    // That emptiness used to mean "skip the check"; it now means
+                    // "cannot possibly equal `owner`", which is the same rule
+                    // this block already applies to every named non-owner.
+                    if !is_local_member && !owner.is_empty() && owner != caller_lane
                         && authorized.is_empty()
                     {
+                        let caller_desc =
+                            if caller_lane.is_empty() { "An anonymous caller" } else { &caller_lane };
                         return finish(
                             &slot_w,
                             PatchOut::Refused(
@@ -8927,7 +8951,7 @@ pub async fn patch_item(
                                 json!({
                                     "error": "cross-lane destruction requires authorized_by",
                                     "why": format!(
-                                        "{caller_lane} is archiving {}, which belongs to {owner}. \
+                                        "{caller_desc} is archiving {}, which belongs to {owner}. \
                                          Archiving hides it from every board view AND every \
                                          autonomy loop, so it is a termination in effect even \
                                          though the status is untouched.",
@@ -8935,7 +8959,10 @@ pub async fn patch_item(
                                     ),
                                     "how": format!(
                                         "add {{\"authorized_by\": \"<who asked>\"}}, or use \
-                                         `amux board archive {} --authorized-by \"<who>\"`",
+                                         `amux board archive {} --authorized-by \"<who>\"`. An \
+                                         anonymous caller (no X-Amux-Session/X-Amux-Worker header) \
+                                         must send this header or authorized_by — there is no \
+                                         exemption for an unnamed caller.",
                                         row.id
                                     ),
                                     "card_owner": owner,
@@ -8944,10 +8971,73 @@ pub async fn patch_item(
                             no_write(),
                         );
                     }
+                    // AF-701: archiving a card that is still `needsyou` hides an
+                    // unanswered ask instead of resolving it — measured fleet-wide
+                    // by mixpeek-orchestrator at 98 such cards, most weeks old,
+                    // several with no attributable actor at all.
+                    //
+                    // NOT gated on "the same request also changes status": tried
+                    // that first, and `next.archived` is set (a few lines below)
+                    // before the status-transition code runs later in this same
+                    // function, which reads `apply_transition`'s own archived-
+                    // check against a task that this request has already marked
+                    // archived — so a combined {"archived":true,"status":"x"} PATCH
+                    // was refused ArchivedTaskImmutable regardless of what this
+                    // gate did. That escape never worked; documenting it as a
+                    // valid path would have been the ethos-rule-3 lie this fix
+                    // exists to remove. The real two-step path (change status
+                    // away from needsyou in one request, archive in the next)
+                    // still works and needs no help from this gate.
+                    if row.status == "needsyou" {
+                        let outcome = map
+                            .get("archive_outcome")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .unwrap_or("");
+                        if outcome.is_empty() {
+                            return finish(
+                                &slot_w,
+                                PatchOut::Refused(
+                                    StatusCode::BAD_REQUEST,
+                                    json!({
+                                        "error": "archiving a needsyou card requires an outcome",
+                                        "why": format!(
+                                            "{} is in needsyou, which means someone is still owed \
+                                             an answer. Archiving it removes it from the owner's \
+                                             queue and every autonomy loop without answering the \
+                                             ask, which is how it goes quiet instead of getting \
+                                             resolved.",
+                                            row.id
+                                        ),
+                                        "how": "add \
+                                                {\"archive_outcome\": \"<answered|withdrawn|discarded, and why>\"} \
+                                                to archive it while recording why, or first PATCH \
+                                                `status` away from needsyou in its own request (the \
+                                                ask was answered or the card is done), then archive \
+                                                it in a second request.",
+                                        "item": row.id,
+                                    }),
+                                ),
+                                no_write(),
+                            );
+                        }
+                    }
                 }
                 if arc_v != next.archived {
                     next.archived = arc_v;
                     changed.push("archived".into());
+                    if arc_v == 1 {
+                        if let Some(o) = map.get("archive_outcome").and_then(Value::as_str) {
+                            let o = o.trim();
+                            if !o.is_empty() {
+                                next.log = Some(bs::append_log(
+                                    next.log.as_deref(),
+                                    &hhmm(),
+                                    &format!("{actor_name}: archive_outcome: {o}"),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             if let Some(t) = body_str(&map, "type") {
@@ -11536,6 +11626,248 @@ mod capture_requeue_tests {
         let log = body["log"].as_str().unwrap_or_default();
         assert!(log.contains("force by mvs-research: doing->backlog reason="), "{log}");
         assert!(log.contains("source message was revoked"), "{log}");
+    }
+}
+
+#[cfg(test)]
+mod af701_archive_guard_tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::HeaderValue;
+
+    fn fixture() -> (AppState, crate::db::SharedStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(
+            crate::db::Store::open(&dir.path().join("af701-archive-guard.db")).expect("open store"),
+        );
+        std::mem::forget(dir);
+        let state = AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "af701-archive-guard-test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        (state, store)
+    }
+
+    fn seed(store: &crate::db::SharedStore, session: &str, status: &str) -> String {
+        let slot = Arc::new(Mutex::new(None));
+        let slot_w = slot.clone();
+        let session = session.to_string();
+        let status = status.to_string();
+        store
+            .write(move |conn| {
+                let row = bs::create_issue(
+                    conn,
+                    &bs::NewIssue {
+                        title: "AF-701 fixture card".into(),
+                        desc: "fixture".into(),
+                        status,
+                        session: Some(session),
+                        item_type: "chore".into(),
+                        creator: "test".into(),
+                        owner_type: "agent".into(),
+                        due: None,
+                        due_time: None,
+                        reviewer: None,
+                        shepherd: None,
+                        gate: vec![],
+                        depends_on: vec![],
+                        tags: vec![],
+                        ask_type: Some("decision".into()),
+                        ask_question: Some("is this ok?".into()),
+                        ask_unblocks: Some("the fixture proceeds".into()),
+                        ask_actor: Some("ethan".into()),
+                        source: Some("test".into()),
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
+                    },
+                    1_700_000_000,
+                )?;
+                *slot_w.lock().unwrap() = Some(row.id);
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .expect("seed");
+        let id = slot.lock().unwrap().clone().unwrap();
+        id
+    }
+
+    fn owner_headers(session: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amux-session", HeaderValue::from_str(session).unwrap());
+        headers
+    }
+
+    fn local_member_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amux-local-member-verified", HeaderValue::from_static("1"));
+        headers
+    }
+
+    async fn patch_as(state: &AppState, id: &str, headers: HeaderMap, body: Value) -> (StatusCode, Value) {
+        let response = patch_item(State(state.clone()), Path(id.to_string()), headers, Json(body)).await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("read response");
+        (status, serde_json::from_slice(&bytes).expect("json response"))
+    }
+
+    fn current(store: &crate::db::SharedStore, id: &str) -> bs::IssueRow {
+        bs::get_issue(&store.read().expect("read"), id)
+            .expect("query")
+            .expect("card")
+    }
+
+    // ---- ask (b): the cross-lane guard must not exempt an unnamed caller ----
+
+    #[tokio::test]
+    async fn an_anonymous_caller_cannot_archive_a_named_owners_card() {
+        let (state, store) = fixture();
+        let id = seed(&store, "some-lane", "todo");
+        let (status, body) =
+            patch_as(&state, &id, HeaderMap::new(), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "cross-lane destruction requires authorized_by");
+        assert_eq!(current(&store, &id).archived, 0, "a refusal must not mutate the card");
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_caller_can_archive_with_authorized_by() {
+        let (state, store) = fixture();
+        let id = seed(&store, "some-lane", "todo");
+        let (status, _body) = patch_as(
+            &state,
+            &id,
+            HeaderMap::new(),
+            json!({"archived": true, "authorized_by": "ethan"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(current(&store, &id).archived, 1);
+    }
+
+    #[tokio::test]
+    async fn a_verified_local_member_can_still_archive_any_lanes_card_unauthorized() {
+        // Regression control: the human-from-the-dashboard exemption must
+        // survive closing the anonymous hole, or archiving breaks for Ethan.
+        let (state, store) = fixture();
+        let id = seed(&store, "some-lane", "todo");
+        let (status, _body) =
+            patch_as(&state, &id, local_member_headers(), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(current(&store, &id).archived, 1);
+    }
+
+    #[tokio::test]
+    async fn a_named_caller_archiving_their_own_card_needs_no_authorization() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "todo");
+        let (status, _body) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(current(&store, &id).archived, 1);
+    }
+
+    #[tokio::test]
+    async fn a_named_caller_archiving_a_different_lanes_card_is_still_refused() {
+        let (state, store) = fixture();
+        let id = seed(&store, "some-other-lane", "todo");
+        let (status, body) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(current(&store, &id).archived, 0);
+    }
+
+    // ---- ask (a): archiving a needsyou card requires an outcome ----
+
+    #[tokio::test]
+    async fn archiving_a_needsyou_card_is_refused_without_an_outcome() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "needsyou");
+        let (status, body) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "archiving a needsyou card requires an outcome");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 0, "a refusal must not mutate the card");
+        assert_eq!(row.status, "needsyou");
+    }
+
+    #[tokio::test]
+    async fn archiving_a_needsyou_card_succeeds_with_archive_outcome() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "needsyou");
+        let (status, body) = patch_as(
+            &state,
+            &id,
+            owner_headers("mvs-research"),
+            json!({"archived": true, "archive_outcome": "answered informally, no longer needed"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 1);
+        assert_eq!(row.status, "needsyou", "the outcome does not itself change status");
+        assert!(
+            row.log.as_deref().unwrap_or_default().contains("archive_outcome: answered informally"),
+            "{:?}",
+            row.log
+        );
+    }
+
+    #[tokio::test]
+    async fn a_combined_archive_and_status_change_in_one_request_is_still_refused_without_an_outcome() {
+        // Tried making this combination the escape hatch first; it cannot work
+        // (see the comment on the gate in patch_item), so this pins that a
+        // combined request gets THIS gate's refusal rather than silently
+        // archiving, silently changing status, or hitting the unrelated
+        // ArchivedTaskImmutable error with no mention of needsyou at all.
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "needsyou");
+        let (status, body) = patch_as(
+            &state,
+            &id,
+            owner_headers("mvs-research"),
+            json!({"archived": true, "status": "discarded"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "archiving a needsyou card requires an outcome");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 0);
+        assert_eq!(row.status, "needsyou");
+    }
+
+    #[tokio::test]
+    async fn the_two_step_path_still_works_status_change_then_archive() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "needsyou");
+        let (s1, b1) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"status": "discarded"}))
+                .await;
+        assert_eq!(s1, StatusCode::OK, "{b1}");
+        let (s2, b2) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(s2, StatusCode::OK, "{b2}");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 1);
+        assert_eq!(row.status, "discarded");
+    }
+
+    #[tokio::test]
+    async fn a_needsyou_card_can_still_be_archived_with_no_outcome_when_the_gate_does_not_apply() {
+        // CONTROL: a card that is NOT needsyou must be unaffected by this gate,
+        // or the gate is not testing needsyou at all.
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "backlog");
+        let (status, body) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(current(&store, &id).archived, 1);
     }
 }
 
