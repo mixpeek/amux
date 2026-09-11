@@ -11,7 +11,7 @@
 
 use super::AppState;
 use axum::body::Bytes;
-use axum::extract::Path;
+use axum::extract::{Path, RawQuery};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -30,6 +30,7 @@ const STALE_SECS: u64 = 3600;
 const SWEEP_LOG_DIRS: usize = 12;
 
 struct InFlight {
+    operation: Arc<tokio::sync::Mutex<()>>,
     filename: String,
     chunks: usize,
     received: BTreeSet<usize>,
@@ -160,7 +161,7 @@ pub fn routes() -> Router<AppState> {
         ))
         .route("/{id}/finish", post({
             let s = state.clone();
-            move |path| finish(s, path)
+            move |path, query| finish(s, path, query)
         }))
 }
 
@@ -265,6 +266,7 @@ async fn start(state: UploadState, Json(body): Json<StartReq>) -> Response {
     }
 
     map.insert(uid.clone(), InFlight {
+        operation: Arc::new(tokio::sync::Mutex::new(())),
         filename,
         chunks: total_chunks,
         received: BTreeSet::new(),
@@ -280,6 +282,8 @@ async fn chunk(
     Path((id, n)): Path<(String, usize)>,
     body: Bytes,
 ) -> Response {
+    let operation = { state.lock().unwrap().get(&id).map(|entry| entry.operation.clone()) };
+    let _guard = match operation { Some(lock) => Some(lock.lock_owned().await), None => None };
     let chunk_path = {
         let map = state.lock().unwrap();
         let Some(entry) = map.get(&id) else {
@@ -305,7 +309,24 @@ async fn chunk(
     Json(json!({"ok": true, "chunk": n})).into_response()
 }
 
-async fn finish(state: UploadState, Path(id): Path<String>) -> Response {
+async fn finish(state: UploadState, Path(id): Path<String>, RawQuery(query): RawQuery) -> Response {
+    if id.is_empty() || id.len() > 128 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return err(StatusCode::BAD_REQUEST, json!({"error":"invalid upload ID"}));
+    }
+    // Serialize chunk writes and publication for this ID. A second finish waits
+    // for the first receipt rather than assembling another destination file.
+    let operation = { state.lock().unwrap().get(&id).map(|entry| entry.operation.clone()) };
+    let _guard = match operation { Some(lock) => Some(lock.lock_owned().await), None => None };
+    let receipt_path = uploads_dir().join(format!(".completed-{id}.json"));
+    if let Ok(bytes) = std::fs::read(&receipt_path) {
+        if let Ok(receipt) = serde_json::from_slice::<Value>(&bytes) {
+            if receipt["destination"] != json!(query) {
+                return err(StatusCode::CONFLICT, json!({"error":"upload ID already completed for a different destination"}));
+            }
+            tracing::info!(target: "amux::upload", upload = %id, "completed upload receipt replayed");
+            return Json(receipt["response"].clone()).into_response();
+        }
+    }
     let entry = {
         let map = state.lock().unwrap();
         let Some(entry) = map.get(&id) else {
@@ -316,6 +337,7 @@ async fn finish(state: UploadState, Path(id): Path<String>) -> Response {
             return err(StatusCode::BAD_REQUEST, json!({"error": format!("{missing} chunks missing")}));
         }
         InFlight {
+            operation: entry.operation.clone(),
             filename: entry.filename.clone(),
             chunks: entry.chunks,
             received: entry.received.clone(),
@@ -324,35 +346,97 @@ async fn finish(state: UploadState, Path(id): Path<String>) -> Response {
         }
     };
 
-    let dest_dir = uploads_dir();
+    // Files/Explore use the same bounded chunk protocol as composer attachments.
+    // Resolve through the existing file policy, and never overwrite a file.
+    let params = super::fs::parse_qs(query.as_deref().unwrap_or(""));
+    let directory = super::fs::qs_get(&params, "dir");
+    let (dest_dir, save_name) = if let Some(dir) = directory {
+        let dest = match std::fs::canonicalize(super::fs::expanduser(dir)) {
+            Ok(path) if path.is_dir() => path,
+            _ => return err(StatusCode::BAD_REQUEST, json!({"error":"not a directory"})),
+        };
+        let name = super::fs::sanitize_upload_name(
+            super::fs::qs_get(&params, "name").unwrap_or(&entry.filename));
+        if !super::fs::is_path_allowed(&dest) || super::fs::is_dangerous_write(&dest.join(&name)) {
+            tracing::warn!(target: "amux::upload", upload = %id, "chunked upload destination refused by file policy");
+            return err(StatusCode::FORBIDDEN, json!({"error":"upload destination refused"}));
+        }
+        (dest, name)
+    } else {
+        (uploads_dir(), format!("{id}-{}", entry.filename))
+    };
     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()}));
+        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":e.to_string()}));
     }
-
-    let save_name = format!("{id}-{}", entry.filename);
-    let save_path = dest_dir.join(&save_name);
-
-    // Assemble chunks
     let assemble = tokio::task::spawn_blocking({
         let tmpdir = entry.tmpdir.clone();
         let chunks = entry.chunks;
-        let target = save_path.clone();
-        move || -> std::io::Result<()> {
-            let mut out = std::fs::File::create(&target)?;
+        let target = dest_dir.join(&save_name);
+        move || -> std::io::Result<PathBuf> {
+            // A temporary file beside the destination supports atomic publication
+            // across disks and leaves no half-file when a write fails.
+            let mut out = tempfile::NamedTempFile::new_in(&dest_dir)?;
             for i in 0..chunks {
-                let cp = tmpdir.join(format!("{i:06}"));
-                let mut inp = std::fs::File::open(&cp)?;
+                let mut inp = std::fs::File::open(tmpdir.join(format!("{i:06}")))?;
                 std::io::copy(&mut inp, &mut out)?;
             }
+            out.as_file().sync_all()?;
+            let mut candidate = target.clone();
+            let mut suffix = 0;
+            loop {
+                match out.persist_noclobber(&candidate) {
+                    Ok(_) => break,
+                    Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        out = error.file;
+                        suffix += 1;
+                        let stem = target.file_stem().unwrap_or_default().to_string_lossy();
+                        let ext = target.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                        candidate = dest_dir.join(format!("{stem}_{suffix}{ext}"));
+                    }
+                    Err(error) => return Err(error.error),
+                }
+            }
             let _ = std::fs::remove_dir_all(&tmpdir);
-            Ok(())
+            Ok(candidate)
         }
     });
+    let save_path = match assemble.await {
+        Ok(Ok(path)) => path,
+        Ok(Err(e)) => {
+            tracing::warn!(target: "amux::upload", upload = %id, error = %e, "chunked upload assembly failed; chunks retained");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":e.to_string()}));
+        }
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":e.to_string()})),
+    };
+    let final_name = save_path.file_name().unwrap_or_default().to_string_lossy();
+    let url = if directory.is_some() {
+        let mut url = reqwest::Url::parse("http://localhost/api/file/raw").expect("static URL");
+        url.query_pairs_mut().append_pair("path", &save_path.to_string_lossy());
+        format!("{}?{}", url.path(), url.query().unwrap_or_default())
+    } else { format!("/api/uploads/{final_name}") };
+    tracing::info!(target: "amux::upload", upload = %id, chunks = entry.chunks,
+        directory_upload = directory.is_some(), "chunked upload published atomically");
 
-    match assemble.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    let result = json!({
+        "path": save_path.display().to_string(),
+        "name": if directory.is_some() { final_name.as_ref() } else { &entry.filename },
+        "url": url,
+    });
+    // A lost finish response must not create another file on retry, including
+    // after a server restart. Persist its receipt before forgetting the upload.
+    let receipt = json!({"destination":query, "response":result});
+    let persist_receipt = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut temp = tempfile::NamedTempFile::new_in(uploads_dir())?;
+        temp.write_all(serde_json::to_string(&receipt)?.as_bytes())?;
+        temp.as_file().sync_all()?;
+        temp.persist(&receipt_path).map_err(|e| e.error)?;
+        Ok(())
+    };
+    if let Err(error) = persist_receipt() {
+        tracing::warn!(target: "amux::upload", upload = %id, %error,
+            "upload saved but completion receipt failed; automatic retry is unsafe");
+        return err(StatusCode::CONFLICT, json!({"error":"file saved but receipt unavailable; inspect destination before retry", "path":save_path}));
     }
 
     // Remove from in-flight
@@ -378,11 +462,7 @@ async fn finish(state: UploadState, Path(id): Path<String>) -> Response {
     // FILES and never descends, so those directories genuinely have no other
     // reaper (AF-235). That one is a gap; this one was a duplicate.
 
-    Json(json!({
-        "path": save_path.display().to_string(),
-        "name": entry.filename,
-        "url": format!("/api/uploads/{save_name}"),
-    })).into_response()
+    Json(result).into_response()
 }
 
 async fn serve_uploaded(Path(filename): Path<String>) -> Response {
@@ -390,16 +470,17 @@ async fn serve_uploaded(Path(filename): Path<String>) -> Response {
     if !path.is_file() {
         return err(StatusCode::NOT_FOUND, json!({"error": "file not found"}));
     }
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => {
-            let ct = content_type_for(&filename);
+    match tokio::fs::metadata(&path).await {
+        Ok(metadata) => {
+            let length = metadata.len();
             (
                 StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, ct.to_string())],
-                bytes,
+                [(axum::http::header::CONTENT_TYPE, content_type_for(&filename).to_string()),
+                 (axum::http::header::CONTENT_LENGTH, length.to_string())],
+                super::file_viewer::stream_file(path, 0, length),
             ).into_response()
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":e.to_string()})),
     }
 }
 
@@ -466,6 +547,7 @@ mod tests {
 
         let mut live: std::collections::HashMap<String, InFlight> = Default::default();
         live.insert("live".into(), InFlight {
+            operation: Arc::new(tokio::sync::Mutex::new(())),
             filename: "f".into(), chunks: 1, received: BTreeSet::new(),
             tmpdir: dir.join(".chunked-live"), ts: now_secs(),
         });
@@ -564,17 +646,23 @@ mod tests {
             .await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // Finish
-        let res = app.clone()
-            .oneshot(Request::builder()
-                .method("POST")
-                .uri(format!("/api/upload/{id}/finish"))
-                .body(Body::empty())
-                .unwrap())
-            .await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        // Mobile reconnects and a second tab may finish the same ID together.
+        let finish_request = || Request::builder().method("POST")
+            .uri(format!("/api/upload/{id}/finish")).body(Body::empty()).unwrap();
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(finish_request()), app.clone().oneshot(finish_request()));
+        let first = first.unwrap(); let second = second.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(first.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
+        let body = axum::body::to_bytes(second.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), v);
+        let restarted: Router = Router::new().nest("/api/upload", routes()).with_state(test_state());
+        let replay = restarted.oneshot(finish_request()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(replay.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), v, "disk receipt survives a fresh upload map");
         assert!(v["path"].as_str().unwrap().contains("hello.txt"));
         assert!(v["url"].as_str().unwrap().starts_with("/api/uploads/"));
 

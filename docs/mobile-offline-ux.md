@@ -1,0 +1,17 @@
+# Mobile UX and upload acceptance
+
+Run the consolidated entry point in `docs/consolidated-lifecycle.md`; its browser stage includes every spec in `e2e`, including mobile upload durability and large-file coverage. The `mobile` project exercises narrow Chromium; `ios-safari` uses Playwright's touch-enabled iPhone/WebKit configuration. Physical device suspension remains separate from browser simulation.
+
+`mobile-offline-ux.spec.ts` covers concurrent queue additions, transaction aborts, foreground recovery without an online transition, and attachment retention/removal across reload. `mobile-large-files.spec.ts` adds a 256 MiB + 123 byte composer artifact and a 128 MiB + 17 byte Files-page artifact, interrupted transfer, reload recovery, bounded local reads, uploaded-file SHA-256, streamed download SHA-256, destination filename preservation, collision handling, dangerous-path refusal, and short viewport geometry.
+
+Uploads must be saved locally before the app reports that they are queued. Composer bytes are kept in IndexedDB chunks, with an attachment metadata row committed only after all its chunks. A failed save retains the active chip and reports failure. A successful send or explicit removal releases the attachment's durable local records. Pending rows are resumed on startup and foreground events; the browser online flag is only a hint.
+
+The browser's Files and composer paths use the same chunked network transfer. Files/Explore may specify a destination folder at finish; the server applies existing file policies and publishes without overwriting an existing file. Assembly and downloads stream rather than loading the full file into memory. Confirmed chunk progress survives reload, and completed-upload receipts survive server restart; reusing an upload ID with a different destination is refused. Legacy multipart queue entries remain readable for replay.
+
+Simulation sizes include 320×568, 375×667, 430×932, 667×375 landscape, and 393×330 to exercise reduced available height. Inspect screenshots of both success and failure states, and assert the entire Send target remains visible. A generated screenshot is not a visual-review verdict.
+
+Limitations to retain in reports: browser storage can fail or be cleared; interruption before local-save completion has not been acknowledged as durable; an interrupted upload may restart its network transfer from locally retained chunks. Safari background execution is not guaranteed. Terminal delivery and board Done/Verified require their own evidence and must not be inferred from an upload acknowledgement.
+
+Background Sync is an optional enhancement, not the delivery contract: browser support is limited and long transfers can outlive a background worker. Foreground/startup recovery must work independently. Browser quotas and eviction also mean that a storage failure must be visible before claiming local acceptance. References: [MDN Background Synchronization](https://developer.mozilla.org/en-US/docs/Web/API/Background_Synchronization_API), [MDN storage quotas and eviction](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+`mobile-attachment-ack.spec.ts` checks that successful local message acceptance releases attachment bytes, while the queued message retains the server artifact reference, both with a successful response and a temporary server outage. Reload must not resurrect sent chips. The Rust upload flow also races two finish requests and replays the receipt through a fresh upload-state map.

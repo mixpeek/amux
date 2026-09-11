@@ -562,7 +562,7 @@ fn raw_mime(ext: &str) -> &'static str {
 /// Stream `length` bytes of `path` from `start` in 1MB chunks. Player aborts
 /// (seeks, quality probes, teardown) just end the stream quietly — python's
 /// `_stream_file_body` contract.
-fn stream_file(path: PathBuf, start: u64, length: u64) -> Body {
+pub(crate) fn stream_file(path: PathBuf, start: u64, length: u64) -> Body {
     struct St {
         path: PathBuf,
         start: u64,
@@ -591,7 +591,9 @@ fn stream_file(path: PathBuf, start: u64, length: u64) -> Body {
             }
         }
     });
-    Body::from_stream(stream)
+    // Compression may poll again after EOF while flushing its encoder. Unfold
+    // panics on that second poll unless fused (aborted gzip upload downloads).
+    Body::from_stream(futures::StreamExt::fuse(stream))
 }
 
 async fn raw(req: Request) -> Response {
@@ -1738,6 +1740,19 @@ fn lib_facets(books: &[Value]) -> Value {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[tokio::test]
+    async fn file_stream_can_be_polled_after_eof_by_compression() {
+        use futures::StreamExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evidence.txt");
+        std::fs::write(&path, b"complete evidence").unwrap();
+        let mut body = super::stream_file(path, 0, 17).into_data_stream();
+        let mut bytes = Vec::new();
+        while let Some(frame) = body.next().await { bytes.extend_from_slice(&frame.unwrap()); }
+        assert_eq!(bytes, b"complete evidence");
+        assert!(body.next().await.is_none(), "compression must be able to poll after EOF");
+    }
+
     use super::*;
     use axum::http::Request as HttpRequest;
     use std::sync::Mutex;

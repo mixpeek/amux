@@ -879,7 +879,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Python's upload-name sanitizer (py:68411):
 /// `re.sub(r'[^\w.\- ]', '_', Path(filename).name)[:240] or "upload"`.
-fn sanitize_upload_name(filename: &str) -> String {
+pub(crate) fn sanitize_upload_name(filename: &str) -> String {
     let base = Path::new(filename)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

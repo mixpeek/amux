@@ -2071,21 +2071,32 @@ function _toggleOfflineQueue() {
 const _UPQ_KEY = 'upload_queue';
 
 async function _upqList() {
-  try { return (await _idb.get(_UPQ_KEY)) || []; } catch (e) { return []; }
+  const current = (await _idb.getUploads()).filter(row => row.surface === 'directory');
+  // Retain pre-upgrade entries until they have actually been delivered.
+  const legacy = (await _idb.get(_UPQ_KEY)) || [];
+  return [...current, ...legacy.map(row => ({...row,
+    blob:row.bytes ? new Blob([row.bytes], {type:row.mime}) : row.blob}))];
+}
+function _uploadStorageError(action, error) {
+  const reason = error?.name || 'StorageError';
+  console.warn('[amux] upload-storage', action, reason);
+  fetch(API + '/api/client-debug', {method:'POST', _skipOutbox:true,
+    headers:_authHeaders({'Content-Type':'application/json'}), signal:AbortSignal.timeout(5000),
+    body:JSON.stringify({kind:'upload-storage', action, reason, measured:true, ver:APP_VER})}).catch(() => {});
 }
 async function _upqAdd(file, dir, kind) {
-  const q = await _upqList();
-  q.push({ id: 'up-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
-           name: file.name || (kind === 'audio' ? 'recording.webm' : 'upload.bin'),
-           mime: file.type || '', dir: dir || '', kind: kind || 'file',
-           size: file.size || 0, ts: Date.now(), blob: file });
-  await _idb.set(_UPQ_KEY, q);
+  const id = crypto.randomUUID();
+  try {
+    await _idb.putUpload({id, surface:'directory', name:file.name || 'upload.bin',
+      dir:dir || '', kind:kind || 'file', size:file.size, mime:file.type, ts:Date.now(), file,
+      totalChunks:Math.ceil(file.size / CHUNK_SIZE) || 1});
+  } catch (error) { _uploadStorageError('enqueue-failed', error); throw error; }
   _upqRenderBadge();
-  return q.length;
+  return (await _upqList()).length;
 }
 async function _upqRemove(id) {
-  const q = (await _upqList()).filter(x => x.id !== id);
-  await _idb.set(_UPQ_KEY, q);
+  await _idb.deleteUpload(id);
+  await _idb.update(_UPQ_KEY, current => (current || []).filter(x => x.id !== id));
   _upqRenderBadge();
 }
 async function _upqCancel(id) {
@@ -2097,28 +2108,38 @@ async function _upqCancel(id) {
 // no-op rather than a double upload.
 let _upqDraining = false;
 async function _upqDrain() {
-  if (_upqDraining || !online) return;
-  const q = await _upqList();
-  if (!q.length) return;
+  if (_upqDraining) return;
   _upqDraining = true;
   let sent = 0, failed = 0;
   try {
-    for (const item of q) {
+    const deliver = async () => {
+    for (const item of await _upqList()) {
       try {
+        if (item.surface === 'directory') {
+          const f = {...item, file:_storedUploadFile(item), stored:true, chunk:0};
+          await _runUpload(f, {render:() => {}});
+          if (f.path) { await _upqRemove(f.id); sent++; } else failed++;
+          continue;
+        }
         const fd = new FormData();
         fd.append('dir', item.dir);
         fd.append('file', item.blob, item.name);
         const r = await fetch(API + '/api/fs/upload',
-                              { method: 'POST', body: fd, _skipOutbox: true });
+                              { method: 'POST', body: fd, _skipOutbox: true, signal:AbortSignal.timeout(30000) });
         const d = await r.json().catch(() => ({}));
         if (r.ok && (d.saved || []).length) { await _upqRemove(item.id); sent++; }
         else failed++;
       } catch (e) { failed++; }
     }
-  } finally { _upqDraining = false; }
+    };
+    if (navigator.locks?.request) await navigator.locks.request('amux-upload-replay', {ifAvailable:true}, lock => lock ? deliver() : undefined);
+    else await deliver();
+  } catch (error) { _uploadStorageError('replay-failed', error); }
+  finally { _upqDraining = false; }
   if (sent) {
     showToast('Uploaded ' + sent + ' queued file' + (sent === 1 ? '' : 's')
               + (failed ? ' \u00b7 ' + failed + ' still queued' : ''));
+    if (typeof loadFiles === 'function' && typeof _filesPath !== 'undefined') loadFiles(_filesPath);
     if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
       try { loadExplore(_explorePath); } catch (e) {}
     }
@@ -2170,21 +2191,23 @@ async function _upqRenderBadge() {
 
 // One entry point for BOTH surfaces, so audio and file uploads cannot drift.
 async function _uploadOrQueue(files, dir, kind) {
-  let uploaded = 0, queued = 0, failed = 0;
+  let queued = 0, failed = 0;
   for (const file of Array.from(files || [])) {
-    if (!online) { await _upqAdd(file, dir, kind); queued++; continue; }
-    try {
-      const fd = new FormData();
-      fd.append('dir', dir);
-      fd.append('file', file, file.name);
-      const r = await fetch(API + '/api/fs/upload',
-                            { method: 'POST', body: fd, _skipOutbox: true });
-      const d = await r.json().catch(() => ({}));
-      if (r.ok && (d.saved || []).length) uploaded++;
-      else { await _upqAdd(file, dir, kind); queued++; }   // server said no: keep the bytes
-    } catch (e) { await _upqAdd(file, dir, kind); queued++; }  // network died mid-flight
+    try { await _upqAdd(file, dir, kind); queued++; }
+    catch (error) { failed++; showToast('File not saved locally — keep the original and retry'); }
   }
-  return { uploaded, queued, failed };
+  _resumePendingUploads();
+  return {uploaded:0, queued, failed};
+}
+
+function _resumePendingUploads() {
+  if (document.hidden) return;
+  _upqDrain().catch(error => _uploadStorageError('resume-failed', error));
+  _restoreAttachments().then(() => {
+    for (const {f, sink} of _durableAttachments.values()) {
+      if (!f.path && !f.cancelled && !f.inflight && !f.queued && f.retryable !== false) _queueAttachment(f, sink);
+    }
+  }).catch(error => _uploadStorageError('restore-failed', error));
 }
 
 function setOnline(val) {
@@ -9819,7 +9842,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.895';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.896';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12730,7 +12753,7 @@ function _renderPeekFileChips() {
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
       ${statusHtml}
-      <span class="chip-remove" onclick="event.stopPropagation();removePeekFile(${i})" title="Remove">×</span>
+      <button type="button" class="chip-remove" aria-label="Remove attachment" onclick="event.stopPropagation();removePeekFile(${i})" title="Remove">×</button>
     </div>`;
   }).join('');
 }
@@ -12751,6 +12774,8 @@ function removePeekFile(idx) {
 function _cancelUpload(f) {
   if (!f) return;
   f.cancelled = true;
+  if (f.id) _persistAttachment(f).then(() => _durableAttachments.delete(f.id))
+    .catch(error => _uploadStorageError('remove-failed', error));
   try { if (f.aborter) f.aborter.abort(); } catch (e) {}
   f.inflight = false;
 }
@@ -12876,7 +12901,7 @@ function _renderCardFileChips(name) {
            status = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`; }
     // The × is on EVERY chip in EVERY state — an escape hatch that only exists
     // once an upload finishes is not one (the peek's own AMUX-85 lesson).
-    const rm = `<span class="chip-remove" onclick="event.stopPropagation();removeCardFile('${name}',${i})" title="Remove">×</span>`;
+    const rm = `<button type="button" class="chip-remove" aria-label="Remove attachment" onclick="event.stopPropagation();removeCardFile('${name}',${i})" title="Remove">×</button>`;
     return `<div class="peek-attach-chip${f.path ? '' : (f.error ? ' failed' : ' uploading')}">${thumb}<span class="chip-name">${esc(f.name)}</span>${status}${rm}</div>`;
   }).join('');
 }
@@ -12957,6 +12982,7 @@ function _blockedByAttachment(files) {
 function _peekSink() {
   const files = peekFiles; // bind to the originating worker before any queue wait
   return {
+    session:peekSession, surface:'peek',
     push: (p) => files.push(p),
     has: (p) => files.indexOf(p) >= 0,
     drop: (p) => { const i = files.indexOf(p); if (i >= 0) files.splice(i, 1); },
@@ -12965,6 +12991,7 @@ function _peekSink() {
 }
 function _cardSink(name) {
   return {
+    session:name, surface:'card',
     push: (p) => (_cardFiles[name] = _cardFiles[name] || []).push(p),
     has: (p) => (_cardFiles[name] || []).indexOf(p) >= 0,
     drop: (p) => { const a = _cardFiles[name] || []; const i = a.indexOf(p); if (i >= 0) a.splice(i, 1); },
@@ -12976,11 +13003,68 @@ function _enqueueUpload(file, sink) {
   sink = sink || _peekSink();
   _queueAttachment(_createAttachment(file, sink), sink);
 }
-function _queueAttachment(f, sink) {
-  f.error = null; f.queued = true; f.status = 'Queued';
-  _uploadQueue.push({ f, sink });
+async function _queueAttachment(f, sink) {
+  if (f.queued || f.inflight || f.cancelled) return;
+  f.error = null; f.queued = true; f.status = 'Saving locally…';
   sink.render();
-  _drainUploadQueue();
+  try {
+    await _persistAttachment(f);
+    if (f.cancelled) return;
+    f.status = 'Queued';
+    _uploadQueue.push({ f, sink });
+    sink.render();
+    _drainUploadQueue();
+  } catch (error) {
+    f.queued = false; f.error = 'Not saved locally — retry or keep the original file'; f.retryable = false;
+    _uploadStorageError('attachment-save-failed', error);
+    sink.render();
+  }
+}
+
+// Bytes and destination survive reload. Persist each attachment independently;
+// whole-array writes lose concurrent additions and repeatedly copy every blob.
+const _durableAttachments = new Map();
+let _attachmentRestorePromise = null;
+function _storedUploadFile(row) {
+  return {name:row.name, size:row.size, type:row.mime || '',
+    slice:async (start, end) => {
+      const index = Math.floor(start / CHUNK_SIZE);
+      const bytes = await _idb.uploadChunk(row.id, index);
+      return new Blob([bytes], {type:row.mime}).slice(start % CHUNK_SIZE, start % CHUNK_SIZE + end - start);
+    }};
+}
+function _persistAttachment(f) {
+  if (!f.id) return Promise.resolve();
+  f.persistence = (f.persistence || Promise.resolve()).catch(() => {}).then(async () => {
+    if (f.cancelled) return _idb.deleteUpload(f.id);
+    if (f.stored) return _idb.updateUpload(f.id, {path:f.path, url:f.url, uploadId:f.uploadId, nextChunk:f.nextChunk});
+    await _idb.putUpload({id:f.id, session:f.session, surface:f.surface, name:f.name, file:f.file,
+      dir:f.dir, path:f.path, url:f.url, isImage:f.isImage, sizeMB:f.sizeMB, totalChunks:f.totalChunks}, (done, total) => {
+        f.status = 'Saving locally ' + Math.round(done / total * 100) + '%';
+        _durableAttachments.get(f.id)?.sink.render();
+      });
+    f.stored = true;
+  });
+  return f.persistence;
+}
+function _restoreAttachments() {
+  if (_attachmentRestorePromise) return _attachmentRestorePromise;
+  _attachmentRestorePromise = _idb.getUploads().then(rows => {
+    for (const row of rows) {
+      if (row.surface === 'directory' || _durableAttachments.has(row.id)) continue;
+      const files = row.surface === 'card' ? (_cardFiles[row.session] ||= [])
+        : row.session === peekSession ? peekFiles : (_peekFilesBySession[row.session] ||= []);
+      const sink = row.surface === 'card' ? _cardSink(row.session) : {
+        session:row.session, surface:'peek', push:f => files.push(f),
+        render:() => { if (peekSession === row.session) renderPeekFiles(); }
+      };
+      const f = {...row, file:_storedUploadFile(row), stored:true, previewUrl:null,
+        chunk:0, queued:false, inflight:false, cancelled:false, status:'Saved locally',
+        error:row.path ? null : 'Saved locally — retrying when connected'};
+      files.push(f); _durableAttachments.set(f.id, {f, sink}); sink.render();
+    }
+  }).catch(error => { _attachmentRestorePromise = null; throw error; });
+  return _attachmentRestorePromise;
 }
 function _drainUploadQueue() {
   while (_uploadQueue.length && _uploadActive < _UPLOAD_CONCURRENCY) {
@@ -13019,16 +13103,19 @@ function _createAttachment(file, sink) {
   // placeholder never gets its .path (send then stalls on "wait for upload").
   // `file` is RETAINED so a failed upload can be retried from the chip itself,
   // and `cancelled`/`inflight` are EXPLICIT rather than inferred (AF-235).
-  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
+  const placeholder = { id:crypto.randomUUID(), session:sink.session, surface:sink.surface, name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
                         chunk: 0, totalChunks, file, error: null, inflight: false,
                         cancelled: false, aborter: null, queued: false, status: 'Queued' };
+  _durableAttachments.set(placeholder.id, {f:placeholder, sink});
   sink.push(placeholder);
   sink.render();
   return placeholder;
 }
 async function uploadAndAttach(file, sink) {
   sink = sink || _peekSink();
-  await _runUpload(_createAttachment(file, sink), sink);
+  const f = _createAttachment(file, sink);
+  await _persistAttachment(f);
+  await _runUpload(f, sink);
 }
 
 // Drive one attachment to completion. Safe to call again on a failed chip.
@@ -13102,37 +13189,44 @@ async function _runUpload(f, sink) {
   try {
     for (let attempt = 1; attempt <= _UPLOAD_ATTEMPTS; attempt++) {
       if (f.cancelled) return;
-      f.attempt = attempt; f.chunk = 0;
+      f.attempt = attempt; f.chunk = f.nextChunk || 0;
       f.status = attempt === 1 ? 'Starting…' : 'Retrying ' + attempt + '/' + _UPLOAD_ATTEMPTS + '…';
       sink.render();
       try {
-        const start = await _uploadRequest(f, 'start', API + '/api/upload/start', {
+        const start = f.uploadId ? {id:f.uploadId} : await _uploadRequest(f, 'start', API + '/api/upload/start', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({name:file.name, size:file.size, chunks:f.totalChunks})});
         if (typeof start.id !== 'string' || !start.id) throw new Error('Server did not return an upload ID');
+        f.uploadId = start.id;
+        await _persistAttachment(f);
         const uploadUrl = API + '/api/upload/' + encodeURIComponent(start.id);
-        for (let i = 0; i < f.totalChunks; i++) {
+        for (let i = f.nextChunk || 0; i < f.totalChunks; i++) {
           if (f.cancelled) return;
           f.status = 'Uploading ' + Math.round(i / f.totalChunks * 100) + '%'; sink.render();
           await _uploadRequest(f, 'chunk', uploadUrl + '/chunk/' + i, {
             method:'PUT', headers:{'Content-Type':'application/octet-stream'},
-            body:file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size))});
-          f.chunk = i + 1;
+            body:await file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size))});
+          f.chunk = i + 1; f.nextChunk = i + 1;
+          await _persistAttachment(f);
         }
         if (f.cancelled) return;
         f.status = 'Finishing…'; sink.render();
-        const done = await _uploadRequest(f, 'finish', uploadUrl + '/finish', {method:'POST'});
+        const destination = f.surface === 'directory' ? '?dir=' + encodeURIComponent(f.dir) + '&name=' + encodeURIComponent(f.name) : '';
+        const done = await _uploadRequest(f, 'finish', uploadUrl + '/finish' + destination, {method:'POST'});
         if (typeof done.path !== 'string' || !done.path || typeof done.url !== 'string' || !done.url)
           throw new Error('Server did not confirm the uploaded file');
         if (f.cancelled) return;
         f.path = done.path; f.url = done.url; f.error = null; f.status = '';
+        await _persistAttachment(f);
         _uploadDiagnostic(f, 'complete');
         return;
       } catch (error) {
         if (f.cancelled) return;
-        // Each retry gets a fresh upload ID: the server's in-flight map can
-        // disappear during deploys. Retain the File, never attach a partial result.
+        // Resume confirmed chunks on transient failure. A server restart can
+        // discard its in-flight map; only that explicit 404 starts a fresh upload.
+        if (error.status === 404) { f.uploadId = null; f.nextChunk = 0; await _persistAttachment(f); }
         const retryable = error.retryable === true || error instanceof TypeError || error.name === 'AbortError';
+        f.retryable = retryable;
         _uploadDiagnostic(f, retryable && attempt < _UPLOAD_ATTEMPTS ? 'retry' : 'failed', error);
         if (!retryable || attempt === _UPLOAD_ATTEMPTS) throw error;
         f.status = 'Retrying ' + (attempt + 1) + '/' + _UPLOAD_ATTEMPTS + '…'; sink.render();
@@ -13308,7 +13402,10 @@ async function sendPeekCmd() {
     // Remove only the acknowledged files, never a new attachment added while
     // waiting, or attachments belonging to a different worker's composer.
     const sent = new Set(files);
-    for (const f of files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    for (const f of files) {
+      _cancelUpload(f);
+      if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    }
     if (peekSession === session) {
       peekFiles = peekFiles.filter(f => !sent.has(f));
       _peekFilesStash(session);
@@ -20647,7 +20744,7 @@ async function handleFilesUpload(files) {
   if (statusEl) statusEl.textContent = '';
   const inp = document.getElementById('files-upload-input');
   if (inp) inp.value = '';
-  if (queued) showToast(queued + ' file' + (queued === 1 ? '' : 's') + ' queued \u2014 will upload when back online');
+  if (queued) showToast(queued + ' file' + (queued === 1 ? '' : 's') + ' saved locally — uploading when reachable');
   if (uploaded) { showToast('Uploaded ' + uploaded + ' file' + (uploaded === 1 ? '' : 's')); loadFiles(_filesPath); }
   _upqRenderBadge();
 }
@@ -20809,7 +20906,7 @@ async function handleExploreUpload(files) {
   const { uploaded, queued } = await _uploadOrQueue(files, _explorePath, 'file');
   const inp = document.getElementById('explore-upload-input');
   if (inp) inp.value = '';
-  if (queued) showToast(queued + ' file' + (queued === 1 ? '' : 's') + ' queued \u2014 will upload when back online');
+  if (queued) showToast(queued + ' file' + (queued === 1 ? '' : 's') + ' saved locally — uploading when reachable');
   if (uploaded) { showToast('Uploaded ' + uploaded + ' file' + (uploaded !== 1 ? 's' : '')); loadExplore(_explorePath); }
   _upqRenderBadge();
 }
@@ -23505,6 +23602,7 @@ function switchView(view) {
   // you happened to open last, with no indication that a filter was applied.
   // Per-session scoping lives on the peek's own Messages tab and on the
   // "Message history" modal reached from inside a peek.
+  if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
   if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'mdai') _mdaiTabLoad();
@@ -31361,10 +31459,12 @@ const _idb = (() => {
   let db = null;
   const open = () => new Promise((resolve, reject) => {
     if (db) return resolve(db);
-    const req = indexedDB.open('amux', 4);
+    const req = indexedDB.open('amux', 5);
     req.onupgradeneeded = () => {
       const d = req.result;
       if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+      if (!d.objectStoreNames.contains('uploads')) d.createObjectStore('uploads', {keyPath:'id'});
+      if (!d.objectStoreNames.contains('uploadChunks')) d.createObjectStore('uploadChunks', {keyPath:['upload', 'index']});
       if (!d.objectStoreNames.contains('issues')) {
         const s = d.createObjectStore('issues', { keyPath: 'id' });
         s.createIndex('by_updated', 'updated');
@@ -31387,11 +31487,71 @@ const _idb = (() => {
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     fn(tx.objectStore(store));
   })).catch(() => {});
+  const transaction = (store, write) => open().then(d => new Promise((resolve, reject) => {
+    const tx = d.transaction(store, 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(tx.error || new Error('Storage transaction aborted'));
+    try { write(tx.objectStore(store)); }
+    catch (error) { tx.abort(); reject(error); }
+  }));
+  let activeSaves = 0;
+  const waitingSaves = [];
+  const saveSlot = async job => {
+    if (activeSaves < 2) activeSaves++;
+    else await new Promise(resolve => waitingSaves.push(resolve));
+    try { return await job(); }
+    finally { const next = waitingSaves.shift(); if (next) next(); else activeSaves--; }
+  };
+  const removeUpload = id => open().then(d => new Promise((resolve, reject) => {
+    const tx = d.transaction(['uploads', 'uploadChunks'], 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(tx.error || new Error('File removal aborted'));
+    tx.objectStore('uploads').delete(id);
+    tx.objectStore('uploadChunks').delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
+  }));
   return {
-    set: (key, val) => open().then(d => {
-      const tx = d.transaction('kv', 'readwrite');
-      tx.objectStore('kv').put(val, key);
-    }).catch(() => {}),
+    // Cache callers are best-effort; pending work uses the strict methods below.
+    set: (key, val) => transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
+    update: (key, mutate) => transaction('kv', os => {
+      const request = os.get(key);
+      request.onsuccess = () => {
+        try { os.put(mutate(request.result), key); }
+        catch (error) { os.transaction.abort(); }
+      };
+    }),
+    putUpload: (value, progress) => saveSlot(async () => {
+      const {file, ...metadata} = value;
+      // Never read a whole large File into RAM. Partial saves have no committed
+      // metadata row, so they cannot be mistaken for a recoverable attachment.
+      try {
+        for (let index = 0; index < metadata.totalChunks; index++) {
+          const bytes = await file.slice(index * CHUNK_SIZE, Math.min((index + 1) * CHUNK_SIZE, file.size)).arrayBuffer();
+          await transaction('uploadChunks', os => os.put({upload:value.id, index, bytes}));
+          if (progress) progress(index + 1, metadata.totalChunks);
+        }
+        await transaction('uploads', os => os.put({...metadata, size:file.size, mime:file.type}));
+      } catch (error) {
+        await removeUpload(value.id).catch(() => {});
+        throw error;
+      }
+    }),
+    updateUpload: (id, patch) => transaction('uploads', os => {
+      const request = os.get(id);
+      request.onsuccess = () => { if (request.result) os.put({...request.result, ...patch}); };
+    }),
+    deleteUpload: id => removeUpload(id),
+    uploadChunk: (id, index) => open().then(d => new Promise((resolve, reject) => {
+      const tx = d.transaction('uploadChunks', 'readonly');
+      const request = tx.objectStore('uploadChunks').get([id, index]);
+      tx.oncomplete = () => request.result ? resolve(request.result.bytes) : reject(new Error('Saved file chunk is missing'));
+      tx.onabort = tx.onerror = () => reject(tx.error || new Error('File read aborted'));
+    })),
+    getUploads: () => open().then(d => new Promise((resolve, reject) => {
+      const tx = d.transaction('uploads', 'readonly');
+      const request = tx.objectStore('uploads').getAll();
+      tx.oncomplete = () => resolve(request.result);
+      tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
+    })),
     get: (key) => open().then(d => new Promise((resolve) => {
       const tx = d.transaction('kv', 'readonly');
       const req = tx.objectStore('kv').get(key);
@@ -31937,7 +32097,8 @@ function _resyncEverything() {
   _runDeltaSync();
 }
 function _onClientResume(reason) {
-  if (document.hidden) { _peekPollStop('hidden'); return; }   // tab backgrounded → pause the open-view poller (beaconed)
+  if (document.hidden) { _peekPollStop('hidden'); return; }
+  _resumePendingUploads();
   // Resume the open-view poller if we're on a peek and it was paused while
   // hidden; also refetch the log and repaint the status badge so a tab that
   // comes back to the foreground is instantly current (visibility/pageshow/focus/online).
@@ -31952,6 +32113,8 @@ function _onClientResume(reason) {
     _forceSseReconnect(reason);
   }
 }
+setTimeout(_resumePendingUploads, 1000);
+setInterval(_resumePendingUploads, 30000);
 document.addEventListener('visibilitychange', () => _onClientResume('visibility'));
 window.addEventListener('pageshow',  e => _onClientResume(e.persisted ? 'bfcache' : 'pageshow'));
 window.addEventListener('focus',     () => _onClientResume('focus'));
@@ -34142,7 +34305,10 @@ async function _handleDeeplink(hash) {
     // the same half-boot trap _restoreScreen's own comment documents.
     const tryView = (attempt) => {
       if (document.getElementById('grid-view') && document.getElementById('tab-' + v)) {
+        if (document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+        if (document.getElementById('board-detail-overlay')?.classList.contains('active')) closeBoardDetail();
         try { switchView(v); } catch(e) {}
+        amuxTrack('deeplink_surface_changed', {to:v, measured:true, n_considered:1});
         return;
       }
       if (attempt < 25) setTimeout(() => tryView(attempt + 1), 200);
@@ -34349,7 +34515,8 @@ function _restoreScreen() {
     // draft) over what the human just selected.
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
-      if (peekSession || _peekOpenGeneration !== restoreGeneration) {
+      if (peekSession || _peekOpenGeneration !== restoreGeneration
+          || /^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }

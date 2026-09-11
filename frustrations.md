@@ -3603,3 +3603,14 @@ CARD: AMUX-4362
 SYMPTOM: Opening the passing populated torrent screenshot showed tiny adjacent pause and stop glyphs with correspondingly small targets at 375px.
 COST: A visual review found friction that successful click assertions missed.
 FIX: Give every torrent action a bordered 44px target and readable theme text. LC-TORRENT records measured dimensions and fails below 44px while retaining viewport-fit and effect checks.
+
+## Mobile upload queues acknowledged unsaved bytes and lost attachments on reload
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-mobile-ux
+CARD: AMUX-4409
+SYMPTOM: Eight simultaneous IndexedDB upload additions retained only the last file; an aborted transaction still reported queued; composer attachment chips disappeared after reload. WebKit also rejected File/Blob storage while byte buffers succeeded. A landscape Send button extended below the viewport, and queued Files uploads completed without refreshing the visible folder.
+COST: Four reproducible browser failures plus two mobile layout/navigation failures; required a new durability and large-file acceptance matrix because the existing upload tests covered retries without reload.
+FIX: Transactional 5 MiB local chunks, foreground replay, persisted chunk progress and completion receipts, streamed assembly/downloads, atomic collision-safe publication, acknowledged attachment cleanup, Files refresh, and viewport-fit checks. A full mobile sweep also reproduced gzip download aborts; fusing the file stream keeps post-EOF compression polls safe. Explicit view links now dismiss overlays and supersede delayed saved-screen restoration. Four original durability regressions failed before the change. The 256 MiB composer and 128 MiB Files hash checks passed in Chromium and WebKit; acceptance cases are in mobile-offline-ux, mobile-large-files, and mobile-attachment-ack specs.

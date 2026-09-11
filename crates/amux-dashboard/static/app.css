@@ -2091,7 +2091,7 @@
     .peek-attach-chip .chip-remove,
     .peek-attach-chip .chip-retry {
       min-width: 44px; min-height: 44px; display: inline-flex;
-      align-items: center; justify-content: center; margin: -12px 0;
+      align-items: center; justify-content: center; margin: 0;
     }
     .peek-attach-chip { max-width: 100%; }
   }
@@ -6254,4 +6254,18 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
   #board-view .board-col:not(.col-collapsed) .board-col-identity { display:grid !important; grid-template-columns:24px minmax(0,1fr); row-gap:2px !important; }
   #board-view .board-col:not(.col-collapsed) .board-col-label { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; line-height:1.3; }
   #board-view .board-col:not(.col-collapsed) .col-terminal-chip { grid-column:2; justify-self:start; max-width:none; font-size:.58rem; overflow:visible; text-overflow:clip; }
+}
+
+/* Short landscape / keyboard viewports keep the composer inside the screen. */
+@media (max-height: 480px) {
+  #peek-overlay .peek-cmd-toggle { display:none; }
+  #peek-overlay .peek-dir-bar { display:none; }
+  #peek-overlay .peek-cmd-row .chips { display:none; }
+  #peek-overlay #peek-cmd-input { max-height: min(96px, 24dvh); }
+  #peek-overlay .peek-attach-bar { max-height:60px; overflow-y:auto; }
+}
+
+.peek-attach-chip button.chip-remove { border:0; padding:0; background:transparent; }
+@media (pointer: coarse) {
+  #peek-overlay .send-input { font-size:16px; }
 }
