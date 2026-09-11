@@ -2229,7 +2229,7 @@ async fn profile_combine(
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dest);
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) }));
         }
     };
 

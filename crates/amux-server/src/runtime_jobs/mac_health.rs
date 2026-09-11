@@ -623,8 +623,9 @@ fn one_pass() {
     let mut panes_reaped = 0usize;
     if swap_pct.is_some_and(|p| p >= mem_reap_swap_pct()) {
         for name in stale_test_panes(test_pane_grace_s()) {
+            let st = crate::backend::tmux::session_target(&name);
             if std::process::Command::new("tmux")
-                .args(["kill-session", "-t", &name])
+                .args(["kill-session", "-t", &st])
                 .status()
                 .is_ok_and(|st| st.success())
             {

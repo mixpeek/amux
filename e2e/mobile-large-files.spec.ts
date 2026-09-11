@@ -81,7 +81,12 @@ test('large mobile file survives interrupted upload and reload with bounded stor
     await info.attach('large-upload-proof',{body:JSON.stringify({size,sha256:expected,interrupted,stored,downloadHash}),contentType:'application/json'});
     await chip.locator('.chip-remove').click();
     await expect.poll(() => page.evaluate(async () => (await _idb.getUploads()).length)).toBe(0);
-  } finally {await rm(dir,{recursive:true,force:true});}
+  } finally {
+    await rm(dir,{recursive:true,force:true});
+    // Keep hash/screenshots for this generated artifact, and release its bytes.
+    if (uploaded?.path && /\/amux-e2e-(?:desktop|mobile|ios-safari)-[^/]+\/uploads\/[a-f0-9]+-large-evidence\.bin$/.test(uploaded.path))
+      await rm(uploaded.path,{force:true});
+  }
 });
 test('mobile composer remains reachable in landscape and a reduced keyboard viewport', async ({page},info) => {
   await setup(page);

@@ -3614,3 +3614,14 @@ CARD: AMUX-4409
 SYMPTOM: Eight simultaneous IndexedDB upload additions retained only the last file; an aborted transaction still reported queued; composer attachment chips disappeared after reload. WebKit also rejected File/Blob storage while byte buffers succeeded. A landscape Send button extended below the viewport, and queued Files uploads completed without refreshing the visible folder.
 COST: Four reproducible browser failures plus two mobile layout/navigation failures; required a new durability and large-file acceptance matrix because the existing upload tests covered retries without reload.
 FIX: Transactional 5 MiB local chunks, foreground replay, persisted chunk progress and completion receipts, streamed assembly/downloads, atomic collision-safe publication, acknowledged attachment cleanup, Files refresh, and viewport-fit checks. A full mobile sweep also reproduced gzip download aborts; fusing the file stream keeps post-EOF compression polls safe. Explicit view links now dismiss overlays and supersede delayed saved-screen restoration. Four original durability regressions failed before the change. The 256 MiB composer and 128 MiB Files hash checks passed in Chromium and WebKit; acceptance cases are in mobile-offline-ux, mobile-large-files, and mobile-attachment-ack specs.
+
+## Consolidated integration checks lagged current board and group contracts
+AREA: tests
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-10
+SESSION: codex-mobile-ux
+CARD: AMUX-4409
+SYMPTOM: Two archive fixtures omitted the now-required authorizer; the Python boundary capture still expected env-only group membership. The browser error guard also found a new profile-merge join error rendered without the shared cause formatter, and the tmux target audit found a stale-pane cleanup using prefix matching.
+COST: Five integration failures obscured the mobile acceptance verdict; a stale cleanup target could match a sibling session. Mobile subagent fixtures also used 1970 timestamps despite the current freshness filter, and repeated large-file fixtures consumed test disk space.
+FIX: Name the fixture owner for intentional archive actions, retain the historical capture while explicitly pinning the evolved native-worker group contracts, use with_cause for the join error, and build the cleanup target with session_target for exact matching. Refresh active-agent fixture timestamps, keep a stale-agent negative control, and release generated large uploads after recording their hashes. Existing denial, error-chain and target-audit controls remain in place.

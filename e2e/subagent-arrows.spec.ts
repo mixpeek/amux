@@ -1,6 +1,7 @@
 import {test, expect, Page} from './fixtures';
 const subs=[{id:'agent-one',conversation:'parent-a',description:'Check the imports',last_active:1,active:true},{id:'agent-two',conversation:'parent-a',description:'Review the tests',last_active:2,active:true}];
-async function setup(page:Page, items=subs, failFirst=false) {
+function freshSubs() { return subs.map(item => ({...item,last_active:Date.now()/1000})); }
+async function setup(page:Page, items=freshSubs(), failFirst=false) {
   await page.addInitScript(()=>localStorage.setItem('amux_walkthrough_done','1'));
   await page.route(/\/api\/sessions(?:\?.*)?$/,r=>r.fulfill({json:[{name:'arrows',running:true,status:'idle',dir:'/tmp/arrows'}]}));
   await page.route('**/api/sessions/arrows/peek?*',r=>r.fulfill({json:{name:'arrows',live:'Main worker terminal output',history:''}}));
@@ -71,8 +72,14 @@ test('a late child response cannot replace the main worker after switching back'
 
 test('failed agent discovery exposes arrow retry',async({page})=>{
   await page.route('**/api/sessions/arrows/subagents?*',r=>r.fulfill({json:{session:'arrows',agent:'agent-one',conversation:'parent-a',output:'Recovered child output'}}));
-  await setup(page,subs,true);
+  await setup(page,freshSubs(),true);
   await expect(page.locator('#peek-agent-label')).toHaveText('Agents unavailable');
   await page.getByRole('button',{name:'Next agent',exact:true}).click();
   await expect(page.locator('#peek-body')).toContainText('Recovered child output');
+});
+
+// An old active flag must not keep a historical subagent in live navigation.
+test('stale subagent timestamps hide the two-arrow control even with an active flag',async({page})=>{
+  await setup(page,subs);
+  await expect(page.locator('#peek-agent-nav')).toBeHidden();
 });

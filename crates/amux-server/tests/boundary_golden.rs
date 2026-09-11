@@ -26,7 +26,7 @@ use amux_server::api::{router, AppState};
 use amux_server::db::Store;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const FIXTURE: &str = include_str!("fixtures/boundary/live_recorded.json");
@@ -226,8 +226,7 @@ async fn native_output_matches_recorded_python_fixtures() {
         "fixture erosion: only {compared} cases compared (skipped: {skipped:?})"
     );
 
-    // The groups CONTRACT strings must be byte-identical to what the live
-    // Python server emitted, independent of fleet composition.
+    // Compare group CONTRACT strings independently of fleet composition.
     let res = app
         .clone()
         .oneshot(Request::builder().uri("/api/groups").body(Body::empty()).unwrap())
@@ -237,8 +236,16 @@ async fn native_output_matches_recorded_python_fixtures() {
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
     let native: Value = serde_json::from_slice(&bytes).unwrap();
     let recorded = &fixture["cases"]["groups_dashboard"]["body"];
+    // AF-649 deliberately added native Rust worker membership after the Python
+    // capture. Keep the historical fixture intact and name the two evolved
+    // contracts; the unchanged group-config contract still uses the capture.
+    let evolved = json!({
+        "derived_from": "CC_TAGS across env-based workers, plus _amux_workers.group for rust-managed ones — neither is a stored COPY of the other, so neither can drift against its own source",
+        "set_on_a_worker": "env-based: PATCH /api/sessions/<name>/config {\"tags\": \"a, b\"}. rust-managed (no env file — AF-649/gh#204): PATCH /api/workers/<id> {\"group\": \"grp_...\"}"
+    });
     for key in ["derived_from", "set_on_a_worker", "configure_group"] {
-        assert_eq!(native[key], recorded[key], "groups contract string {key}");
+        let expected = evolved.get(key).unwrap_or(&recorded[key]);
+        assert_eq!(&native[key], expected, "groups contract string {key}");
     }
 
     std::env::remove_var("AMUX_HOME");
