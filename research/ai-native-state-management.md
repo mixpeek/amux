@@ -6,11 +6,25 @@ Date: 2026-09-11
 
 amux already has the right raw material for better state management: a Rust API with a monotonic global revision, `/api/sync`, `/api/events`, diagnostic endpoints with `measured`/`n_considered`, a durable offline outbox, client-debug beacons, lifecycle e2e coverage, and a dashboard that already tries to surface refused/queued/error states. The weakness is that those pieces are not one contract. Each surface still hand-rolls loading flags, toasts, optimistic writes, retries, local caches, and render decisions in `crates/amux-dashboard/static/app.js`.
 
-I would make state management a first-class amux primitive, but not by introducing a ninth domain concept. It should be a thin interaction ledger over the existing primitives: workers, board, scheduler, filesystem, groups, memories, environment, and messages.
+I would make state management a first-class amux concern, but not by introducing a ninth domain primitive. The primary abstraction should be a command and interaction contract over the existing primitives: workers, board, scheduler, filesystem, groups, memories, environment, and messages.
+
+The architecture should read this way:
+
+```text
+AMUX domain state
+  -> command contract
+  -> authoritative mutation or run
+  -> interaction receipt
+  -> domain effects
+  -> query/cache reconciliation
+  -> UI feedback
+```
+
+TanStack Query, XState, and any local store are implementation machinery. The receipt and effects contract should survive replacing any of them.
 
 The target invariant:
 
-> Every user or agent interaction creates an interaction receipt with an id, phase, target, visible feedback, server acknowledgement or refusal, and diagnostic trail. If nothing changed, the receipt says that. If the measurement did not run, the receipt says that too.
+> Every consequential human, agent, or system command produces immediate feedback and a machine-readable interaction receipt that eventually resolves to a known state. Every resulting domain change is linked back to that interaction. If nothing changed, the receipt says that. If the measurement did not run, the receipt says that too.
 
 This makes the UI better for humans and better for agents. A model should be able to ask, "what happened to my click/send/save?" and get a structured answer instead of scraping a toast or guessing from a re-render.
 
@@ -42,23 +56,28 @@ Testing shape:
 
 ## Design principle
 
-Separate state into four layers:
+Separate state into five layers:
 
 1. **Authoritative state**
    The database and revision journal. Source of truth. Already Rust/SQLite.
 
-2. **Server-state cache**
+2. **Command and interaction contract**
+   The stable envelope for intent, acknowledgement, progress, refusal, and causality. This is the center of the proposal.
+
+3. **Server-state cache**
    Browser cache for GET data keyed by endpoint/domain, updated by fetch, SSE invalidations, `/api/sync`, and mutation acknowledgements.
 
-3. **Interaction ledger**
-   Local durable records of user/agent intent: click, save, send, upload, start, stop, retry, discard. This is the missing layer.
+4. **Interaction ledger**
+   Local and eventually durable records of user/agent/system intent: click, save, send, upload, start, stop, retry, discard, approval, autonomous pickup. This is the missing layer.
 
-4. **Ephemeral UI state**
+5. **Ephemeral UI state**
    Open modal, selected tab, focused input, panel width. Local only, never confused with authority.
 
 The mistake to avoid is making the UI store the source of truth. amux's existing `rev` and `MutationResult` work is exactly the right server-side center of gravity.
 
 ## Proposed libraries
+
+The libraries should sit under the interaction contract, not define it.
 
 ### Use TanStack Query core for server state
 
@@ -75,7 +94,7 @@ Do not use it as the authority. It is a cache over server truth.
 
 ### Use XState selectively for interaction workflows
 
-Use `xstate` only for multi-step workflows where illegal states are a real bug: worker create/start/send, board edit/save with offline fallback, upload, browser-control session, auth/setup, scheduler run, and deploy/update flows. XState's actor/state-machine model is specifically good at event-driven logic, statecharts, visualization, inspection, and generated test paths.
+Use `xstate` only for multi-step workflows where illegal states are a real bug: upload, browser-control session, auth/setup, deploy/update flows, and possibly message sending when delivery, queueing, waiting, and acknowledgement branch enough to warrant a statechart. XState's actor/state-machine model is specifically good at event-driven logic, statecharts, visualization, inspection, and generated test paths.
 
 Why selective:
 
@@ -83,9 +102,11 @@ Why selective:
 - Per-workflow machines make "what can happen next?" explicit for humans and models.
 - Statecharts are inspectable artifacts: useful for AI-native reasoning and test generation.
 
+Do not automatically start with machines for every save operation. A simple board edit that is only `editing -> saving -> saved/error` can be handled by the interaction ledger. A board edit that grows real branches, such as `dirty -> validating -> saving -> queued_offline -> conflicting -> reconciling -> applied`, deserves a machine.
+
 ### Use a tiny vanilla store for ephemeral UI state
 
-Either add `zustand/vanilla` or write a 100-line local store. Zustand's vanilla store plus selector subscriptions is a good fit if we want a maintained package, but amux may not need it immediately. The first pass can use a local `createStore({ getState, setState, subscribe, select })` to avoid dependency churn.
+Write a tiny local store, roughly `createStore({ getState, setState, subscribe, select })`. Do not add Zustand yet. amux already has TanStack Query for server cache, the interaction manager for commands/mutations, XState for complex workflows, and the server revision journal for authority. Adding a fourth state abstraction before it is needed would make simple UI state look more important than it is.
 
 Use this for:
 
@@ -95,7 +116,7 @@ Use this for:
 - local preferences mirrored from storage
 - transient input state that is not a durable draft
 
-Do not put server data, interaction receipts, or authoritative entity state here.
+Do not put server data, interaction receipts, command effects, or authoritative entity state here.
 
 ### Do not add Redux
 
@@ -115,19 +136,46 @@ Sources checked:
 - TanStack Query docs: https://tanstack.com/query/latest
 - TanStack Vanilla libraries: https://tanstack.com/libraries/vanilla
 - XState/Stately overview: https://stately.ai/
-- Zustand docs: https://zustand.docs.pmnd.rs/
 
-## The core addition: interaction receipts
+## The core addition: commands, receipts, and effects
 
-Add a browser-side `interactionManager` and, eventually, a server-side interaction log.
+Add a browser-side `interactionManager` and, eventually, a server-side interaction log. Keep three concepts separate:
+
+```text
+Command
+  -> Interaction receipt
+  -> Effects
+```
+
+The command is the intent: "approve this task", "send this message", "start this worker".
+
+The interaction receipt answers: "what happened to that request?"
+
+Effects answer: "what changed because of it?"
+
+One command can produce multiple effects. A single approval might move a task, resume a worker, emit a message, finalize an artifact, and unblock a dependent task. The receipt should not become a grab bag for all of that. It should link to effects.
 
 Receipt shape:
 
 ```ts
+type CommandEnvelope = {
+  id: string;
+  kind: string;
+  target: {
+    primitive: 'worker' | 'board' | 'scheduler' | 'filesystem' | 'group' | 'memory' | 'environment' | 'message';
+    id?: string;
+    label?: string;
+  };
+  payload?: unknown;
+};
+
 type InteractionPhase =
   | 'accepted'
   | 'queued'
   | 'sending'
+  | 'running'
+  | 'waiting'
+  | 'blocked'
   | 'applied'
   | 'noop'
   | 'refused'
@@ -137,22 +185,18 @@ type InteractionPhase =
 
 type InteractionReceipt = {
   id: string;
-  kind: string;
-  target: {
-    primitive: 'worker' | 'board' | 'scheduler' | 'filesystem' | 'group' | 'memory' | 'environment' | 'message';
-    id?: string;
-    label?: string;
-  };
+  command: CommandEnvelope;
   origin: {
     actor: 'human' | 'agent' | 'system';
     surface: string;
     session?: string;
   };
   phase: InteractionPhase;
-  visible_feedback: {
-    channel: 'inline' | 'toast' | 'banner' | 'modal' | 'badge' | 'notification' | 'none';
-    selector?: string;
-    text?: string;
+  feedback: {
+    required: boolean;
+    persistence: 'transient' | 'until-settled' | 'durable';
+    severity: 'info' | 'success' | 'warning' | 'error';
+    message?: string;
   };
   request?: {
     method: string;
@@ -168,11 +212,24 @@ type InteractionReceipt = {
     ignored_fields?: string[];
     error?: string;
   };
+  effects: CommandEffect[];
   measured: boolean;
   n_considered: number;
   why_unmeasured?: string;
   created_at: number;
   updated_at: number;
+};
+
+type CommandEffect = {
+  id: string;
+  kind: string;
+  entity: {
+    primitive: string;
+    id: string;
+  };
+  from?: unknown;
+  to?: unknown;
+  rev?: number;
 };
 ```
 
@@ -184,13 +241,35 @@ Immediate browser-only implementation:
 - When the server answers, update the receipt from the response body and status.
 - When offline queue accepts it, phase becomes `queued`, not "success".
 - When replay confirms it, phase becomes `applied` or `refused`.
+- Long-running agent work can move through `running`, `waiting`, and `blocked` before it reaches `applied`, `failed`, or `refused`.
 - Post a compact diagnostic to `/api/client-debug` on `failed`, `unknown`, unmeasured, or "no visible feedback" cases.
 
 Server follow-up:
 
-- Add `_amux_interactions` table or extend request log with interaction id, outcome, rev, target, and acknowledgement summary.
-- Expose `GET /api/interactions/recent` and `GET /api/why/interaction/{id}`.
+- Add `_amux_interactions` and `_amux_interaction_effects` tables, or extend the request log plus event journal with interaction id, command kind, outcome, rev, target, acknowledgement summary, and effect links.
+- Expose `GET /api/interactions/recent`, `GET /api/interactions/{id}`, `GET /api/interactions/{id}/effects`, and `GET /api/interactions/{id}/why`.
 - Include interaction ids in `/api/why` timelines and board/card histories where relevant.
+
+The UI can still choose presentation channels. The domain contract should say whether feedback is required, how persistent it must be, and how severe it is. The renderer can decide whether that becomes an inline error, banner, toast, badge, modal, or notification.
+
+Example:
+
+```json
+{
+  "command": {
+    "kind": "task.approve",
+    "target": {"primitive": "board", "id": "task_123"}
+  },
+  "interaction": {
+    "id": "int_789",
+    "phase": "running"
+  },
+  "effects": [
+    {"kind": "task.state_changed", "entity": {"primitive": "board", "id": "task_123"}, "from": "review", "to": "done"},
+    {"kind": "worker.resumed", "entity": {"primitive": "worker", "id": "finance-agent"}}
+  ]
+}
+```
 
 ## AI-native behavior
 
@@ -220,7 +299,15 @@ Response shape:
       "kind": "board.save",
       "target": {"primitive": "board", "id": "AF-123"},
       "phase": "applied",
-      "visible_feedback": {"channel": "inline", "text": "Saved"}
+      "feedback": {"persistence": "until-settled", "severity": "success", "message": "Saved"}
+    }
+  ],
+  "recent_effects": [
+    {
+      "interaction_id": "int_...",
+      "kind": "task.updated",
+      "entity": {"primitive": "board", "id": "AF-123"},
+      "rev": 456
     }
   ],
   "next_actions": [
@@ -239,9 +326,59 @@ Useful affordances:
 
 - Every visible control has a stable `data-action` and, for mutations, a declared `data-interaction-kind`.
 - Every mutation result can be explained by id.
+- Every domain change caused by a command links back to the interaction id.
 - Every refused action has a machine-readable fix when one exists.
 - Every queued action has an idempotency/dedupe key.
 - Every "nothing happened" has a receipt saying whether nothing changed, it queued, it was refused, or the measurement failed.
+
+Add these direct reads:
+
+```http
+GET /api/interactions/{id}
+GET /api/interactions/{id}/effects
+GET /api/interactions/{id}/why
+```
+
+Together they answer:
+
+- Did it happen?
+- Is it still happening?
+- What changed?
+- Why?
+- What blocked it?
+- What should happen next?
+
+## AG-UI compatibility
+
+The proposal does not require AG-UI, and AG-UI should not become amux's internal domain model. amux's model is richer than a chat protocol because it has board tasks, gates, workers, artifacts, autonomous pickup, verification, and local operational diagnostics.
+
+Design the event system so amux can emit an AG-UI-compatible projection where the concepts overlap:
+
+```text
+AMUX command
+  -> InteractionManager
+  -> domain mutation or run
+  -> event stream
+       -> AMUX domain event
+       -> AG-UI projection
+```
+
+Suggested projection:
+
+```text
+AMUX event            AG-UI event
+
+run.started       ->  RUN_STARTED
+message.delta     ->  TEXT_MESSAGE_CONTENT
+tool.started      ->  TOOL_CALL_START
+tool.completed    ->  TOOL_CALL_RESULT
+state.changed     ->  STATE_DELTA
+artifact.created  ->  CUSTOM
+task.blocked      ->  CUSTOM
+approval.required ->  CUSTOM
+```
+
+This gives compatibility with assistant-ui or other AG-UI clients without designing amux around chat. The internal stream remains amux-native; AG-UI is an interoperability adapter.
 
 ## Migration plan
 
@@ -250,13 +387,13 @@ Useful affordances:
 Create an interaction registry beside `app.js`:
 
 - `interaction-kinds.json` or `static/state/interactions.js`
-- List every mutation/control kind, primitive target, expected visible feedback channel, queue policy, and idempotency key.
+- List every mutation/control kind, primitive target, feedback requirement, queue policy, and idempotency key.
 - Use the UX crawler to compare interactive controls against this registry.
 
 Definition of done:
 
 - Every mutating button has `data-interaction-kind`.
-- Every registered kind declares a feedback channel.
+- Every command-producing control has `data-action`, `data-interaction-kind`, stable target identity, and a declared feedback requirement.
 - A test fails if a mutating control is not registered.
 
 ### Phase 1: state kernel under the current SPA
@@ -288,11 +425,11 @@ Definition of done:
 
 ### Phase 2: workflow machines for high-risk interactions
 
-Start with three XState machines:
+Start with one XState machine only where the need is clear:
 
-- `sendMessageMachine`
-- `boardEditMachine`
 - `uploadMachine`
+
+Consider adding `sendMessageMachine` after receipt-driven send/queue/delivery has been implemented and the remaining branches are still hard to reason about. Add `boardEditMachine` only if board editing develops meaningful branching beyond `editing -> saving -> saved/error`.
 
 Each machine emits receipts and consumes acknowledgements. Keep rendering outside the machine.
 
@@ -306,7 +443,8 @@ Definition of done:
 Add a Rust request/interaction correlation:
 
 - Header: `X-Amux-Interaction-Id`
-- Request log columns or new table: `interaction_id`, `interaction_kind`, `target_kind`, `target_id`, `mutation_applied`, `rev`, `ack_status`, `visible_feedback_claim`
+- Request log columns or new table: `interaction_id`, `command_kind`, `target_kind`, `target_id`, `mutation_applied`, `rev`, `ack_status`, `feedback_required`
+- Effect table or event-journal link: `interaction_id`, `effect_kind`, `entity_kind`, `entity_id`, `from`, `to`, `rev`
 - Diagnostic endpoint: `/api/debug/interactions`
 - User/agent endpoint: `/api/interactions/recent`
 
@@ -314,6 +452,7 @@ Definition of done:
 
 - `/api/logs/analyze` can group failed/refused interactions by kind.
 - `/api/why` can answer "why does the UI say this is pending?"
+- `/api/interactions/{id}/effects` names each domain change caused by a command.
 - A sweep can catch controls with frequent `unknown` or `failed_before_feedback` outcomes.
 
 ### Phase 4: surface-by-surface renderer cleanup
@@ -337,6 +476,7 @@ Rust:
 
 - `MutationResult` already pins no-op/applied semantics.
 - Add tests for interaction request-log extraction.
+- Add tests for command-to-effect linkage in the event journal or effect table.
 - Add tests that diagnostic interaction endpoints use `measured` and `n_considered`.
 - Add tests that a mutation with `X-Amux-Interaction-Id` records the id even on 4xx/5xx.
 
@@ -345,16 +485,22 @@ JavaScript:
 - Interaction reducer transitions:
   - accepted -> sending -> applied
   - accepted -> queued -> sending -> applied
+  - accepted -> queued -> running -> waiting -> running -> applied
+  - accepted -> running -> blocked
   - accepted -> sending -> refused
   - accepted -> queued -> failed
   - accepted -> noop
   - any unresolved receipt older than threshold -> unknown plus client-debug beacon
+- Command/effect reducer:
+  - one command can append several effects
+  - effects retain `interaction_id`
+  - receipt phase remains about the command, not the number of effects
 - Query invalidation mapping from SSE:
   - `keys:["board"]` invalidates board only
   - lagged event triggers `/api/sync` or full refresh
   - ping version mismatch remains separate from data invalidation
 - Receipt rendering:
-  - every phase maps to visible feedback or an explicit `none` with reason
+  - every phase maps to a feedback requirement, or to an explicit no-feedback reason for non-consequential reads
 
 ### Browser tests
 
@@ -363,9 +509,22 @@ Extend `e2e/feedback-smoke.spec.ts` from five examples to a registry-driven cont
 - discover controls with `data-interaction-kind`
 - perform a representative action per kind
 - assert a receipt appears in `window.__amuxInteractions`
-- assert one visible feedback channel changed within a budget
+- assert required feedback appears within a budget
 - assert the receipt reaches a terminal or queued phase
+- assert any domain change caused by the action is linked back to the receipt
 - assert no horizontal overflow after feedback
+
+The crawler should publish a product-quality metric like:
+
+```text
+327 interactive elements discovered
+84 produce commands
+84 registered
+84 produced receipts
+84 displayed feedback
+84 linked effects when state changed
+0 silent mutations
+```
 
 Add failure injection tests:
 
@@ -386,6 +545,7 @@ Tie to `e2e/lifecycle/cases.json`:
 - LC-14 column lifecycle/gates: refused transition receipt names unmet gate.
 - LC-24 composer/delivery: pending/sent/failed/retry are receipt phases, not separate UI guesses.
 - LC-27 terminal controls: input/resize/connect produce visible connection or failure receipts.
+- Long-running/autonomous work: accepted commands can move through `running`, `waiting`, and `blocked` without losing their original interaction id.
 
 ### Observability tests
 
@@ -394,6 +554,7 @@ Add a sweep test:
 - call `/api/debug/interactions?since_h=24`
 - assert response has `measured` and `n_considered`
 - assert groups include `kind`, `phase`, `count`, and a sample
+- assert effect coverage counts interactions with zero linked effects, one linked effect, and many linked effects
 - inject one synthetic failed receipt and prove it appears
 
 Add a request-log test:
@@ -401,6 +562,7 @@ Add a request-log test:
 - send mutation with interaction id
 - force a 405/409/500
 - verify `/api/logs/analyze` sample carries or links the id
+- verify `/api/interactions/{id}/why` can cite the request log row and any effects
 
 ### Mutation testing
 
@@ -443,8 +605,8 @@ lagged -> call /api/sync, then invalidate all affected keys
 Every mutation goes through one function:
 
 ```js
-async function runInteraction(kind, target, visibleFeedback, requestFn) {
-  const receipt = interactions.accept({ kind, target, visibleFeedback });
+async function runInteraction(command, feedback, requestFn) {
+  const receipt = interactions.accept({ command, feedback });
   try {
     interactions.sending(receipt.id);
     const response = await requestFn({ interactionId: receipt.id });
@@ -460,14 +622,14 @@ Raw `fetch` stays allowed for GETs and explicitly skipped endpoints, but mutatin
 
 ### Feedback rendering
 
-Feedback should be chosen by interaction kind, not sprinkled at call sites:
+Feedback requirements should be chosen by interaction kind, not sprinkled at call sites:
 
-- destructive action requiring consent -> modal
-- accepted local intent -> inline pending row/chip
-- background retry -> sync banner
-- completion -> inline settled state, optional toast
-- refusal -> inline error near the control plus toast for global actions
-- lost/unknown -> connection/status surface plus client-debug
+- destructive action requiring consent -> `feedback.required=true`, `persistence=durable`, `severity=warning`; renderer may choose a modal
+- accepted local intent -> `persistence=until-settled`; renderer may choose inline pending row/chip
+- background retry -> `persistence=until-settled`; renderer may choose sync banner
+- completion -> `severity=success`; renderer may choose inline settled state plus optional toast
+- refusal -> `severity=error`, usually durable until user action; renderer may choose inline error near the control plus toast for global actions
+- lost/unknown -> `severity=warning` or `error`; renderer should include connection/status surface plus client-debug
 
 Toasts are not enough. They disappear and are hard for agents to inspect. Toasts can supplement, but the receipt needs a persistent inspectable home.
 
@@ -479,6 +641,7 @@ Expose `window.__amuxState` for tests and local agent browser automation:
 window.__amuxState = {
   query: { get: key => ... },
   interactions: { recent: (n = 50) => ... },
+  effects: { forInteraction: id => ... },
   connection: () => ...,
   explain: id => ...
 };
@@ -491,15 +654,29 @@ This is not authority. It is an inspectable projection of browser state, useful 
 - **Over-centralization:** a giant state kernel could become another `app.js`. Keep it as four small modules and migrate by surface.
 - **Receipt spam:** not every hover/tab switch needs a durable receipt. The contract is for commands and mutations; read/navigation feedback can be lighter.
 - **False success:** synthetic queued responses must never look applied. Preserve the existing `X-Amux-Outbox: queued` distinction.
+- **Three answers to one question:** avoid Query state + receipt state + XState state for simple saves. XState is for workflows whose branches justify a statechart.
 - **Framework creep:** do not let library adoption become a React migration by accident.
 - **Agent overreach:** AI-native summaries should report and recommend, not decide human-owned actions.
 
 ## Recommendation
 
-Start with the interaction ledger and TanStack Query core. That gives the highest leverage with the least rewrite. Then add XState machines only where the workflow has enough branches that another boolean flag would be dishonest.
+Start with the command/receipt/effects contract. Then add TanStack Query core under it for server cache reconciliation. That gives the highest leverage with the least rewrite. Add XState machines only where the workflow has enough branches that another boolean flag would be dishonest.
 
 The first user-visible milestone should be:
 
-> In the dashboard, every save/send/start/stop/delete/upload action immediately creates a persistent visible receipt, and the receipt settles to applied, queued, noop, refused, or failed. `/api/client-debug` and the request log can show any receipt that fails or remains unknown.
+> Every consequential command produces immediate feedback and a machine-readable interaction receipt that eventually resolves to a known state. Every resulting domain change is linked back to that interaction.
 
 That milestone is small enough to ship incrementally and large enough to change how amux feels: no more silent clicks, no more "did it work?", and a much better substrate for the next model to operate on.
+
+The intended causality graph is:
+
+```text
+user click or agent command
+  -> int_123
+       -> task updated
+       -> artifact generated
+       -> worker resumed
+       -> message emitted
+```
+
+Once amux can always explain that chain, it becomes genuinely AI-native rather than merely better state managed.
