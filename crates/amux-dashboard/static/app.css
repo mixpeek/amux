@@ -2050,6 +2050,10 @@
   .peek-cmd-row.open { display: flex; min-width: 0; overflow: visible; position: relative; }
   .peek-cmd-row .send-input { font-size: 0.85rem; padding: 6px 10px; min-height: 30px; min-width: 0; }
   .peek-cmd-row .btn { min-height: 30px; padding: 5px 11px; font-size: 0.82rem; }
+  .peek-composer-input { flex: 1; min-width: 0; position: relative; }
+  .peek-composer-input .send-input { display: block; min-height: 44px; }
+  .peek-cmd-row > .peek-more-wrap { align-self: flex-end; }
+  .peek-cmd-row .peek-attach-btn { width: 44px; height: 44px; justify-content: center; }
   /* Mobile: 16px input font stops iOS Safari from zooming in on focus (both the
      peek command input and the session-card inputs share .send-input). */
   @media (max-width: 640px) {
@@ -2112,7 +2116,8 @@
   .peek-more-wrap { position: relative; flex-shrink: 0; }
   .peek-more-menu { display: none; position: absolute; bottom: calc(100% + 6px); right: 0;
     background: var(--card); border: 1px solid var(--border); border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.35); padding: 4px; z-index: 60; min-width: 168px; }
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35); padding: 4px; z-index: 60; min-width: 168px;
+    max-height: calc(100dvh - 110px); overflow-y: auto; }
   .peek-more-menu.open { display: block; }
   .peek-more-menu button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
     background: none; border: none; color: var(--text); font-size: 0.85rem; padding: 9px 10px;
@@ -2137,6 +2142,20 @@
     background: rgba(127,127,127,0.16); border: none; color: var(--dim); font-size: 0.82rem;
     padding: 3px 5px; border-radius: 5px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .peek-input-expand:hover { color: var(--text); background: rgba(127,127,127,0.3); }
+  /* Keep the phone's writing space independent of the Send/Queue label. Both
+     actions share a 44px toolbar below the input, including multiline drafts. */
+  @media (max-width: 600px) {
+    .peek-composer-input { flex: 1 0 100%; }
+    .peek-cmd-row > .send-split { margin-left: auto; }
+    .peek-cmd-row .peek-more-menu,
+    .peek-cmd-row .dict-popup { left: 0; right: auto; }
+    .peek-cmd-row .peek-more-menu {
+      max-width: calc(100vw - 24px);
+    }
+    #peek-cmd-input { padding-right: 48px; min-height: 44px; }
+    #peek-overlay #peek-cmd-input { max-height: min(160px, 30dvh); }
+    .peek-input-expand { top: 0; right: 0; width: 44px; height: 44px; }
+  }
   /* Fullscreen compose overlay */
   .peek-input-fs { display: none; position: fixed; inset: 0; z-index: 600; background: var(--bg);
     flex-direction: column; gap: 8px; padding: 10px;

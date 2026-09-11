@@ -702,8 +702,8 @@
   {
     "id": "LC-COMPOSER-LAYOUT",
     "surface": "Long-draft composer layout",
-    "actions": "Enter a long multiline draft on desktop, mobile and Safari; inspect the Send button and mode menu.",
-    "expected": "Both controls retain 44px touch targets and the group stays compact rather than stretching to the textarea height.",
+    "actions": "Enter short and long multiline drafts; toggle Send/Queue on desktop, 320px mobile, iPhone Safari, landscape and reduced keyboard viewports. Open Attach file and cancel the chooser, then clear the draft.",
+    "expected": "Phone inputs occupy the full composer width with aligned 44px controls below. Actions and attachment menus remain inside the viewport, mode changes and cancelling file selection preserve text, and clearing a long draft reclaims its height.",
     "sources": [
       "e2e/lifecycle/composer-layout.spec.ts"
     ]

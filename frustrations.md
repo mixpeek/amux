@@ -2062,3 +2062,14 @@ CARD: AMUX-4417
 SYMPTOM: LC-SEMANTIC-INTAKE posted candidate tasks directly to /api/board. The canonical case also promised captured worker messages, but no executable scenario sent those messages through a composer and checked their surviving task links.
 COST: A direct-board semantic pass could be mistaken for proof that ordinary new messages avoid near-duplicate board tasks.
 FIX: Add LC-SEMANTIC-MESSAGES to live discovery: six composer messages must produce three tasks, four linked source messages on one survivor, measured append/update decisions and preserved requirements. Follow source links in desktop/mobile details. Record live prerequisites separately: the first attempt failed worker admission under host memory pressure before sending, so it is not a semantic pass. Preserve the dedicated run's health and trace evidence.
+
+## Phone composer squeezed the draft beside a misaligned Queue button
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The phone composer put the textarea, top-aligned more button and bottom-aligned Queue button on one row. Removing the corrected full-width rule reproduces a 204px input in a 363px row. The expanded test also found the attachment menu 16px above the viewport in landscape.
+COST: Another user screenshot and a failed landscape acceptance run before the clipping was corrected.
+FIX: This commit gives phones a full-width input and a separate aligned 44px toolbar, bounds the long draft and attachment menu, and adds inputW/actionDelta to the existing layout diagnostic. Source-built LC-COMPOSER-LAYOUT, LC-LATENCY and LC-RECEIPT: 9 passed across desktop, mobile and iPhone WebKit; 32 outbox contracts passed. The CSS negative control fails on input width (204.34375px versus at least 362px).

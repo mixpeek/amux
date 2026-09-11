@@ -883,3 +883,12 @@ python3 scripts/lifecycle/run.py live --grep LC-SEMANTIC-MESSAGES
 This case is discovered automatically by `live`/`full`. The earlier direct-board
 `LC-SEMANTIC-INTAKE` case remains a separate API test and cannot substitute for it.
 The canonical scenarios and expected task/message counts are in `cases.json`.
+
+The `LC-COMPOSER-LAYOUT` browser case also covers the phone composer in Send and
+Queue modes. It measures full-width writing space and aligned 44px controls at
+320px, the normal project viewport, landscape, and a reduced keyboard viewport;
+opens the attachment menu and file chooser; and checks draft preservation and
+height recovery. Screenshot checkpoints include short drafts, long drafts and
+open menus. These are simulated browser viewports, not a physical iPhone keyboard
+test. The terminal's existing layout diagnostic now includes `inputW` and
+`actionDelta`, so a reported misalignment can be measured from the affected client.

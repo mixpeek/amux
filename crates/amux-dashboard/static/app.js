@@ -9959,7 +9959,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.905';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.906';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10830,6 +10830,9 @@ function _peekGeoBeacon() {
     const vv = window.visualViewport || {};
     const o = ov.getBoundingClientRect(), b = bar.getBoundingClientRect();
     const r = row ? row.getBoundingClientRect() : { bottom: 0 };
+    const input = document.getElementById('peek-cmd-input').getBoundingClientRect();
+    const more = document.getElementById('peek-composer-more-btn').getBoundingClientRect();
+    const send = row.querySelector('.send-split').getBoundingClientRect();
     const hdrTop = hdr ? Math.round(hdr.getBoundingClientRect().top) : -1;
     const titleTop = title ? Math.round(title.getBoundingClientRect().top) : -1;
     const probe = document.createElement('div');
@@ -10937,6 +10940,8 @@ function _peekGeoDebug() {
       ' ovB=' + Math.round(o.bottom) + ' ovPadB=' + getComputedStyle(ov).paddingBottom +
       ' barB=' + Math.round(b.bottom) + ' barPadB=' + getComputedStyle(bar).paddingBottom +
       ' rowB=' + Math.round(r.bottom) +
+      ' inputW=' + Math.round(input.width) +
+      ' actionDelta=' + Math.round(Math.abs(more.bottom - send.bottom)) +
       ' standalone=' + (navigator.standalone ? 1 : 0);
     document.getElementById('peek-status').textContent = s;
     console.log(s);
