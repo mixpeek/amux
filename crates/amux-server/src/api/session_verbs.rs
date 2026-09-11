@@ -1647,12 +1647,6 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
                 return "active".into();
             }
         }
-    } else {
-        if status_bar.contains("esc to interrupt")
-            || cached_re!(r"← \d+ agents?").is_match(&status_bar)
-        {
-            return "active".into();
-        }
     }
     // 2. Bottom-up scan of the last 12 lines.
     let completed_re = cached_re!(r" for \d+\s*[hms]\b");
