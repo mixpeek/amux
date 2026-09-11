@@ -1894,6 +1894,18 @@ FIX: Hash each path at observation time and compare against the staged blob — 
  into "someone touched THIS CONTENT", which is the claim the warning already makes in
  prose. Tracked as AMUX-3954, deliberately NOT built at the end of a long session: it is a
  change to a safety-critical guard, which is how a fix becomes the next incident.
+STATUS-2026-09-11: THE CHEAP HALF SHIPPED (commit 6278427f). Every co-edit claim the
+ guard evaluates — fired in full or downgraded by the existing
+ AF-391/MC-1561 corroboration checks — is now logged to
+ ~/.amux/staged-guard-mirror-notices.jsonl, so "how often is a fired claim right" is
+ finally a query instead of whoever happened to check that day. Pure additive logging:
+ no verdict changed, no content hash added. 4 new cells
+ (scripts/test-staged-guard-coedit.sh, 8 passed -> 12 passed), mutation-verified: killing
+ either log call site, and killing the peer-guard on the fired call, each reddened
+ exactly the cell naming that property. THE REAL FIX NAMED ABOVE —
+ hash each path at observation time and compare against the staged blob — is still
+ open. The signal is still time-keyed, not content-keyed; this entry stays open on
+ that clause.
 NOTE THE THIRD OUTCOME, because neither party had a slot for it: this was not "you were
  right" or "I was wrong". The signal was REAL and pointed at the WRONG EVENT. An
  attribution system keyed on time rather than content will keep producing that verdict,
