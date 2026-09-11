@@ -385,9 +385,25 @@ fn check_claude_count(max: usize) -> Option<usize> {
     Some(count)
 }
 
+/// Where sysctl actually is, most-specific first. `/usr/sbin` is absent from
+/// launchd's PATH; the bare name is kept last so a non-standard host still works.
+const SYSCTL_PATHS: [&str; 2] = ["/usr/sbin/sysctl", "sysctl"];
+
 /// Swap percentage in use, or None when it cannot be read.
 fn swap_used_pct() -> Option<f64> {
-    let out = std::process::Command::new("sysctl").args(["-n", "vm.swapusage"]).output().ok()?;
+    // ABSOLUTE PATH, BECAUSE LAUNCHD'S PATH IS NOT A SHELL'S.
+    // This server runs under launchd with
+    // PATH=~/.cargo/bin:~/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
+    // — no /usr/sbin, which is where sysctl lives. Bare `sysctl` therefore
+    // failed to spawn and the probe returned None on every tick: the first
+    // deploy of this arm logged `swap_pct=-1 swap_measured=false` while the
+    // host really was at 95%. It is the documented launchd-PATH trap in
+    // CLAUDE.md, hit again. pgrep, ps and tmux all resolve on that PATH, which
+    // is why only this one broke.
+    let out = SYSCTL_PATHS
+        .iter()
+        .find_map(|bin| std::process::Command::new(bin).args(["-n", "vm.swapusage"]).output().ok())
+        .filter(|o| o.status.success())?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     // "total = 32768.00M  used = 31284.00M  free = 1484.00M  (encrypted)"
     let grab = |key: &str| -> Option<f64> {
@@ -707,7 +723,13 @@ mod tests {
         // Both feed a decision to KILL things, so "could not measure" must not
         // arrive as a number. swap_used_pct returns Option and the tick logs
         // swap_measured beside it; the ranking says so in words.
-        if let Some(p) = swap_used_pct() {
+        // On macOS this MUST measure. Returning None here is the launchd-PATH
+        // bug: /usr/sbin is not on the server's PATH, so a bare `sysctl` never
+        // spawns and the arm silently never fires. Asserting Some is what
+        // makes that a red test instead of a quiet -1 in a log nobody reads.
+        #[cfg(target_os = "macos")]
+        {
+            let p = swap_used_pct().expect("swap must be measurable on macOS — check SYSCTL_PATHS");
             assert!((0.0..=100.0).contains(&p), "swap pct out of range: {p}");
         }
         let top = top_memory_consumers(3);
