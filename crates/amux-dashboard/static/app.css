@@ -6106,7 +6106,7 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 }
 
 /* A failed worker read must resolve the loading screen (AMUX-4246). */
-.session-read-notice { margin:16px 0; padding:18px; border:1px solid var(--border); border-radius:12px; background:var(--bg2); font-size:0.9rem; }
+.session-read-notice { margin:10px 0; padding:14px; border:1px solid #f8514944; border-radius:10px; background:rgba(248,81,73,0.06); font-size:0.85rem; }
 .session-read-notice p { margin:8px 0 14px; color:var(--dim); line-height:1.5; }
 .session-read-notice button { min-height:44px; }
 .session-read-notice details { margin-top:14px; color:var(--dim); font-size:0.78rem; }

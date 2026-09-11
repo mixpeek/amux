@@ -1167,7 +1167,7 @@ function showConnHistory() {
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
     + '<span style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
     + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Connection interruptions on this device (this browser)</div>'
-    + _pingWidgetHtml() + rows + blipHtml + pendingHtml + clearHtml + '</div>';
+    + _pingWidgetHtml() + _sessionReadNotice() + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
 }
 
@@ -1979,11 +1979,7 @@ function updateConnectionStatus() {
     }
   });
   const notice = document.getElementById('session-read-notice');
-  const noticeHTML = _sessionReadNotice();
-  if (notice && notice._noticeHTML !== noticeHTML) {
-    notice.innerHTML = noticeHTML;
-    notice._noticeHTML = noticeHTML;
-  }
+  if (notice && notice.innerHTML) { notice.innerHTML = ''; notice._noticeHTML = ''; }
   // Update offline banner
   const banner = document.getElementById('offline-banner');
   const ops = document.getElementById('offline-ops');
@@ -4245,7 +4241,7 @@ function render() {
   const _nonArchivedCount = sessions.filter(s => !s.archived).length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
-      el.innerHTML = ''; // The actionable failure is in #session-read-notice.
+      el.innerHTML = ''; // Actionable detail is in the Sync error badge modal.
     } else if (_initialLoad) {
       // A SPINNER THAT NEVER RESOLVES IS A LIE (amux-cloud, AC-275, 2026-08-06).
       // _initialLoad clears on ANY successful /api/sessions fetch, empty list
