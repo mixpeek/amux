@@ -2042,6 +2042,32 @@
      page (device traces show zero events). Keep the controls clear of that
      zone; the installed PWA has no Safari chrome and stays flush. */
   body.safari-tab .peek-cmd-bar { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
+  /* THE COMMAND BAR TOOK A FIFTH OF THE PHONE (Ethan: "fix the toolbar at
+     ... bottom"). Measured at 390x844: 168px tall, 20% of the viewport, and
+     20px of that was a row holding nothing but the words "Send command" above
+     a composer that is already obviously a composer. On a screen where the
+     terminal is the product, that row is rent with no tenant.
+     Reclaimed on phones only; the label still reads normally on a desktop
+     where the space is free. */
+  @media (max-width: 600px) {
+    /* ONE COMPOSER LINE, NOT THREE. Measured at 390x844 the bar was 170px, a
+       fifth of the phone, and the shape was the cause: .peek-cmd-row wraps, and
+       the input (44), the ⋮ (44) and Send (44) each took their own line because
+       they could not fit together. The chips row above them is 35 more.
+       Letting the input flex and pinning the two buttons to their touch size
+       puts all three on one line — the buttons were never the problem, the
+       input's intrinsic width was. */
+    .peek-cmd-toggle { font-size: 0.7rem; padding: 0; min-height: 0; line-height: 1.1; opacity: 0.75; }
+    .peek-cmd-bar { padding-top: 2px; }
+    .peek-cmd-row { gap: 4px; align-items: flex-end; }
+    #peek-chips { margin-bottom: 4px; }
+    .peek-cmd-row .ac-wrap { flex: 1 1 0; min-width: 0; }
+    .peek-cmd-row .peek-more-wrap { flex: 0 0 44px; }
+    .peek-cmd-row .send-split { flex: 0 0 auto; }
+    /* Send keeps its 44px touch height and loses only the padding that was
+       pushing it onto its own line. */
+    .peek-cmd-row .send-split .btn { padding-left: 10px; padding-right: 6px; }
+  }
   .peek-cmd-toggle {
     width: 100%; padding: 3px; border: none; background: transparent;
     color: var(--dim); font-size: 0.75rem; cursor: pointer; text-align: center;
@@ -2191,7 +2217,16 @@
      position:sticky at right:0 of this scrollport, and a right padding is inside
      the scrollable area, so tabs render in that gap and bleed past the pinned
      button. The button carries its own padding, so nothing is lost. */
-  .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 0 0 12px;
+  /* RESERVE THE BUTTON'S LANE (Ethan, 2026-09-11: "fix the toolbar at top").
+     `.tab-customize-btn` sits at the strip's right end while the strip itself
+     scrolls underneath it, so the last tab ends up BEHIND the button: measured
+     at 390px, strip scrollWidth 444 vs client 378, the button occupying
+     x=324..384 and the last tab running to x=390. It renders as a tab sliced
+     mid-word against a hard seam, and no amount of scrolling frees it because
+     the button travels with the viewport.
+     Padding on the scroll box gives the content somewhere to go — the last tab
+     can now scroll clear of the button instead of stopping under it. */
+  .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 68px 0 12px;
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
     overscroll-behavior-x: contain; touch-action: pan-x; }
   .peek-tabs::-webkit-scrollbar { display: none; }

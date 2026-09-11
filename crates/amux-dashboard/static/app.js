@@ -2015,7 +2015,31 @@ function describeOp(item) {
 // Normal outbox transport stays in Messages; connection warnings describe a
 // delayed or refused operation, not every brief local acceptance.
 function _outboxNeedsAttention(q) {
-  return q.state === 'blocked' || !!q.error || Date.now() - (q.timestamp || 0) > 20000;
+  return q.state === 'blocked' || !!q.error || _outboxAgeMs(q) > 20000;
+}
+function _outboxAgeMs(q) { return Date.now() - (q.timestamp || 0); }
+// AN OP THAT HAS BEEN "SENDING" FOR HOURS IS NOT SENDING.
+//
+// Ethan, 2026-09-11 ("this is not ok terrible ux"): the banner read
+// "1 sending, 1 failed" over ops timestamped 215m ago, and offered "Retry now"
+// — for a 409 that says "previous message acceptance is uncertain; inspect the
+// worker terminal before sending a new message", which no amount of retrying
+// can resolve. The word "sending" was doing the damage: it promises the thing
+// is still on its way, so there is nothing to act on, so it sits there for
+// three and a half hours.
+//
+// Past this age an op is STALLED and is presented as needing a decision, not
+// as in-flight. The retry loop is unchanged — this is about not describing a
+// stuck message as a moving one.
+const _OUTBOX_STALLED_MS = 600000;   // 10 minutes; the send deadline is 600s
+function _outboxIsStalled(q) {
+  return q.state !== 'blocked' && _outboxAgeMs(q) > _OUTBOX_STALLED_MS;
+}
+function _outboxAgeLabel(q) {
+  const m = Math.floor(_outboxAgeMs(q) / 60000);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h < 24 ? h + 'h ' + (m % 60) + 'm' : Math.floor(h / 24) + 'd';
 }
 // Connection status
 function updateConnectionStatus() {
@@ -2091,11 +2115,24 @@ function updateConnectionStatus() {
         ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
         ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
     } else {
+      const stalledOps = pendingOps.filter(_outboxIsStalled);
+      const movingOps = pendingOps.filter(q => !_outboxIsStalled(q));
       const parts = [];
       if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
-      if (pendingOps.length) parts.push(pendingOps.length + ' sending');
+      if (movingOps.length) parts.push(movingOps.length + ' sending');
+      // Named by how long it has been stuck, because "sending" for 3.5 hours is
+      // the claim that stopped anyone acting on it.
+      if (stalledOps.length) {
+        const oldest = stalledOps.reduce((a, b) => (_outboxAgeMs(a) > _outboxAgeMs(b) ? a : b));
+        parts.push(stalledOps.length + ' stalled ' + _outboxAgeLabel(oldest));
+      }
       if (blockedOps.length) parts.push(blockedOps.length + ' failed');
-      title.innerHTML = '&#x21BB; ' + parts.join(', ');
+      const needsDecision = stalledOps.length || blockedOps.length;
+      title.innerHTML = (needsDecision ? '&#x26A0; ' : '&#x21BB; ') + parts.join(', ')
+        + (needsDecision
+            ? ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>'
+              + ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>'
+            : '');
     }
   } else {
     const parts = [];
@@ -10158,7 +10195,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.908';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.910';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11659,6 +11696,20 @@ const _NON_HUMAN_PROMPT_MARKS = [
   ['[amux ', 'amux'],               // any other bracketed amux subsystem
   ['[Scheduled]', 'schedule'],
   ['/compact Context is at', 'amux'],
+  // AMUX'S OWN NOTICES WERE READING AS "Unclassified" (Ethan, 2026-09-11,
+  // studio-plg). These are delivered BY the harness, not typed by anyone, and
+  // the table simply did not list them — so they fell to the honest-but-useless
+  // 'unknown' bucket alongside genuinely unattributable text.
+  //
+  // Taken from the producers in crates/amux-server, not from one screenshot:
+  //   "[board note on {id}: {}] ..."   board.rs peer-note delivery
+  //   "[task callback {}: {}] ..."     runtime task-callback delivery
+  //   "[capture] {}: redacted ..."     capture notices
+  // Each is a literal prefix the server writes, so matching it is reading
+  // amux's own label rather than guessing at prose.
+  ['[board note on', 'amux'],
+  ['[task callback', 'amux'],
+  ['[capture]', 'amux'],
 ];
 
 // Normalize terminal wrapping without losing provenance. A different worker's
