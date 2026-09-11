@@ -19,7 +19,7 @@ export async function checkpoint(page: Page, info: TestInfo, name: string) {
     body: JSON.stringify({ ...state, coverage: 'discovered; effects require scenario assertions' }, null, 2),
     contentType: 'application/json',
   });
-  await info.attach(name, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+  await info.attach(name, { body: await page.screenshot({ fullPage: !(await page.locator('.overlay.active').count()), animations:'disabled' }), contentType: 'image/png' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
     `${name}: page must fit the viewport`).toBe(true);
 }
@@ -60,7 +60,10 @@ export async function deleteOwnedWorkers(page: Page, request: APIRequestContext,
     if (await closeDetail.isVisible()) await closeDetail.click();
     const closePeek = page.locator('#peek-overlay.active').getByRole('button', { name: 'Close worker', exact: true });
     if (await closePeek.isVisible()) await closePeek.click();
-    await page.goto('/');
+    // An explicit destination prevents a delayed saved-peek restore from
+    // covering the Workers tab while teardown is trying to click it.
+    await page.goto('/#view=sessions');
+    await expect(page.locator('#peek-overlay')).not.toHaveClass(/active/);
     await page.locator('#tab-sessions').click();
     const card = page.locator(`.card[data-session="${name}"]`).locator('visible=true').first();
     await expect(card).toBeVisible();

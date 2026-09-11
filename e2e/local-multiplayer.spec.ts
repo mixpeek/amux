@@ -143,7 +143,10 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
       const fleetRow = rows.find((row: any) => row.name === workerName);
       const info = await fetch(`/api/sessions/${encodeURIComponent(workerName)}/info`);
       const infoBody = await info.json();
-      const stoppedSend = await fetch(`/api/sessions/${encodeURIComponent(workerName)}/send`, {
+      // This assertion measures server member attribution. Use the native
+      // transport: the UI fetch interceptor now acknowledges local queuing
+      // immediately, before a server response or authored_by can exist.
+      const stoppedSend = await (window as any).eval('_origFetch')(`/api/sessions/${encodeURIComponent(workerName)}/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

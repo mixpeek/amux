@@ -28,6 +28,12 @@ trap 'rm -rf "$TMP"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0=main
 
+# AMUX-3954: same path `run_case` points MIRROR_NOTICE_LOG at. Cleared up
+# front so the LAST line after any one run_case call is that call's own row,
+# with nothing to clean up between cells.
+LEDGER="${TMPDIR:-/tmp}/test-mirror-notices.jsonl"
+rm -f "$LEDGER"
+
 echo "== staged-guard co-edit corroboration cells =="
 
 # A repo with two files: one whose worktree bytes are committed (nothing in
@@ -41,7 +47,7 @@ git init -q "$TMP/r"
 
 run_case() { # $1 = python dict for one shared-file entry
   python3 - "$HOOK" "$TMP/r" "$1" <<'PY' 2>&1
-import io, os, subprocess, sys, ast
+import io, json, os, subprocess, sys, time, ast
 src = open(sys.argv[1]).read()
 os.chdir(sys.argv[2])
 # Take the SHIPPED helper and the SHIPPED loop body, never a retyped copy.
@@ -51,12 +57,29 @@ os.chdir(sys.argv[2])
 h0 = src.index("def _never_wrote(path, session):")
 h1 = src.index("\n\n", src.index("        return None, \"the check errored\""))
 helper = src[h0:h1]
+# AMUX-3954: same rule applies to the ledger call the loop body now makes.
+# Extracted rather than stubbed, so a change to its signature breaks THIS test
+# instead of silently exec'ing a paraphrase.
+n0 = src.index("def _record_mirror_notice(")
+n1 = src.index("\ndef _derive_session_from_tmux")
+notice_helper = src[n0:n1]
 b0 = src.index('    for f in (d.get("shared") or []):')
 b1 = src.index("    # PRE-COMMIT MISATTRIBUTES A PEER'S WRITE TO AN INNOCENT HOOK")
 body = "\n".join(l[4:] if l.startswith("    ") else l for l in src[b0:b1].splitlines())
 buf = io.StringIO()
-g = {"subprocess": subprocess, "w": buf.write, "d": {"shared": [ast.literal_eval(sys.argv[3])]}}
+g = {
+    "subprocess": subprocess, "json": json, "time": time, "w": buf.write,
+    "d": {"shared": [ast.literal_eval(sys.argv[3])]},
+    # `sess` is a `main()` local the loop body closes over; the extraction
+    # runs at module scope, so it needs a stand-in like the others below.
+    "sess": "test-session",
+    # Real names the extracted call site reads as globals, kept out of the
+    # asserted output by pointing the ledger at a path this test owns.
+    "MIRROR_NOTICE_LOG": os.path.join(os.environ.get("TMPDIR", "/tmp"), "test-mirror-notices.jsonl"),
+    "GUARD_VERSION": 0,
+}
 exec(helper, g)
+exec(notice_helper, g)
 exec(body, g)
 sys.stdout.write(buf.getvalue())
 PY
@@ -70,6 +93,13 @@ if printf '%s' "$out" | grep -q "settled.txt"; then ok "(a) the file is still NA
 else bad "(a) the downgraded line must still name the file" "$out"; fi
 if printf '%s' "$out" | grep -q "git apply --cached"; then bad "(a) the eight-line remedy must not print for a dispute that does not exist" "$out"
 else ok "(a) the remedy block is gone, which is the cost being removed"; fi
+# AMUX-3954: the downgrade is LOGGED, not just printed — that is the whole
+# point of the ledger (measuring how often a fired claim would have been
+# right requires keeping the downgraded ones too).
+row=$(tail -1 "$LEDGER" 2>/dev/null || true)
+if printf '%s' "$row" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['disposition']=='downgraded' and d['path']=='settled.txt' and d['owner']=='peer'" 2>/dev/null
+then ok "(a) the downgrade is recorded in the mirror-notice ledger"
+else bad "(a) expected a downgraded ledger row for settled.txt/peer" "$row"; fi
 
 # (b) CONTROL, the one that stops this being a hollowing-out: REAL uncommitted
 #     content still prints the full warning even though the claim is mtime-derived.
@@ -84,11 +114,29 @@ else ok "(b) no downgrade when there is something to dispute"; fi
 out=$(run_case "{'path':'settled.txt','owner':'peer','peer':True,'age_secs':600,'has_unstaged_changes':False,'mine_provenance':'transcript','their_provenance':'transcript'}")
 if printf '%s' "$out" | grep -q "UNCORROBORATED co-edit claim"; then bad "(c) a two-sided transcript claim is not mtime-derived and must stand" "$out"
 else ok "(c) only an mtime-derived claim is eligible for downgrade"; fi
+# AMUX-3954: a claim that FIRED (named a peer in full) is logged too, with the
+# opposite disposition from (a) — the ledger has to carry both to be useful.
+row=$(tail -1 "$LEDGER" 2>/dev/null || true)
+if printf '%s' "$row" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['disposition']=='fired' and d['path']=='settled.txt' and d['owner']=='peer'" 2>/dev/null
+then ok "(c) a fired claim is recorded in the mirror-notice ledger too"
+else bad "(c) expected a fired ledger row for settled.txt/peer" "$row"; fi
 
 # (d) An unknown path: the check cannot run, and that must not read as settled.
 out=$(run_case "{'path':'no-such-file.txt','owner':'peer','peer':True,'age_secs':600,'has_unstaged_changes':True,'mine_provenance':'observed','their_provenance':'transcript'}")
 if printf '%s' "$out" | grep -q "UNCORROBORATED co-edit claim"; then bad "(d) an unrunnable check must not be reported as 'nothing in dispute'" "$out"
 else ok "(d) a check that could not run leaves the warning standing"; fi
+
+# (e) NO PEER NAMED: this is YOUR OWN dirty file, not a co-edit claim. Must
+# print the solo form and must NOT add a mirror-notice row — there is no
+# co-editor to have a claim about. Distinguishes the ledger from "log every
+# shared-loop iteration", which would make it noise instead of a claim record.
+before=$(tail -1 "$LEDGER" 2>/dev/null || true)
+out=$(run_case "{'path':'settled.txt','owner':None,'peer':False,'age_secs':600,'has_unstaged_changes':False,'mine_provenance':'transcript'}")
+if printf '%s' "$out" | grep -q "is yours and has uncommitted changes"; then ok "(e) a solo dirty file prints the no-peer form"
+else bad "(e) expected the solo form with no peer named" "$out"; fi
+after=$(tail -1 "$LEDGER" 2>/dev/null || true)
+if [ "$before" = "$after" ]; then ok "(e) a solo entry with no peer adds nothing to the mirror-notice ledger"
+else bad "(e) a claim naming no co-editor must not become a ledger row" "$after"; fi
 
 # -- (t) READER vs WRITER: trailer history settles it (MC-1561) ---------------
 #

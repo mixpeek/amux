@@ -50,7 +50,7 @@ import json, os, ssl, subprocess, sys, time, urllib.error, urllib.request
 # `^`-anchored, because an unanchored match now finds the comment line first
 # (checked: it returned empty, which would have made `grep -L` match nothing and
 # report a clean fleet).
-GUARD_VERSION = 15
+GUARD_VERSION = 16
 
 
 def amux_base_url():
@@ -291,6 +291,21 @@ DIVERGENCE_LOG = os.path.join(
     os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),
     "staged-guard-divergence.jsonl")
 
+# AMUX-3954: a mirror-notice names a session as a co-editor of a path, and
+# until this ledger existed nothing recorded that a claim was MADE, so nobody
+# could measure how often it was wrong — only individual recipients who
+# happened to check remembered (amux-frustrations' own 2-of-3 sample, logged
+# by hand). This is the cheap half named on that card: log the claim itself,
+# including the corroboration signals (`_never_wrote`, `_nothing_in_dispute`)
+# this file already computes before deciding to print or downgrade it. It does
+# NOT add a content hash and does NOT change any verdict — a notice fires or
+# downgrades exactly as it did before this ledger existed. The harder half
+# (comparing a claim against a content hash of the version actually staged, and
+# a way for the recipient to record what they found) is still open.
+MIRROR_NOTICE_LOG = os.path.join(
+    os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),
+    "staged-guard-mirror-notices.jsonl")
+
 
 def _git_lines(args):
     r = subprocess.run(["git"] + args, capture_output=True, text=True, timeout=10)
@@ -370,6 +385,37 @@ def _record_divergence(sess, paths, resolution):
             fh.write(json.dumps({
                 "ts": time.time(), "session": sess, "resolution": resolution,
                 "paths": paths, "head_before": head,
+                "guard_version": GUARD_VERSION,
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def _record_mirror_notice(sess, path, owner, mins, disposition, reason=None,
+                          co_signal=None, mine_provenance=None, their_provenance=None):
+    """One row per co-edit claim this guard EVALUATED, fired or not.
+
+    `disposition` is "fired" (the claim was printed and named `owner`) or
+    "downgraded" (AF-391 or MC-1561 found nothing to corroborate it, so it
+    printed as an uncorroborated NOTE instead). Both are worth keeping: a
+    downgrade is itself evidence the guard's own signals disagreed, which is
+    exactly the population needed to answer "how often is a fired claim
+    right" without waiting for a recipient to volunteer a correction.
+
+    `notice_id` exists so a future recipient-side verdict (still open, see
+    AMUX-3954) has something to attach to without a schema change here.
+    """
+    try:
+        import uuid
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+        with open(MIRROR_NOTICE_LOG, "a") as fh:
+            fh.write(json.dumps({
+                "notice_id": uuid.uuid4().hex[:12],
+                "ts": time.time(), "session": sess, "path": path, "owner": owner,
+                "age_mins": mins, "disposition": disposition, "reason": reason,
+                "co_signal": co_signal, "mine_provenance": mine_provenance,
+                "their_provenance": their_provenance, "head_before": head,
                 "guard_version": GUARD_VERSION,
             }) + "\n")
     except Exception:
@@ -877,6 +923,12 @@ def main():
                          "trailer, so the record is activity in a shared cwd rather " \
                          "than authorship (MC-1561)" % (f.get("owner") or "that session")
         if _quiet:
+            if f.get("peer"):
+                _record_mirror_notice(sess, f.get("path"), f.get("owner"), mins,
+                                      "downgraded", reason=_quiet,
+                                      co_signal=f.get("co_signal"),
+                                      mine_provenance=f.get("mine_provenance"),
+                                      their_provenance=f.get("their_provenance"))
             w("amux staged-guard: NOTE — %s carries an UNCORROBORATED co-edit claim: %s. "
               "Not asking you to check anything.\n" % (f.get("path"), _quiet))
             continue
@@ -938,6 +990,11 @@ def main():
                 w("  Provenance: YOUR claim is a recorded write; THEIRS is an mtime their "
                   "Bash command saw move — possibly your own write, seen from their "
                   "window (AMUX-3662).\n")
+        if f.get("peer"):
+            _record_mirror_notice(sess, f.get("path"), f.get("owner"), mins, "fired",
+                                  co_signal=f.get("co_signal"),
+                                  mine_provenance=f.get("mine_provenance"),
+                                  their_provenance=f.get("their_provenance"))
     # PRE-COMMIT MISATTRIBUTES A PEER'S WRITE TO AN INNOCENT HOOK (AF-327).
     #
     # `pre_commit/commands/run.py` decides a hook changed something with

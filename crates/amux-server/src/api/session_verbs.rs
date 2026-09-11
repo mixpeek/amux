@@ -3820,6 +3820,9 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
             ts INTEGER NOT NULL, origin TEXT NOT NULL DEFAULT '');
          CREATE TABLE IF NOT EXISTS prefs (key TEXT PRIMARY KEY, value TEXT);",
     )?;
+    // A reservation is not acceptance. Older rows have no receipt and remain
+    // uncertain rather than being upgraded into a fabricated delivery receipt.
+    let _ = conn.execute("ALTER TABLE send_dedup ADD COLUMN receipt_id TEXT", []);
     // Python's steering_queue predates `guard` and gained it via ALTER; a DB
     // created by Python's schema block lacks it. Add-if-missing, ignore
     // "duplicate column".
@@ -4327,7 +4330,9 @@ fn mint_capture_card(
             // Only the first capture may establish the lane's execution claim.
             status: capture_status.into(),
             session: Some(session_name.to_string()),
-            item_type: "code".into(),
+            // AF-699: a peer-relay REPLY carrying no ask is not code work and
+            // cannot close on "implemented and merged".
+            item_type: amux_core::board::item_type_for_capture(body).into(),
             creator: "amux".into(),
             owner_type: "agent".into(),
             due: None,
@@ -4452,6 +4457,7 @@ fn associate_capture_card(
     session_name: &str,
     body: &str,
     now_ms: i64,
+    intake: &super::board_intake::Plan,
 ) -> rusqlite::Result<Option<CaptureAssociation>> {
     let mut live_owned = Vec::new();
     for id in prompt_card_refs(body) {
@@ -4476,7 +4482,13 @@ fn associate_capture_card(
             "ledger: substantive prompt named multiple live owned cards; capturing an explicit reconciliation card"
         );
     }
-    if let Some(row) = mint_capture_card(conn, session_name, body, now_ms)? {
+    let title = amux_core::board::title_from_prompt(body).unwrap_or_default();
+    if let Some(row) = super::board_intake::apply(conn, intake, &title, body, now_ms / 1000)? {
+        return Ok(Some(CaptureAssociation {row, created:false}));
+    }
+    if let Some(mut row) = mint_capture_card(conn, session_name, body, now_ms)? {
+        row.log = Some(crate::db::board_store::append_log(row.log.as_deref(), &chrono::Local::now().format("%H:%M").to_string(), &format!("{}; disposition=create", intake.log_line())));
+        crate::db::board_store::save_patched(conn, &mut row)?;
         return Ok(Some(CaptureAssociation { row, created: true }));
     }
 
@@ -4767,6 +4779,9 @@ pub(crate) async fn cmd_hist_record_full(
             let sess_log = cap_session.clone();
             let peer_requester = (cap_ctype == "session" && !cap_origin.trim().is_empty())
                 .then(|| cap_origin.clone());
+            let _intake_guard = super::board_intake::lock(&cap_session, "agent").await;
+            let intake = super::board_intake::plan(&state.store, &cap_session, "agent",
+                &amux_core::board::title_from_prompt(&cap_text_for_capture).unwrap_or_default(), &cap_text_for_capture).await;
             let res = state
                 .store
                 .write_async(move |conn| match associate_capture_card(
@@ -4774,6 +4789,7 @@ pub(crate) async fn cmd_hist_record_full(
                     &cap_session,
                     &cap_text_for_capture,
                     now_ms,
+                    &intake,
                 )? {
                     Some(mut association) => {
                         if let Some(requester) = peer_requester.as_deref() {
@@ -4798,8 +4814,17 @@ pub(crate) async fn cmd_hist_record_full(
                                 payload: None,
                             }
                         };
+                        let mut events = vec![ev];
+                        if !association.created {
+                            events.push(crate::db::PendingEvent {
+                                entity_type: amux_core::revision::EntityType::Task,
+                                entity_id: association.row.id.clone(),
+                                mutation: amux_core::revision::MutationKind::Updated,
+                                payload: Some(association.row.snapshot()),
+                            });
+                        }
                         *associated_w.lock().unwrap() = Some(association);
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![ev] })
+                        Ok(crate::db::WriteOutcome { applied: true, events })
                     }
                     None => Ok(crate::db::WriteOutcome { applied: false, events: vec![] }),
                 })
@@ -5379,31 +5404,68 @@ async fn steer_enqueue_precond_with_id(
     })
 }
 
-/// py:25236 _send_dedup_seen — idempotency across client retries, persisted
-/// because the loss window IS a server restart.
-async fn send_dedup_seen(state: &AppState, name: &str, msg_id: &str) -> bool {
-    let session = name.to_string();
-    let msg_id = msg_id.to_string();
-    let reply = state
-        .store
-        .write_async(move |conn| {
-            ensure_fleet_tables(conn)?;
-            conn.execute("DELETE FROM send_dedup WHERE ts < ?", [now_i64() - 600])?;
-            let dup = conn
-                .execute(
-                    "INSERT INTO send_dedup (session, msg_id, ts) VALUES (?,?,?)",
-                    rusqlite::params![session, msg_id, now_i64()],
-                )
-                .is_err();
-            Ok(crate::db::WriteOutcome {
-                applied: !dup,
-                events: vec![],
-            })
-        })
-        .await;
-    match reply {
-        Ok(r) => !r.applied,
-        Err(_) => false, // dedup is best-effort; never block a send on it
+/// Reserve one transport identity before acting, then acknowledge it only once
+/// the terminal accepted it or the server queue durably stored it. A concurrent
+/// retry must never turn the first request's reservation into "already sent".
+async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<Response> {
+    if msg_id.is_empty() { return None; }
+    let (session, identity) = (name.to_string(), msg_id.to_string());
+    let reply = state.store.write_async(move |conn| {
+        ensure_fleet_tables(conn)?;
+        // Keep confirmed receipts across long offline periods. An interrupted
+        // reservation never expires into permission to inject the text again.
+        conn.execute("DELETE FROM send_dedup WHERE receipt_id IS NOT NULL AND ts < ?", [now_i64() - 30 * 86400])?;
+        let inserted = conn.execute(
+            "INSERT INTO send_dedup (session,msg_id,ts) VALUES (?,?,?) ON CONFLICT(session,msg_id) DO NOTHING",
+            rusqlite::params![session,identity,now_i64()],
+        )?;
+        Ok(crate::db::WriteOutcome {applied:inserted > 0,events:vec![]})
+    }).await;
+    let error = match reply {
+        Ok(reply) if reply.applied => return None,
+        Ok(_) => {
+            let row = (|| -> anyhow::Result<(Option<String>,i64)> {
+                let conn=state.store.read()?;
+                Ok(conn.query_row("SELECT receipt_id,ts FROM send_dedup WHERE session=? AND msg_id=?",
+                    rusqlite::params![name,msg_id],|r| Ok((r.get(0)?,r.get(1)?)))?)
+            })();
+            match row {
+                Ok((Some(id),_)) => return Some(j200(json!({"ok":true,"deduped":true,"id":id,
+                    "message":"duplicate retry ignored (previous acceptance confirmed)"}))),
+                Ok((None,ts)) => {
+                    let uncertain=now_i64().saturating_sub(ts)>120;
+                    tracing::warn!(target:"amux::message_acceptance",session=name,uncertain,
+                        measured=true,n_considered=1,"duplicate message has no acceptance receipt");
+                    return Some(jresp(if uncertain {StatusCode::CONFLICT} else {StatusCode::SERVICE_UNAVAILABLE},
+                        json!({"ok":false,"submission":if uncertain {"uncertain"} else {"pending"},
+                            "error":if uncertain {"previous message acceptance is uncertain; inspect the worker terminal before sending a new message"}
+                                else {"previous message acceptance is still pending; retry the same message ID"},
+                            "retryable":!uncertain})));
+                }
+                Err(error) => error.to_string(),
+            }
+        }
+        Err(error) => error.to_string(),
+    };
+    tracing::warn!(target:"amux::message_acceptance",session=name,%error,measured=false,n_considered=1,
+        "message identity could not be reserved; no send attempted");
+    Some(jresp(StatusCode::SERVICE_UNAVAILABLE,json!({"ok":false,"error":"message identity storage unavailable; retry the same message ID"})))
+}
+
+async fn send_dedup_accept(state: &AppState, name: &str, msg_id: &str, receipt_id: &str) {
+    if msg_id.is_empty() { return; }
+    let (session,identity,receipt)=(name.to_string(),msg_id.to_string(),receipt_id.to_string());
+    let result=state.store.write_async(move |conn| {
+        let changed=conn.execute("UPDATE send_dedup SET receipt_id=? WHERE session=? AND msg_id=?",
+            rusqlite::params![receipt,session,identity])?;
+        if changed != 1 { return Err(rusqlite::Error::QueryReturnedNoRows); }
+        Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+    }).await;
+    if let Err(error)=result {
+        // The effect happened, so do not retry it automatically. A lost HTTP
+        // response leaves an uncertain reservation for explicit terminal review.
+        tracing::warn!(target:"amux::message_acceptance",session=name,%error,measured=false,n_considered=1,
+            "message accepted but durable receipt write failed");
     }
 }
 
@@ -8657,7 +8719,12 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
         type_line(name, "unset ANTHROPIC_API_KEY").await;
         poll_shell_prompt(name, 3000).await;
     }
-    // Launch the provider command.
+    // Startup profiles and scoped environment files may change directory.
+    // Pin the actual provider invocation to the resolved workspace, even when
+    // an earlier shell setup line was delayed by interactive initialization.
+    let cmd = format!("cd {} && {cmd}", sh_quote(&work_dir));
+    tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
+        "launching provider in resolved worker workspace");
     let _ = send_literal(name, &cmd).await;
     sleep_ms(150).await;
     send_key(name, "Enter").await;
@@ -9083,15 +9150,58 @@ fn structured_resume_prompt(context: &StructuredResumeContext, reason: &str) -> 
 // for the shell, hard-kill on timeout. tmux stays alive.
 // ---------------------------------------------------------------------------
 
-async fn stop_session(name: &str) -> (bool, String) {
+async fn stop_session(state: &AppState, name: &str) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
     }
-    // Same exclusion as start_session (see session_op_lock): a stop typing
-    // /exit into a pane a concurrent start is booting is exactly the 2026-08-09
-    // interleaving incident.
+    // Keep the terminal stop and its durable status edge under the same lock
+    // as start. A fresh launch must not have its report erased by an older stop.
     let op_lock = session_op_lock(name);
     let _op = op_lock.lock().await;
+    let result = stop_session_process(name).await;
+    if result.0 {
+        if let Err(error) = clear_stopped_report(state, name).await {
+            tracing::warn!(session = name, %error, "worker stopped but status reset failed");
+            return (false, format!("worker stopped but status reset failed: {error}"));
+        }
+    }
+    result
+}
+
+async fn clear_stopped_report(state: &AppState, name: &str) -> anyhow::Result<()> {
+    use rusqlite::OptionalExtension;
+    let name = name.to_string();
+    state.store.write_async(move |conn| {
+        ensure_fleet_tables(conn)?;
+        let raw: Option<String> = conn.query_row(
+            "SELECT value FROM prefs WHERE key='session_reports'", [], |r| r.get(0)
+        ).optional()?;
+        let mut reports: Value = match raw {
+            Some(raw) => serde_json::from_str(&raw)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+            None => json!({}),
+        };
+        if let Some(report) = reports.get_mut(&name).and_then(Value::as_object_mut) {
+            // Keep model, token and conversation diagnostics. Only the live
+            // assertion belongs to the process that has just ended.
+            report.insert("state".into(), json!("idle"));
+            report.insert("source".into(), json!("server-stop"));
+            report.insert("ts".into(), json!(now_f64()));
+            report.remove("subagents");
+            conn.execute(
+                "UPDATE prefs SET value=?1 WHERE key='session_reports'", [reports.to_string()]
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await?;
+    crate::api::sessions_legacy::invalidate_sessions_runtime_cache();
+    Ok(())
+}
+
+async fn stop_session_process(name: &str) -> (bool, String) {
+    if !valid_session_name(name) {
+        return (false, "invalid session name".into());
+    }
     let cfg = parse_env(name);
     if backend_of_cfg(&cfg) == "herdr" {
         if !herdr_agent_running(name).await {
@@ -9114,10 +9224,12 @@ async fn stop_session(name: &str) -> (bool, String) {
                 return (true, "stopped".into());
             }
         }
-        return (true, "stopped (hard-kill unavailable on rust origin — pane close is a gap)".into());
+        return (false, "worker is still running; herdr hard-kill is unavailable".into());
     }
-    let tmux_sess = tmux_name(name);
-    if !tmux_sessions_set().await.contains(&tmux_sess) {
+    // A terminated provider can leave its footer below the shell prompt.
+    // Use the process-aware running probe before typing /rename or /exit;
+    // otherwise a repeated Stop sends those commands into a childless shell.
+    if !is_running(name).await {
         return (true, "not running".into());
     }
     let output = tmux_capture(name, 10).await;
@@ -9165,6 +9277,9 @@ async fn stop_session(name: &str) -> (bool, String) {
     }
     type_line(name, "stty sane").await;
     sleep_ms(1000).await;
+    if pane_has_live_child(name).await != Some(false) {
+        return (false, "could not confirm the worker process stopped".into());
+    }
     (true, "stopped (hard-kill)".into())
 }
 
@@ -9197,7 +9312,7 @@ async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
             let start = data.len().saturating_sub(MAX_LOG_BYTES);
             let _ = std::fs::write(log_path(name), &data[start..]);
         }
-        let _ = stop_session(name).await;
+        let _ = stop_session(state, name).await;
     }
     kill_tmux_session(name).await;
     let mut cfg = parse_env(name);
@@ -9258,7 +9373,7 @@ async fn reset_session(state: &AppState, name: &str) -> (bool, String) {
                 let _ = std::fs::write(log_path(name), &data[start..]);
             }
         }
-        let _ = stop_session(name).await;
+        let _ = stop_session(state, name).await;
         kill_tmux_session(name).await;
     }
     let mut meta = load_meta(name);
@@ -12270,6 +12385,9 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                 std::sync::Arc::new(std::sync::Mutex::new(None));
             let associated_w = associated.clone();
             let peer_requester = sender.clone();
+            let _intake_guard = super::board_intake::lock(&sess3, "agent").await;
+            let intake = super::board_intake::plan(&state.store, &sess3, "agent",
+                &amux_core::board::title_from_prompt(&text3).unwrap_or_default(), &text3).await;
             let res = state
                 .store
                 .write_async(move |conn| {
@@ -12291,7 +12409,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                     if already > 0 {
                         return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                     }
-                    match associate_capture_card(conn, &sess3, &text3, now_ms)? {
+                    match associate_capture_card(conn, &sess3, &text3, now_ms, &intake)? {
                         Some(mut association) => {
                             if !peer_requester.trim().is_empty() {
                                 arm_peer_callback(conn, &mut association.row, &peer_requester)?;
@@ -12304,16 +12422,13 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                                   AND card_id IS NULL ORDER BY id DESC LIMIT 1)",
                                 rusqlite::params![association.row.id, sess3, text3],
                             )?;
-                            let events = if association.created {
-                                vec![crate::db::PendingEvent {
-                                    entity_type: amux_core::revision::EntityType::Task,
-                                    entity_id: association.row.id.clone(),
-                                    mutation: amux_core::revision::MutationKind::Created,
-                                    payload: Some(association.row.snapshot()),
-                                }]
-                            } else {
-                                vec![]
-                            };
+                            let events = vec![crate::db::PendingEvent {
+                                entity_type: amux_core::revision::EntityType::Task,
+                                entity_id: association.row.id.clone(),
+                                mutation: if association.created { amux_core::revision::MutationKind::Created }
+                                    else { amux_core::revision::MutationKind::Updated },
+                                payload: Some(association.row.snapshot()),
+                            }];
                             *associated_w.lock().unwrap() = Some(association);
                             Ok(crate::db::WriteOutcome { applied: true, events })
                         }
@@ -12785,6 +12900,40 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
 }
 
 /// Deliver the oldest queued steering message for ONE specific session.
+/// Atomically claim a `steering_queue` row for delivery (AF-678). Only one
+/// caller can win this UPDATE for a given row -- a losing caller means
+/// someone else is already delivering it (or already has), which is
+/// contention, not a delivery refusal.
+async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
+    let id = id.to_string();
+    store
+        .write_async(move |conn| {
+            let n = conn.execute(
+                "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL",
+                rusqlite::params![now_f64(), id],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        })
+        .await
+        .map(|r| r.applied)
+        .unwrap_or(false)
+}
+
+/// Release a claim so the row stays eligible for retry (AMUX-2629): a
+/// refused send must not lose its place in the queue just because it
+/// happened to get claimed first. Best-effort like every other steering
+/// write here -- a failure leaves the row claimed, which
+/// `reconcile_orphaned_steering_claims` resolves on the next restart.
+async fn unclaim_steering_row(store: &crate::db::SharedStore, id: &str) {
+    let id = id.to_string();
+    let _ = store
+        .write_async(move |conn| {
+            conn.execute("UPDATE steering_queue SET delivering_since=NULL WHERE id=?1", [id])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .await;
+}
+
 /// Called reactively when a session reports "idle" — the report IS the turn
 /// boundary, so there is no need to re-check `steer_lane_at_boundary` (the
 /// caller just wrote "idle" into session_reports). This closes the race where
@@ -12830,6 +12979,23 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     let mut sent = None;
     let mut was_mid_turn = false;
     for (rid, rtext, queued_at) in rows {
+        // AF-678: CLAIM before delivering, mirroring AF-515's scheduler fix.
+        // `send_text_inner` below can leave keystrokes irreversibly typed into
+        // the pane, and the row used to stay in `steering_queue` until a
+        // SEPARATE, later write_async deleted it — so a crash, restart, or a
+        // write failure under normal DB contention between those two steps
+        // left the row undeleted, and the NEXT call for this session (which
+        // happens routinely, on every idle report) delivered it again.
+        // Claiming first means a crash after this point leaves a reconcilable
+        // row (see reconcile_orphaned_steering_claims) instead of a
+        // guaranteed duplicate.
+        if !claim_steering_row(&state.store, &rid).await {
+            // Already claimed (a concurrent caller is mid-delivery on this
+            // exact row) or the claim write itself failed. Either way, this
+            // is not a delivery refusal — do not skip() it, just leave it for
+            // whoever holds the claim (or the next tick) and try the next row.
+            continue;
+        }
         // This function is called BECAUSE the lane just reported idle, so the
         // boundary is not in question; the age still decides whether a lane
         // that flickers idle-then-busy gets an overdue delivery.
@@ -12846,6 +13012,10 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
             sent = Some((msg, age));
             break;
         }
+        // REFUSED: release the claim so the row stays eligible for retry
+        // (AMUX-2629's head-of-line fix depends on a refused row remaining in
+        // the queue, not being lost because it happened to get claimed).
+        unclaim_steering_row(&state.store, &rid).await;
         skip(session, &rid, &format!("send-refused: {msg}"));
     }
     let Some((msg, age)) = sent else { return false };
@@ -12869,7 +13039,7 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     // erases. That remaining hole is named on the card, not fixed here.
     let outcome2 = msg.clone();
     let (id2, sess2, text2) = (id.clone(), session_s.clone(), text.clone());
-    let _ = state
+    let finalized = state
         .store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
@@ -12890,6 +13060,20 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
+    // AF-678: this used to be `let _ =`, discarding the result unconditionally.
+    // A delivered message whose finalize write then failed left the row
+    // CLAIMED (delivering_since set) rather than deleted, which is exactly
+    // the state reconcile_orphaned_steering_claims exists to find on the next
+    // restart — but only if a failure here is loud enough to be worth
+    // grepping for before that restart happens.
+    if let Err(error) = finalized {
+        tracing::warn!(
+            steer_id = %id, session = %session, %error,
+            "steering: delivered but the finalize write (delete + history) failed — \
+             the row stays claimed; reconcile_orphaned_steering_claims will resolve it \
+             as interrupted on the next restart rather than silently retrying it (AF-678)"
+        );
+    }
     emit_event(
         state,
         session,
@@ -12908,6 +13092,63 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     .await;
     tracing::info!(session = %session, id = %id, detail = %msg, "steering delivered (reactive)");
     true
+}
+
+/// A claimed steering row cannot survive the process that was delivering it
+/// (AF-678, same shape as AF-515's scheduler fix). Reconcile on startup: any
+/// row still carrying `delivering_since` means the previous process died (or
+/// otherwise never finalized) between claiming it and recording the outcome,
+/// so its TRUE delivery status is unknown — it may have already reached the
+/// pane. Move it to `steering_history` with an `interrupted` outcome and
+/// delete it from the queue, rather than clearing the claim and letting it
+/// be retried: retrying is exactly the guaranteed-duplicate shape this fix
+/// exists to close, and a message that silently drops here is visible in the
+/// log and in `steering_history`, which a duplicate typed into a pane is not.
+struct OrphanedSteeringClaim {
+    id: String,
+    session: String,
+    text: String,
+    queued_at: f64,
+    guard: Option<String>,
+    sender: Option<String>,
+}
+
+pub fn reconcile_orphaned_steering_claims(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    let orphans: Vec<OrphanedSteeringClaim> = conn
+        .prepare(
+            "SELECT id, session, text, queued_at, guard, sender FROM steering_queue \
+             WHERE delivering_since IS NOT NULL",
+        )?
+        .query_map([], |r| {
+            Ok(OrphanedSteeringClaim {
+                id: r.get(0)?,
+                session: r.get(1)?,
+                text: r.get(2)?,
+                queued_at: r.get(3)?,
+                guard: r.get(4)?,
+                sender: r.get(5)?,
+            })
+        })?
+        .flatten()
+        .collect();
+    for OrphanedSteeringClaim { id, session, text, queued_at, guard, sender } in &orphans {
+        conn.execute(
+            "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at, outcome, guard, sender) \
+             VALUES(?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                id,
+                session,
+                redact_secrets(text),
+                queued_at,
+                now_f64(),
+                "interrupted: server restarted before this delivery attempt recorded an outcome",
+                guard,
+                sender,
+            ],
+        )?;
+        conn.execute("DELETE FROM steering_queue WHERE id=?1", [id])?;
+    }
+    Ok(orphans.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -14868,9 +15109,6 @@ pub(crate) async fn steer_mutate(
             return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'text'"}));
         }
         let client_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
-        if !client_id.is_empty() && send_dedup_seen(state, name, &format!("steer:{client_id}")).await {
-            return j200(json!({"ok": true, "deduped": true, "message": "duplicate retry ignored (already queued)"}));
-        }
         // Strip [no-board] before ENQUEUE (AC-183): decide, then strip.
         let _skip_board = body.get("no_board").map(py_truthy).unwrap_or(false) || no_board_re().is_match(&text);
         if no_board_re().is_match(&text) {
@@ -14918,6 +15156,8 @@ pub(crate) async fn steer_mutate(
                 }),
             );
         }
+        let dedup_id=if client_id.is_empty() {String::new()} else {format!("steer:{client_id}")};
+        if let Some(response)=send_dedup_gate(state,name,&dedup_id).await {return response;}
         // IS THIS A PICKER ANSWER? Decide NOW, while the picker is still on
         // screen — intent is only knowable at the moment it existed (AMUX-2823).
         // The `selector-answer` guard also dedupes: at most one pending menu
@@ -14939,6 +15179,7 @@ pub(crate) async fn steer_mutate(
         let msg_id = match steer_enqueue(state, name, &text, guard, &hdr_worker(headers)).await {
             Ok(id) => id,
             Err(reason) => {
+                send_dedup_forget(state,name,&dedup_id).await;
                 return jresp(
                     StatusCode::CONFLICT,
                     json!({
@@ -14950,6 +15191,7 @@ pub(crate) async fn steer_mutate(
                 )
             }
         };
+        send_dedup_accept(state,name,&dedup_id,&msg_id).await;
         if body.get("record_history").map(py_truthy).unwrap_or(false) {
             let email = headers.get("x-amux-user-email").and_then(|v| v.to_str().ok()).unwrap_or("");
             // QUEUED, not direct (AF-159). `steer_enqueue` above put this on the
@@ -15116,11 +15358,13 @@ async fn post_dispatch(
             let st2 = state.clone();
             let n = name.to_string();
             tokio::spawn(async move {
-                let (ok, _msg) = stop_session(&n).await;
+                let (ok, msg) = stop_session(&st2, &n).await;
                 if ok {
                     emit_event(&st2, &n, "session.stopped", None, None, "api-stop").await;
-                    // _complete_session_board_issue is a deliberate no-op in
-                    // Python (py:12727) — nothing to port.
+                    // Stopping a process never completes its board work.
+                } else {
+                    tracing::warn!(session = %n, reason = %msg, "session_stop_failed");
+                    emit_event(&st2, &n, "session.stop_failed", Some(json!({"message": msg})), None, "api-stop").await;
                 }
             });
             jresp(StatusCode::ACCEPTED, json!({"ok": true, "message": "stopping"}))
@@ -15779,16 +16023,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         text.push_str(&stamp);
     }
     let msg_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
-    if !msg_id.is_empty() && send_dedup_seen(state, name, &msg_id).await {
-        // Same `id` as the original response — see send_response_id. A retry
-        // that answers with a DIFFERENT id (or none, as this arm did until
-        // 2026-08-11) breaks the caller's correlation exactly when it is
-        // retrying, which is the one moment idempotency is for.
-        return j200(json!({
-            "ok": true, "deduped": true, "id": send_response_id(name, &msg_id),
-            "message": "duplicate retry ignored (already delivered)"
-        }));
-    }
+    if let Some(response)=send_dedup_gate(state,name,&msg_id).await {return response;}
     if text.trim().starts_with("/compact") {
         let n = name.to_string();
         tokio::task::spawn_blocking(move || backup_session_jsonl(&n, "pre_compact"));
@@ -15881,6 +16116,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             send_dedup_forget(state, name, &msg_id).await;
         }
     } else if ok {
+        send_dedup_accept(state,name,&msg_id,&send_response_id(name,&msg_id)).await;
         update_meta(
             name,
             &[
@@ -17242,7 +17478,7 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         return jresp(StatusCode::FORBIDDEN, json!({"error": "cannot delete pinned session — unpin first"}));
     }
     if is_running(name).await {
-        let _ = stop_session(name).await;
+        let _ = stop_session(state, name).await;
     }
     // Worktree cleanup (py:76300).
     if cfg.get("CC_WORKTREE") == Some("1") {
@@ -18262,7 +18498,7 @@ async fn restart_for_swap(state: &AppState, name: &str, provider: &str) -> bool 
             }
         }
     }
-    let _ = stop_session(name).await;
+    let _ = stop_session(state, name).await;
     kill_tmux_session(name).await;
     let (ok, _msg) = start_session(state, name, "", false).await;
     ok
@@ -18299,7 +18535,7 @@ async fn restart_for_swap(state: &AppState, name: &str, provider: &str) -> bool 
 // and the plain-log mirror. Deliberately NOT migrated, named here rather
 // than silently inherited: session_events rows (append-only audit — history
 // keeps the name it happened under; the rename journal entry links the two)
-// and send_dedup rows (600s TTL, self-expiring).
+// and send_dedup receipt retention (30 days; interrupted reservations remain explicit).
 // ---------------------------------------------------------------------------
 
 static RENAME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -19351,7 +19587,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
             tokio::spawn(async move {
                 // py:76651 _restart_in_new_dir: hard-kill then start. The
                 // graceful stop records the resumable name first.
-                let _ = stop_session(&n).await;
+                let _ = stop_session(&st2, &n).await;
                 kill_tmux_session(&n).await;
                 sleep_ms(2000).await;
                 let _ = start_session(&st2, &n, "", false).await;
@@ -19770,7 +20006,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         let st2 = state.clone();
         let n = name.to_string();
         tokio::spawn(async move {
-            let _ = stop_session(&n).await;
+            let _ = stop_session(&st2, &n).await;
             kill_tmux_session(&n).await;
             // skip_conv_id=true AND the meta already cleared: belt and braces,
             // because either one alone still leaves a path that could resume.
@@ -21769,6 +22005,68 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn message_acceptance_reservation_is_not_a_delivery_receipt() {
+        let (state,_dir)=state();
+        assert!(send_dedup_gate(&state,"probe","retry-1").await.is_none());
+        let (a,b)=tokio::join!(send_dedup_gate(&state,"probe","retry-1"),send_dedup_gate(&state,"probe","retry-1"));
+        assert_eq!(a.unwrap().status(),StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(b.unwrap().status(),StatusCode::SERVICE_UNAVAILABLE);
+        send_dedup_accept(&state,"probe","retry-1","original-receipt").await;
+        let response=send_dedup_gate(&state,"probe","retry-1").await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),65536).await.unwrap();
+        let receipt:Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(receipt["id"],"original-receipt");
+        assert_eq!(receipt["deduped"],true);
+        // A lost acknowledgement retried after the former ten-minute TTL
+        // cannot inject again. Interrupted attempts also never age into New.
+        assert!(send_dedup_gate(&state,"probe","interrupted").await.is_none());
+        state.store.write_async(|conn| {
+            conn.execute("UPDATE send_dedup SET ts=?",[now_i64()-3600])?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await.unwrap();
+        assert_eq!(send_dedup_gate(&state,"probe","retry-1").await.unwrap().status(),StatusCode::OK);
+        assert_eq!(send_dedup_gate(&state,"probe","interrupted").await.unwrap().status(),StatusCode::CONFLICT);
+        send_dedup_forget(&state,"probe","interrupted").await;
+        assert!(send_dedup_gate(&state,"probe","interrupted").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_legacy_reservations_are_uncertain_not_confirmed() {
+        let (state,_dir)=state();
+        state.store.write_async(|conn| {
+            conn.execute_batch("DROP TABLE IF EXISTS send_dedup; CREATE TABLE send_dedup(session TEXT NOT NULL,msg_id TEXT NOT NULL,ts INTEGER NOT NULL,PRIMARY KEY(session,msg_id)); INSERT INTO send_dedup VALUES ('probe','legacy',1);")?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await.unwrap();
+        assert_eq!(send_dedup_gate(&state,"probe","legacy").await.unwrap().status(),StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_storage_failure_refuses_untracked_delivery() {
+        let (state,_dir)=state();
+        state.store.write_async(|conn| {
+            ensure_fleet_tables(conn)?;
+            conn.execute_batch("CREATE TRIGGER refuse_identity BEFORE INSERT ON send_dedup BEGIN SELECT RAISE(ABORT,'test identity storage unavailable'); END;")?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await.unwrap();
+        assert_eq!(send_dedup_gate(&state,"probe","not-tracked").await.unwrap().status(),StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_repeated_steer_refusal_never_becomes_success() {
+        let home=tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"),"CC_DIR=\"/tmp\"\nCC_ARCHIVED=\"1\"\n").unwrap();
+        let _home=crate::api::settings::test_env::set_home(home.path());
+        let (state,_dir)=state();let app:Router=routes().with_state(state);
+        for _ in 0..2 {
+            let (status,body)=call(&app,"POST","/api/sessions/probe/steer",Some(json!({"text":"preserve this refused request","msg_id":"archived-retry"}))).await;
+            assert_eq!(status,StatusCode::CONFLICT,"{body}");
+            assert_ne!(body["deduped"],true,"a refusal is not an acceptance receipt");
+        }
+    }
+
     // The column ALIGNMENT, which submit_verdict_of's unit tests cannot catch:
     // the INSERT lists 9 columns and 9 placeholders, and getting that pairing
     // wrong writes the verdict into the wrong column silently. Round-trip a
@@ -23116,6 +23414,125 @@ mod tests {
         assert!(seen >= 6, "expected to inspect at least 6 history inserts, saw {seen}");
     }
 
+    /// AF-678. Two callers claim the same row (the shape a concurrent
+    /// `steer_deliver_for_session` invocation would hit): the first CLAIM
+    /// must win and the second must see nothing to claim, or two deliveries
+    /// of the same row become possible again with the claim mechanism itself
+    /// providing no protection. Calls the REAL `claim_steering_row` /
+    /// `unclaim_steering_row` -- not a hand-copy of their SQL -- so a
+    /// regression to the shipped guard is what this test would catch.
+    #[tokio::test]
+    async fn a_second_claim_on_an_already_claimed_row_affects_nothing() {
+        let (st, _dir) = state();
+        st.store
+            .write_async(|conn| {
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) \
+                     VALUES('c1','lane-c','hello',0)",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            claim_steering_row(&st.store, "c1").await,
+            "the first claim on an unclaimed row must win"
+        );
+        let stamp_after_first: f64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT delivering_since FROM steering_queue WHERE id='c1'", [], |r| r.get(0))
+            .unwrap();
+
+        assert!(
+            !claim_steering_row(&st.store, "c1").await,
+            "a second claim on an already-claimed row must affect nothing"
+        );
+        let stamp_after_second: f64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row("SELECT delivering_since FROM steering_queue WHERE id='c1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            stamp_after_first, stamp_after_second,
+            "the second claim must not have overwritten the first claimant's stamp"
+        );
+
+        unclaim_steering_row(&st.store, "c1").await;
+        assert!(
+            claim_steering_row(&st.store, "c1").await,
+            "unclaiming (a refused send) must leave the row eligible for a fresh claim (AMUX-2629)"
+        );
+    }
+
+    /// AF-678. A row left claimed (delivering_since set) means a previous
+    /// process died between claiming it and finalizing delivery -- its true
+    /// outcome is unknown. The reconciler must move it to history as
+    /// `interrupted` and remove it from the queue, and must NOT touch a row
+    /// nobody has claimed (that one is still legitimately waiting its turn).
+    #[tokio::test]
+    async fn reconcile_orphaned_steering_claims_resolves_claimed_rows_only() {
+        let (st, _dir) = state();
+        st.store
+            .write_async(|conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at, guard, sender, delivering_since) \
+                     VALUES('orphan-1','lane-o','stuck message',10.0,'board-drive','origin-lane',5.0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) \
+                     VALUES('waiting-1','lane-o','not yet attempted',20.0)",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        let n = st
+            .store
+            .write_async(|conn| {
+                let n = crate::api::session_verbs::reconcile_orphaned_steering_claims(conn)?;
+                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            })
+            .await
+            .unwrap();
+        assert!(n.applied, "the claimed row must have been reconciled");
+
+        let conn = st.store.read().unwrap();
+        let orphan_in_queue: i64 = conn
+            .query_row("SELECT COUNT(*) FROM steering_queue WHERE id='orphan-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphan_in_queue, 0, "the claimed orphan must leave the queue");
+        let (outcome, guard, sender): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT outcome, guard, sender FROM steering_history WHERE id='orphan-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(
+            outcome.as_deref().is_some_and(|o| o.starts_with("interrupted")),
+            "an orphaned claim must read as interrupted, not as a clean delivery: {outcome:?}"
+        );
+        assert_eq!(guard.as_deref(), Some("board-drive"), "the producer must survive into history");
+        assert_eq!(sender.as_deref(), Some("origin-lane"));
+
+        // CONTROL: the never-claimed row must be untouched. Without this, a
+        // reconciler that clears the whole table would pass the assertions
+        // above just as well.
+        let waiting_in_queue: i64 = conn
+            .query_row("SELECT COUNT(*) FROM steering_queue WHERE id='waiting-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(waiting_in_queue, 1, "a row nobody has claimed must not be reconciled away");
+    }
+
     /// The behavioural half: a guard set at enqueue must still be readable in
     /// history after the row leaves the queue. The source check above cannot
     /// see a params list that binds the wrong variable, and this cannot see a
@@ -24309,6 +24726,33 @@ CLAUDE-POSTFIX-COMPLETE
     }
 
     #[tokio::test]
+    async fn stop_status_edge_retires_only_the_stopped_workers_live_report() {
+        let (state, _dir) = state();
+        state.store.write(|conn| {
+            ensure_fleet_tables(conn)?;
+            conn.execute("INSERT INTO prefs(key,value) VALUES('session_reports',?1)",
+                [json!({"stopped": {"state":"waiting", "ts":now_f64(), "model":"sonnet",
+                    "subagents":{"count":2}}, "peer":{"state":"active","ts":now_f64()}}).to_string()])?;
+            Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
+        }).unwrap();
+        clear_stopped_report(&state, "stopped").await.unwrap();
+        let conn = state.store.read().unwrap();
+        let raw: String = conn.query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r| r.get(0)).unwrap();
+        let reports: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reports["stopped"]["state"], "idle");
+        assert_eq!(reports["stopped"]["source"], "server-stop");
+        assert_eq!(reports["stopped"]["model"], "sonnet");
+        assert!(reports["stopped"].get("subagents").is_none());
+        assert_eq!(reports["peer"]["state"], "active");
+        let mut signals = crate::api::sessions_legacy::tests::signals();
+        signals.now = now_f64();
+        signals.running.insert("amux-stopped".into());
+        signals.shell_only.insert("amux-stopped".into());
+        signals.reports = reports;
+        assert!(!signals.agent_running("amux-stopped"), "a dead worker must not be rescued by its old report");
+    }
+
+    #[tokio::test]
     async fn file_backed_verbs_roundtrip_hermetically() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
@@ -24557,11 +25001,15 @@ CLAUDE-POSTFIX-COMPLETE
             &app,
             "POST",
             "/api/sessions/probe/steer",
-            Some(json!({"text": "queued message"})),
+            Some(json!({"text": "queued message", "msg_id":"hermetic-steer-retry"})),
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         let id = v["id"].as_str().unwrap().to_string();
+        let (retry_status,retry)=call(&app,"POST","/api/sessions/probe/steer",Some(json!({"text":"queued message","msg_id":"hermetic-steer-retry"}))).await;
+        assert_eq!(retry_status,StatusCode::OK,"{retry}");
+        assert_eq!(retry["deduped"],true);
+        assert_eq!(retry["id"],id,"the durable queue receipt keeps its identity");
         let (_, v) = call(&app, "GET", "/api/sessions/probe/steer", None).await;
         assert_eq!(v[0]["text"], json!("queued message"));
         assert_eq!(v[0]["id"], json!(id));
@@ -28447,6 +28895,10 @@ mod refusal_status_tests {
             "tmux not found or timed out",
             "Claude failed to start",
             "could not write session env",
+            // A stop that cannot establish process exit is an operational
+            // failure, not a successful or safely refused stop receipt.
+            "worker is still running; herdr hard-kill is unavailable",
+            "could not confirm the worker process stopped",
         ];
         let mut found = 0usize;
         let mut match_patterns = 0usize;

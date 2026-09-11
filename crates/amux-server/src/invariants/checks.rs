@@ -6071,6 +6071,81 @@ pub fn schedule_cost_titles_match_kind(rows: &[ScheduleKindRow]) -> Vec<Invarian
         .collect()
 }
 
+/// One (schedule_id, count) pair for [`unrecorded_schedule_outcomes_are_visible`],
+/// enriched with title/session (gtm-ticker, AF-582 follow-up: a count with
+/// no names sends a reader back to `/api/schedules/runs` to re-derive
+/// exactly this join). `title`/`session` are empty for a schedule since
+/// deleted -- the row still gets reported, just without a name to show.
+pub struct UnrecordedScheduleOutcome {
+    pub schedule_id: String,
+    pub count: i64,
+    pub title: String,
+    pub session: String,
+}
+
+/// AF-582. `delivery='unknown'` is the honest discriminator
+/// fail_orphaned_cron_runs already stamps when the server restarted
+/// mid-fire (AF-515) -- the fact was always recorded, and the only reader
+/// was a `tracing::warn!` at startup that a fleet of agents has no reason
+/// to grep for. This surfaces the same fact through the diagnostic
+/// contract every lane already reads.
+///
+/// NAMES GO IN `observed`, NOT ONLY IN `evidence` (gtm-ticker, checking
+/// live): `/api/health/invariants`' failure objects carry no `evidence` key
+/// at all, and `/api/debug/invariants` returns the SAME invariant_id under
+/// two DIFFERENT shapes depending on which internal list produced it --
+/// one with `evidence`, one without. `observed` is the one field present on
+/// every shape, so that is where a reader can actually find the breakdown
+/// without knowing which shape they were handed.
+///
+/// Sorted by count descending: the worst offender first is the actionable
+/// reading (a schedule hit 8x more than any other is a specific question
+/// about ITS cadence against a restart window, not a diffuse "six things
+/// were mid-fire").
+///
+/// A pass is genuinely zero restarts-mid-fire in the window, not merely
+/// zero rows read (that distinction is the caller's `Unknown` on a failed
+/// store read, not this function's problem).
+pub fn unrecorded_schedule_outcomes_are_visible(
+    window_h: i64,
+    rows: &[UnrecordedScheduleOutcome],
+) -> Vec<InvariantResult> {
+    const ID: &str = "scheduler.unrecorded_delivery_outcomes";
+    let total: i64 = rows.iter().map(|r| r.count).sum();
+    if total == 0 {
+        return vec![InvariantResult::pass(ID)];
+    }
+    let mut sorted: Vec<&UnrecordedScheduleOutcome> = rows.iter().collect();
+    sorted.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.schedule_id.cmp(&b.schedule_id)));
+    let named: Vec<String> = sorted
+        .iter()
+        .map(|r| {
+            if r.title.is_empty() {
+                format!("{} x{}", r.schedule_id, r.count)
+            } else {
+                format!("{} x{} ({}, {})", r.schedule_id, r.count, r.title, r.session)
+            }
+        })
+        .collect();
+    let mut out = InvariantResult::new(ID, Status::Fail);
+    out.expected = format!("0 schedule_runs with delivery='unknown' in the last {window_h}h");
+    out.observed = format!(
+        "{total} run(s) across {} schedule(s) recorded delivery='unknown' in the last {window_h}h \
+         — the server restarted mid-fire (AF-515); status='error' on these rows is not a job \
+         failure, it is an unrecorded outcome. By schedule: {}",
+        rows.len(),
+        named.join("; ")
+    );
+    out.evidence = serde_json::json!({
+        "total": total,
+        "window_h": window_h,
+        "by_schedule": sorted.iter().map(|r| serde_json::json!({
+            "schedule_id": r.schedule_id, "count": r.count, "title": r.title, "session": r.session,
+        })).collect::<Vec<_>>(),
+    });
+    vec![out]
+}
+
 #[cfg(test)]
 mod schedule_kind_tests {
     use super::*;
@@ -6195,6 +6270,100 @@ mod schedule_kind_tests {
             let out = schedule_cost_titles_match_kind(&[row("S", t, "tmux")]);
             assert_eq!(out[0].status, Status::Fail, "{t} asserts zero cost and runs as tmux");
         }
+    }
+}
+
+#[cfg(test)]
+mod unrecorded_schedule_outcome_tests {
+    use super::*;
+
+    fn row(id: &str, count: i64, title: &str, session: &str) -> UnrecordedScheduleOutcome {
+        UnrecordedScheduleOutcome {
+            schedule_id: id.into(),
+            count,
+            title: title.into(),
+            session: session.into(),
+        }
+    }
+
+    #[test]
+    fn zero_rows_in_the_window_passes() {
+        let out = unrecorded_schedule_outcomes_are_visible(24, &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, Status::Pass);
+    }
+
+    /// AF-582's own measured incident shape: 21 rows, 15 distinct schedules.
+    /// The fix is visibility, so the failure must carry both the total and
+    /// the per-schedule breakdown -- a reader deciding "is this the same
+    /// incident as an hour ago" needs the schedule IDs, not just a count.
+    #[test]
+    fn a_restart_burst_fails_and_names_every_affected_schedule() {
+        let rows = vec![row("SCHED-1", 3, "Nightly sweep", "gtm-ticker"), row("SCHED-2", 1, "", "")];
+        let out = unrecorded_schedule_outcomes_are_visible(24, &rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, Status::Fail);
+        assert!(out[0].observed.contains("4 run"), "{}", out[0].observed);
+        assert!(out[0].observed.contains("2 schedule"), "{}", out[0].observed);
+        let by_schedule = out[0].evidence["by_schedule"].as_array().expect("evidence carries the breakdown");
+        assert_eq!(by_schedule.len(), 2, "every affected schedule must be named, not just the total");
+        assert_eq!(out[0].evidence["total"], 4);
+    }
+
+    /// AF-582 follow-up, gtm-ticker: `/api/health/invariants` carries no
+    /// `evidence` key at all on its failure objects, and `/api/debug/invariants`
+    /// returns the SAME invariant_id under two different shapes -- one WITH
+    /// evidence, one without. `observed` is the only field present on every
+    /// shape, so the names have to live there, not only in evidence.
+    #[test]
+    fn the_names_are_in_observed_not_only_in_evidence() {
+        let rows = vec![
+            row("SCHED-439", 8, "Focus-trim accountability tick", "mixpeek-orchestrator"),
+            row("SCHED-320", 2, "MVS breaker decay tick", "mvs-infra"),
+            row("SCHED-184", 1, "Hand-Raiser SLA Monitor", "gtm-ticker"),
+        ];
+        let out = unrecorded_schedule_outcomes_are_visible(24, &rows);
+        for needle in [
+            "SCHED-439",
+            "Focus-trim accountability tick",
+            "mixpeek-orchestrator",
+            "SCHED-320",
+            "SCHED-184",
+        ] {
+            assert!(out[0].observed.contains(needle), "observed must name {needle}: {}", out[0].observed);
+        }
+    }
+
+    /// The worst offender first, so the reading is "one schedule is hit 8x
+    /// more than anything else" rather than a diffuse "six things fired
+    /// late" -- the ordering IS the actionable claim, not cosmetics.
+    #[test]
+    fn schedules_are_ordered_worst_offender_first() {
+        let rows = vec![row("SCHED-A", 1, "", ""), row("SCHED-B", 8, "", ""), row("SCHED-C", 2, "", "")];
+        let out = unrecorded_schedule_outcomes_are_visible(24, &rows);
+        let pos_b = out[0].observed.find("SCHED-B").expect("B present");
+        let pos_c = out[0].observed.find("SCHED-C").expect("C present");
+        let pos_a = out[0].observed.find("SCHED-A").expect("A present");
+        assert!(pos_b < pos_c && pos_c < pos_a, "expected B (8) < C (2) < A (1): {}", out[0].observed);
+    }
+
+    /// A schedule deleted after firing still gets reported -- an empty
+    /// title/session must not make the row disappear or crash the format.
+    #[test]
+    fn a_deleted_schedule_still_reports_by_id() {
+        let out = unrecorded_schedule_outcomes_are_visible(24, &[row("SCHED-GONE", 1, "", "")]);
+        assert!(out[0].observed.contains("SCHED-GONE"), "{}", out[0].observed);
+    }
+
+    /// The window is part of the CLAIM, not decoration: a reader comparing
+    /// this to a different invocation must be able to tell whether they are
+    /// looking at the same population.
+    #[test]
+    fn the_window_hours_appear_in_both_the_claim_and_the_evidence() {
+        let out = unrecorded_schedule_outcomes_are_visible(6, &[row("SCHED-1", 1, "", "")]);
+        assert!(out[0].expected.contains("6h"), "{}", out[0].expected);
+        assert!(out[0].observed.contains("6h"), "{}", out[0].observed);
+        assert_eq!(out[0].evidence["window_h"], 6);
     }
 }
 

@@ -30,6 +30,9 @@ pub struct VerifyRequest {
     /// version; a stale explicit value is refused.
     #[serde(default)]
     pub criteria_version: Option<u32>,
+    /// A custom workflow gate remains authoritative alongside executable criteria.
+    #[serde(default)]
+    pub gate_checked: Vec<String>,
 }
 
 fn actor(headers: &axum::http::HeaderMap) -> String {
@@ -78,7 +81,7 @@ async fn verify_task(
         )
             .into_response();
     }
-    let (row, criteria, cwd, harness_version) = {
+    let (row, criteria, cwd, harness_version, gate_snapshot) = {
         let conn = match state.store.read() {
             Ok(c) => c,
             Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
@@ -94,10 +97,10 @@ async fn verify_task(
             }
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
-        if board_store::parse_status(&row.status) != Some(amux_core::board::TaskStatus::Done) {
+        if !matches!(board_store::parse_status(&row.status), Some(amux_core::board::TaskStatus::Done | amux_core::board::TaskStatus::Verified)) {
             return (
                 StatusCode::CONFLICT,
-                Json(json!({"error": "verification runs against done tasks", "item": id, "status": row.status})),
+                Json(json!({"error": "verification runs against done or previously verified tasks", "item": id, "status": row.status})),
             )
                 .into_response();
         }
@@ -154,6 +157,12 @@ async fn verify_task(
             )
                 .into_response();
         }
+        let groups = row.session.as_deref().map(super::session_verbs::lane_groups).unwrap_or_default();
+        let gate = board_store::effective_gate_trail(&conn, &row, amux_core::board::TaskStatus::Verified, &groups);
+        if gate.source != board_store::GateSource::TypeDefault && gate.criteria.iter().any(|c| !req.gate_checked.contains(c)) {
+            return (StatusCode::CONFLICT, Json(json!({"error":"custom verified gate requires the current checklist", "gate":gate.criteria,
+                "source":gate.source.token(), "how_to_ack":{"gate_checked":gate.criteria}}))).into_response();
+        }
         let sensor_profile = match crate::db::harness_store::get_sensor_profile(
             &conn,
             &row.item_type,
@@ -203,7 +212,7 @@ async fn verify_task(
             Ok(version) => version,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         };
-        (row, criteria, cwd, harness_version)
+        (row, criteria, cwd, harness_version, gate.criteria)
     };
 
     let executable: Vec<GateCriterion> = criteria
@@ -244,7 +253,9 @@ async fn verify_task(
         )
     };
     let ver_id = format!("VER-{}", ulid::Ulid::new().to_string().to_lowercase());
-    let run_json = match serde_json::to_string(&execution) {
+    let mut recorded_run = serde_json::to_value(&execution).unwrap_or_default();
+    recorded_run["gate_snapshot"] = json!(gate_snapshot);
+    let run_json = match serde_json::to_string(&recorded_run) {
         Ok(value) => Some(value),
         Err(error) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
@@ -269,19 +280,52 @@ async fn verify_task(
     let harness_version_for_write = harness_version.clone();
     let duration_ms = execution.duration_ms;
     let criteria_version = criteria.version;
+    let expected_status = row.status.clone();
     let write = state
         .store
         .write_async(move |conn| {
+            // Verification executes outside the writer. A concurrent criteria
+            // amendment must never certify a result against the new version.
+            if super::criteria::load(conn, &id2)?.as_ref() != Some(&criteria) {
+                tracing::warn!(target: "amux::verification", card = %id2, criteria_version,
+                    "verification refused: criteria changed during execution");
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                    std::io::Error::other("criteria changed during verification; run the current version"))));
+            }
+            let current = board_store::get_issue(conn, &id2)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let groups = current.session.as_deref().map(super::session_verbs::lane_groups).unwrap_or_default();
+            if board_store::effective_gate_trail(conn, &current, amux_core::board::TaskStatus::Verified, &groups).criteria != gate_snapshot {
+                tracing::warn!(target:"amux::verification", card=%id2, "gate changed during verification; result not applied");
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other("gate changed during verification"))));
+            }
             let opts = crate::db::advance::AdvanceOpts {
                 force: false,
                 gate_ack: true,
-                expected_from: Some("done".into()),
-                log_line: Some(summary),
+                expected_from: Some(expected_status.clone()),
+                log_line: Some(summary.clone()),
                 skip_continuation: true,
                 ..Default::default()
             };
+            let events = if passed && expected_status == "verified" {
+                let mut current = board_store::get_issue(conn, &id2)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                if current.status != expected_status || current.archived != 0 {
+                    return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                        std::io::Error::other("task changed during verification"))));
+                }
+                current.log = Some(board_store::append_log(current.log.as_deref(), &chrono::Local::now().format("%H:%M").to_string(), &summary));
+                current.updated = chrono::Utc::now().timestamp();
+                current.rev += 1;
+                current.version += 1;
+                board_store::save_patched(conn, &mut current)?;
+                vec![crate::db::PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Task,
+                    entity_id: id2.clone(),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: Some(current.snapshot()),
+                }]
+            } else {
             let result = crate::db::advance::advance(conn, &id2, target, &actor2, &opts)?;
-            let events = match result {
+            match result {
                 Ok(outcome) => outcome.events,
                 Err(refusal) => {
                     return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
@@ -290,6 +334,7 @@ async fn verify_task(
                         )),
                     )))
                 }
+            }
             };
             if passed {
                 conn.execute(
@@ -330,7 +375,7 @@ async fn verify_task(
         Json(json!({
             "item": row.id,
             "verification_id": ver_id,
-            "criteria_version": criteria.version,
+            "criteria_version": criteria_version,
             "harness_version": harness_version,
             "verdict": execution.run.verdict,
             "evidence": execution.evidence,

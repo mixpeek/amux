@@ -17,11 +17,12 @@ export default defineConfig({
   ...base,
   testDir: '..',
   testIgnore: ['**/live-*.spec.ts'],
-  workers: 1, // specs mutate global prefs; one writer per isolated server
+  workers: 3, // independent desktop/mobile/Safari servers may run concurrently
   fullyParallel: false,
   retries: 0,
   projects: base.projects!.map((project, index) => ({
-    ...project, use: { ...project.use, baseURL: `https://localhost:${firstPort + index * 10}` },
+    ...project, workers: 1, // serialize every mutation within this project
+    use: { ...project.use, baseURL: `https://localhost:${firstPort + index * 10}` },
   })),
   webServer: (base.webServer as any[]).map((server, index) => ({
     ...server,

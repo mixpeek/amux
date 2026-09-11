@@ -625,18 +625,15 @@ test('live worker composer is a preserved draft, never a delivered message', asy
     eval('_lastPeekRaw = ""; _peekScrollLocked = false;');
     await (window as any).refreshPeek();
   });
-  const draft = page.locator('.peek-worker-input');
+  const draft = page.locator('.peek-queued-msg');
   await expect(draft).toBeVisible();
   await expect(page.locator('#peek-overlay')).toHaveCSS('opacity', '1');
-  await expect(draft.locator('summary')).toHaveText('Unsent worker input · 2 pasted blocks');
-  await expect(draft.locator('pre')).toBeHidden();
-  await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
+  await expect(draft).toContainText('[Pasted text #401 +11 lines]');
+  await expect(draft).toContainText('[AMUX-INJECT-END]');
   await expect(page.locator('#pk-live')).not.toContainText('Unclassified');
-  await page.screenshot({path:test.info().outputPath('worker-input-collapsed.png')});
-  await draft.locator('summary').click();
-  await expect(draft.locator('pre')).toContainText('[Pasted text #401 +11 lines]');
-  await expect(draft.locator('pre')).toContainText('[AMUX-INJECT-END]');
+  // Current terminal UX renders worker input inline, but excludes it from
+  // delivered-message navigation and attribution.
   await expect(page.locator('#peek-body .peek-prompt')).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({path:test.info().outputPath('worker-input-expanded.png')});
+  await page.screenshot({path:test.info().outputPath('worker-input-inline.png')});
 });

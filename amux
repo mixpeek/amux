@@ -2770,19 +2770,25 @@ Usage: amux board epic $id <EPIC-ID> | none"
       # Creating children with repeated `board add` calls made dependency,
       # priority, ownership and epic linking optional at every step, and left
       # half a plan behind whenever one call failed.
+      # Help must work before ID validation: workers ask for the schema before
+      # they can author the plan. Keep the same concrete shape at either position.
+      local help='Usage: amux board decompose <CAPTURE-ID> --stdin | --file <plan.json>
+The plan is JSON: {"tasks":[{"title":"Parse invoices","description":"Parse and validate invoice rows","type":"chore","priority":1,"depends_on":[],"next_action":"Implement strict CSV parsing","acceptance_criteria":["Malformed amounts are rejected with a nonzero exit"]},{"title":"Produce report","description":"Generate a report from valid rows","type":"chore","priority":1,"depends_on":[1],"next_action":"Generate the customer totals","acceptance_criteria":["The report totals match the input invoices"]}]}
+Supply 2-50 children. depends_on contains 1-based indexes of earlier tasks, not IDs or titles. priority is an integer 0 (highest) through 3.
+Every child needs a concrete description, next_action, and 1-12 falsifiable acceptance_criteria. The source capture becomes their linked epic atomically.'
       local id="${1:-}"
+      if [[ "$id" == --help || "$id" == -h || "${2:-}" == --help || "${2:-}" == -h ]]; then
+        printf '%s\n' "$help"
+        return 0
+      fi
+      [[ -n "$id" ]] || die "$help"
       _board_id_guard "decompose" "$id"
-      [[ -n "$id" ]] || die "Usage: amux board decompose <CAPTURE-ID> --stdin | --file <plan.json>
-The plan is JSON: {\"tasks\":[{\"title\":\"...\",\"description\":\"...\",\"type\":\"code\",\"priority\":0,\"depends_on\":[],\"next_action\":\"Implement ...\",\"acceptance_criteria\":[\"The focused test fails before and passes after the change\"]}, ...]}
-depends_on contains 1-based indexes of earlier tasks. Priority is p0 (highest) through p3.
-Every child needs a concrete description, next action, and 1-12 falsifiable acceptance criteria."
       shift
       local plan=""
       case "${1:-}" in
         --stdin|-) plan=$(cat); shift ;;
         --file) [[ -n "${2:-}" && -r "${2:-}" ]] || die "amux board decompose: readable --file required"
                 plan=$(cat "$2"); shift 2 ;;
-        --help|-h) die "Usage: amux board decompose <CAPTURE-ID> --stdin | --file <plan.json>" ;;
         *) die "amux board decompose: pass the plan with --stdin or --file" ;;
       esac
       [[ -n "$plan" ]] || die "amux board decompose: the plan is empty"
@@ -2799,6 +2805,12 @@ Every child needs a concrete description, next action, and 1-12 falsifiable acce
       # but workers had no attributed CLI path to write it. A registry nobody
       # can reach from the pickup instruction degrades back into prose.
       local id="${1:-}" ref="${2:-}" kind="implementation" state="created" description=""
+      local help='Usage: amux board artifact <ISSUE-ID> <file|URL|commit|PR> [--kind K] [--state S] [--description TEXT]
+Use --stdin or --file <reference.txt> to read the reference. Example: amux board artifact AMUX-123 /tmp/result.json --kind verification --description "Recorded test output"'
+      if [[ "$id" == --help || "$id" == -h || "$ref" == --help || "$ref" == -h ]]; then
+        printf '%s\n' "$help"
+        return 0
+      fi
       _board_id_guard "artifact" "$id"
       [[ -n "$id" ]] || die "Usage: amux board artifact <ISSUE-ID> <file|URL|commit|PR> [--kind K] [--state S] [--description TEXT]"
       shift
@@ -2808,6 +2820,7 @@ Every child needs a concrete description, next action, and 1-12 falsifiable acce
         [[ -n "${2:-}" && -r "${2:-}" ]] || die "amux board artifact: readable --file required"
         ref=$(cat "$2"); shift 2
       else
+        [[ "${1:-}" != --* ]] || _board_bad_flag artifact "$1" "--stdin --file <reference.txt> --help"
         ref="${1:-}"; [[ $# -gt 0 ]] && shift
       fi
       [[ -n "$ref" ]] || die "amux board artifact: artifact reference required"
@@ -2873,16 +2886,28 @@ print(json.dumps(b))')
       local _av=1; [[ "$subcmd" == "unarchive" ]] && _av=0
       local id="${1:-}"
       _board_id_guard "archive" "$id"
-      [[ -n "$id" ]] || die "Usage: amux board $sub <ISSUE-ID>
+      [[ -n "$id" ]] || die "Usage: amux board $sub <ISSUE-ID> [--authorized-by <who>] [--archive-outcome <why>]
 archive   hides a card from every board view AND every autonomy loop (advance, pickup, rot)
-unarchive brings it back — this is the un-do that did not exist before AMUX-2492"
+unarchive brings it back — this is the un-do that did not exist before AMUX-2492
+--authorized-by   required to archive a card owned by a DIFFERENT lane (AMUX-2492)
+--archive-outcome required to archive a card whose status is still needsyou (AF-701) —
+                  someone is owed an answer, so archiving it needs to say what the answer was"
       shift
-      local _auth=""
-      [[ "${1:-}" == "--authorized-by" ]] && { _auth="${2:-}"; shift 2; }
+      local _auth="" _outcome=""
+      # AF-701: order-independent, since a needsyou card owned by another lane
+      # can need BOTH flags at once (cross-lane AND the outcome gate).
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --authorized-by) _auth="${2:-}"; shift 2 ;;
+          --archive-outcome) _outcome="${2:-}"; shift 2 ;;
+          *) break ;;
+        esac
+      done
       local result
-      result=$(A="$_av" W="$_auth" python3 -c 'import json,os
+      result=$(A="$_av" W="$_auth" O="$_outcome" python3 -c 'import json,os
 b={"archived": int(os.environ["A"])}
 if os.environ.get("W"): b["authorized_by"]=os.environ["W"]
+if os.environ.get("O"): b["archive_outcome"]=os.environ["O"]
 print(json.dumps(b))' \
         | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
@@ -2909,6 +2934,30 @@ Sets the session whose sign-off is required for review -> done."
         | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
       echo "$result" | _board_outcome "$id" "" "reviewer set to ${who:-none}"
+      return $?
+      ;;
+    shepherd)
+      # AF-697. The server's own cross-board-reassignment refusal, and this
+      # CLI's own help text (AF-66-era "workers may assign board items only
+      # to their own board" hint), both name `shepherd` as a peer-coordination
+      # escape hatch on par with `reviewer` -- but no verb existed to set it,
+      # so `amux board shepherd <id> <peer>` fell through to an unrecognized
+      # subcommand while `shepherd` is a fully PATCH-able server field
+      # (crates/amux-server/src/api/board.rs `set_opt("shepherd", ...)`).
+      # A how_to_fix that names a verb which does not exist is the same
+      # defect `reviewer` above was added to close for AMUX-2325 -- every
+      # gate-relevant or hand-off-relevant field needs an attributed setter,
+      # not a raw PATCH (ethos rule 6's unaudited back door).
+      local id="${1:-}"; local who="${2:-}"
+      _board_id_guard "shepherd" "$id"
+      [[ -n "$id" && -n "$who" ]] || die "Usage: amux board shepherd <ISSUE-ID> <session>   (pass 'none' to clear)
+Names the peer this card is handed off to, without moving it onto their board."
+      [[ "$who" == "none" ]] && who=""
+      local result
+      result=$(S="$who" python3 -c 'import json,os;print(json.dumps({"shepherd":os.environ["S"]}))' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "shepherd set to ${who:-none}"
       return $?
       ;;
     show|cat)
@@ -3829,6 +3878,8 @@ ${BOLD}amux board${RESET} — manage board issues from the CLI
   amux board artifact <ID> <ref>   Register a file, URL, commit, PR, screenshot or
                                    verification asset on the task.
   amux board reviewer <ID> <W>     Name the peer a card in review is handed to
+  amux board shepherd <ID> <W>     Name the peer a card is handed off to, without
+                                   moving it onto their board (pass 'none' to clear)
   amux board block <ID> --on <why> Block a card WITHOUT changing its status, so its
                                    lifecycle position survives. --on is required:
                                    a block with no named cause is unfalsifiable.

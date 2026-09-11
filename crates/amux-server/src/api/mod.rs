@@ -12,6 +12,7 @@ pub mod usage;
 pub mod aliases;
 pub mod auth;
 pub mod board;
+pub mod board_intake;
 pub mod criteria;
 pub mod browser;
 pub mod browser_import;

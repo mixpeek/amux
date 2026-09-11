@@ -389,6 +389,13 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // fact with nothing between them.
     out.extend(frustration_ledger_check(state));
     out.extend(schedule_kind_check(state));
+    // AF-582: the announcement for an interrupted schedule fire already
+    // existed (scheduler.rs's own AF-515 warn on startup) and reached
+    // nobody — it fired 20 times through gtm-ticker's incident window and
+    // the only consumer was the log file. This is the same fact surfaced
+    // through a channel lanes already read (GET /api/health/invariants),
+    // read-only and additive.
+    out.extend(unrecorded_schedule_outcomes_check(state));
 
     tm.mark(&out, "6f. does the frustrations LEDGER agree with the boar");
     // -- 6e. is the invariant system's OWN evaluation log bounded? (AMUX-3489:
@@ -702,6 +709,56 @@ fn schedule_kind_check(state: &AppState) -> Vec<InvariantResult> {
         )];
     }
     checks::schedule_cost_titles_match_kind(&rows)
+}
+
+/// AF-582: a schedule fire whose delivery outcome was never recorded
+/// (`delivery='unknown'`, stamped by fail_orphaned_cron_runs when the server
+/// restarted mid-fire, AF-515) already gets a `tracing::warn!` on startup --
+/// but a log line is a channel to whoever already suspects something and
+/// knows to grep, not to the fleet. Measured live during gtm-ticker's
+/// restart-burst incident: that warn fired 20 times through the exact
+/// window two lanes lost time misreading `status='error'` as a genuine job
+/// failure, and nothing besides the log file ever consumed it.
+///
+/// Read-only and additive, per the diagnostic contract: counts
+/// `schedule_runs` with `delivery='unknown'` in a recent window, so the
+/// same fact reaches every lane that already reads
+/// `GET /api/health/invariants` instead of only whoever thinks to grep
+/// server-rs.log.
+fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> {
+    const ID: &str = "scheduler.unrecorded_delivery_outcomes";
+    let window_h: i64 = std::env::var("AMUX_UNRECORDED_SCHEDULE_WINDOW_H")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24);
+    let Ok(conn) = state.store.read() else {
+        return vec![InvariantResult::unknown(ID, "could not read the store")];
+    };
+    let cutoff = chrono::Utc::now().timestamp() - window_h * 3600;
+    // AF-582 follow-up (gtm-ticker): a count with no names sends a reader
+    // back to /api/schedules/runs to re-derive exactly this join. LEFT JOIN
+    // because a schedule can be deleted after firing; a row must still be
+    // reported, just without a title/session to show for it.
+    let rows: Vec<checks::UnrecordedScheduleOutcome> = conn
+        .prepare(
+            "SELECT r.schedule_id, COUNT(*), COALESCE(s.title,''), COALESCE(s.session,'') \
+             FROM schedule_runs r LEFT JOIN schedules s ON s.id = r.schedule_id \
+             WHERE r.delivery='unknown' AND r.ran_at > ?1 \
+             GROUP BY r.schedule_id",
+        )
+        .and_then(|mut st| {
+            st.query_map([cutoff], |r| {
+                Ok(checks::UnrecordedScheduleOutcome {
+                    schedule_id: r.get(0)?,
+                    count: r.get(1)?,
+                    title: r.get(2)?,
+                    session: r.get(3)?,
+                })
+            })
+            .map(|it| it.flatten().collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    checks::unrecorded_schedule_outcomes_are_visible(window_h, &rows)
 }
 
 fn provider_launch_check() -> Vec<InvariantResult> {

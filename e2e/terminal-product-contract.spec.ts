@@ -22,6 +22,7 @@ async function boot(page: Page, options?: {
   await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: [{
     name: worker, dir: '/tmp/terminal-contract', running: true, status: 'working',
   }] }));
+  await page.route(`**/api/sessions/${worker}/subagents`, route => route.fulfill({json:{session:worker,subagents:[]}}));
   const tasksRoute = `**/api/sessions/${worker}/tasks`;
   await page.route(tasksRoute, route => route.fulfill({ json: { tasks: [], counts: {}, total: 0 } }));
   allowUnusedRoute(page, tasksRoute); // plan polling is throttled and optional to these terminal contracts
@@ -42,7 +43,7 @@ async function boot(page: Page, options?: {
   await page.route(sendRoute, async (route: Route) => {
     const body = route.request().postDataJSON() as { text?: string };
     live = `\u276f ${body.text || ''}\nAssistant accepted the request\n`;
-    await route.fulfill({ json: { ok: true, sent: true } });
+    await route.fulfill({ json: { ok: true, submitted: true, submission: 'verified' } });
   });
   if (!options?.willSend) allowUnusedRoute(page, sendRoute);
   await page.route(`**/api/sessions/${worker}/peek?*`, async route => {
@@ -106,6 +107,33 @@ test('a prompt sent while terminal is open is immediately attributed to the huma
   await expect(prompt).not.toContainText('Unclassified');
 });
 
+test('a delayed nonempty history snapshot preserves newly queued human attribution', async ({page}) => {
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/api/history?limit=500',async route=>{
+    await held;
+    await route.fulfill({json:[{id:800,text:'Older server history',type:'direct',session:'another-worker',ts:1}]});
+  });
+  try {
+    await boot(page,{historyRows:[],willSend:true});
+    const text='New human message must survive the older global snapshot';
+    await page.locator('#peek-cmd-input').fill(text);
+    await page.locator('.peek-cmd-bar .send-split-main').click();
+    await expect(page.locator('#peek-cmd-input')).toHaveValue('');
+    const response=page.waitForResponse(r=>r.url().endsWith('/api/history?limit=500'));
+    release();await response;
+    await expect.poll(()=>page.evaluate(()=>eval('_cmdHistory').some((r:any)=>r.id===800))).toBe(true);
+    await expect.poll(()=>page.evaluate(text=>eval('_cmdHistory').some((r:any)=>r.text===text&&r.session==='terminal-contract'),text)).toBe(true);
+    await expect(page.locator('#peek-body .peek-prompt').filter({hasText:text})).toHaveAttribute('data-msg-kind','human');
+    const peers=await page.evaluate(()=>{
+      (window as any).cmdHistoryAdd('Same message',{session:'peer-one',type:'direct'});
+      (window as any).cmdHistoryAdd('Same message',{session:'peer-two',type:'direct'});
+      return eval('_cmdHistory').filter((r:any)=>r.text==='Same message').map((r:any)=>r.session);
+    });
+    expect(peers).toEqual(['peer-one','peer-two']);
+  } finally {release();}
+});
+
 test('terminal controls stay compact and the bottom affordance distinguishes navigation from new output', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const transcript = Array.from({ length: 220 }, (_, i) => `terminal output row ${i}`).join('\n');
@@ -146,7 +174,7 @@ test('terminal chrome cannot inject navigation or slash-picker keys', async ({ p
   await boot(page);
 
   const controls = page.locator('.peek-output-controls');
-  await expect(controls.locator('button')).toHaveCount(1);
+  await expect(controls.locator('button:visible')).toHaveCount(1);
   await expect(controls.locator('[onclick*="peekQuickKeys"]')).toHaveCount(0);
   await controls.locator('#peek-copy-btn').click();
   await page.waitForTimeout(100);

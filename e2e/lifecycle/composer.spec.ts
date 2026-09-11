@@ -1,8 +1,8 @@
-import { test, expect } from '../fixtures';
+import { test, expect, allowUnusedRoute } from '../fixtures';
 import { boot, auth, checkpoint, deleteOwnedWorkers } from './evidence';
 
-for (const outcome of ['refused', 'accepted', 'queued'] as const) {
-  test(`LC-COMPOSER: ${outcome} delivery preserves the draft until the server answers`, async ({ page, request }, info) => {
+for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const) {
+  test(`LC-COMPOSER: ${outcome} delivery clears only after local persistence, before server response`, async ({ page, request }, info) => {
     test.setTimeout(60_000);
     await boot(page);
     const headers = await auth(page);
@@ -10,17 +10,14 @@ for (const outcome of ['refused', 'accepted', 'queued'] as const) {
     expect((await request.post('/api/sessions', { headers, data: { name, dir: '/tmp' } })).status()).toBe(201);
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
-    let requests = 0;
-    const beacons: any[] = [];
-    page.on('request', r => { if (r.url().endsWith('/api/client-debug') && r.method() === 'POST') { const data = r.postDataJSON(); if (data.kind === 'composer-delivery') beacons.push(data); } });
-    // A controlled transport failure/delay exercises the shipped send handler.
-    // No model is started; this is not counted as successful live coordination.
+    const payloads: any[] = [];
     await page.route(`**/api/sessions/${name}/send`, async route => {
-      requests++;
+      payloads.push(route.request().postDataJSON());
       await pending;
       await route.fulfill({ status: outcome === 'refused' ? 422 : outcome === 'queued' ? 503 : 200,
-        json: outcome !== 'accepted' ? { error: 'lifecycle controlled refusal' } : { ok: true, submitted: true } });
+        json: ['accepted', 'unconfirmed'].includes(outcome) ? { ok: true, submitted: outcome === 'accepted' } : { error: 'lifecycle controlled refusal' } });
     });
+    const entries = () => page.evaluate(name => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]').filter((q: any) => q.url.endsWith(`/${name}/send`)), name);
     try {
       await page.reload();
       const card = page.locator(`.card[data-session="${name}"]`).locator('visible=true').first();
@@ -29,7 +26,7 @@ for (const outcome of ['refused', 'accepted', 'queued'] as const) {
       await page.locator('#peek-composer-more-btn').click();
       const chooser = page.waitForEvent('filechooser');
       await page.locator('#peek-more-menu').getByRole('button', { name: 'Attach file', exact: false }).click();
-      await (await chooser).setFiles({ name: 'retained-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Keep this upload with its draft.') });
+      await (await chooser).setFiles({ name: 'retained-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Keep this upload with its queued message.') });
       await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(1);
       await expect(page.locator('#peek-attach-bar .uploading')).toHaveCount(0);
       await expect(page.locator('#peek-attach-bar .failed')).toHaveCount(0);
@@ -38,35 +35,92 @@ for (const outcome of ['refused', 'accepted', 'queued'] as const) {
       const message = `Preserve this ${outcome} message ${name}`;
       await input.fill(message);
       await send.click();
-      await expect.poll(() => requests).toBe(1);
-      await expect(input, 'pending delivery is not permission to discard the draft').toHaveValue(message);
-      await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(1);
-      await expect(send, 'a second tap must not submit the same pending message').toBeDisabled();
-      release();
+      await expect(input, 'durable local acceptance clears before the server answers').toHaveValue('');
       await expect(send).toBeEnabled();
-      if (outcome === 'refused') {
-        await expect(input).toHaveValue(message);
-        await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(1);
-        await expect.poll(() => beacons.some(b => b.verdict === 'unconfirmed' && b.draft_retained)).toBe(true);
-        await expect(page.locator('#toast')).toContainText(/failed|error|not confirmed/i);
-        await checkpoint(page, info, 'refused-draft-retained');
-        await page.getByRole('button', { name: 'Close worker', exact: true }).click();
-        await page.reload();
-        await page.locator(`.card[data-session="${name}"]`).locator('visible=true').first().locator('.card-menu-btn').click();
-        await page.locator('.card-menu.open [data-worker-action="peek-terminal"]').click();
-        await expect(input, 'failed send must also survive a reload').toHaveValue(message);
-      } else {
-        await expect(input).toHaveValue('');
-        await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(0);
-        if (outcome === 'queued') {
-          expect(await page.evaluate(() => eval('offlineQueue').some((q: any) => q.options.body.includes('Preserve this queued message')))).toBe(true);
-          await expect(page.locator('#toast')).toContainText(/queued/i);
-        }
+      await expect(page.locator('#peek-attach-bar .peek-attach-chip')).toHaveCount(0);
+      const saved = await entries();
+      expect(saved).toHaveLength(1);
+      const intent = JSON.parse(saved[0].options.body);
+      expect(intent.text).toContain(message);
+      expect(intent.text).toContain('@');
+      expect(intent.msg_id).toBeTruthy();
+      await expect.poll(() => payloads.length).toBe(1);
+      expect(payloads[0]).toEqual(intent);
+      await input.fill('A newer draft must survive the old delivery receipt');
+      await checkpoint(page, info, 'locally-queued-server-still-pending');
+      release();
+      if (outcome === 'accepted') await expect.poll(async () => (await entries()).length).toBe(0);
+      else {
+        await expect.poll(async () => (await entries())[0]?.attempts).toBe(1);
+        expect((await entries())[0].state).toBe(outcome === 'queued' ? 'pending' : 'blocked');
       }
-      expect(requests).toBe(1);
+      await expect(input).toHaveValue('A newer draft must survive the old delivery receipt');
+      await page.reload();
+      const persisted = await entries();
+      if (outcome !== 'accepted') {
+        expect(persisted).toHaveLength(1);
+        expect(JSON.parse(persisted[0].options.body)).toEqual(intent);
+      }
     } finally {
       release();
+      await page.evaluate(name => eval('_mutateQueue')((queue: any[]) => { for (let i = queue.length - 1; i >= 0; i--) if (queue[i].url.endsWith(`/${name}/send`)) queue.splice(i, 1); }), name);
       await deleteOwnedWorkers(page, request, headers, [name]);
     }
   });
 }
+
+test('LC-COMPOSER: focused and replacement inputs clear exactly the accepted draft', async ({ page }, info) => {
+  await boot(page);
+  const result = await page.evaluate(() => {
+    const name = 'lc-focus-regression';
+    const input = document.createElement('textarea');
+    input.id = 'input-' + name; document.body.appendChild(input);
+    input.value = 'accepted message'; input.focus();
+    eval('_draftSave')(name, input.value);
+    eval('_composerAcceptLocal')(name, input.value);
+    const focusedCleared = input.value === '';
+    const replacement = input.cloneNode() as HTMLTextAreaElement;
+    replacement.value = 'replacement accepted'; input.replaceWith(replacement); replacement.focus();
+    eval('_draftSave')(name, replacement.value);
+    eval('_composerAcceptLocal')(name, 'replacement accepted');
+    const replacementCleared = replacement.value === '';
+    replacement.value = 'newer edit'; eval('_draftSave')(name, 'older accepted');
+    eval('_composerAcceptLocal')(name, 'older accepted');
+    const newerPreserved = replacement.value === 'newer edit' && eval('_draftGet')(name) === 'newer edit';
+    replacement.remove(); eval('_draftClear')(name);
+    return { focusedCleared, replacementCleared, newerPreserved };
+  });
+  expect(result).toEqual({ focusedCleared:true, replacementCleared:true, newerPreserved:true });
+});
+
+test('LC-COMPOSER: failed local persistence retains draft and sends nothing', async ({ page, request }) => {
+  await boot(page);
+  const headers = await auth(page);
+  const name = `lc-storage-${Date.now()}`;
+  expect((await request.post('/api/sessions', {headers, data:{name, dir:'/tmp'}})).status()).toBe(201);
+  let sends = 0;
+  // Zero requests is the required outcome when durable local storage fails.
+  allowUnusedRoute(page, `**/api/sessions/${name}/send`);
+  await page.route(`**/api/sessions/${name}/send`, route => { sends++; return route.fulfill({json:{ok:true, submitted:true}}); });
+  try {
+    await page.reload();
+    await page.locator(`.card[data-session="${name}"]`).locator('visible=true').first().locator('.card-menu-btn').click();
+    await page.locator('.card-menu.open [data-worker-action="peek-terminal"]').click();
+    await page.locator('#peek-cmd-input').fill('Storage failure must keep this draft');
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      (window as any).__restoreStorage = () => { Storage.prototype.setItem = original; };
+      Storage.prototype.setItem = function(key, value) {
+        if (key === 'amux_offline_queue') throw new DOMException('Lifecycle controlled quota', 'QuotaExceededError');
+        return original.call(this, key, value);
+      };
+    });
+    await page.locator('#peek-overlay .send-split-main').click();
+    await expect(page.locator('#peek-cmd-input')).toHaveValue('Storage failure must keep this draft');
+    await expect(page.locator('#peek-overlay .send-split-main')).toBeEnabled();
+    expect(sends).toBe(0);
+  } finally {
+    await page.evaluate(() => (window as any).__restoreStorage?.());
+    await deleteOwnedWorkers(page, request, headers, [name]);
+  }
+});

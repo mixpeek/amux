@@ -2311,6 +2311,39 @@ mod tests {
         assert_eq!(detail["id"].as_str().unwrap(), id);
     }
 
+    #[tokio::test]
+    async fn legacy_sessions_stores_do_not_share_cached_rows() {
+        crate::api::sessions_legacy::SUPPRESS_FLEET_FOR_TEST
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (first, _first_dir) = app();
+        let (second, _second_dir) = app();
+        create(&first, "first-store-worker").await;
+        create(&second, "second-store-worker").await;
+        // Both stores now have the same global epoch. Alternate reads without
+        // invalidating: a fresh snapshot from one must never answer the other.
+        for (app, name) in [
+            (&first, "first-store-worker"),
+            (&second, "second-store-worker"),
+            (&first, "first-store-worker"),
+        ] {
+            let (mut status, _, mut rows) = send(app, "GET", "/api/sessions", None).await;
+            for attempt in 1..5 {
+                if status != StatusCode::INTERNAL_SERVER_ERROR
+                    || rows["error"].as_str()
+                        != Some("sessions list changed during discovery; retry")
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt)).await;
+                (status, _, rows) = send(app, "GET", "/api/sessions", None).await;
+            }
+            assert_eq!(status, StatusCode::OK, "{rows}");
+            let rows = rows.as_array().expect("legacy rows");
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0]["name"], name, "{rows:?}");
+        }
+    }
+
     /// ATE-92 acceptance contract: the HTTP session projection, not only a
     /// helper test, must carry one measured runtime/board verdict. A client
     /// may never have to reconstruct its WORKING badge from a separate board
@@ -2330,6 +2363,7 @@ mod tests {
             ("tubescience", "ses-tubescience"),
             ("released", "ses-released"),
             ("conflict", "ses-conflict"),
+            ("decomposed", "ses-decomposed"),
         ] {
             conn.execute(
                 "INSERT INTO _amux_workers (id, display_name, state, created_at, updated_at) \
@@ -2352,6 +2386,8 @@ mod tests {
             ("TUBES-2459", "tubescience"),
             ("CONFLICT-1", "conflict"),
             ("CONFLICT-2", "conflict"),
+            ("DECOMP-1", "decomposed"),
+            ("DECOMP-2", "decomposed"),
         ] {
             conn.execute(
                 "INSERT INTO issues (id, title, status, session, creator, created, updated) \
@@ -2360,6 +2396,8 @@ mod tests {
             )
             .unwrap();
         }
+        conn.execute("UPDATE issues SET type='epic' WHERE id='DECOMP-1'", []).unwrap();
+        conn.execute("UPDATE issues SET epic='DECOMP-1' WHERE id='DECOMP-2'", []).unwrap();
         conn.execute(
             "INSERT INTO issues (id, title, status, session, creator, created, updated) \
              VALUES ('RELEASED-1', 'released title', 'done', 'released', 'test', ?1, ?1)",
@@ -2387,6 +2425,8 @@ mod tests {
             ("released", "RELEASED-1"),
             ("conflict", "CONFLICT-1"),
             ("conflict", "CONFLICT-2"),
+            ("decomposed", "DECOMP-1"),
+            ("decomposed", "DECOMP-2"),
         ] {
             conn.execute(
                 "INSERT INTO session_events (ts, session, type, data, source) \
@@ -2412,7 +2452,20 @@ mod tests {
         drop(conn);
         crate::api::sessions_legacy::invalidate_sessions_cache();
 
-        let (status, _, payload) = send(&app, "GET", "/api/sessions", None).await;
+        let (mut status, _, mut payload) = send(&app, "GET", "/api/sessions", None).await;
+        // Other tests mutate the shared discovery epoch. Retry only the
+        // route's explicit concurrent-change response, retaining all other
+        // failures and the complete board-truth assertions below.
+        for attempt in 1..5 {
+            if status != StatusCode::INTERNAL_SERVER_ERROR
+                || payload["error"].as_str()
+                    != Some("sessions list changed during discovery; retry")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50 * attempt)).await;
+            (status, _, payload) = send(&app, "GET", "/api/sessions", None).await;
+        }
         assert_eq!(status, StatusCode::OK, "{payload}");
         let rows = payload.as_array().expect("legacy session array");
         let linked = rows.iter().find(|row| row["name"] == "linked").expect("linked row");
@@ -2458,6 +2511,13 @@ mod tests {
         assert!(released["runtime_board"]["card_id"].is_null(), "{released}");
         assert_eq!(released["runtime_board"]["cardless_suppressed_by_live_claim"], json!(false), "{released}");
         assert!(released["task_board_id"].as_str().unwrap_or_default().is_empty(), "{released}");
+
+        let decomposed = rows.iter().find(|row| row["name"] == "decomposed").unwrap();
+        assert_eq!(decomposed["status"], json!("active"), "{decomposed}");
+        assert_eq!(decomposed["runtime_board"]["status"], json!("linked"));
+        assert_eq!(decomposed["runtime_board"]["card_id"], json!("DECOMP-2"));
+        assert_eq!(decomposed["runtime_board"]["card_count"], json!(1));
+        assert_eq!(decomposed["runtime_board"]["epic_container_count"], json!(1));
 
         let conflict = rows.iter().find(|row| row["name"] == "conflict").expect("conflict row");
         assert_eq!(conflict["status"], json!("unattributed"), "{conflict}");

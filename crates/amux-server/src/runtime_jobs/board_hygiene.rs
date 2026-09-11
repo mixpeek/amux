@@ -147,6 +147,36 @@ fn count_by_session_status(conn: &rusqlite::Connection) -> Vec<StatusCount> {
     out
 }
 
+/// Drop every line starting with the auto-aged marker, so the daily sweep
+/// SUPERSEDES its previous stamp instead of stacking a new one on top
+/// (reported by mixpeek-orchestrator/gtm-engine, GE-610: a card that sat in
+/// needsyou for weeks grew 20+ consecutive copies of this line, burying the
+/// actual ask underneath its own age history). Prefix match, not exact-line
+/// match, so a stale line still gets removed even if the AGE NUMBER in it
+/// differs from today's.
+///
+/// Collapses any run of blank lines the removal leaves behind, so a card
+/// whose only content was this stamp does not end up with dangling empty
+/// lines once it is replaced.
+fn strip_prior_auto_aged_lines(desc: &str) -> String {
+    const MARKER: &str = "Auto-aged: this card has been in needsyou for";
+    let kept: Vec<&str> = desc.lines().filter(|line| !line.starts_with(MARKER)).collect();
+    let mut out = String::new();
+    let mut prev_blank = true; // suppress leading blank lines too
+    for line in kept {
+        let blank = line.trim().is_empty();
+        if blank && prev_blank {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        prev_blank = blank;
+    }
+    out
+}
+
 /// Run the needsyou aging sweep. Returns (warned, discarded).
 async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
     let last = LAST_NEEDSYOU_RUN.load(std::sync::atomic::Ordering::Relaxed);
@@ -226,10 +256,16 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                             |r| r.get(0),
                         )
                         .unwrap_or_default();
-                    let new_desc = if old_desc.trim().is_empty() {
+                    // SUPERSEDE, not accumulate (reported by mixpeek-orchestrator/
+                    // gtm-engine, GE-610): this sweep runs at most once per 23h per
+                    // card, so a card sitting in needsyou for weeks previously grew
+                    // one "Auto-aged: ... N days" line per pass, 20+ deep, burying
+                    // the actual ask underneath its own age history.
+                    let stripped = strip_prior_auto_aged_lines(&old_desc);
+                    let new_desc = if stripped.trim().is_empty() {
                         note.clone()
                     } else {
-                        format!("{}\n{note}", old_desc.trim_end())
+                        format!("{}\n{note}", stripped.trim_end())
                     };
                     let old_log: Option<String> = conn
                         .query_row(
@@ -420,6 +456,43 @@ mod tests {
         const { assert!(NEEDSYOU_DISCARD_DAYS > 0) };
         const { assert!(AUTOFIX_STALE_HOURS > 0) };
         const { assert!(BACKLOG_STALE_DAYS > 0) };
+    }
+
+    /// GE-610: a card that sat in needsyou for weeks grew one "Auto-aged"
+    /// line per daily pass, 20+ deep. The fix must SUPERSEDE, so the
+    /// original ask stays adjacent to the (single) current age line rather
+    /// than scrolling off beneath a stack of historical ones.
+    #[test]
+    fn strip_prior_auto_aged_lines_removes_only_the_stamp() {
+        let desc = "the real ask: which pricing tier?\n\
+                     Auto-aged: this card has been in needsyou for 14 days";
+        assert_eq!(strip_prior_auto_aged_lines(desc), "the real ask: which pricing tier?");
+    }
+
+    #[test]
+    fn strip_prior_auto_aged_lines_collapses_a_long_stack() {
+        let mut desc = "the real ask: which pricing tier?".to_string();
+        for n in [14, 15, 16, 17, 20, 21] {
+            desc.push('\n');
+            desc.push_str(&format!("Auto-aged: this card has been in needsyou for {n} days"));
+        }
+        let stripped = strip_prior_auto_aged_lines(&desc);
+        assert_eq!(stripped, "the real ask: which pricing tier?");
+        assert_eq!(stripped.matches("Auto-aged").count(), 0, "every historical stamp must be gone");
+    }
+
+    #[test]
+    fn strip_prior_auto_aged_lines_is_a_noop_on_a_desc_with_no_stamp() {
+        let desc = "just an ordinary description with no age stamp at all";
+        assert_eq!(strip_prior_auto_aged_lines(desc), desc);
+    }
+
+    #[test]
+    fn strip_prior_auto_aged_lines_handles_an_all_stamp_desc() {
+        assert_eq!(
+            strip_prior_auto_aged_lines("Auto-aged: this card has been in needsyou for 14 days"),
+            ""
+        );
     }
 
     #[test]

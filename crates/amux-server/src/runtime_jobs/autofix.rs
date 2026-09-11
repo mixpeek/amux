@@ -449,6 +449,13 @@ fn schedule_duplicate_streak() -> usize {
 fn schedule_message_grace_s() -> f64 {
     env_f64("AMUX_AUTOFIX_SCHEDULE_MESSAGE_GRACE_S", 300.0).clamp(30.0, 3600.0)
 }
+/// A missing-Messages run this close to a recorded `server_downtime` window is
+/// explained by the restart, not by the schedule. Padding on both sides of the
+/// window because the run can fire just before the crash (message never
+/// written) or just after the restart (the writer hasn't caught up yet).
+fn schedule_downtime_explain_pad_s() -> f64 {
+    env_f64("AMUX_AUTOFIX_DOWNTIME_EXPLAIN_PAD_S", 300.0).clamp(30.0, 3600.0)
+}
 /// Oldest steering row older than this means the queue is not draining.
 fn steering_stale_min() -> f64 {
     env_f64("AMUX_AUTOFIX_STEERING_STALE_MIN", 90.0).max(5.0)
@@ -2797,6 +2804,51 @@ fn schedule_error_pattern(note: &str) -> String {
     if out.is_empty() { "(empty error note)".into() } else { out.into() }
 }
 
+/// `server_downtime` rows that could explain a missing-Messages run in this
+/// tick's window. Returns empty (never an error) on a query failure, which
+/// degrades to the pre-AF-583 behaviour of one finding per schedule rather
+/// than hiding anything.
+fn known_downtime_windows(conn: &Connection, since: i64) -> Vec<(i64, f64, f64, String)> {
+    let pad = schedule_downtime_explain_pad_s();
+    let mut stmt = match conn.prepare(
+        "SELECT id, down_from, up_at, COALESCE(cause,'') FROM server_downtime \
+         WHERE up_at >= ?1 ORDER BY down_from",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "server_downtime query did not prepare; missing-message findings will not be \
+                 consolidated by outage this tick"
+            );
+            return Vec::new();
+        }
+    };
+    let rows = stmt.query_map([since as f64 - pad], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?))
+    });
+    match rows {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "server_downtime rows could not be read; missing-message findings will not be \
+                 consolidated by outage this tick"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// The `id` of the first known downtime window whose padded span covers
+/// `ran_at`, or `None` if no recorded restart explains it.
+fn downtime_window_covering(ran_at: f64, windows: &[(i64, f64, f64, String)], pad: f64) -> Option<i64> {
+    windows
+        .iter()
+        .find(|(_, down_from, up_at, _)| ran_at >= down_from - pad && ran_at <= up_at + pad)
+        .map(|(id, ..)| *id)
+}
+
 fn schedule_id_from_origin(origin: &str) -> Option<String> {
     let start = origin.find("[SCHED-")? + 1;
     let tail = &origin[start..];
@@ -2909,7 +2961,10 @@ fn detect_schedule_run_health(
     }
 
     let grace_before = now - schedule_message_grace_s();
+    let downtime_pad = schedule_downtime_explain_pad_s();
+    let downtime_windows = known_downtime_windows(conn, cutoff);
     let mut missing_messages: BTreeMap<&str, Vec<&ScheduleRunObservation>> = BTreeMap::new();
+    let mut missing_by_outage: BTreeMap<i64, Vec<&ScheduleRunObservation>> = BTreeMap::new();
     for run in rows
         .iter()
         .filter(|r| r.status == "delivered" && (r.ran_at as f64) <= grace_before)
@@ -2937,7 +2992,14 @@ fn detect_schedule_run_health(
         if message_exists {
             continue;
         }
-        missing_messages.entry(&run.id).or_default().push(run);
+        match downtime_window_covering(run.ran_at as f64, &downtime_windows, downtime_pad) {
+            Some(window_id) => {
+                missing_by_outage.entry(window_id).or_default().push(run);
+            }
+            None => {
+                missing_messages.entry(&run.id).or_default().push(run);
+            }
+        }
     }
     for (id, missing) in missing_messages {
         let newest = missing[0];
@@ -2971,6 +3033,84 @@ fn detect_schedule_run_health(
                 newest.session.replace('\'', "''")
             ),
             owner: Some(newest.session.clone()).filter(|s| !s.is_empty()),
+            count: missing.len() as u64,
+            last_ts: newest.ran_at as f64,
+            parked_until: None,
+        });
+    }
+
+    // A restart loop turns "one schedule missed its confirmation" into the
+    // same fact for every schedule that fired near the crash. Filing each one
+    // separately is honest about the individual run but dishonest about the
+    // shape of the incident: 103 findings implies 103 causes when there was
+    // one (AF-583). Group by the RECORDED downtime window instead, one
+    // Finding per outage naming every schedule it touched — still visible,
+    // never suppressed, just not miscounted as N unrelated faults.
+    for (window_id, missing) in missing_by_outage {
+        let Some((_, down_from, up_at, cause)) =
+            downtime_windows.iter().find(|w| w.0 == window_id)
+        else {
+            continue;
+        };
+        let mut by_schedule: BTreeMap<&str, (u64, &str, &str)> = BTreeMap::new();
+        for run in &missing {
+            let entry = by_schedule
+                .entry(run.id.as_str())
+                .or_insert((0, run.title.as_str(), run.session.as_str()));
+            entry.0 += 1;
+        }
+        let mut breakdown: Vec<(&str, u64, &str, &str)> =
+            by_schedule.into_iter().map(|(id, (n, title, session))| (id, n, title, session)).collect();
+        breakdown.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let schedules_text = breakdown
+            .iter()
+            .map(|(id, n, title, session)| format!("{id} x{n} ({title}, {session})"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let newest = missing.iter().max_by_key(|r| r.ran_at).expect("non-empty group");
+        let oldest = missing.iter().min_by_key(|r| r.ran_at).expect("non-empty group");
+        tracing::warn!(
+            downtime_id = window_id,
+            schedules_affected = breakdown.len(),
+            missing_runs = missing.len(),
+            "missing-Messages runs consolidated into one outage-scoped finding"
+        );
+        findings.push(Finding {
+            kind: DetectorKind::SilentSubsystem,
+            signature: format!("silent|schedule-message-missing-outage|{window_id}"),
+            title: format!(
+                "A restart at {} left {} run(s) across {} schedule(s) with no Messages confirmation",
+                rl::local_when(*down_from),
+                missing.len(),
+                breakdown.len()
+            ),
+            evidence: vec![
+                ("downtime_id".into(), window_id.to_string()),
+                ("down_from".into(), rl::local_when(*down_from)),
+                ("up_at".into(), rl::local_when(*up_at)),
+                ("cause".into(), if cause.is_empty() { "(not recorded)".into() } else { cause.clone() }),
+                ("schedules_affected".into(), breakdown.len().to_string()),
+                ("missing_runs_total".into(), missing.len().to_string()),
+                ("first_missing_at".into(), rl::local_when(oldest.ran_at as f64)),
+                ("latest_missing_at".into(), rl::local_when(newest.ran_at as f64)),
+                ("schedules".into(), schedules_text),
+                (
+                    "meaning".into(),
+                    format!(
+                        "Every run above fired within {:.0}s of this recorded server restart and \
+                         never got a Messages confirmation in the usual window. Filed as one card \
+                         for the outage instead of one per schedule (AF-583) — the restart's own \
+                         cause is tracked separately and is not re-litigated here.",
+                        downtime_pad
+                    ),
+                ),
+            ],
+            recheck: format!(
+                "sqlite3 ~/.amux/amux.db \"SELECT id,down_from,up_at,cause FROM server_downtime WHERE id={window_id};\" && sqlite3 ~/.amux/amux.db \"SELECT schedule_id,COUNT(*) FROM schedule_runs WHERE status='delivered' AND ran_at BETWEEN {} AND {} GROUP BY schedule_id;\"",
+                (*down_from - downtime_pad) as i64,
+                (*up_at + downtime_pad) as i64
+            ),
+            owner: None,
             count: missing.len() as u64,
             last_ts: newest.ran_at as f64,
             parked_until: None,
@@ -7689,6 +7829,11 @@ mod tests {
              CREATE TABLE session_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL,
                 ts REAL NOT NULL, type TEXT NOT NULL, data TEXT
+             );
+             CREATE TABLE server_downtime (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, down_from REAL NOT NULL,
+                up_at REAL NOT NULL, seconds REAL NOT NULL, port INTEGER,
+                cause TEXT, requests_during INTEGER
              );",
         )
         .unwrap();
@@ -7842,6 +7987,164 @@ mod tests {
             "a schedule renamed after its run must still link by id — this is ts-gke's \
              false report, and the title arms cannot see it"
         );
+    }
+
+    #[test]
+    fn missing_messages_inside_a_known_outage_file_one_combined_finding() {
+        // AF-583: a restart loop turned one outage into 103 separate cards
+        // because the detector grouped misses purely by schedule id. This is
+        // the shape that must collapse: two DIFFERENT schedules, both missing
+        // their confirmation near the SAME recorded restart, must produce ONE
+        // finding naming both, not two per-schedule findings.
+        let conn = schedule_health_conn();
+        conn.execute("INSERT INTO schedules VALUES ('SCHED-10','Other sync','worker-b',1,NULL)", [])
+            .unwrap();
+        let now = 1_788_000_000i64;
+        let crash_at = now - 900;
+        let restart_at = now - 800;
+        conn.execute(
+            "INSERT INTO server_downtime(down_from,up_at,seconds,port,cause) VALUES(?1,?2,100,8824,'oom')",
+            rusqlite::params![crash_at as f64, restart_at as f64],
+        )
+        .unwrap();
+        // One run fired just BEFORE the crash (never got to write its confirmation),
+        // one just AFTER the restart (writer hadn't caught up yet) — both arms of the pad.
+        for (sched, ran_at) in [("SCHED-9", crash_at - 10), ("SCHED-10", restart_at + 10)] {
+            conn.execute(
+                "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES(?1,?2,'delivered','confirmed','cron-rs')",
+                rusqlite::params![sched, ran_at],
+            )
+            .unwrap();
+        }
+        let (findings, _) = super::detect_schedule_run_health(&conn, now as f64);
+        assert!(
+            !findings.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
+            "a run inside a known restart window must not also file its own per-schedule finding"
+        );
+        assert!(!findings.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-10"));
+        let combined: Vec<_> = findings
+            .iter()
+            .filter(|f| f.signature.starts_with("silent|schedule-message-missing-outage|"))
+            .collect();
+        assert_eq!(combined.len(), 1, "one outage must produce exactly one combined finding");
+        let f = combined[0];
+        assert_eq!(f.count, 2);
+        let schedules = f.evidence.iter().find(|(k, _)| k == "schedules").unwrap().1.clone();
+        assert!(schedules.contains("SCHED-9"), "{schedules}");
+        assert!(schedules.contains("SCHED-10"), "{schedules}");
+        let affected = f.evidence.iter().find(|(k, _)| k == "schedules_affected").unwrap().1.clone();
+        assert_eq!(affected, "2");
+    }
+
+    #[test]
+    fn an_unrelated_downtime_window_does_not_swallow_a_genuine_miss() {
+        // Naming a downtime table is not enough on its own: the window has to
+        // actually COVER the run. A restart from hours earlier must not
+        // explain away an unrelated, still-real miss.
+        let conn = schedule_health_conn();
+        let now = 1_788_000_000i64;
+        conn.execute(
+            "INSERT INTO server_downtime(down_from,up_at,seconds,port,cause) VALUES(?1,?2,100,8824,'oom')",
+            rusqlite::params![(now - 100_000) as f64, (now - 99_900) as f64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'delivered','confirmed','cron-rs')",
+            [now - 600],
+        )
+        .unwrap();
+        let (findings, _) = super::detect_schedule_run_health(&conn, now as f64);
+        assert!(
+            findings.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
+            "an unrelated downtime window must not suppress a genuinely unexplained miss"
+        );
+        assert!(!findings
+            .iter()
+            .any(|f| f.signature.starts_with("silent|schedule-message-missing-outage|")));
+    }
+
+    #[test]
+    fn the_explain_window_is_padded_but_not_unbounded() {
+        let now = 1_788_000_000i64;
+        let down_from = now - 1000;
+        let up_at = now - 900;
+
+        let conn = schedule_health_conn();
+        conn.execute(
+            "INSERT INTO server_downtime(down_from,up_at,seconds,port,cause) VALUES(?1,?2,100,8824,'')",
+            rusqlite::params![down_from as f64, up_at as f64],
+        )
+        .unwrap();
+        // 250s before down_from: inside the default 300s pad.
+        conn.execute(
+            "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'delivered','confirmed','cron-rs')",
+            [down_from - 250],
+        )
+        .unwrap();
+        let (inside, _) = super::detect_schedule_run_health(&conn, now as f64);
+        assert!(inside
+            .iter()
+            .any(|f| f.signature.starts_with("silent|schedule-message-missing-outage|")));
+        assert!(!inside.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"));
+
+        let conn2 = schedule_health_conn();
+        conn2.execute(
+            "INSERT INTO server_downtime(down_from,up_at,seconds,port,cause) VALUES(?1,?2,100,8824,'')",
+            rusqlite::params![down_from as f64, up_at as f64],
+        )
+        .unwrap();
+        // 350s before down_from: outside the default 300s pad.
+        conn2.execute(
+            "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'delivered','confirmed','cron-rs')",
+            [down_from - 350],
+        )
+        .unwrap();
+        let (outside, _) = super::detect_schedule_run_health(&conn2, now as f64);
+        assert!(!outside
+            .iter()
+            .any(|f| f.signature.starts_with("silent|schedule-message-missing-outage|")));
+        assert!(outside.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"));
+    }
+
+    #[test]
+    fn the_combined_finding_orders_schedules_worst_offender_first() {
+        let conn = schedule_health_conn();
+        conn.execute("INSERT INTO schedules VALUES ('SCHED-1','A','worker-a',1,NULL)", []).unwrap();
+        conn.execute("INSERT INTO schedules VALUES ('SCHED-2','B','worker-b',1,NULL)", []).unwrap();
+        let now = 1_788_000_000i64;
+        let down_from = now - 500;
+        let up_at = now - 480;
+        conn.execute(
+            "INSERT INTO server_downtime(down_from,up_at,seconds,port,cause) VALUES(?1,?2,20,8824,'')",
+            rusqlite::params![down_from as f64, up_at as f64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-1',?1,'delivered','x','cron-rs')",
+            [down_from - 10],
+        )
+        .unwrap();
+        for ran_at in [down_from - 5, down_from, down_from + 5] {
+            conn.execute(
+                "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-2',?1,'delivered','x','cron-rs')",
+                [ran_at],
+            )
+            .unwrap();
+        }
+        let (findings, _) = super::detect_schedule_run_health(&conn, now as f64);
+        let f = findings
+            .iter()
+            .find(|f| f.signature.starts_with("silent|schedule-message-missing-outage|"))
+            .expect("combined finding must exist");
+        let schedules = f.evidence.iter().find(|(k, _)| k == "schedules").unwrap().1.clone();
+        let sched2_pos = schedules.find("SCHED-2").expect("SCHED-2 named");
+        let sched1_pos = schedules.find("SCHED-1").expect("SCHED-1 named");
+        assert!(
+            sched2_pos < sched1_pos,
+            "the schedule with more misses (SCHED-2, x3) must be named before the one with fewer \
+             (SCHED-1, x1): {schedules}"
+        );
+        assert_eq!(f.count, 4);
     }
 
     #[test]

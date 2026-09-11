@@ -21,7 +21,7 @@ pass=0; fail=0
 ok()  { echo "  ok   $1"; pass=$((pass+1)); }
 bad() { echo "  FAIL $1"; fail=$((fail+1)); }
 
-T="$(mktemp -d -t testinstallref)"
+T="$(mktemp -d "${TMPDIR:-/tmp}/testinstallref.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 W="$T/work"
 git init -q --bare "$T/origin.git"

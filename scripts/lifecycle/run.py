@@ -140,10 +140,16 @@ def main():
         run('syntax', ['bash', 'scripts/safe-cargo.sh', 'check', '--workspace'])
         run('contracts', ['bash', 'scripts/test-contended.sh', '--workspace'], live=True)
     if args.mode in ('browser', 'full'):
+        run('outbox-contracts', ['node', '--test', 'tests/dashboard-outage-recovery.mjs'])
+        assets = {'/' + name: hashlib.sha256((ROOT / 'crates/amux-dashboard/static' / name).read_bytes()).hexdigest()
+                  for name in ('app.js', 'app.css', 'sw.js')}
+        manifest = out / 'expected-assets.json'
+        manifest.write_text(json.dumps(assets, indent=2) + '\n')
+        env['AMUX_LIFECYCLE_ASSET_MANIFEST'] = str(manifest)
         binary = args.binary
         if binary is None:
-            # Bounded shared E2E cache, separate from the fleet's auto-adopt binary.
-            env['CARGO_TARGET_DIR'] = str(Path.home() / '.amux/rust-build-target-e2e-head')
+            # Respect the shared build target; pin a private copy before running tests.
+            env.setdefault('CARGO_TARGET_DIR', str(Path.home() / '.amux/rust-build-target'))
             if run('build', ['bash', 'scripts/safe-cargo.sh', 'build', '-p', 'amux-server']):
                 binary = Path(env['CARGO_TARGET_DIR']) / 'debug/amux-server'
         if binary and binary.is_file():
@@ -151,11 +157,15 @@ def main():
             shutil.copy2(binary, pinned)
             env['AMUX_LIFECYCLE_BINARY'] = str(pinned)
             state['binary'] = {'sha256': hashlib.sha256(pinned.read_bytes()).hexdigest(),
-                               'source_verified': args.binary is None}
+                               'source_verified': False, 'built_from_checkout': args.binary is None}
             command = ['node', 'node_modules/@playwright/test/cli.js', 'test', '--config=e2e/lifecycle/playwright.config.ts']
             if args.project: command += ['--project', args.project]
             if args.grep: command += ['--grep', args.grep]
             run('browser', command, browser_json='browser.json')
+            receipts = [json.loads(p.read_text()) for p in out.glob('asset-provenance-*.json')]
+            state['binary']['asset_provenance'] = receipts
+            state['binary']['source_verified'] = args.binary is None and bool(receipts) and all(r['verdict'] == 'assets_match' for r in receipts)
+            report(out, state)
         else:
             state['stages'].append({'name': 'browser', 'status': 'INCOMPLETE', 'note': 'No usable server binary'})
     if args.mode == 'full':
