@@ -93,3 +93,44 @@ async fn exhausted_read_pool_keeps_health_identity_and_runtime_responsive() {
     assert_eq!(status.as_u16(), 200);
     assert!(body.board.measured && body.board.ok);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn late_probe_success_remains_visible_during_the_next_slow_probe() {
+    use std::{sync::{Arc, mpsc}, time::Duration};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(amux_server::db::Store::open(&dir.path().join("progress.db")).unwrap());
+    let state = AppState {
+        store:store.clone(), started:std::time::Instant::now(), build_hash:"probe-progress".into(),
+        auth_token:None, reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    };
+    let block_writer = || {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let db = store.clone();
+        let thread = std::thread::spawn(move || db.write(move |_| {
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(amux_server::db::WriteOutcome {applied:false,events:vec![]})
+        }).unwrap());
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        (release_tx,thread)
+    };
+    let (release, thread) = block_writer();
+    let (status, axum::Json(body)) = amux_server::api::health::health(axum::extract::State(state.clone())).await;
+    assert_eq!(status.as_u16(),503);
+    assert_eq!(body.board.error.as_deref(),Some("probe_deadline_exceeded"));
+    assert!(!body.board.measured);
+    assert_eq!(body.store_probe.last_success_age_ms,None,"never claim a measurement before completion");
+    assert!(body.store_probe.in_flight_age_ms.is_some());
+    release.send(()).unwrap(); thread.join().unwrap();
+    // The detached work must publish its success even though its HTTP caller
+    // already received 503. A new healthy response alone does not prove this.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (release, thread) = block_writer();
+    let (status, axum::Json(body)) = amux_server::api::health::health(axum::extract::State(state)).await;
+    release.send(()).unwrap(); thread.join().unwrap();
+    assert_eq!(status.as_u16(),503);
+    assert!(!body.board.measured,"the current request is still unmeasured");
+    assert!(body.store_probe.last_success_age_ms.is_some_and(|age| age < 5000),
+        "the earlier detached probe completed successfully; a watchdog must see that progress");
+}

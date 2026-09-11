@@ -60,6 +60,9 @@ pub struct Health {
     pub uptime_s: u64,
     pub rev: Option<u64>,
     pub store: &'static str,
+    /// Progress of the actual probe, including work that completed after the
+    /// HTTP budget. Historical success is not current readiness.
+    pub store_probe: StoreProbeProgress,
     pub pid: u32,
     pub server: &'static str,
     /// Open descriptors / the process's own RLIMIT_NOFILE soft limit.
@@ -479,6 +482,23 @@ fn fd_health() -> Option<FdHealth> {
     Some(FdHealth { open, limit, ratio: open as f64 / limit as f64 })
 }
 
+#[derive(Serialize)]
+pub struct StoreProbeProgress {
+    pub last_success_age_ms: Option<u64>,
+    pub in_flight_age_ms: Option<u64>,
+}
+
+// Monotonic, process-local timestamps: zero is reserved for "not measured".
+fn probe_clock_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+struct ProbeFlight(std::sync::Arc<std::sync::atomic::AtomicU64>);
+impl Drop for ProbeFlight {
+    fn drop(&mut self) { self.0.store(0, std::sync::atomic::Ordering::Relaxed); }
+}
+
 pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>) {
     // AMUX-4225: a pooled read can wait 30s and SQLite itself can wait 5s.
     // Neither may occupy a Tokio worker, including the worker accepting TLS.
@@ -488,10 +508,13 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
     let phase = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
     let result = match state.store.health_probe.clone().try_acquire_owned() {
         Ok(permit) => {
+            state.store.health_probe_started.store(probe_clock_ms(), std::sync::atomic::Ordering::Relaxed);
             let store = state.store.clone();
             let phase = phase.clone();
             let task = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
+                let _flight = ProbeFlight(store.health_probe_started.clone());
+                let probe_started = std::time::Instant::now();
                 phase.store(1, std::sync::atomic::Ordering::Relaxed);
                 // Readability alone concealed a dead writer for hours while
                 // every queued mutation failed. Exercise the serialized write
@@ -511,6 +534,17 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
                         BoardProbe { measured: true, ok: false, rows_mapped: 0, error: Some(e.to_string()) }
                     }
                 };
+                // A timed-out JoinHandle keeps running, but used to discard
+                // every eventual success. The watchdog then inferred a dead
+                // database from three slow samples and killed a serving app.
+                if board.ok {
+                    store.health_probe_last_success.store(probe_clock_ms(), std::sync::atomic::Ordering::Relaxed);
+                    if probe_started.elapsed() >= std::time::Duration::from_millis(250) {
+                        tracing::info!(target:"health", verdict="slow_probe_completed",
+                            measured=true, elapsed_ms=probe_started.elapsed().as_millis() as u64,
+                            "store probe completed after the HTTP deadline; readiness history retained");
+                    }
+                }
                 Ok((rev, board))
             });
             match tokio::time::timeout(std::time::Duration::from_millis(250), task).await {
@@ -532,6 +566,12 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             (None, "hung", StatusCode::SERVICE_UNAVAILABLE,
                 BoardProbe { measured: false, ok: false, rows_mapped: 0, error: Some(reason.into()) })
         }
+    };
+    let now = probe_clock_ms();
+    let age = |value: u64| (value != 0).then(|| now.saturating_sub(value));
+    let store_probe = StoreProbeProgress {
+        last_success_age_ms: age(state.store.health_probe_last_success.load(std::sync::atomic::Ordering::Relaxed)),
+        in_flight_age_ms: age(state.store.health_probe_started.load(std::sync::atomic::Ordering::Relaxed)),
     };
     let board_bad = board.measured && !board.ok;
     let fds = fd_health();
@@ -573,6 +613,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             uptime_s: state.started.elapsed().as_secs(),
             rev,
             store,
+            store_probe,
             pid: std::process::id(),
             server: "amux-rust",
             fds,
