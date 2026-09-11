@@ -2050,3 +2050,15 @@ CARD: AMUX-4417
 SYMPTOM: The rapid-send lifecycle case failed on desktop, mobile and iPhone WebKit: the first local send cleared, but the second distinct message remained in the composer after Send. _btnFire suppressed every activation within 350 ms instead of only the synthesized echo of one gesture.
 COST: A legitimate new message required another tap and made the local-first composer appear stuck.
 FIX: Reset per-button echo suppression on a new pointerdown/touchstart and allow distinct keyboard activation. Keep the same gesture's pointerup/touchend/click echoes deduplicated. The rapid-send UI case exercises two different messages and verifies two unique IDs, immediate continuation and terminal rendering; the event contract verifies duplicate echoes still fire once. Existing send-fire diagnostics retain the pre/post composer length and event sequence.
+
+
+## Semantic intake acceptance listed worker-message coverage but only exercised the board API
+AREA: testing
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: LC-SEMANTIC-INTAKE posted candidate tasks directly to /api/board. The canonical case also promised captured worker messages, but no executable scenario sent those messages through a composer and checked their surviving task links.
+COST: A direct-board semantic pass could be mistaken for proof that ordinary new messages avoid near-duplicate board tasks.
+FIX: Add LC-SEMANTIC-MESSAGES to live discovery: six composer messages must produce three tasks, four linked source messages on one survivor, measured append/update decisions and preserved requirements. Follow source links in desktop/mobile details. Record live prerequisites separately: the first attempt failed worker admission under host memory pressure before sending, so it is not a semantic pass. Preserve the dedicated run's health and trace evidence.

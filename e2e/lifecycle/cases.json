@@ -669,10 +669,11 @@
   {
     "id": "LC-SEMANTIC-INTAKE",
     "surface": "Semantic task intake",
-    "actions": "Submit paraphrased duplicate work, a refined requirement, a related independent outcome, and a different-domain task. Repeat through captured worker messages. Inspect actual model decisions, survivor IDs, retained context and task history.",
-    "expected": "Same work appends or updates one existing task; distinct outcomes get distinct tasks. No task content is lost; unavailable comparison is explicit.",
+    "actions": "Create tasks through both the direct board API and six actual composer messages to a real worker: initial request, paraphrase, added context, revised requirements, independent UI outcome and separate-domain output. Use the real helper model and inspect task/message links in desktop and phone views.",
+    "expected": "The six messages produce exactly three tasks. Paraphrase/context/refinement preserve one survivor ID, increasing revision, all four linked full source messages and original requirements. Logs must record measured create/append/update decisions. Distinct outcomes remain separate. No explicit task IDs, mocked classifier, observer board/history writes or manual completion can manufacture the result; unavailable comparison fails the live case.",
     "sources": [
       "e2e/lifecycle/live-semantic-intake.spec.ts",
+      "e2e/lifecycle/live-semantic-messages.spec.ts",
       "crates/amux-server/src/api/board_intake.rs"
     ]
   },
