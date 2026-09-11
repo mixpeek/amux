@@ -2083,14 +2083,26 @@ function updateConnectionStatus() {
     return;
   }
   banner.classList.add('active');
-  const parts = [];
-  if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
-  if (offlineQueue.length) parts.push(offlineQueue.length + ' op' + (offlineQueue.length === 1 ? '' : 's'));
-  // Say what is true. "Unsaved changes" over a queue that is retrying by
-  // itself reads as data loss; it is a delayed send.
-  title.innerHTML = online
-    ? '&#x21BB; Still sending &mdash; ' + parts.join(', ') + ' waiting'
-    : '&#x26A0; Offline &mdash; ' + parts.join(', ') + ' queued, will send on reconnect';
+  const blockedOps = offlineQueue.filter(q => q.state === 'blocked');
+  const pendingOps = offlineQueue.filter(q => q.state !== 'blocked');
+  if (online) {
+    if (blockedOps.length && !pendingOps.length && !drafts.length) {
+      title.innerHTML = '&#x26A0; ' + blockedOps.length + ' failed op' + (blockedOps.length === 1 ? '' : 's') +
+        ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
+        ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
+    } else {
+      const parts = [];
+      if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
+      if (pendingOps.length) parts.push(pendingOps.length + ' sending');
+      if (blockedOps.length) parts.push(blockedOps.length + ' failed');
+      title.innerHTML = '&#x21BB; ' + parts.join(', ');
+    }
+  } else {
+    const parts = [];
+    if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
+    if (offlineQueue.length) parts.push(offlineQueue.length + ' op' + (offlineQueue.length === 1 ? '' : 's'));
+    title.innerHTML = '&#x26A0; Offline &mdash; ' + parts.join(', ') + ' queued, will send on reconnect';
+  }
   const rows = [];
   drafts.forEach(d => {
     rows.push('<div class="offline-op">' +
@@ -2101,9 +2113,13 @@ function updateConnectionStatus() {
   offlineQueue.forEach(item => {
     const age = Math.floor((Date.now() - item.timestamp) / 60000);
     const timeStr = age < 1 ? 'just now' : age + 'm ago';
-    rows.push('<div class="offline-op">' +
-      '<span class="op-action">' + esc(describeOp(item)) + (item.error ? ' — ' + esc(item.error) : '') + '</span>' +
-      '<span class="op-time">' + timeStr + '</span>' +
+    const isBlocked = item.state === 'blocked';
+    const dismissBtn = isBlocked
+      ? ' <button type="button" onclick="_dismissQueuedOp(\'' + escJs(item.id) + '\')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px;" title="Dismiss">&#x2715;</button>'
+      : '';
+    rows.push('<div class="offline-op' + (isBlocked ? ' blocked' : '') + '">' +
+      '<span class="op-action">' + esc(describeOp(item)) + (item.error ? ' <span style="color:var(--red,#e55)">[' + esc(item.error).substring(0, 80) + ']</span>' : '') + '</span>' +
+      '<span class="op-time">' + timeStr + dismissBtn + '</span>' +
     '</div>');
   });
   // Accordion (Ethan 08:39): once the queued list exceeds 5, collapse it by
@@ -2510,6 +2526,20 @@ async function _removeQueuedOperation(id) {
   await _mutateQueue(current => { const at = current.findIndex(q => q.id === id); if (at >= 0) current.splice(at, 1); });
   if (!offlineQueue.length && !drafts.length) _writeError = '';
   updateConnectionStatus(); showQueueModal();
+}
+
+async function _dismissQueuedOp(id) {
+  await _mutateQueue(current => { const at = current.findIndex(q => q.id === id); if (at >= 0) current.splice(at, 1); });
+  if (!offlineQueue.length && !drafts.length) _writeError = '';
+  updateConnectionStatus();
+}
+
+async function _clearBlockedOps() {
+  await _mutateQueue(current => {
+    for (let i = current.length - 1; i >= 0; i--) { if (current[i].state === 'blocked') current.splice(i, 1); }
+  });
+  if (!offlineQueue.length && !drafts.length) _writeError = '';
+  updateConnectionStatus();
 }
 
 // Queue modal
@@ -10128,7 +10158,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.909';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.910';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
