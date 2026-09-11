@@ -7108,8 +7108,7 @@ async function doSend(name, text) {
   const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
   const sendOpts = { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, _authHeaders()), body: sendBody };
   try {
-    const r = await fetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
-    if (_isLocallyQueued(r)) return 'queued';
+    const r = await _origFetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
     if (r.ok) return 'sent';
     if (r.status === 409) {
       const d = await r.json().catch(() => ({}));
@@ -9838,7 +9837,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.896';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.897';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

@@ -1568,6 +1568,7 @@
     .header-row { gap: 4px; flex-wrap: nowrap; }
     .header-row h1 { font-size: 1.1rem; flex-shrink: 0; }
     .header-row > div { gap: 6px !important; flex-shrink: 1; min-width: 0; }
+    .btn-rate-limit { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 8px; }
   }
 
   /* Header + dropdown */
@@ -1946,7 +1947,7 @@
        2026-09-10: "the toolbar on the top of the worker is wonky"). Even
        distribution uses the same width without inventing a void. */
     .peek-msg-nav { flex:0 1 auto; }
-    .peek-toolbar { justify-content:space-between; }
+    .peek-toolbar { justify-content:space-between; max-width:none; gap:6px; }
   }
   .peek-filter-panel { position:absolute; top:calc(100% + 7px); left:0; width:min(320px,calc(100vw - 24px)); box-sizing:border-box; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,0.25); z-index:65; max-height:calc(100dvh - 180px); overflow-y:auto; }
   .peek-filter-panel[hidden] { display:none; }
