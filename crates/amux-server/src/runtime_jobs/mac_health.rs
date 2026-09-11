@@ -385,6 +385,96 @@ fn check_claude_count(max: usize) -> Option<usize> {
     Some(count)
 }
 
+/// Swap percentage in use, or None when it cannot be read.
+fn swap_used_pct() -> Option<f64> {
+    let out = std::process::Command::new("sysctl").args(["-n", "vm.swapusage"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    // "total = 32768.00M  used = 31284.00M  free = 1484.00M  (encrypted)"
+    let grab = |key: &str| -> Option<f64> {
+        let at = text.find(key)?;
+        text[at + key.len()..]
+            .trim_start_matches(|c: char| c == '=' || c.is_whitespace())
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .next()?
+            .parse::<f64>()
+            .ok()
+    };
+    let (total, used) = (grab("total")?, grab("used")?);
+    if total <= 0.0 { return None; }
+    Some(used / total * 100.0)
+}
+
+/// tmux sessions created by an amux TEST harness, older than `grace_s`.
+///
+/// These are the amux-owned share of memory pressure and nothing else reaps
+/// them: they carry no registered worker, so no lane owns them, and each holds
+/// a claude process. Measured 2026-09-10 on a host at 96% swap: 40 such panes
+/// alive, 25 of them leaked by amux's own lifecycle e2e spec across earlier
+/// runs, together holding 19 claude processes.
+///
+/// Scoped to prefixes a harness mints, never to a worker name. A real lane is
+/// somebody's work in progress and is not this job's to end.
+fn stale_test_panes(grace_s: u64) -> Vec<String> {
+    const HARNESS: [&str; 3] = ["e2e-", "board-reviewer-", "callback-b-"];
+    let out = std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name} #{session_created}"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() { return Vec::new(); }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, created) = line.rsplit_once(' ')?;
+            let bare = name.strip_prefix("amux-")?;
+            if !HARNESS.iter().any(|p| bare.starts_with(p)) { return None; }
+            let age = now.saturating_sub(created.trim().parse::<u64>().ok()?);
+            (age >= grace_s).then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn test_pane_grace_s() -> u64 {
+    std::env::var("AMUX_TEST_PANE_GRACE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(1800)
+}
+
+/// The top memory consumers, aggregated by command, as one log line.
+///
+/// Printed only under pressure, because that is when somebody needs to know
+/// WHERE the memory went — and a ranking is the thing a swap percentage cannot
+/// tell you. Measured on this host it was the discriminator: claude 14.8 GB
+/// over 55 processes, and fseventsd holding 8.8 GB in ONE process, which is a
+/// system daemon no scheduler should be killing.
+fn top_memory_consumers(n: usize) -> String {
+    let Ok(out) = std::process::Command::new("ps").args(["-eo", "rss=,comm="]).output() else {
+        return String::from("(unavailable)");
+    };
+    let mut by_cmd: std::collections::HashMap<String, (u64, usize)> = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let line = line.trim();
+        let Some((rss, comm)) = line.split_once(char::is_whitespace) else { continue };
+        let Ok(rss) = rss.trim().parse::<u64>() else { continue };
+        let name = comm.trim().rsplit('/').next().unwrap_or(comm.trim()).to_string();
+        let e = by_cmd.entry(name).or_insert((0, 0));
+        e.0 += rss;
+        e.1 += 1;
+    }
+    let mut rows: Vec<_> = by_cmd.into_iter().collect();
+    rows.sort_by_key(|(_, (rss, _))| std::cmp::Reverse(*rss));
+    rows.iter()
+        .take(n)
+        .map(|(cmd, (rss, procs))| format!("{cmd}={:.1}GB/{procs}p", *rss as f64 / 1_048_576.0))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn mem_reap_swap_pct() -> f64 {
+    std::env::var("AMUX_MEM_REAP_SWAP_PCT").ok().and_then(|v| v.parse().ok()).unwrap_or(85.0)
+}
+
 fn one_pass() {
     let grace = ray_orphan_grace_s();
     let pw_grace = playwright_chrome_grace_s();
@@ -512,6 +602,32 @@ fn one_pass() {
         );
     }
 
+    // --- Memory pressure: reap what amux owns, and NAME the rest ---
+    let swap_pct = swap_used_pct();
+    let mut panes_reaped = 0usize;
+    if swap_pct.is_some_and(|p| p >= mem_reap_swap_pct()) {
+        for name in stale_test_panes(test_pane_grace_s()) {
+            if std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &name])
+                .status()
+                .is_ok_and(|st| st.success())
+            {
+                panes_reaped += 1;
+                tracing::info!(job = JOB, pane = %name, "mac-health: reaped a stale test pane under memory pressure");
+            }
+        }
+        tracing::warn!(
+            job = JOB,
+            swap_pct = swap_pct.unwrap_or(-1.0) as i64,
+            threshold_pct = mem_reap_swap_pct() as i64,
+            panes_reaped,
+            top_consumers = %top_memory_consumers(5),
+            knob = "AMUX_MEM_REAP_SWAP_PCT",
+            "mac-health: host is under memory pressure — reaped amux's own stale test panes. \
+             Anything named above that is not amux's is a human's call, not this job's."
+        );
+    }
+
     // --- Claude process count ---
     let claude_count = check_claude_count(max_claude);
     tracing::info!(
@@ -522,6 +638,9 @@ fn one_pass() {
         // one. -1 is never a process count.
         claude_count_measured = claude_count.is_some(),
         max_claude,
+        swap_pct = swap_pct.unwrap_or(-1.0) as i64,
+        swap_measured = swap_pct.is_some(),
+        panes_reaped,
         ray_alive = raylet_running(),
         playwright_chromes_reaped = pw_orphans.len(),
         rustc_reaped,
@@ -550,6 +669,49 @@ mod tests {
         assert_eq!(parse_etime("00:05"), Some(5));
         // Malformed -> None, not a panic.
         assert_eq!(parse_etime("bad"), None);
+    }
+
+    #[test]
+    fn the_pressure_arm_reaps_only_harness_panes_and_only_when_stale() {
+        // The rule this job must not get wrong: a real lane is somebody's work
+        // in progress. Only prefixes a HARNESS mints are eligible, and only
+        // once they are old enough that no run still owns them.
+        const HARNESS: [&str; 3] = ["e2e-", "board-reviewer-", "callback-b-"];
+        let eligible = |bare: &str| HARNESS.iter().any(|p| bare.starts_with(p));
+
+        // Real workers, including ones whose names merely CONTAIN a harness
+        // word — a prefix test and a substring test differ exactly here.
+        for lane in [
+            "amux", "backend", "mixpeek-orchestrator", "amux-testing-e2e",
+            "gtm-e2e-runner", "my-callback-b-worker",
+        ] {
+            assert!(!eligible(lane), "{lane} is a real lane and must never be reaped");
+        }
+        for harness in [
+            "e2e-life-desktop-1788996104537",
+            "board-reviewer-ios-safari-1788976843246",
+            "callback-b-desktop-1788849272894",
+        ] {
+            assert!(eligible(harness), "{harness} is harness scaffolding and should be eligible");
+        }
+
+        // Age gates independently of the name: a pane from a RUNNING test is
+        // not stale, and reaping it would kill the run that owns it.
+        let grace = test_pane_grace_s();
+        assert!(grace > 0, "a zero grace would reap panes belonging to a live run");
+        assert!(mem_reap_swap_pct() > 0.0 && mem_reap_swap_pct() <= 100.0);
+    }
+
+    #[test]
+    fn swap_and_consumers_report_absence_rather_than_a_false_zero() {
+        // Both feed a decision to KILL things, so "could not measure" must not
+        // arrive as a number. swap_used_pct returns Option and the tick logs
+        // swap_measured beside it; the ranking says so in words.
+        if let Some(p) = swap_used_pct() {
+            assert!((0.0..=100.0).contains(&p), "swap pct out of range: {p}");
+        }
+        let top = top_memory_consumers(3);
+        assert!(!top.is_empty(), "the consumer ranking must never render as an empty string");
     }
 
     #[test]
