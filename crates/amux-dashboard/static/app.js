@@ -2406,6 +2406,11 @@ async function _runSyncBanner(quiet = false) {
         q.state = 'blocked';
         throw new Error('Needs review before retry: expired or unsupported operation');
       }
+      q.attempted_at ||= Date.now();
+      let stillQueued = false;
+      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) { saved.attempted_at = q.attempted_at; saved.not_attempted = false; stillQueued = true; } });
+      if (!stillQueued) { item.status = 'done'; return; }
+      try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
       const r = await _boundedMutationFetch(q.url, opts);
       if (!r.ok) {
@@ -2680,7 +2685,7 @@ async function _queueOp(url, options) {
       }
     } catch (e) {}
   }
-  const entry = { id: options._outboxId || crypto.randomUUID(), url, options: { method: options.method, headers: options.headers, body }, timestamp: Date.now(), state: 'pending' };
+  const entry = { id: options._outboxId || crypto.randomUUID(), url, options: { method: options.method, headers: options.headers, body }, timestamp: Date.now(), state: 'pending', not_attempted:true };
   try {
     await _mutateQueue(current => {
       if (current.some(q => q.id === entry.id)) return;
@@ -2801,17 +2806,50 @@ function _outboxBoardAcknowledged(card) {
     _boardDraftsPersist();
   }
 }
+async function _waitForMessageReceipt(input, init, signal) {
+  let msgId;
+  try { msgId = JSON.parse(init?.body || '{}').msg_id; } catch (_) {}
+  if (!msgId || !/\/api\/sessions\/[^/?]+\/(send|steer)$/.test(input)) return new Promise(() => {});
+  const url = input.replace(/\/(send|steer)$/, '/send') + '?msg_id=' + encodeURIComponent(msgId);
+  while (!signal.aborted) {
+    await new Promise((resolve, reject) => {
+      const stop = () => { clearTimeout(timer); reject(new DOMException('Stopped', 'AbortError')); };
+      const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve(); }, 1000);
+      signal.addEventListener('abort', stop, {once:true});
+    });
+    try {
+      const r = await _origFetch(url, {headers:init.headers, signal, cache:'no-store'});
+      const receipt = r.ok ? await r.json() : null;
+      if (receipt?.accepted === true && receipt.msg_id === msgId && typeof receipt.id === 'string' && receipt.id) {
+        try { amuxTrack('outbox_acceptance_receipt', {id:msgId}); } catch (_) {}
+        return new Response(JSON.stringify({ok:true,deduped:true,id:receipt.id}), {status:200,headers:{'Content-Type':'application/json'}});
+      }
+    } catch (e) { if (signal.aborted) throw e; }
+  }
+  throw new DOMException('Stopped', 'AbortError');
+}
 async function _boundedMutationFetch(input, init) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   const signal = init && init.signal
     ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+  const original = (async () => {
+    try {
+      const response = await _origFetch(input, { ...init, signal });
+      const bytes = await response.arrayBuffer();
+      return new Response([204, 205, 304].includes(response.status) ? null : bytes, {status: response.status, statusText: response.statusText, headers: response.headers});
+    } finally { clearTimeout(timer); }
+  })();
+  const poll = new AbortController();
   try {
-    const response = await _origFetch(input, { ...init, signal });
-    const bytes = await response.arrayBuffer();
-    return new Response([204, 205, 304].includes(response.status) ? null : bytes, {status: response.status, statusText: response.statusText, headers: response.headers});
-  } finally { clearTimeout(timer); }
+    return await Promise.race([original, _waitForMessageReceipt(input, init, AbortSignal.any([signal,poll.signal]))]);
+  } finally {
+    // A receipt wins without cancelling the original handler's board work.
+    // Its existing request deadline still bounds transport resources.
+    poll.abort();
+  }
 }
+
 window.fetch = async function(input, init) {
   const url = typeof input === 'string' ? input : (input && input.url) || '';
   if (!_outboxQueueable(url, init)) return _origFetch(input, init);
@@ -9901,7 +9939,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.903';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.904';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -16246,17 +16284,21 @@ function _pendingSendsFor(session) {
     if (!m || decodeURIComponent(m[1]) !== session) return;
     let text = '';
     try { text = (JSON.parse(op.options?.body || '{}').text) || ''; } catch(e) {}
-    if (text) out.push({ text, ts: op.timestamp, kind: m[2], idx });
+    if (text) out.push({ text, ts: op.timestamp, kind: m[2], idx, attempted: !!(op.attempted_at || op.attempts || !op.not_attempted), id:op.id });
   });
   return out;
 }
-async function _pendingCancel(idx) {
-  if (idx < 0 || idx >= offlineQueue.length) return;
-  const id = offlineQueue[idx].id;
-  await _mutateQueue(current => { const at = current.findIndex(q => q.id === id); if (at >= 0) current.splice(at, 1); });
+async function _pendingCancel(id) {
+  if (typeof id !== 'string' || !id) return;
+  let removed = false;
+  await _mutateQueue(current => {
+    const at = current.findIndex(q => q.id === id);
+    if (at < 0 || !current[at].not_attempted || current[at].attempted_at || current[at].attempts || _outboxActive.has(id)) return;
+    current.splice(at, 1); removed = true;
+  });
   updateConnectionStatus();
   _peekMessagesRender();
-  showToast('Removed from queue');
+  showToast(removed ? 'Removed from queue' : 'Already attempted — check the worker before retrying or removing it');
 }
 // Normal delivery is visible in Messages. Only offline or delayed messages
 // need a notice above the composer; do not flash a queued pill on every Send.
@@ -16326,9 +16368,9 @@ function _peekMessagesRender() {
     const safe = _hlSearch(p.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'), q);
     return `<div style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);display:flex;gap:10px;align-items:flex-start;">
       <div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">
-        <div style="margin-bottom:4px;"><span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">&#x23F3; pending${p.kind==='steer'?' &middot; queue':''}</span><span style="color:var(--dim);font-size:0.7rem;">${ts} &mdash; not yet delivered${online?', sending soon':', waiting for connection'}</span></div>
+        <div style="margin-bottom:4px;"><span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${p.attempted ? 'Awaiting confirmation' : 'Saved on this device'}</span><span style="color:var(--dim);font-size:0.7rem;">${ts} &mdash; ${p.attempted ? 'may already be with the worker' : online ? 'waiting to sync' : 'waiting for connection'}</span></div>
         ${safe}</div>
-      <button onclick="event.stopPropagation();_pendingCancel(${p.idx})" title="Remove from the offline queue (will NOT be sent)" style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;padding:2px 6px;min-width:24px;min-height:24px;">&#215;</button>
+      <button ${p.attempted ? 'hidden disabled' : ''} onclick="event.stopPropagation();_pendingCancel('${escJs(p.id)}')" title="Remove this unattempted local message" style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;padding:2px 6px;min-width:24px;min-height:24px;">&#215;</button>
     </div>`;
   }).join('');
   const cnt = document.getElementById('peek-messages-count');

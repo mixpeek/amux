@@ -34,6 +34,7 @@ function fixture(names = [], shared = {}) {
     _authHeaders: h => h, esc: s => s, describeOp: q => q.url,
     showToast() {}, amuxTrack() {}, updateConnectionStatus() {}, fetchSessions() {}, fetchBoard() {},
     _loadCmdHistoryFromServer: () => Promise.resolve(), _peekMessagesBadge() {}, _outboxBoardAcknowledged() {},
+    _waitForMessageReceipt: () => new Promise(() => {}),
     _origFetch: async () => new Response('{"id":"TASK-1"}', {status:200}),
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
@@ -436,4 +437,41 @@ test('composer pending notice is quiet for ordinary delivery, visible for a dela
   ctx.online = false;
   ctx._updatePendingPill();
   assert.match(element('peek-pending-pill').innerHTML, /saved offline/);
+});
+
+test('exact durable receipt drains local intent while the original POST remains unfinished', async () => {
+  const {ctx,stored,timers}=fixture(['_waitForMessageReceipt']);
+  await ctx._queueOp('/api/sessions/worker/send',{method:'POST',body:JSON.stringify({text:'already in native queue',msg_id:'receipt-race'})});
+  let finish;let posts=0;let reads=0;
+  ctx._origFetch=(url)=>{
+    if(url.includes('?msg_id=')){reads++;return Promise.resolve(new Response(JSON.stringify({ok:true,accepted:true,msg_id:'receipt-race',id:'accepted-one'})));}
+    posts++;return new Promise(resolve=>{finish=resolve;});
+  };
+  const replay=ctx.runSyncBanner();await new Promise(setImmediate);
+  assert.ok(JSON.parse(stored.get('amux_offline_queue'))[0].attempted_at);
+  [...timers.values()].at(-1)(); // the receipt delay, while POST stays held
+  await replay;
+  assert.equal(posts,1);assert.equal(reads,1);assert.equal(ctx.offlineQueue.length,0);
+  finish(new Response('{"ok":true,"submitted":true}'));await new Promise(setImmediate);
+});
+
+test('an unaccepted or wrong-identity receipt never clears the local message',async()=>{
+  for(const receipt of [{ok:true,accepted:false,msg_id:'wanted'},{ok:true,accepted:true,msg_id:'other',id:'not-ours'}]){
+    const {ctx,timers}=fixture(['_waitForMessageReceipt']);
+    await ctx._queueOp('/api/sessions/worker/send',{method:'POST',body:'{"text":"retain","msg_id":"wanted"}'});
+    let finish;ctx._origFetch=url=>url.includes('?msg_id=')?Promise.resolve(new Response(JSON.stringify(receipt))):new Promise(resolve=>{finish=resolve});
+    const replay=ctx.runSyncBanner();await new Promise(setImmediate);[...timers.values()].at(-1)();await new Promise(setImmediate);
+    assert.equal(ctx.offlineQueue.length,1);
+    finish(new Response('temporarily unavailable',{status:503}));await replay;
+    assert.equal(ctx.offlineQueue.length,1);
+  }
+});
+
+test('an attempted local send cannot be cancelled as though it never reached the server',async()=>{
+  const {ctx,stored}=fixture(['_pendingCancel']);ctx._peekMessagesRender=()=>{};
+  await ctx._queueOp('/api/sessions/worker/send',{method:'POST',body:'{"text":"retain"}'});
+  await ctx._mutateQueue(rows=>{rows[0].attempted_at=Date.now()});
+  await ctx._pendingCancel(ctx.offlineQueue[0].id);assert.equal(JSON.parse(stored.get('amux_offline_queue')).length,1);
+  await ctx._mutateQueue(rows=>{delete rows[0].attempted_at});
+  await ctx._pendingCancel(ctx.offlineQueue[0].id);assert.equal(ctx.offlineQueue.length,0);
 });

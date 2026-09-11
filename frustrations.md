@@ -2014,3 +2014,15 @@ CARD: AMUX-4417
 SYMPTOM: The real Gemini mobile upload screenshot showed direct? on MSG-80 although its API receipt recorded queued. Both the shared history cache mapping and _msgNorm discarded delivery metadata before the shared renderer read it.
 COST: New messages looked like legacy records, and failed submission indicators could disappear from all three message surfaces.
 FIX: Preserve recorded delivery, queue timestamps, wait duration and submission verdict through the shared normalizer, and use it for initial history loading too. A browser regression fetches controlled direct, queued and stuck API rows through the actual scoped loader, renders all three message surfaces and requires their real labels. The existing server delivery logs and exposed steering outcome remain the diagnostic signal.
+
+
+## Delivered message still appears locally unsent while its response is pending
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The user's 11:55:17 screenshot showed a homepage request in Claude's native queue while Messages said not yet delivered. Its exact MSG-55405 server record had direct/confirmed delivery at 11:55:12. Local pending state was tied to the entire POST response, including downstream board processing, instead of the durable acceptance already recorded.
+COST: The client contradicted the terminal and offered cancellation as if an already-attempted message could still be prevented from sending.
+FIX: Expose a read-only, non-cacheable receipt lookup scoped by session and msg_id. During an in-flight send, a bounded lookup can acknowledge the exact durable receipt without repeating delivery or cancelling the original handler's board work. Persist attempted state before transport, label uncertainty as Awaiting confirmation, and refuse local cancellation once attempted; legacy entries without attempt provenance are conservative. acceptance_receipt_read and outbox_acceptance_receipt expose reconciliation. Tests hold the original POST open, reject wrong-ID/unaccepted receipts, and check the real handler never reserves or sends on a lookup.

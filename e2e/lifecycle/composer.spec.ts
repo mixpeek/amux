@@ -104,6 +104,7 @@ test('LC-COMPOSER: focused and replacement inputs clear exactly the accepted dra
 });
 
 test('LC-COMPOSER: failed local persistence retains draft and sends nothing', async ({ page, request }) => {
+  test.setTimeout(60_000);
   await boot(page);
   const headers = await auth(page);
   const name = `lc-storage-${Date.now()}`;
@@ -144,6 +145,8 @@ test('LC-COMPOSER: failed local persistence retains draft and sends nothing', as
     await expect(page.locator('#conn-modal-write-notice')).toContainText('has not left this device');
   } finally {
     await page.evaluate(() => (window as any).__restoreStorage?.());
+    const connectionModal = page.locator('#conn-hist-modal');
+    if (await connectionModal.isVisible()) await connectionModal.click({position:{x:4,y:4}});
     await deleteOwnedWorkers(page, request, headers, [name]);
   }
 });

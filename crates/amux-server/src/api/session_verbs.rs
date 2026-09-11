@@ -5446,6 +5446,32 @@ async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<R
     Some(jresp(StatusCode::SERVICE_UNAVAILABLE,json!({"ok":false,"error":"message identity storage unavailable; retry the same message ID"})))
 }
 
+// Read the durable acceptance fact without repeating the send or waiting for
+// downstream semantic board intake to finish the original HTTP request.
+fn send_receipt(state: &AppState, name: &str, msg_id: &str) -> Response {
+    if msg_id.is_empty() || msg_id.len() > 256 {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error":"a valid msg_id is required"}));
+    }
+    let result = (|| -> rusqlite::Result<Option<String>> {
+        let conn = state.store.read().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row("SELECT receipt_id FROM send_dedup WHERE session=?1 AND msg_id=?2",
+            rusqlite::params![name,msg_id], |r| r.get(0))
+    })();
+    let response = match result {
+        Ok(Some(id)) => {
+            tracing::info!(target:"amux::message_acceptance", session=name, verdict="acceptance_receipt_read",
+                "confirmed durable receipt independently of the original send response");
+            j200(json!({"ok":true,"accepted":true,"id":id,"msg_id":msg_id}))
+        }
+        Ok(None) | Err(rusqlite::Error::QueryReturnedNoRows) =>
+            jresp(StatusCode::ACCEPTED,json!({"ok":true,"accepted":false,"msg_id":msg_id})),
+        Err(_) => jresp(StatusCode::SERVICE_UNAVAILABLE,json!({"error":"message receipt unavailable"})),
+    };
+    let mut response = response;
+    response.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    response
+}
+
 async fn send_dedup_accept(state: &AppState, name: &str, msg_id: &str, receipt_id: &str) {
     if msg_id.is_empty() { return; }
     let (session,identity,receipt)=(name.to_string(),msg_id.to_string(),receipt_id.to_string());
@@ -14217,6 +14243,7 @@ async fn get_dispatch(
     qs: &[(String, String)],
 ) -> Response {
     match action {
+        "send" if subid.is_empty() => send_receipt(state, name, qs_first(qs, "msg_id", "")),
         "" => {
             // Bare GET → the SAME record the list endpoint serves (py:74892).
             match crate::api::sessions_legacy::legacy_sessions_values(state.store.clone()).await {
@@ -24402,6 +24429,25 @@ CLAUDE-POSTFIX-COMPLETE
             format!("{password_key}=REDACTED {s3_key}=REDACTED"),
             "unlisted secret-bearing env names must be redacted by shape"
         );
+    }
+
+    #[tokio::test]
+    async fn acceptance_receipt_is_read_only_and_never_confuses_reservation_or_peer() {
+        let (state, _dir) = state();
+        async fn value(r: Response) -> Value {
+            serde_json::from_slice(&axum::body::to_bytes(r.into_body(),1<<20).await.unwrap()).unwrap()
+        }
+        assert!(send_dedup_gate(&state,"lane","same-id").await.is_none());
+        assert_eq!(value(send_receipt(&state,"lane","same-id")).await["accepted"],false);
+        send_dedup_accept(&state,"lane","same-id","receipt-one").await;
+        let r = get_dispatch(&state,"lane","send","",&[("msg_id".into(),"same-id".into())]).await;
+        assert_eq!(r.headers()["cache-control"],"no-store");
+        assert_eq!(value(r).await["id"],"receipt-one");
+        assert_eq!(value(send_receipt(&state,"peer","same-id")).await["accepted"],false);
+        assert_eq!(value(send_receipt(&state,"lane","unknown")).await["accepted"],false);
+        let conn = state.store.read().unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM send_dedup",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     }
 
     #[tokio::test]
