@@ -7330,34 +7330,28 @@ async function sendFromInput(name) {
   }
   const original = inp.value;
   const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
-  if (_composerPendingSends.has(name)) return;
-  _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _syncComposerPending();
-  try {
-    const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
-      : await doSend(name, _expandAtMentions(msg));
-    if (!['sent', 'queued'].includes(result)) {
-      _composerUnconfirmed(name, result, _files.length);
-      showToast('Message not confirmed — draft and attachments kept');
-      return;
+  const message = _expandAtMentions(msg);
+  // OPTIMISTIC: clear immediately, fire in background.
+  cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
+  _composerAcceptLocal(name, original);
+  const sent = new Set(_files);
+  for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
+  renderCardFiles(name);
+  (async () => {
+    try {
+      const result = queued
+        ? (await steerSession(name, message) ? 'queued' : 'failed')
+        : await doSend(name, message);
+      if (!['sent', 'queued'].includes(result) && result !== 'declined') {
+        _composerUnconfirmed(name, result, _files.length);
+        showToast('Send failed — use message history (⋮) to retry');
+      }
+    } catch (e) {
+      _composerUnconfirmed(name, 'exception', _files.length);
+      showToast('Send failed — use message history (⋮) to retry');
     }
-    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(name, original);
-    const sent = new Set(_files);
-    for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-    _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
-    renderCardFiles(name);
-    if (result === 'queued') showToast('Queued for ' + name);
-    else showToast('Sent to ' + name);
-    _cardQueuedBadge(name);
-  } catch (e) {
-    _composerUnconfirmed(name, 'exception', _files.length);
-    showToast('Message not confirmed — draft and attachments kept');
-  } finally {
-    _composerPendingSends.delete(name);
-    _syncComposerPending();
-  }
+  })();
 }
 
 // Mirror the peek's "queued" pill onto the card, so a worker with locally-queued
@@ -13376,47 +13370,41 @@ async function sendPeekCmd() {
     }
     message = _expandAtMentions(message);
   }
-  // Persist text and upload references in the local outbox before clearing.
-  // A network refusal remains reviewable in Sync and pending Messages.
-  _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _syncComposerPending();
-  let result = 'failed';
-  try {
-    result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
-      : await doSend(session, message);
-    if (!['sent', 'queued'].includes(result)) {
-      _composerUnconfirmed(session, result, files.length);
-      showToast('Message not confirmed — draft and attachments kept');
-      return;
-    }
-    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(session, original);
-    // Remove only the acknowledged files, never a new attachment added while
-    // waiting, or attachments belonging to a different worker's composer.
-    const sent = new Set(files);
-    for (const f of files) {
-      _cancelUpload(f);
-      if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-    }
-    if (peekSession === session) {
-      peekFiles = peekFiles.filter(f => !sent.has(f));
-      _peekFilesStash(session);
-      renderPeekFiles();
-      inp.style.borderColor = 'var(--green)';
-      setTimeout(() => { inp.style.borderColor = ''; }, 400);
-      _refreshPeekSoon();
-    } else if (_peekFilesBySession[session]) {
-      _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
-    }
-    if (result === 'queued') showToast('Queued for ' + session);
-  } catch (e) {
-    _composerUnconfirmed(session, 'exception', files.length);
-    showToast('Message not confirmed — draft and attachments kept');
-  } finally {
-    _composerPendingSends.delete(session);
-    _syncComposerPending();
+  // OPTIMISTIC: clear input and files immediately so the composer feels instant.
+  // The network request fires in the background; failures surface as a toast and
+  // the message is recoverable from command history.
+  cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
+  _composerAcceptLocal(session, original);
+  const sent = new Set(files);
+  for (const f of files) {
+    _cancelUpload(f);
+    if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   }
+  if (peekSession === session) {
+    peekFiles = peekFiles.filter(f => !sent.has(f));
+    _peekFilesStash(session);
+    renderPeekFiles();
+    inp.style.borderColor = 'var(--green)';
+    setTimeout(() => { inp.style.borderColor = ''; }, 400);
+  } else if (_peekFilesBySession[session]) {
+    _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
+  }
+  // Fire the actual send/steer in the background.
+  (async () => {
+    try {
+      const result = queued
+        ? (await steerSession(session, message) ? 'queued' : 'failed')
+        : await doSend(session, message);
+      if (!['sent', 'queued'].includes(result) && result !== 'declined') {
+        _composerUnconfirmed(session, result, files.length);
+        showToast('Send failed — use message history (⋮) to retry');
+      }
+      if (peekSession === session) _refreshPeekSoon();
+    } catch (e) {
+      _composerUnconfirmed(session, 'exception', files.length);
+      showToast('Send failed — use message history (⋮) to retry');
+    }
+  })();
 }
 // Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
 // Claude repaints a picker/selection in <50ms and the peek endpoint serves in
