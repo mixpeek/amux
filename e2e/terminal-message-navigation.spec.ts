@@ -637,3 +637,30 @@ test('live worker composer is a preserved draft, never a delivered message', asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({path:test.info().outputPath('worker-input-inline.png')});
 });
+
+test('Gemini peer messages remain searchable with the Workers terminal filter', async ({ page }) => {
+  await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({json:[{name:'nav-probe',provider:'gemini',running:true,status:'idle'}]}));
+  const raw = '> [amux-origin: reviewer — server-verified from the sender\'s session identity]\n\n  REVIEW_APPROVED Task ID: LG1A-2. Actual independent tests passed.\n\n✦ I will produce the report.\n> [12:30 PM] Read the reviewed report and summarize its actual results.\n✦ Report ready.\n────────────────────\n> Type your message or @path/to/file\n────────────────────\nworkspace (/directory)    sandbox    /model\n';
+  const classified = await page.evaluate(raw => {
+    const w = window as any;
+    eval("sessions = [{name:'nav-probe',provider:'gemini'}]; _peekMsgRowsFor='nav-probe'; _peekMsgRows=[{session:'nav-probe',type:'user',text:'Read the reviewed report and summarize its actual results.'}];");
+    eval('lastPeekHTML = _peekHtml(' + JSON.stringify(raw) + '); _peekHistoryHTML=lastPeekHTML; _lastLiveHTML="";');
+    w.applyPeekSearch(false, false);
+    return [...document.querySelectorAll('#peek-body .peek-prompt')].map(el => ({kind:(el as HTMLElement).dataset.msgKind,text:el.textContent}));
+  }, raw);
+  expect(classified.map(row => row.kind)).toEqual(['session','human']);
+  expect(classified[0].text).toContain('REVIEW_APPROVED');
+  expect(classified.some(row => row.text?.includes('Report ready'))).toBe(false);
+  await sourceFilter(page, 'session');
+  await page.getByRole('button', {name:'Find in terminal',exact:true}).click();
+  await page.locator('#peek-search').fill('REVIEW_APPROVED');
+  await expect(page.locator('#peek-body .peek-highlight.current')).toBeInViewport();
+  expect(await page.locator('#peek-body .peek-highlight.current').evaluate(el => el.closest('.peek-prompt')?.getAttribute('data-msg-kind'))).toBe('session');
+  // Shell/Markdown > lines in other providers must not become input messages.
+  const nonGemini = await page.evaluate(raw => {
+    eval("sessions = [{name:'nav-probe',provider:'claude'}]");
+    const host = document.createElement('div'); host.innerHTML=(window as any)._peekHtml(raw);
+    return host.querySelectorAll('.peek-prompt').length;
+  }, raw);
+  expect(nonGemini).toBe(0);
+});

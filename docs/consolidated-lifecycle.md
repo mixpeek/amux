@@ -842,3 +842,24 @@ identical messages sent to different peers, full phone Verified headers, and
 worker menus surviving scroll events from unrelated panels. Queue unit contracts
 execute the shipped functions and check automatic replay while connectivity is
 believed offline, plus quiet normal sends and visible stuck-send status.
+
+### Mobile storage and Gemini terminal regressions (2026-09-11)
+
+`LC-LOCAL-OUTBOX` now fills the actual browser localStorage quota using
+reproducible cache data before sending a large message. The prior queued message
+and another worker's draft must survive. A recoverable quota failure must reclaim
+cache space and accept the message locally. An unrecoverable write must send
+nothing, retain the draft, and expose its specific cause in Sync and
+`outbox-storage` diagnostics without message contents. The normal path keeps the
+Send button stable and avoids queue/sync completion toasts and connection-badge
+flashes. Run this on all three browser projects.
+
+Attachment cancellation is tested across immediate reload while its IndexedDB
+delete is deliberately held open. A cancelled file must not return; if the
+cancellation journal cannot persist, the file must remain available.
+
+Gemini peer prompts must remain searchable through the real Workers filter,
+including multiline input and the current `>` glyph. Claude/Codex output that
+starts with `>` must remain unclassified. Completion callbacks must not instruct
+the requester to notify themselves again; the integration regression inspects
+the durable callback rather than a fabricated reply.

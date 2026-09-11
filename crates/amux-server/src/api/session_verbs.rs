@@ -4408,12 +4408,9 @@ fn arm_peer_callback(
         row.callback_session = Some(requester.to_string());
         newly_armed = true;
     }
-    if row.callback_prompt.as_deref().is_none_or(str::is_empty) {
-        row.callback_prompt = Some(
-            "Notify the requesting worker with the terminal outcome and every produced asset."
-                .to_string(),
-        );
-    }
+    // The callback itself notifies the requester. A default instruction to
+    // notify them again creates acknowledgement loops and fresh capture cards.
+    // Preserve an explicitly authored callback prompt; no default is needed.
     // An identical transport retry can reuse the open capture card.  Preserve
     // an already pending/dispatching/queued callback rather than rewinding its
     // durable outbox state and sending the completion twice.

@@ -16,7 +16,9 @@ test('LC-LIVE: a new worker changes code, tests it, and drives its tasks to evid
   const before = await request.get('/health');
   expect(before.ok()).toBeTruthy();
   const health = await before.json();
-  const name = `lifecycle-${Date.now()}`;
+  const observe = process.env.AMUX_LIFECYCLE_JOURNEY_OBSERVE === '1';
+  const name = process.env.AMUX_LIFECYCLE_JOURNEY_RUN || `lifecycle-${Date.now()}`;
+  expect(name.startsWith('lifecycle-')).toBe(true);
   const marker = `${name}-complete`;
   const prompt = `Work only in ${cwd}. This is an acceptance test with three deliverables.
 Create three separate chore board tasks assigned to your own worker; link their dependencies.
@@ -32,6 +34,7 @@ test passed without running it. This is scratch work, with no production deploym
 Finish every deliverable at Done using its legitimate chore gates. Never acknowledge production,
 merge or CI checks that did not happen. Include node --test sum.test.mjs and its actual result
 in each deliverable's evidence. Verified is reserved for independent harness verification.`;
+  if (!observe) {
   await page.locator('#tab-sessions').click();
   await page.locator('[onclick*="toggleAddMenu"]').click();
   await page.locator('.card-menu-item', { hasText: 'New worker' }).click();
@@ -41,6 +44,7 @@ in each deliverable's evidence. Verified is reserved for independent harness ver
   await page.locator('#create-prompt').fill(prompt);
   await checkpoint(page, info, 'live-01-worker-and-prompt');
   await createLifecycleWorker(page);
+  }
   const roster = await request.get('/api/sessions', { headers });
   expect(roster.ok()).toBeTruthy();
   expectLifecycleWorker((await roster.json()).find((row: any) => row.name === name));
@@ -60,10 +64,12 @@ in each deliverable's evidence. Verified is reserved for independent harness ver
       await page.goto('/#view=board');
       await page.locator('#tab-board').click();
       await page.screenshot({ path: info.outputPath(`progress-${samples.length}.png`), fullPage: true });
-      const deliverables = cards.filter(row => !['epic', 'prompt'].includes(row.type));
-      return deliverables.length >= 3 && cards.every(row => ['done', 'verified'].includes(row.status));
+      const deliverables = cards.filter(row => !['epic', 'prompt'].includes(row.type) && ['done', 'verified'].includes(row.status));
+      // The server captures the source request too. A worker may legitimately
+      // discard that shell after producing the three concrete deliverables.
+      return deliverables.length >= 3 && cards.every(row => ['done', 'verified', 'discarded'].includes(row.status));
     }, { timeout: 1_050_000, intervals: [5000, 15000, 30000], message: 'worker must finish its own tasks, without observer intervention' }).toBe(true);
-    for (const card of cards) {
+    for (const card of cards.filter(row => row.status !== 'discarded')) {
       expect(String(card.evidence || '').length, `${card.id} must carry command/result evidence`).toBeGreaterThan(20);
       if (!['epic', 'prompt'].includes(card.type)) expect(card.evidence).toContain('node --test sum.test.mjs');
       if (card.status === 'verified') {

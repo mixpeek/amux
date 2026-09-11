@@ -25,10 +25,11 @@ function fixture(names = [], shared = {}) {
     console, Date, Promise, Set, Map, JSON, Math,
     location: {origin: 'https://amux.test'}, navigator: {locks: shared.locks || sharedStorage().locks},
     document: {getElementById: element},
-    localStorage: {setItem(k,v) { stored.set(k,v); }, getItem(k) { return stored.get(k) ?? null; }},
+    localStorage: {setItem(k,v) { stored.set(k,v); }, getItem(k) { return stored.get(k) ?? null; },
+      removeItem(k) { stored.delete(k); }, key(i) { return [...stored.keys()][i] ?? null; }, get length() { return stored.size; }},
     setTimeout(fn) { timers.set(++tid, fn); return tid; }, clearTimeout(id) { timers.delete(id); },
     API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null, _syncBackoffMs: 0, _SYNC_MIN_MS: 2000, _SYNC_MAX_MS: 60000,
-    _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
+    _localWriteError: '', window:{isSecureContext:true}, APP_VER:'test', _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
     _OUTBOX_SKIP: /\/api\/client-debug/, _OUTBOX_METHODS: {POST:1,PATCH:1,PUT:1,DELETE:1},
     _authHeaders: h => h, esc: s => s, describeOp: q => q.url,
     showToast() {}, amuxTrack() {}, updateConnectionStatus() {}, fetchSessions() {}, fetchBoard() {},
@@ -37,7 +38,7 @@ function fixture(names = [], shared = {}) {
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
   const ctx = vm.createContext(sandbox);
-  for (const name of ['_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
+  for (const name of ['_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -419,4 +420,20 @@ test('ordinary message acceptance and automatic retries do not open delivery pro
   ctx.runSyncBanner = value => { quiet = value; };
   [...timers.values()].at(-1)();
   assert.equal(quiet, true, 'automatic replay must leave the progress banner closed');
+});
+
+test('composer pending notice is quiet for ordinary delivery, visible for a delayed or offline message', () => {
+  const {ctx, element} = fixture(['_pendingSendsFor', '_updatePendingPill']);
+  ctx.peekSession = 'worker';
+  ctx.offlineQueue = [{url:'/api/sessions/worker/send',timestamp:Date.now(),options:{body:'{"text":"saved message"}'}}];
+  ctx._updatePendingPill();
+  assert.equal(element('peek-pending-pill').style.display, 'none');
+  ctx.offlineQueue[0].error = 'temporary server refusal';
+  ctx._updatePendingPill();
+  assert.equal(element('peek-pending-pill').style.display, '');
+  assert.match(element('peek-pending-pill').innerHTML, /message waiting/);
+  delete ctx.offlineQueue[0].error;
+  ctx.online = false;
+  ctx._updatePendingPill();
+  assert.match(element('peek-pending-pill').innerHTML, /saved offline/);
 });

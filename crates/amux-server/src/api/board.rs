@@ -2402,9 +2402,21 @@ pub(crate) async fn dispatch_pending_callbacks(
                 }
             }
         }
-        if let Some(instruction) = row.callback_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
+        let instruction = row.callback_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        // Older auto-captures stored this instruction on the RETURN message,
+        // addressed to the requester who was already being notified. Gemini
+        // turned those receipts into repeated reviews and new capture tasks.
+        let legacy_echo = instruction == Some("Notify the requesting worker with the terminal outcome and every produced asset.");
+        if legacy_echo {
+            tracing::warn!(task_id = %row.id, target_session = %target, measured = true,
+                n_considered = 1, verdict = "callback_echo_instruction_suppressed",
+                "legacy callback asked its recipient to repeat the notification");
+        }
+        if let Some(instruction) = instruction.filter(|_| !legacy_echo) {
             prompt.push_str("\nCallback instruction: ");
-            prompt.push_str(instruction.trim());
+            prompt.push_str(instruction);
+        } else {
+            prompt.push_str("\nThis receipt already notifies you as the requester. Do not acknowledge or relay it back, or create another task merely to process this notification. Resume your original linked task only when it has remaining actionable work.");
         }
         let guard = format!("task-callback:{}", row.id);
         // Re-resolve policy at delivery time. The request was authorized when
@@ -2669,6 +2681,33 @@ mod callback_dispatch_tests {
         let conn = state.store.read().unwrap();
         assert_eq!(bs::get_issue(&conn, &id).unwrap().unwrap().callback_state.as_deref(), Some("armed"));
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_callback_receipt_does_not_request_an_acknowledgement_loop() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        for worker in ["worker-a", "worker-b"] {
+            std::fs::write(home.path().join(format!("sessions/{worker}.env")), "CC_TAGS=\"test\"\n").unwrap();
+        }
+        let state = state(home.path());
+        let id = pending_request(&state);
+        let child = id.clone();
+        state.store.write(move |conn| {
+            conn.execute("UPDATE issues SET callback_prompt=?1 WHERE id=?2",
+                rusqlite::params!["Notify the requesting worker with the terminal outcome and every produced asset.", child])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let result = dispatch_pending_callbacks(&state, Some(&id)).await;
+        assert_eq!((result.attempted, result.queued), (1, 1));
+        let conn = state.store.read().unwrap();
+        let prompt: String = conn.query_row("SELECT text FROM steering_queue WHERE id=?1",
+            [format!("task-callback-{id}")], |r| r.get(0)).unwrap();
+        assert!(prompt.contains("Report written to /tmp/launch-report.md"));
+        assert!(prompt.contains("Do not acknowledge or relay it back"));
+        assert!(!prompt.contains("Callback instruction:"));
+        assert!(!prompt.contains("Notify the requesting worker"));
     }
 
     /// Happy path plus the crash window: enqueue succeeds, but the process dies
