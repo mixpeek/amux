@@ -2,6 +2,9 @@
 
 This is a partial live-provider result, not a full consolidated-suite pass.
 
+Current disposition of every known remaining gap, repair entry points and rerun
+commands: [Lifecycle status and closure checklist](lifecycle-open-work.md).
+
 ## Production messaging and connection failures
 
 Seven Safari 0.9.900 studio-plg failures recorded only `failed/unconfirmed`; the underlying exception was absent. Read-only inspection measured 5,193,082 localStorage bytes, dominated by history and reproducible caches. A real WebKit quota test against the pre-fix JavaScript failed local acceptance. The reproduced mechanism is consistent with this storage condition; the historical exception itself cannot be recovered.

@@ -1,0 +1,230 @@
+{
+  "as_of": "2026-09-11T23:13:02-04:00",
+  "tracking_card": "AMUX-4417",
+  "overall": "INCOMPLETE",
+  "scope": "Retained selected runs, not a full suite or all-provider pass",
+  "deployment": {
+    "commit": "241b92acb02c719cb72b9ef8d70109c1f75fa3e4",
+    "build": "a6d4111bd0eaff6c",
+    "pid": 29458,
+    "status": "ok",
+    "assets": {
+      "app.js": "14c11cd5c4496690e34d46a06b8bdf6421b63399c2859b0ab7ee147d014715ae",
+      "app.css": "57c6ca94158778138112d8eabcd504134f59e24c12e432d1a17dce636909068d",
+      "sw.js": "0f702b0b7acf61295ab5ac99c406382e492c3c5c5c8699b1f6b0101632dd8657"
+    },
+    "dismiss_control": "present",
+    "version": "0.9.911",
+    "real_messages_sent": 0
+  },
+  "latest_health": {
+    "status": "ok",
+    "store": "ok",
+    "commit": "241b92acb02c",
+    "build": "a6d4111bd0eaff6c",
+    "pressure": "warn",
+    "swap_used_mb": 22176.1875,
+    "admission": "deny"
+  },
+  "runs": [
+    {
+      "archive_key": "board-continue-20260911",
+      "summary_sha256": "2b31bf50c4b646b8c48e75a9c4a2c316683ecbdf6cfe399fe908da6f9f32a8c5",
+      "commit": "860a4eb7e3e5e987ea87d340e12ebe1cdb43d7fc",
+      "dirty": [],
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-GATE-REVISION|LC-LINKED-RECORD|LC-COORD|LC-BOARD-HEADER|LC-DEEPLINK|LC-FILES-UPLOAD"
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "FAIL",
+          "note": ""
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": ""
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 21, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}"
+        }
+      ],
+      "binary": {
+        "sha256": "20ccca5a91d704bde12debf8ce124da6d5d52c630414f1ec694bc35fe7818b24",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "served_assets": {
+        "/app.js": "a9526aa98982812366fc86c4fb131b9e9c3cd4995ea2f390523e3973b93a7abf",
+        "/app.css": "045a23468f4e4ab8fbe7bd68ebfe049b0665ef641753c381f7fa3a05b97fa082",
+        "/sw.js": "3ff7ce8b5b9a185e2a68bdd45a8b2cb189f384f2b29c7051856564982d4567a2"
+      },
+      "asset_receipts_match": true,
+      "assets_match_deployment": false
+    },
+    {
+      "archive_key": "board-outbox-main-911",
+      "summary_sha256": "eb991bd89a68e518a8f4b02c37446295eb8e438173b789559981a0e6361cf983",
+      "commit": "bed7046f691a728ddae41ebde46b0b364a56bd5d",
+      "dirty": [],
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-BLOCKED-OUTBOX|LC-GATE-REVISION|LC-LINKED-RECORD|LC-RECEIPT|LC-LATENCY|LC-COMPOSER-LAYOUT"
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": ""
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": ""
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 15, \"failed\": 3, \"skipped\": 0, \"flaky\": 0}"
+        }
+      ],
+      "binary": {
+        "sha256": "038cf6cfa2713b5ff01bb92846e43317fdc4b2b641f0bcb817cb997fa1ea680c",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "served_assets": {
+        "/app.js": "14c11cd5c4496690e34d46a06b8bdf6421b63399c2859b0ab7ee147d014715ae",
+        "/app.css": "d53b24abc6d21e2d30b2aa8128afd8b485125a3961dc0bb0df17a18f47d0ceeb",
+        "/sw.js": "0f702b0b7acf61295ab5ac99c406382e492c3c5c5c8699b1f6b0101632dd8657"
+      },
+      "asset_receipts_match": true,
+      "assets_match_deployment": false
+    },
+    {
+      "archive_key": "board-outbox-repaired-911",
+      "summary_sha256": "4763766df9ad4ff25dfaff3f0631f3f7727e8e2f4af10cc5df41fcd98ca1adc9",
+      "commit": "bed7046f691a728ddae41ebde46b0b364a56bd5d",
+      "dirty": [
+        " M crates/amux-dashboard/static/app.css",
+        " M frustrations.md"
+      ],
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-BLOCKED-OUTBOX|LC-GATE-REVISION|LC-LINKED-RECORD|LC-RECEIPT|LC-LATENCY|LC-COMPOSER-LAYOUT"
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": ""
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": ""
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 18, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}"
+        }
+      ],
+      "binary": {
+        "sha256": "e8ad170dd153298188d99345f99e598f4743eb46d65ca5f64b88bc9441c9fa51",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "served_assets": {
+        "/app.js": "14c11cd5c4496690e34d46a06b8bdf6421b63399c2859b0ab7ee147d014715ae",
+        "/app.css": "57c6ca94158778138112d8eabcd504134f59e24c12e432d1a17dce636909068d",
+        "/sw.js": "0f702b0b7acf61295ab5ac99c406382e492c3c5c5c8699b1f6b0101632dd8657"
+      },
+      "asset_receipts_match": true,
+      "assets_match_deployment": true
+    },
+    {
+      "archive_key": "large-file-ios-911",
+      "summary_sha256": "93f79fedaaf271c96e6afafe1b247665b251b52d51eb81b4c2381d5fd0350817",
+      "commit": "bed7046f691a728ddae41ebde46b0b364a56bd5d",
+      "dirty": [],
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "ios-safari",
+        "grep": "large mobile file survives interrupted upload"
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": ""
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}"
+        }
+      ],
+      "binary": {
+        "sha256": "038cf6cfa2713b5ff01bb92846e43317fdc4b2b641f0bcb817cb997fa1ea680c",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "served_assets": {
+        "/app.js": "14c11cd5c4496690e34d46a06b8bdf6421b63399c2859b0ab7ee147d014715ae",
+        "/app.css": "d53b24abc6d21e2d30b2aa8128afd8b485125a3961dc0bb0df17a18f47d0ceeb",
+        "/sw.js": "0f702b0b7acf61295ab5ac99c406382e492c3c5c5c8699b1f6b0101632dd8657"
+      },
+      "asset_receipts_match": true,
+      "assets_match_deployment": false
+    },
+    {
+      "archive_key": "semantic-messages-live",
+      "summary_sha256": "0546935320d46f6f13867a2fe19969ec30d65922f2e741d2cafd0f042659d0e2",
+      "commit": "ced4b617ad000bd63bc8bc811d35d02b4cd6de45",
+      "dirty": [
+        " M docs/consolidated-lifecycle.md",
+        " M e2e/lifecycle/cases.json",
+        "?? e2e/lifecycle/live-semantic-messages.spec.ts"
+      ],
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-SEMANTIC-MESSAGES"
+      },
+      "stages": [
+        {
+          "name": "live-journey",
+          "status": "FAIL",
+          "note": "{\"passed\": 0, \"failed\": 1, \"skipped\": 0, \"flaky\": 0}"
+        }
+      ],
+      "binary": {
+        "sha256": null,
+        "source_verified": null,
+        "built_from_checkout": null
+      }
+    }
+  ],
+  "large_upload": {
+    "bytes": 268435579,
+    "stored_chunks": 52,
+    "interrupted_after_chunks": 4,
+    "source_sha256": "e9c0dc533938bb86970cafa1e42dc9e0eba1a439a498be99cf78ba7c1f67cd7e",
+    "download_sha256": "e9c0dc533938bb86970cafa1e42dc9e0eba1a439a498be99cf78ba7c1f67cd7e",
+    "provider_execution": false
+  },
+  "native_gemini": {
+    "upload": "PASS with operator-assisted initial folder trust; LG1A-7 completed with real file evidence",
+    "cross_group": "INCOMPLETE: messages and core work completed, older peer terminal-history assertion failed",
+    "backlog": "INCOMPLETE: reviewer LG1R-8/9 completed; author LG1A-10/11 stayed Backlog/Todo; stopped after 6.5 minutes",
+    "semantic_messages": "BLOCKED before worker creation by admission; native assertions not executed"
+  }
+}
