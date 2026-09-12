@@ -616,10 +616,20 @@ fn clean_tool_output(raw: &str) -> String {
 }
 
 /// Pull the text out of a `*_output` payload's `output` field (a string in the
-/// versions captured; defensively handles an object carrying `output`).
-fn output_text(payload: &Value) -> String {
+/// versions captured, an object carrying `output`, or native text/image blocks).
+pub(crate) fn output_text(payload: &Value) -> String {
     match payload.get("output") {
         Some(Value::String(s)) => clean_tool_output(s),
+        Some(Value::Array(blocks)) => {
+            let text = blocks.iter().filter_map(|block| {
+                if matches!(block["type"].as_str(), Some("text" | "input_text" | "output_text")) {
+                    block["text"].as_str()
+                } else {
+                    None // Images are not terminal text or base64 scrollback.
+                }
+            }).collect::<Vec<_>>().join("\n");
+            clean_tool_output(&text)
+        }
         Some(other) => other
             .get("output")
             .and_then(Value::as_str)

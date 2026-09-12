@@ -2432,3 +2432,14 @@ CARD: AF-657
 SYMPTOM: A loopback HTTP fixture returned non-JSON after accepting evidence/outcome writes. The CLI printed NOT recorded, continued to the status PATCH, and printed raw HTML for its unreadable response. Exit 1 prevented a success claim but did not tell the caller which writes were unknown; a mixed success could still invite repeating an already-applied append.
 COST: The caller must rediscover whether prose and status landed independently before safely retrying.
 FIX: Shared acknowledgement validation rejects malformed or non-object JSON, stops before a dependent status transition, and explicitly says the write outcome is unknown. It retains a measured board_ack_unknown event in the existing durable CLI diagnostic spool, delivered on the next invocation. Five real-CLI tests deliberately apply writes before corrupting replies, cover each stage plus success/refusal controls, and verify spool delivery; four failed before the fix and all five pass after. Existing transport checks also pass (11/11).
+
+## Codex Terminal showed only Working while its saved conversation still existed
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-740
+SYMPTOM: Mobile screenshot MSG-58672 showed the Codex Working/input footer and empty space. The structured transcript endpoint resolved 92 events, but Terminal discarded history for non-Claude alternate screens and depended on raw tmux paint otherwise. Load earlier output also bypassed the structured Codex reader. An isolated pre-fix API probe returned history absent/0 characters for a pinned, existing rollout.
+COST: User reported missing logs and could not inspect earlier work from Terminal; diagnosis required tracing two provider-specific paths despite the saved conversation already being readable elsewhere.
+FIX: AF-740 routes Codex/Ollama full peek and paginated earlier history through the existing provider projection, preserves independent tool results across byte cursors, keeps live polls separate, and emits measured peek_history_loaded/peek_history_unavailable signals. Native audit also found array-shaped input_text tool results were silently ignored by the shared Codex projection; those now decode alongside strings/objects, exclude image payloads, and are counted as tool_output_arrays in page logs. The terminal contract tests now initiate real wheel/touch intent before positioning earlier text: direct scrollTop assignments had left follow-bottom enabled and produced six false user-scroll failures across three engines, while native touch scrolling passed. Candidate is tested in scratch/frustrations-integration; production deployment remains pending.

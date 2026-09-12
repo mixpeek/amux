@@ -76,6 +76,24 @@ async function boot(page: Page, options?: {
   };
 }
 
+// A scrollTop assignment is also used by the product's bottom-follow logic;
+// it is not a reader gesture. Supply wheel/touch intent before positioning a
+// specimen; the native Simulator test separately exercises an actual swipe.
+async function readEarlier(page: Page, touch: boolean) {
+  const body = page.locator('#peek-body');
+  const before = await body.evaluate(el => el.scrollTop);
+  if (touch) {
+    // Playwright mobile WebKit has no wheel API. A real tap on the body's
+    // padding supplies touch intent; the native Simulator suite owns swipes.
+    await body.tap({ position: { x: 5, y: 5 } });
+    await body.evaluate(el => { el.scrollTop -= 400; });
+  } else {
+    await body.hover();
+    await page.mouse.wheel(0, -400);
+  }
+  await expect.poll(() => body.evaluate(el => el.scrollTop)).toBeLessThan(before - 10);
+}
+
 test('history/live seam renders every submitted prompt exactly once', async ({ page }) => {
   const oldOne = '[05:35 PM] first submitted request';
   const oldTwo = '[05:38 PM] second submitted request';
@@ -147,6 +165,7 @@ test('terminal controls stay compact and the bottom affordance distinguishes nav
   expect(layout.controlsWidth).toBeLessThan(260);
   expect(Math.abs(layout.controlsRight - layout.bodyRight)).toBeLessThan(12);
 
+  await readEarlier(page, !!testInfo.project.use.hasTouch);
   await page.evaluate(() => {
     const body = document.getElementById('peek-body')!;
     body.scrollTop = 0;
@@ -208,9 +227,10 @@ test('worker tab choices restore from the server after browser storage is lost a
   await expect(page.locator('#peek-tab-steering')).toBeVisible();
 });
 
-test('terminal scroll geometry remains stable through repeated live frames', async ({ page }) => {
+test('terminal scroll geometry remains stable through repeated live frames', async ({ page }, testInfo) => {
   const transcript = Array.from({ length: 900 }, (_, i) => `stable terminal row ${i}`).join('\n');
   const state = await boot(page, { transcript, live: 'live frame zero\n' });
+  await readEarlier(page, !!testInfo.project.use.hasTouch);
   const before = await page.evaluate(() => {
     const body = document.getElementById('peek-body')!;
     body.scrollTop = Math.floor((body.scrollHeight - body.clientHeight) * 0.45);

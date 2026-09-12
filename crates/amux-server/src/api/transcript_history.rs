@@ -3,10 +3,69 @@
 use super::*;
 use std::io::{Read, Seek, SeekFrom};
 
-struct Page {
-    text: String,
+pub(super) struct Page {
+    pub(super) text: String,
     before: u64,
-    records: usize,
+    pub(super) records: usize,
+    tool_output_arrays: usize,
+}
+
+// Reuse the provider's conversation projection (including wrapper removal and
+// mirror dedup). Keep output records independent of their calls: a page can
+// start between the two, and pairing only within that page would lose output.
+fn readable_records(record: Value) -> Vec<Value> {
+    use crate::opencode::events::{codex_rollout_transcript, TranscriptEvent};
+    if record["type"] != "response_item" {
+        return vec![record];
+    }
+    let payload = &record["payload"];
+    if matches!(payload["type"].as_str(), Some("function_call_output" | "custom_tool_call_output")) {
+        return vec![json!({"type":"user", "message":{"role":"user", "content":[
+            {"type":"tool_result", "content":crate::opencode::events::output_text(payload)}
+        ]}})];
+    }
+    codex_rollout_transcript(&[record]).into_iter().filter_map(|event| {
+        let (role, block) = match event {
+            TranscriptEvent::User { text } => ("user", json!({"type":"text", "text":text})),
+            TranscriptEvent::Assistant { text } => ("assistant", json!({"type":"text", "text":text})),
+            TranscriptEvent::Tool { tool, detail, .. } => ("assistant", json!({
+                "type":"tool_use", "name":tool, "input":{"description":detail}
+            })),
+            TranscriptEvent::Plan { steps } => {
+                let text = steps.into_iter().map(|step| format!("[{}] {}", step.status, step.step)).collect::<Vec<_>>().join("\n");
+                ("assistant", json!({"type":"text", "text":text}))
+            }
+            // Like the Claude terminal renderer, display conversation and
+            // tool activity, not internal reasoning records.
+            TranscriptEvent::Reasoning { .. } => return None,
+        };
+        Some(json!({"type":role, "message":{"role":role, "content":[block]}}))
+    }).collect()
+}
+
+fn conversation_path(name: &str, provider: &str) -> Option<PathBuf> {
+    match provider {
+        "codex" | "ollama" => codex_rollout_path(name),
+        "claude" => session_jsonl_path(name),
+        _ => None,
+    }
+}
+
+pub(super) fn snapshot(name: &str, provider: &str, budget: usize) -> Result<Page, &'static str> {
+    let result = conversation_path(name, provider).ok_or("conversation_not_resolved")
+        .and_then(|path| read_page(&path, None, budget).map_err(|error| {
+            tracing::warn!(session = name, provider, measured = false, n_considered = 0,
+                verdict = "peek_history_read_failed", %error);
+            "conversation_read_failed"
+        }));
+    match &result {
+        Ok(page) => tracing::info!(session = name, provider, measured = true,
+            n_considered = page.records, tool_output_arrays = page.tool_output_arrays,
+            bytes = page.text.len(), verdict = "peek_history_loaded"),
+        Err(why) => tracing::warn!(session = name, provider, measured = false,
+            n_considered = 0, why_unmeasured = why, verdict = "peek_history_unavailable"),
+    }
+    result
 }
 
 // Absolute byte cursors remain stable while the worker appends. Include the
@@ -44,31 +103,41 @@ fn read_page(path: &Path, before: Option<u64>, budget: usize) -> std::io::Result
     let mut chars = 0;
     let mut cursor = end;
     let mut count = 0;
+    let mut tool_output_arrays = 0;
     for (offset, line) in records.into_iter().rev() {
         cursor = offset;
         let Ok(record) = serde_json::from_slice::<Value>(line) else { continue };
-        let text = render_transcript_records(vec![record.clone()], usize::MAX);
+        if record["type"] == "response_item"
+            && matches!(record["payload"]["type"].as_str(), Some("function_call_output" | "custom_tool_call_output"))
+            && record["payload"]["output"].is_array()
+        {
+            tool_output_arrays += 1;
+        }
+        let normalized = readable_records(record);
+        let text = render_transcript_records(normalized.clone(), usize::MAX);
         count += 1;
         if !text.is_empty() {
             chars += text.chars().count();
-            parts.push(record);
+            parts.push(normalized);
         }
         if chars >= budget { break; }
     }
     parts.reverse();
-    Ok(Page { text: render_transcript_records(parts, usize::MAX), before: cursor, records: count })
+    Ok(Page { text: render_transcript_records(parts.into_iter().flatten().collect(), usize::MAX), before: cursor, records: count, tool_output_arrays })
 }
 
 pub(super) fn response(name: &str, qs: &[(String, String)]) -> Response {
-    if provider_of(&parse_env(name)) != "claude" {
+    let provider = provider_of(&parse_env(name));
+    if !matches!(provider.as_str(), "claude" | "codex" | "ollama") {
         if !qs_first(qs, "conversation", "").is_empty() {
             return jresp(StatusCode::CONFLICT, json!({"error": "worker provider changed; reopen its history"}));
         }
         let legacy: Vec<_> = qs.iter().filter(|(key, _)| key != "source").cloned().collect();
         return log_get(name, "", &legacy);
     }
-    let Some(path) = session_jsonl_path(name) else {
-        tracing::warn!(session = name, verdict = "conversation_history_unavailable",
+    let Some(path) = conversation_path(name, &provider) else {
+        tracing::warn!(session = name, provider, measured = false, n_considered = 0,
+            verdict = "conversation_history_unavailable",
             "readable history unavailable; refusing to display terminal redraw fragments as conversation");
         return jresp(StatusCode::NOT_FOUND, json!({"error": "no saved conversation"}));
     };
@@ -86,8 +155,10 @@ pub(super) fn response(name: &str, qs: &[(String, String)]) -> Response {
     };
     match read_page(&path, before, 192_000) {
         Ok(page) => {
-            tracing::info!(session = name, verdict = "conversation_history_page", source = "transcript",
-                records = page.records, bytes = page.text.len(), remaining = page.before,
+            tracing::info!(session = name, provider, measured = true, n_considered = page.records,
+                verdict = "conversation_history_page", source = "transcript",
+                records = page.records, tool_output_arrays = page.tool_output_arrays,
+                bytes = page.text.len(), remaining = page.before,
                 "served readable conversation history without terminal redraw fragments");
             (StatusCode::OK, [
                 ("content-type", "text/plain; charset=utf-8".to_string()),
@@ -98,7 +169,8 @@ pub(super) fn response(name: &str, qs: &[(String, String)]) -> Response {
             ], page.text).into_response()
         }
         Err(error) => {
-            tracing::warn!(session = name, verdict = "conversation_history_read_failed", %error);
+            tracing::warn!(session = name, provider, measured = false, n_considered = 0,
+                verdict = "conversation_history_read_failed", %error);
             jresp(StatusCode::CONFLICT, json!({"error": "could not read this conversation history page; reopen the worker"}))
         }
     }
@@ -111,6 +183,72 @@ mod tests {
 
     fn record(text: &str) -> String {
         format!("{}\n", json!({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":text}]}}))
+    }
+
+    fn codex_record(kind: &str, payload: Value) -> String {
+        format!("{}\n", json!({"type":kind,"payload":payload}))
+    }
+
+    #[test]
+    fn codex_history_is_readable_without_the_tui_frame() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "{}{}{}{}{}", codex_record("response_item", json!({"type":"message","role":"user","content":[{"type":"input_text","text":"Find the missing logs"}]})),
+            codex_record("response_item", json!({"type":"function_call","name":"exec_command","call_id":"call-one","arguments":"{\"cmd\":\"printf fixture\"}"})),
+            codex_record("response_item", json!({"type":"function_call_output","call_id":"call-one","output":"fixture completed"})),
+            codex_record("response_item", json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Earlier work remains visible."}]})),
+            codex_record("event_msg", json!({"type":"agent_message","message":"Earlier work remains visible."}))).unwrap();
+        let page = read_page(file.path(), None, 192_000).unwrap();
+        assert!(page.text.contains("Find the missing logs"), "{}", page.text);
+        assert!(page.text.contains("exec_command"));
+        assert!(page.text.contains("fixture completed"));
+        assert_eq!(page.text.matches("Earlier work remains visible.").count(), 1);
+    }
+
+    #[test]
+    fn codex_output_at_page_boundary_is_not_dropped_or_duplicated() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "{}{}", codex_record("response_item", json!({"type":"function_call","name":"exec_command","call_id":"call-two","arguments":"{}"})),
+            codex_record("response_item", json!({"type":"function_call_output","call_id":"call-two","output":"A complete tool result at the boundary"}))).unwrap();
+        let last = read_page(file.path(), None, 1).unwrap();
+        assert!(last.text.contains("A complete tool result at the boundary"));
+        let before = read_page(file.path(), Some(last.before), 1).unwrap();
+        assert!(before.text.contains("exec_command"));
+        assert!(!before.text.contains("A complete tool result at the boundary"));
+    }
+
+    #[test]
+    fn codex_history_removes_harness_metadata_and_internal_records() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for payload in [
+            json!({"type":"reasoning", "summary":[{"text":"internal reasoning specimen"}]}),
+            json!({"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"harness instructions specimen"}]}),
+            json!({"type":"custom_tool_call_output", "call_id":"custom-one", "output":{"output":"Chunk ID: abc\nWall time: 0.1\nProcess exited with code 0\nOutput:\nActual tool output"}}),
+        ] {
+            write!(file, "{}", codex_record("response_item", payload)).unwrap();
+        }
+        let page = read_page(file.path(), None, 192_000).unwrap();
+        assert!(page.text.contains("Actual tool output"));
+        for hidden in ["internal reasoning specimen", "harness instructions specimen", "Chunk ID:"] {
+            assert!(!page.text.contains(hidden), "{hidden}");
+        }
+        assert_eq!(page.records, 3);
+    }
+
+    #[test]
+    fn codex_native_array_tool_output_is_visible_without_image_payloads() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "{}", codex_record("response_item", json!({
+            "type":"custom_tool_call_output", "call_id":"native-output", "output":[
+                {"type":"input_text", "text":"The native tool completed successfully"},
+                {"type":"input_image", "image_url":"data:image/png;base64,private-image-payload"},
+                {"type":"text", "text":"A second result block"}
+            ]
+        }))).unwrap();
+        let page = read_page(file.path(), None, 192_000).unwrap();
+        assert!(page.text.contains("The native tool completed successfully"));
+        assert!(page.text.contains("A second result block"));
+        assert!(!page.text.contains("private-image-payload"));
+        assert_eq!(page.tool_output_arrays, 1);
     }
 
     #[test]

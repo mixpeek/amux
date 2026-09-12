@@ -10362,7 +10362,7 @@ async fn peek_response(name: &str, lines: i64, live_only: bool, no_trim: bool) -
         let live = if output.is_empty() { String::new() } else { strip_launch_noise(output.trim()) };
         // The live=1 trim needs the transcript the CLIENT is displaying; the
         // rust origin re-renders it (bounded) instead of a process cache.
-        let live = if !live.is_empty() && !no_trim {
+        let live = if !live.is_empty() && !no_trim && provider == "claude" {
             let tr = render_session_transcript(name, 120_000);
             if tr.is_empty() { live } else { trim_live_overlap(&tr, &live) }
         } else {
@@ -10377,10 +10377,24 @@ async fn peek_response(name: &str, lines: i64, live_only: bool, no_trim: bool) -
     }
     let tmux_lines = if output.is_empty() { 0 } else { output.lines().count() };
     let is_alt = tmux_alt_screen(name).await;
-    if is_alt {
-        let (transcript, output) = if provider != "claude" {
-            // Non-Claude alt-screen TUIs repaint in place: the LIVE frame is
-            // the whole truthful state (py:75040).
+    let has_codex_history = matches!(provider.as_str(), "codex" | "ollama");
+    if is_alt || has_codex_history {
+        let mut history_measurement = None;
+        let (transcript, output) = if has_codex_history {
+            let transcript = match transcript_history::snapshot(name, &provider, 120_000) {
+                Ok(page) => {
+                    history_measurement = Some(json!({"measured":true, "n_considered":page.records}));
+                    page.text
+                }
+                Err(why) => {
+                    history_measurement = Some(json!({"measured":false, "n_considered":0, "why_unmeasured":why}));
+                    String::new()
+                }
+            };
+            // Codex repaints both normal and alternate screens. Its rollout
+            // owns history; tmux contributes only the current viewport.
+            (transcript, strip_scroll_pill(&tmux_capture(name, 0).await))
+        } else if provider != "claude" {
             (String::new(), clean_gemini_frame(&tmux_capture(name, 0).await))
         } else {
             (render_session_transcript(name, 120_000), output)
@@ -10418,6 +10432,10 @@ async fn peek_response(name: &str, lines: i64, live_only: bool, no_trim: bool) -
             // the structural fact instead of guessing at the cause.
             "output_is_viewport_only": true,
         });
+        if let Some(measurement) = history_measurement {
+            resp["history_source"] = json!("codex-rollout");
+            resp["history_measurement"] = measurement;
+        }
         if hl > ol + 20 {
             resp["hint"] = json!(format!(
                 "`output` is only the current terminal frame ({ol} line(s)) — a full-screen \
