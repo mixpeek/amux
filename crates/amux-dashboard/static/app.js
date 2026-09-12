@@ -4227,9 +4227,9 @@ function updatePeekStatus() {
   // Update input placeholder based on session state
   const cmdInp = document.getElementById('peek-cmd-input');
   if (cmdInp) {
-    cmdInp.placeholder = s.status === 'active'
-      ? 'Type a message (worker is working)...'
-      : 'Type a message or drop a file...';
+    // Working state is already shown above; repeating it here clips the
+    // empty prompt inside the deliberately single-row phone composer.
+    cmdInp.placeholder = 'Message…';
   }
   // Model badge (+ reasoning effort, Claude only)
   const mb = document.getElementById('peek-model-badge');
@@ -10401,7 +10401,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.926';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.927';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -10879,7 +10879,7 @@ function _peekAgentsPaint() {
   label.title = state.error ? 'Use either arrow to retry' : state.selected?.description || state.selected?.id || 'Main worker';
   nav.querySelectorAll('button').forEach(b=>b.disabled=state.loading);
   const input=document.getElementById('peek-cmd-input');
-  if (input) input.placeholder=state.selected ? 'Message the main worker…' : 'Type a message or drop a file...';
+  if (input) { input.placeholder = 'Message…'; input.setAttribute('aria-label', state.selected ? 'Message the main worker' : 'Message the worker'); }
 }
 async function _peekAgentsLoad(force=false) {
   const name = peekSession;
@@ -11215,6 +11215,22 @@ let _menuBeaconCount = 0;   // card-menu-geo beacons per load (AMUX-1731)
 // Second snapshot with the keyboard UP (fires once, on first input focus) —
 // the keyboard-down beacon can't show keyboard-state bugs.
 let _kbdBeaconSent = false;
+function _peekComposerGeometry() {
+  const input = document.getElementById('peek-cmd-input');
+  if (!input || !input.getClientRects().length) return { measured: false, n_considered: 0, why_unmeasured: 'composer_hidden' };
+  const style = getComputedStyle(input);
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (!ctx) return { measured: false, n_considered: 0, why_unmeasured: 'text_measurement_unavailable' };
+  ctx.font = style.fontSize + ' ' + style.fontFamily;
+  const available = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const width = ctx.measureText(input.placeholder).width;
+  const fits = width <= available + 1;
+  return { measured: true, n_considered: 1,
+    verdict: !input.value && !fits ? 'composer_placeholder_clipped' : 'composer_readable',
+    placeholder_fits: fits, empty: !input.value,
+    placeholder_width_px: Math.round(width), available_text_width_px: Math.round(available),
+    input_height_px: Math.round(input.getBoundingClientRect().height) };
+}
 function _peekKbdBeacon() {
   if (_kbdBeaconSent || window.innerWidth > 700) return;
   _kbdBeaconSent = true;
@@ -11230,7 +11246,7 @@ function _peekKbdBeacon() {
       fetch(API + '/api/client-debug', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          kind: 'peek-geo-kbd', ver: APP_VER,
+          ..._peekComposerGeometry(), kind: 'peek-geo-kbd', ver: APP_VER,
           appliedZoom: document.documentElement.style.zoom || '1',
           win: window.innerWidth + 'x' + window.innerHeight,
           vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0),
@@ -11287,7 +11303,7 @@ function _peekGeoBeacon() {
     fetch(API + '/api/client-debug', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        kind: 'peek-geo', ver: APP_VER, zoom: (typeof _zoomLevel !== 'undefined' ? _zoomLevel : '?'),
+        ..._peekComposerGeometry(), kind: 'peek-geo', ver: APP_VER, zoom: (typeof _zoomLevel !== 'undefined' ? _zoomLevel : '?'),
         win: window.innerWidth + 'x' + window.innerHeight,
         vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0), vvScale: vv.scale || 1,
         sab: sabH, fixedBottomAt: sabBottom,

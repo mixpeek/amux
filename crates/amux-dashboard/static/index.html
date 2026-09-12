@@ -2279,7 +2279,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="peek-attach-bar" id="peek-attach-bar"></div>
         <!-- Input row -->
         <div class="ac-wrap peek-composer-input">
-          <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Type a message or drop a file..."
+          <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Message…" aria-label="Message the worker"
             autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
             enterkeyhint="enter" style="width:100%;"
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset();_draftSaveDebounced(peekSession,this.value)" onkeydown="slashAcKeydown(event)"

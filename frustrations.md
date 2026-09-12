@@ -2476,3 +2476,14 @@ CARD: AF-742
 SYMPTOM: User reported being unable to scroll up after reaching log bottom. Native iOS 26.5 Safari reproduced it: -25pt gesture left gap=0/following=true, whereas -350pt escaped. The scroll event and live-frame renderer independently treated being within 40px of the bottom as permission to resume following, undoing the first small upward movement.
 COST: Earlier logs became unreachable with small gestures, and a correction to only the scroll handler still snapped the reader back when a live frame arrived; the new three-engine regression caught that second path.
 FIX: Track scroll direction, resume only on downward movement to the actual end, and make live refresh honor the explicit follow state. Emit measured bottom-follow-paused / reader_scrolling with input kind and bottom gap. New five-pixel regression fails before and passes after, including live-frame position retention and deliberate return to bottom. Native small/large gestures both pass with changed live frames, and the full terminal browser matrix passes 72 tests. Candidate only; production deployment pending.
+
+## Empty mobile composer clips its own working-state placeholder
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-743
+SYMPTOM: MSG-58894 circles a mobile textarea whose working-state placeholder wraps to three lines and clips below its border. The user explicitly requires input/More/Send on one row; repeating the Working status and drop-file hint consumes the remaining writing width. Reproduced in the native Simulator log audit and a 375px active/idle browser regression.
+COST: The empty field looks broken and obscures where to type; the user reported another screenshot despite the one-row layout already being implemented.
+FIX: Use Message… with an accessible recipient label, preserving the one-row layout, drafts and send behavior. Existing keyboard-down/up geometry beacons now measure placeholder width against the actual text area and emit composer_placeholder_clipped or composer_readable. New test fails in all three engines before and passes after; native keyboard-open controls, More/mode taps and exact draft retention pass. Owner has authorized deployment; live verification follows clean integration gates.

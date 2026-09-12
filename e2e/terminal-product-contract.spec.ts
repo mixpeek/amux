@@ -340,3 +340,31 @@ test('a small upward scroll at the log bottom relinquishes following through liv
   await page.evaluate(() => (window as any).refreshPeek(true));
   await expect.poll(() => body.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
 });
+
+test('the compact phone composer keeps its empty prompt readable beside the actions', async ({ page }, testInfo) => {
+  await page.setViewportSize({width:375,height:812});
+  await boot(page);
+  for (const status of ['active', 'idle']) {
+    await page.evaluate(status => { eval(`sessions.find(s=>s.name==='terminal-contract').status=${JSON.stringify(status)};updatePeekStatus()`); }, status);
+    const g = await page.locator('#peek-cmd-input').evaluate((el: HTMLTextAreaElement) => {
+      const style=getComputedStyle(el), canvas=document.createElement('canvas'),ctx=canvas.getContext('2d')!;
+      ctx.font=`${style.fontSize} ${style.fontFamily}`;
+      const input=el.getBoundingClientRect(), more=document.querySelector('#peek-composer-more-btn')!.getBoundingClientRect(),send=document.querySelector('#peek-cmd-row > .send-split')!.getBoundingClientRect();
+      return {promptWidth:ctx.measureText(el.placeholder).width,available:el.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight),height:input.height,sameRow:Math.abs(input.bottom-more.bottom)<2&&Math.abs(input.bottom-send.bottom)<2,overflow:document.documentElement.scrollWidth>innerWidth};
+    });
+    expect(g.promptWidth,JSON.stringify(g)).toBeLessThanOrEqual(g.available);
+    expect(g.sameRow).toBe(true);expect(g.overflow).toBe(false);
+  }
+  await page.locator('#peek-cmd-input').fill('Preserve this mobile draft.');
+  await page.locator('#peek-composer-more-btn')[testInfo.project.use.hasTouch ? 'tap' : 'click']();
+  await expect(page.locator('#peek-more-menu')).toBeVisible();
+  await page.locator('#peek-composer-more-btn')[testInfo.project.use.hasTouch ? 'tap' : 'click']();
+  await expect(page.locator('#peek-cmd-input')).toHaveValue('Preserve this mobile draft.');
+  const failure = page.waitForRequest(request => request.url().endsWith('/api/client-debug') && request.postDataJSON()?.verdict === 'composer_placeholder_clipped');
+  await page.evaluate(() => {
+    const input=document.querySelector('#peek-cmd-input') as HTMLTextAreaElement;
+    input.value=''; input.placeholder='This deliberately long placeholder cannot fit the phone composer';
+    eval('_geoBeaconSent=false;_peekGeoBeacon()');
+  });
+  expect((await failure).postDataJSON()).toMatchObject({measured:true,n_considered:1,placeholder_fits:false});
+});
