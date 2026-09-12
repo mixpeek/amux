@@ -10270,7 +10270,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.912';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.913';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11740,6 +11740,19 @@ function _linkifyPaths(safeHtml) {
 function _peekHtml(raw) {
   return wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))));
 }
+// True when a terminal ❯ draft is really a steering message shown elsewhere:
+// the provider's "Press up to edit queued messages" hint, or the text of a
+// message sitting in this session's Steering queue. Compared after stripping a
+// leading [HH:MM ...] stamp and collapsing whitespace so a stamped queue row
+// still matches its unstamped pane echo.
+function _draftEchoesSteering(input) {
+  const norm = s => String(s || '').replace(/^\s*\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?[^\]]*\]\s*/i, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const n = norm(input);
+  if (!n) return false;
+  if (n === 'press up to edit queued messages') return true;
+  const sess = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(s => s.name === peekSession) : null;
+  return _steerQueueFor(sess).some(m => { const t = norm(m.text); return t && (t === n || t.includes(n) || n.includes(t)); });
+}
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
 function _peekLiveHtml(raw) {
@@ -11751,7 +11764,14 @@ function _peekLiveHtml(raw) {
     const end = plain.findIndex((line, n) => n > i && rule(line));
     if (end < 0 || !plain.slice(end + 1).some(line => /⏵|bypass permissions|\/rc failed|shift\+tab/.test(line))) continue;
     const input = plain.slice(i, end).join('\n').replace(/^\s*❯\s?/, '').trim();
-    const draft = input ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
+    // Do NOT echo a message that already lives in the Steering tab (Ethan,
+    // 2026-09-12: "this message is in here despite being in steering, it's
+    // duplicated"). Two shapes: the provider's "Press up to edit queued
+    // messages" hint, and the queued text itself when a steer is mid-delivery.
+    // A genuinely typed-but-unsent draft (nothing matching in the queue) still
+    // shows, so the terminal never hides what only it knows.
+    const showDraft = input && !_draftEchoesSteering(input);
+    const draft = showDraft ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
     return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
       + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
   }

@@ -2239,7 +2239,13 @@
      the button travels with the viewport.
      Padding on the scroll box gives the content somewhere to go — the last tab
      can now scroll clear of the button instead of stopping under it. */
-  .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 68px 0 12px;
+  /* right padding 0 so the sticky ⊞ pins to the TRUE right edge, flush like
+     the worker-list tab button (Ethan, 2026-09-12: "make this all the way on
+     the right just like the worker list page"). It used to be 68px, which
+     parked the button that far in from the edge on desktop. The button carries
+     its own background + border-left + shadow, so a tab scrolling under it at
+     the extreme right stays legible. */
+  .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 0 0 12px;
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
     overscroll-behavior-x: contain; touch-action: pan-x; }
   .peek-tabs::-webkit-scrollbar { display: none; }
@@ -3160,6 +3166,13 @@
      missing one hides the border or leaves a stray button in focus mode. */
   #peek-tab-customize {
     position: sticky; right: 0; z-index: 2;
+    /* FLUSH RIGHT in both regimes (Ethan, 2026-09-12). When the strip does not
+       overflow (wide desktop), sticky right:0 is inert and the button would sit
+       right after the last tab; margin-left:auto eats the free space and pushes
+       it to the edge, exactly like the worker-list `.tab-customize-wrap`. When
+       the strip DOES overflow there is no free space, margin-left:auto is 0, and
+       sticky keeps it pinned as you scroll. */
+    margin-left: auto;
     background: var(--bg);
     border-left: 1px solid var(--border);
     box-shadow: -10px 0 10px -8px rgba(0, 0, 0, 0.45);
