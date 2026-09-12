@@ -3702,67 +3702,15 @@ fn write_screenshot(r: &Value, home: &Path, session: &str) -> anyhow::Result<(Pa
 }
 
 pub async fn screenshot_to_file(c: &mut CdpClient, home: &Path, session: &str) -> anyhow::Result<(PathBuf, usize)> {
-    // A MINIMISED WINDOW STAYS MINIMISED (AMUX-4357). bringToFront below would
-    // restore the window the human asked to keep off the screen, so try the
-    // capture as-is first: the active tab renders while minimised. Only a
-    // capture that BLOCKS (a background tab) falls back to the restore path,
-    // and that path re-minimises after the shot, so the window shows for the
-    // round trip and no longer.
-    let minimized = matches!(window_state(c).await, Some((_, ref s)) if s == "minimized");
-    if minimized {
-        match c
-            .call("Page.captureScreenshot", json!({ "format": "png" }), std::time::Duration::from_secs(6))
-            .await
-        {
-            Ok(r) => return write_screenshot(&r, home, session),
-            Err(e) => tracing::info!(
-                "[browser] capture while minimised blocked for session {session:?} ({e}); restoring \
-                 the window for one capture and minimising it again (AMUX-4357)"
-            ),
-        }
-    }
-    // ACTIVATE BEFORE CAPTURING (AMUX-3712).
-    //
-    // `Page.captureScreenshot` waits for the renderer to produce a frame, and a
-    // tab that is not the active surface does not composite. A backgrounded or
-    // occluded tab therefore does not FAIL, it BLOCKS, until the 30s deadline
-    // below turns into a 502. That is this card's entire signature: 30,003ms and
-    // 30,006ms, the deadline to the millisecond, twice, against a browser whose
-    // active surface was an omnibox popup rather than the page being captured.
-    //
-    // BEST EFFORT AND NON-FATAL, with a deadline of its own. If the renderer is
-    // genuinely wedged, bringToFront cannot fix it and must not become a second
-    // way for the same fault to be reported; if the tab was merely
-    // backgrounded, this is the whole fix. Proceeding on failure means it can
-    // only help.
-    //
-    // The WARN is the discriminator, and it is the thing that did not exist:
-    // "capture timed out" alone cannot separate a backgrounded tab from a dead
-    // one, and those want opposite responses. A timeout AFTER a successful
-    // bringToFront is a wedged renderer.
-    if let Err(e) =
-        c.call("Page.bringToFront", json!({}), std::time::Duration::from_secs(5)).await
-    {
-        tracing::warn!(
-            "[browser] Page.bringToFront failed for session {session:?} before capture: {e} — \
-             capturing anyway. If the capture now times out, the renderer is wedged rather than \
-             merely backgrounded (AMUX-3712)"
-        );
-    }
-    let r = c
-        .call(
-            "Page.captureScreenshot",
-            json!({ "format": "png" }),
-            std::time::Duration::from_secs(30),
-        )
-        .await;
-    if minimized {
-        // Whatever the capture did, put the window back where the human left it.
-        if let Err(e) = minimize_window(c).await {
-            tracing::warn!("[browser] could not re-minimise the window after capture for {session:?}: {e} (AMUX-4357)");
-        }
-    }
-    write_screenshot(&r?, home, session)
+    // Capturing evidence must never activate a user's desktop. Headless is the
+    // start API default; explicitly headed/minimized windows stay where they are.
+    let r = c.call("Page.captureScreenshot", json!({"format":"png", "fromSurface":true}),
+        std::time::Duration::from_secs(30)).await.map_err(|e| {
+        tracing::warn!(session, error=%e, verdict="capture_failed_without_focus",
+            "browser: background capture failed; window was not raised");
+        anyhow::anyhow!("background capture failed without changing focus: {e}; use a headless browser or explicitly identify the window")
+    })?;
+    write_screenshot(&r, home, session)
 }
 
 /// Session names come from callers; a name is a FILE component here, so
@@ -4880,87 +4828,36 @@ mod tests {
         assert!(err.to_string().contains("boom"), "{err}");
     }
 
-    /// AMUX-3712: the capture activates the tab first, and a failure to activate
-    /// does not abort the capture.
-    ///
-    /// THE SPECIMEN: `GET /api/browser/screenshot` returned 502 with "CDP
-    /// Page.captureScreenshot timed out after 30s" at 11:12:41 and again at
-    /// 12:06:17 on 2026-08-25, at 30,006ms and 30,003ms. The deadline to the
-    /// millisecond, twice, is not a slow capture — it is a capture that never
-    /// returns. `Page.captureScreenshot` waits on a compositor frame, and the
-    /// browser in question had its active surface on an omnibox popup, so the
-    /// page being captured was not compositing at all.
-    ///
-    /// BOTH CELLS MATTER. The order cell is the fix. The tolerate-failure cell
-    /// is what stops the fix becoming a second way for a wedged renderer to
-    /// fail: bringToFront cannot revive a dead renderer, so if it errors the
-    /// capture must still be attempted rather than short-circuiting into a
-    /// different error message for the same fault.
     #[tokio::test]
-    async fn a_capture_activates_the_tab_first_and_survives_a_failed_activation() {
+    async fn capture_never_raises_a_window_even_when_the_renderer_fails() {
         use std::sync::{Arc, Mutex};
-        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        // 1x1 transparent PNG, so the capture path writes real bytes.
-        const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-
-        // `fail_front` drives the second cell: the fake refuses bringToFront.
-        let serve = |fail_front: bool, seen: Arc<Mutex<Vec<String>>>| async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            tokio::spawn(async move {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        for fail_capture in [false, true] {
+            let seen=Arc::new(Mutex::new(Vec::<String>::new()));
+            let calls=seen.clone();
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr=listener.local_addr().unwrap();
+            let server=tokio::spawn(async move {
+                let (stream,_)=listener.accept().await.unwrap();
+                let mut ws=tokio_tungstenite::accept_async(stream).await.unwrap();
                 use tokio_tungstenite::tungstenite::Message;
-                while let Some(Ok(msg)) = ws.next().await {
-                    if let Message::Text(t) = msg {
-                        let v: Value = serde_json::from_str(&t).unwrap();
-                        let id = v["id"].as_u64().unwrap();
-                        let method = v["method"].as_str().unwrap_or("").to_string();
-                        seen.lock().unwrap().push(method.clone());
-                        let resp = match method.as_str() {
-                            "Page.bringToFront" if fail_front => {
-                                json!({"id": id, "error": {"message": "not attached to an active page"}})
-                            }
-                            "Page.captureScreenshot" => json!({"id": id, "result": {"data": PNG_B64}}),
-                            _ => json!({"id": id, "result": {}}),
-                        };
-                        ws.send(Message::Text(resp.to_string())).await.unwrap();
-                    }
+                while let Some(Ok(Message::Text(text)))=ws.next().await {
+                    let v:Value=serde_json::from_str(&text).unwrap();
+                    let method=v["method"].as_str().unwrap().to_string();
+                    calls.lock().unwrap().push(method.clone());
+                    let response=if method=="Page.captureScreenshot" && !fail_capture {
+                        json!({"id":v["id"],"result":{"data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}})
+                    }else{json!({"id":v["id"],"error":{"message":"controlled renderer failure"}})};
+                    ws.send(Message::Text(response.to_string())).await.unwrap();
                 }
             });
-            addr
-        };
-
-        let home = fake_home();
-
-        // CELL 1 — the order. bringToFront must precede the capture, or a
-        // backgrounded tab blocks for 30s instead of being made visible.
-        let addr = serve(false, seen.clone()).await;
-        let mut c = CdpClient::connect(&format!("ws://{addr}")).await.unwrap();
-        let (path, size) = screenshot_to_file(&mut c, home.path(), "cell1").await.expect("capture");
-        assert!(size > 0 && path.exists(), "the capture wrote real bytes");
-        let calls = seen.lock().unwrap().clone();
-        let front = calls.iter().position(|m| m == "Page.bringToFront");
-        let shot = calls.iter().position(|m| m == "Page.captureScreenshot");
-        assert!(front.is_some(), "the tab must be activated before capturing: {calls:?}");
-        assert!(front < shot, "activation must come FIRST, not after: {calls:?}");
-
-        // CELL 2 — a refused activation must not abort the capture. Without
-        // this, a wedged renderer would report "not attached to an active page"
-        // instead of the timeout that actually describes it, and the fix would
-        // have added a failure mode rather than removed one.
-        let seen2: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let addr2 = serve(true, seen2.clone()).await;
-        let mut c2 = CdpClient::connect(&format!("ws://{addr2}")).await.unwrap();
-        let (_, size2) = screenshot_to_file(&mut c2, home.path(), "cell2")
-            .await
-            .expect("a refused bringToFront must not fail the capture");
-        assert!(size2 > 0);
-        assert!(
-            seen2.lock().unwrap().iter().any(|m| m == "Page.captureScreenshot"),
-            "the capture must still be attempted after a failed activation: {:?}",
-            seen2.lock().unwrap()
-        );
+            let mut c=CdpClient::connect(&format!("ws://{addr}")).await.unwrap();
+            let home=fake_home();
+            let shot=screenshot_to_file(&mut c,home.path(),"background-capture").await;
+            if fail_capture {assert!(shot.unwrap_err().to_string().contains("without changing focus"));}
+            else {let (p,n)=shot.unwrap();assert!(p.exists() && n>0);}
+            assert_eq!(*seen.lock().unwrap(),vec!["Page.captureScreenshot".to_string()]);
+            server.abort();
+        }
     }
 
     /// The server-machine invariant, hermetically: a CDP endpoint that is

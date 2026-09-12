@@ -1111,6 +1111,8 @@ struct StartBody {
     height: Option<u32>,
     /// AMUX-3508: launch with no window (`--headless=new`), same profile
     /// dirs — log in headfully once, reuse the cookies headlessly forever.
+    /// Omission defaults to headless so automation cannot steal desktop focus;
+    /// an explicit false requests a headed (normally minimized) browser.
     #[serde(default)]
     headless: Option<bool>,
     /// Explicit consent to replace ANOTHER session's running browser
@@ -1272,12 +1274,13 @@ async fn start(
             );
         }
     }
-    match chrome::start(&home, &body.profile, &body.url, &session, attrib.as_deref().unwrap_or(""), body.headless.unwrap_or(false))
+    match chrome::start(&home, &body.profile, &body.url, &session, attrib.as_deref().unwrap_or(""), body.headless.unwrap_or(true))
         .await
     {
         Ok(info) => {
             let mut v = serde_json::to_value(&info).unwrap_or_else(|_| json!({}));
             v["ok"] = json!(true);
+            v["headless"] = json!(body.headless.unwrap_or(true));
             // Apply the requested viewport to the tab start just opened —
             // same CDP call as the viewport action. A failure here degrades
             // the FIELD (`viewport_error`), never the start: the browser is
@@ -1314,7 +1317,7 @@ async fn start(
             // off the owner's screen a beat after it appears. Off with
             // AMUX_BROWSER_START_MINIMIZED=0. The pointer notes it so a caller
             // that wants the window can raise it with `amux browser identify`.
-            let headless = body.headless.unwrap_or(false);
+            let headless = body.headless.unwrap_or(true);
             let minimized = !headless && chrome::start_minimized_by_default();
             if let Some(p) = headed_launch_pointer(headless, minimized, &body.profile) {
                 v["tell_the_human"] = json!(p);
@@ -1338,7 +1341,7 @@ async fn start(
                     "profile": body.profile,
                     "requested_url": audit_url(&body.url),
                     "url": v.get("launch_url").and_then(Value::as_str).map(audit_url),
-                    "headless": body.headless.unwrap_or(false),
+                    "headless": body.headless.unwrap_or(true),
                     "pid": v.get("pid"),
                     "cdp_port": v.get("cdp_port"),
                 }),
@@ -1607,6 +1610,10 @@ mod headed_pointer_tests {
     /// confident instruction to look at nothing.
     #[test]
     fn a_headless_start_is_told_nothing_because_there_is_no_window() {
+        let omitted: StartBody = serde_json::from_str("{}").unwrap();
+        assert!(omitted.headless.unwrap_or(true));
+        let headed: StartBody = serde_json::from_str(r#"{"headless":false}"#).unwrap();
+        assert!(!headed.headless.unwrap_or(true));
         assert_eq!(headed_launch_pointer(true, false, "hubspot"), None);
     }
 }

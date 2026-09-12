@@ -2140,3 +2140,124 @@ CARD: AMUX-4417
 SYMPTOM: After integrating the latest toolbar change, LC-COMPOSER-LAYOUT failed on all three projects: the 320px phone input shrank to 155px instead of its available 308px.
 COST: Long drafts become difficult to read beside More and Queue.
 FIX: Remove the conflicting ac-wrap flex override, retain compact chrome and aligned action controls, and preserve the full-width mobile writing row. Existing composer-layout diagnostics record inputW and actionDelta; the browser case checks short/long drafts, Send/Queue, narrow/landscape viewports and attachment-menu reachability.
+
+## Uncertain native submission was deleted and counted as synced
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: An uncertain 409 send response removed the durable message and marked its progress row done.
+COST: The only recoverable intent disappeared while the UI reported a success.
+FIX: Keep the original message ID, text and attachment references in a blocked outbox row; outbox_retry_failed reports the rejection. The new uncertain-submission contract rejects false checkmarks.
+
+## Steering preview depended on expiring in-memory text matches
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Pending steering used a temporary map cleared by matching text or a two-minute expiry, while actual intent lived in durable storage.
+COST: A reload or delay could erase the preview; identical messages could be conflated.
+FIX: Render pending steering directly from durable outbox entries with stable IDs. Distinct identical requests survive reload and age. steering_accept_failed identifies acceptance failures.
+
+## Worker-card file picker was missing on touch screens
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Details offered Attach file while the worker card relied on drag/drop.
+COST: Phone users could not select files from the worker-list composer.
+FIX: Add a 44px card file picker using the same durable upload pipeline. card_files_selected logs file counts; lifecycle covers real upload/download bytes and Send/Queue from both surfaces.
+
+## Mobile attachment menu overflowed after compact composer layout
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: At 320px and iPhone WebKit the attachment menu extended 10–16px beyond the screen edge.
+COST: All three layout runs failed their reachability check.
+FIX: Right-align the menu with its More control. Desktop, phone and WebKit layout checks now pass at narrow, landscape and keyboard heights; existing composer geometry diagnostics expose bounds.
+
+## Disabling browser idle expiry disabled hard and activity lifetimes
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The reaper returned immediately when idle expiry was zero, skipping independently configured hard and activity TTLs.
+COST: Browsers could retain processes indefinitely despite configured age limits.
+FIX: Evaluate activity and hard expiry before the idle-only switch. Existing reaper warnings report the actual expiry arm. The real-stop contract exercises both lifetimes with idle expiry disabled; notices now name AMUX_BROWSER_IDLE_REAP_S correctly.
+
+## Automatic browser capture could raise a user window
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Screenshot retry restored the browser and invoked bringToFront; omitted API headless settings also launched a visible window.
+COST: Background automation could interrupt the foreground application.
+FIX: Default API automation to headless and remove all screenshot focus recovery. capture_failed_without_focus logs a failed capture; explicit headed sign-in remains available. Real browser lifetime and foreground checks are tracked in LC-BROWSER-BACKGROUND.
+
+## Reconnect hid individual progress and failed-step evidence
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Reconnect requested a quiet sync and failures immediately hid the step list.
+COST: Users could not follow which saved operations had succeeded.
+FIX: Reconnect shows per-operation progress, only acknowledged changes receive checkmarks, and failed steps remain reviewable. LC-SYNC-PROGRESS holds three real edits at successive boundaries, injects one conflict and verifies explicit recovery.
+
+## Composer cleared before durable local acceptance
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The recent fire-and-forget path cleared the editor before local persistence and restored text later on refusal.
+COST: A failed local write or intervening edit could create misleading success feedback.
+FIX: Clear only after the fetch interceptor durably accepts the intent; delivery remains asynchronous. Existing composer_locally_accepted and composer_unconfirmed diagnostics identify the boundary. Newer text and files survive refusal.
+
+## Quoted Gemini picker blocked an idle worker's steering boundary
+AREA: steering
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The existing current_questions_survive_but_quoted_questions_do_not replay failed: a quoted boxed Gemini selector above a newer empty Claude prompt classified the worker as waiting.
+COST: Automatic steering could refuse an idle boundary based on historical output.
+FIX: Keep Gemini's live picker-over-placeholder behavior but disregard a boxed selector preceding a newer bare prompt. stale_picker_ignored emits a debug verdict. The existing cross-provider replay is the pre-fix failure; native completion remains separately blocked by host admission.
+
+## Browser reaper reported disabled while its hard lifetime was running
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The real browser-lifetime probe expired Chrome successfully, but its follow-up system-jobs assertion found no enabled reaper: setting one expiry arm to zero marked the entire job disabled.
+COST: Operators could not distinguish a disabled lifetime arm from a stopped cleanup loop.
+FIX: The catalog no longer treats arm-specific zero values as job-level disable switches. Actual per-job and global isolation still report disabled. LC-BROWSER-BACKGROUND requires an enabled reaper and disabled unrelated loops before launching, then observes real expiry; system-jobs exposes the corrected status and tick count.
+
+## Reconnect toasts covered the sync checkmarks on a phone
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Visual review of the passing iPhone sync-progress screenshot showed the reconnect toast covering the failed operation's explanation in the bottom checklist.
+COST: The requested per-operation evidence was temporarily obscured exactly when it changed.
+FIX: Use the visible checklist as reconnect feedback when saved work exists, cancel the lingering queue toast animation and clear its visible state when it opens, and remove its redundant completion toast. Reconnect without queued work still has its usual toast. Existing sync-step status and outbox diagnostics identify acknowledgements and failures.

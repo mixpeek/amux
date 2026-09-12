@@ -1,7 +1,7 @@
 import { test, expect } from '../fixtures';
 import { boot, auth, checkpoint, deleteOwnedWorkers } from './evidence';
 
-test('LC-COMPOSER-LAYOUT: mobile writing space and Queue controls stay aligned and reachable', async ({ page, request }, info) => {
+test('LC-COMPOSER-LAYOUT: compact mobile writing space and Queue controls stay aligned and reachable', async ({ page, request }, info) => {
   test.setTimeout(90_000);
   await boot(page);
   const headers = await auth(page);
@@ -33,7 +33,6 @@ test('LC-COMPOSER-LAYOUT: mobile writing space and Queue controls stay aligned a
             return box.y + box.height;
           }).toBeLessThanOrEqual(size.height);
           const field = (await input.boundingBox())!;
-          const row = (await page.locator('#peek-cmd-row').boundingBox())!;
           const action = (await main.boundingBox())!;
           const menu = (await more.boundingBox())!;
           expect(Math.abs(menu.y + menu.height - action.y - action.height)).toBeLessThanOrEqual(1);
@@ -45,9 +44,10 @@ test('LC-COMPOSER-LAYOUT: mobile writing space and Queue controls stay aligned a
             expect(box.x + box.width).toBeLessThanOrEqual(size.width);
           }
           if (size.width <= 600) {
-            expect(field.width).toBeGreaterThanOrEqual(row.width - 1);
+            expect(field.width).toBeGreaterThanOrEqual(120);
+            expect(field.x + field.width).toBeLessThanOrEqual(menu.x);
             expect(field.height).toBeLessThanOrEqual(160);
-            expect(menu.y).toBeGreaterThanOrEqual(field.y + field.height);
+            expect(Math.abs(menu.y + menu.height - field.y - field.height)).toBeLessThanOrEqual(1);
             const expand = (await page.locator('#peek-input-expand').boundingBox())!;
             expect(expand.width).toBe(44);
             expect(expand.height).toBe(44);

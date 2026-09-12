@@ -667,7 +667,7 @@ async fn patch_archived_round_trip_with_cross_lane_guard() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "archived": 1 })),
+        Some(json!({ "archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden" })),
         &[("X-Amux-Session", "lane-b")],
     )
     .await;
@@ -680,7 +680,7 @@ async fn patch_archived_round_trip_with_cross_lane_guard() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "archived": 1 })),
+        Some(json!({ "archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden" })),
         &[("X-Amux-Session", "lane-a")],
     )
     .await;
@@ -696,7 +696,7 @@ async fn patch_archived_round_trip_with_cross_lane_guard() {
         &app,
         "PATCH",
         &format!("/api/board/{id2}"),
-        Some(json!({ "archived": "true", "authorized_by": "ethan" })),
+        Some(json!({ "archived": "true", "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "ethan" })),
         &[("X-Amux-Session", "lane-b")],
     )
     .await;
@@ -3167,7 +3167,7 @@ async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "archived": 1 })),
+        Some(json!({ "archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden" })),
         &[("x-amux-worker", "lane-b")],
     )
     .await;
@@ -3189,7 +3189,7 @@ async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "archived": 1 })),
+        Some(json!({ "archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden" })),
         &[("x-amux-worker", "lane-a")],
     )
     .await;
@@ -5131,7 +5131,7 @@ async fn count_agrees_with_the_list_and_is_not_shaped_like_one() {
         if arch == 1 {
             let id = c["id"].as_str().expect("created id");
             let (st, _, v) =
-                send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"archived": 1, "authorized_by": "lifecycle fixture owner"}))).await;
+                send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
             assert_eq!(st, StatusCode::OK, "archive c{i} failed: {v}");
         }
     }
@@ -5207,7 +5207,7 @@ async fn archiving_a_trigger_bearing_card_records_that_it_de_arms_it() {
     assert_eq!(v["source_ref"], json!("when the content_hash deploy lands"), "{v}");
 
     let (st, _, v) =
-        send(&app, "PATCH", &format!("/api/board/{armed_id}"), Some(json!({"archived": 1, "authorized_by": "lifecycle fixture owner"}))).await;
+        send(&app, "PATCH", &format!("/api/board/{armed_id}"), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let log = v["log"].as_str().unwrap_or_default();
     assert!(log.contains("DE-ARMS"), "the log must say archiving de-arms it: {log}");
@@ -5221,7 +5221,7 @@ async fn archiving_a_trigger_bearing_card_records_that_it_de_arms_it() {
     let plain = create(&app, json!({"title": "plain", "session": "lane"})).await;
     let plain_id = plain["id"].as_str().unwrap();
     let (_, _, pv) =
-        send(&app, "PATCH", &format!("/api/board/{plain_id}"), Some(json!({"archived": 1, "authorized_by": "lifecycle fixture owner"}))).await;
+        send(&app, "PATCH", &format!("/api/board/{plain_id}"), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
     let plog = pv["log"].as_str().unwrap_or_default();
     assert!(plog.contains("ARCHIVED"), "it still records the archive: {plog}");
     assert!(!plog.contains("DE-ARMS"), "but must not warn about a trigger it does not have: {plog}");

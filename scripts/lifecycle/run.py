@@ -138,7 +138,7 @@ def main():
     if args.mode == 'full':
         run('runner-contracts', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/lifecycle', '-p', 'test_*.py'])
         run('syntax', ['bash', 'scripts/safe-cargo.sh', 'check', '--workspace'])
-        run('contracts', ['bash', 'scripts/test-contended.sh', '--workspace'], live=True)
+        run('contracts', ['bash', 'scripts/test-contended.sh', '--workspace', '--no-fail-fast'], live=True)
     if args.mode in ('browser', 'full'):
         run('outbox-contracts', ['node', '--test', 'tests/dashboard-outage-recovery.mjs'])
         assets = {'/' + name: hashlib.sha256((ROOT / 'crates/amux-dashboard/static' / name).read_bytes()).hexdigest()

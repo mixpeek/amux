@@ -28,7 +28,7 @@ export default defineConfig({
     ...server,
     command: `bash ${path.join(__dirname, 'serve.sh')}`,
     url: `https://localhost:${firstPort + index * 10}/health`,
-    env: { ...server.env, AMUX_RS_PORT: String(firstPort + index * 10), TMUX_TMPDIR: socketRoot() },
+    env: { ...server.env, AMUX_LIFECYCLE_BROWSER_TTL_S: process.env.AMUX_LIFECYCLE_BROWSER_TTL_S || '', AMUX_RS_PORT: String(firstPort + index * 10), TMUX_TMPDIR: socketRoot() },
   })).filter((_, index) => !selected.length || selected.includes(base.projects![index].name!)),
   outputDir: path.join(output, 'browser-artifacts'),
   reporter: [

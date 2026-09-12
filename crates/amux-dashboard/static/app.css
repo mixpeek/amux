@@ -2191,7 +2191,7 @@
   @media (max-width: 600px) {
     .peek-cmd-row > .send-split { margin-left: auto; }
     .peek-cmd-row .peek-more-menu,
-    .peek-cmd-row .dict-popup { left: 0; right: auto; }
+    .peek-cmd-row .dict-popup { left: auto; right: 0; }
     .peek-cmd-row .peek-more-menu {
       max-width: calc(100vw - 24px);
     }
@@ -6358,3 +6358,5 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 @media (pointer: coarse) {
   #peek-overlay .send-input { font-size:16px; }
 }
+
+.card-file-picker { min-width:44px; min-height:44px; margin-bottom:4px; }

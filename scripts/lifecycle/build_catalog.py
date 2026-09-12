@@ -15,6 +15,11 @@ changes-requested review, independent re-review and dependent integration are
 first-class scenarios. Existing specs remain independently runnable; no coverage is deleted or duplicated
 by importing test files into a giant order-dependent test.
 
+Current release evidence and every known unresolved lifecycle gap are tracked in
+[Lifecycle status and closure checklist](lifecycle-open-work.md), with the latest
+[steering and sync validation](lifecycle-validation-2026-09-12.md). That status is
+INCOMPLETE; the case catalog is not a completed test run.
+
 ## Run
 
 ```bash
@@ -45,6 +50,27 @@ export AMUX_LIFECYCLE_LAB_ACK=dedicated-test-instance
 # Optional: AMUX_LIFECYCLE_STORAGE_STATE=/path/to/test-browser-auth.json
 python3 scripts/lifecycle/run.py live
 ```
+
+For background browser expiry, run the real scratch-Chrome case explicitly:
+
+```bash
+AMUX_LIFECYCLE_BROWSER_TTL_S=20 python3 scripts/lifecycle/run.py browser \
+  --project desktop --grep LC-BROWSER-BACKGROUND
+python3 scripts/lifecycle/run.py browser \
+  --grep 'LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-COMPOSER-LAYOUT'
+AMUX_LIFECYCLE_PROVIDER=claude python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
+AMUX_LIFECYCLE_PROVIDER=gemini python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
+```
+
+The TTL setting is scoped to temporary test servers; it disables their idle and
+activity expiry so the hard lifetime is independently exercised. Only the browser
+reaper is enabled through existing per-job controls; every other catalogued loop
+stays disabled, and the test verifies that isolation before launching Chrome. Run
+the TTL selection separately from ordinary browser tests; those retain global
+fleet isolation. Omitting the TTL setting
+skips the real-Chrome case, which is not a pass. Native steering requires normal
+worker admission, uploaded bytes, confirmed automatic delivery and an original
+terminal task with evidence. Its preflight refuses a denied host before creation.
 
 The live phase also runs two three-worker coordination journeys: all peers in one
 group, then implementation in one group and review/integration in another. The
@@ -105,6 +131,10 @@ operator script for coverage that is not yet fully automated. Automated tests ar
 supporting evidence; their existence does not pre-mark any of these rows PASS.
 
 '''
+    # Preserve the maintained provider/run notes outside generated case rows.
+    existing = (ROOT / 'docs/consolidated-lifecycle.md').read_text()
+    notes_marker = '\n## Running the same lifecycle with Gemini'
+    notes = notes_marker + existing.split(notes_marker, 1)[1] if notes_marker in existing else ''
     parts = [head]
     for c in cases:
         parts.append(f"### {c['id']} — {c['surface']}\n\n{c['actions']}\n\nPass requires: {c['expected']}\n\nSupporting coverage: {', '.join('`'+s+'`' for s in c['sources'])}.\n\n")
@@ -129,6 +159,6 @@ a stable run of this checkout cannot certify concurrent drafts. The inherited
 Playwright startup banner describes configured browser targets; the report’s
 Selection field and executed test counts are the authoritative scope of this run.
 ''')
-    (ROOT / 'docs/consolidated-lifecycle.md').write_text(''.join(parts))
+    (ROOT / 'docs/consolidated-lifecycle.md').write_text(''.join(parts) + notes)
 
 if __name__ == '__main__': render()

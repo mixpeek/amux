@@ -382,10 +382,10 @@ test('a newly queued send stays quiet while a stuck send shows its waiting state
   ctx.offlineQueue = [{url:'/api/sessions/worker/send',timestamp:Date.now()}];
   ctx.updateConnectionStatus();
   assert.equal(classes.has('active'), false);
-  ctx.offlineQueue[0].timestamp -= 21000;
+  ctx.offlineQueue[0].timestamp -= 600001;
   ctx.updateConnectionStatus();
   assert.equal(classes.has('active'), true);
-  assert.match(element('offline-banner-title').innerHTML, /1 sending/);
+  assert.match(element('offline-banner-title').innerHTML, /1 stalled/);
   ctx.online = false;
   ctx.updateConnectionStatus();
   assert.match(element('offline-banner-title').innerHTML, /will send on reconnect/);
@@ -565,4 +565,42 @@ test('a stale failed-row dismiss cannot remove work another tab has resumed', as
   assert.equal(events[0][0],'outbox_dismiss_ignored');
   await ctx._clearBlockedOps();
   assert.deepEqual(JSON.parse(stored.get('amux_offline_queue')).map(q=>q.id),['resumed']);
+});
+
+
+test('uncertain message receipt never becomes a synced checkmark or deletes intent', async()=>{
+  const {ctx,stored,element}=fixture();
+  await ctx._queueOp('/api/sessions/worker/send',{method:'POST',body:JSON.stringify({text:'with @/tmp/evidence.txt',msg_id:'uncertain'})});
+  ctx._origFetch=async()=>new Response(JSON.stringify({ok:false,submission:'uncertain'}),{status:409});
+  await ctx.runSyncBanner();
+  const rows=JSON.parse(stored.get('amux_offline_queue'));
+  assert.equal(rows.length,1);assert.equal(rows[0].state,'blocked');
+  assert.equal(JSON.parse(rows[0].options.body).msg_id,'uncertain');
+  assert.equal(element('sync-title-text').textContent,'0 synced, 1 failed');
+  assert.doesNotMatch(element('sync-items').innerHTML,/sync-item done/);
+});
+
+test('steering rows survive reload and time passage without merging identical requests',async()=>{
+  const {ctx,stored}=fixture(['_steerQueueFor']);
+  for(const id of ['one','two'])await ctx._queueOp('/api/sessions/worker/steer',{method:'POST',body:JSON.stringify({text:'same text',msg_id:id})});
+  await ctx._mutateQueue(q=>{for(const r of q)r.timestamp-=600000});
+  const reloaded=fixture(['_steerQueueFor'],{stored});
+  reloaded.ctx.offlineQueue=reloaded.ctx._readQueue();
+  const rows=reloaded.ctx._steerQueueFor({name:'worker',steering:[]});
+  assert.equal(rows.length,2);assert.ok(rows.every(r=>r.pending));assert.notEqual(rows[0].id,rows[1].id);
+  await reloaded.ctx._mutateQueue(q=>q.splice(0,q.length));
+  assert.equal(reloaded.ctx._steerQueueFor({name:'worker',steering:[]}).length,0,'delivered steering leaves no optimistic ghost');
+});
+
+
+test('quiet batches show individual receipts while one ordinary send stays quiet', async()=>{
+  for(const count of [1,2]) {
+    const {ctx,element}=fixture();let shown=false;
+    element('sync-banner').classList.add=()=>{shown=true};
+    for(let i=0;i<count;i++)await ctx._queueOp('/api/board/TASK-'+i,patch);
+    ctx._origFetch=async url=>new Response(JSON.stringify({id:url.split('/').pop()}),{status:200});
+    await ctx.runSyncBanner(true);
+    assert.equal(shown,count>=2);
+    assert.equal(ctx.offlineQueue.length,0);
+  }
 });

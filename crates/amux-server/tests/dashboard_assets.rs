@@ -1253,7 +1253,7 @@ fn the_worker_tab_customizer_is_the_grid_glyph() {
 /// into the dedup gate, and after two minutes became a BLOCKED op with a red
 /// banner over a message the worker already had (2026-09-11, two workers).
 #[test]
-fn a_slow_send_waits_for_the_server_instead_of_falling_into_the_outbox() {
+fn a_slow_send_has_a_bounded_outer_deadline() {
     let js = asset("app.js");
     let i = js.find("async function doSend(").expect("doSend exists");
     let j = js[i..].find("async function doKeys(").expect("doKeys follows doSend");
@@ -1263,12 +1263,10 @@ fn a_slow_send_waits_for_the_server_instead_of_falling_into_the_outbox() {
         "doSend aborts at 10s again; on this host /send routinely exceeds that"
     );
     assert!(body.contains("AbortSignal.timeout(90000)"), "doSend keeps a 90s ceiling for a hung server");
-    // And the replay drops an 'uncertain' dedup answer instead of blocking on it.
-    assert!(
-        js.contains("d.submission === 'uncertain'") && js.contains("'uncertain_send_dropped'"),
-        "the outbox replay must drop a 409 submission=uncertain send (with its beacon) rather than \
-         keep it blocked forever"
-    );
+    // Uncertain delivery must retain the original durable intent. The executable
+    // dashboard-outage-recovery.mjs contract tests the real response path and
+    // checkmark state, including a negative control restoring the old drop.
+
 }
 
 /// A card-composer send must remove its sent attachments DURABLY (via
@@ -1315,28 +1313,6 @@ fn a_session_update_refreshes_the_open_details_view() {
          branch (>=2 call sites); found {calls} — a status/queue change would update the list \
          while the peek stays stale until a manual refresh"
     );
-}
-
-/// A send/steer blocked as "acceptance uncertain" can never succeed on retry
-/// and a blocked op is never re-attempted, so it sat as a permanent red banner
-/// (Ethan, 2026-09-12: a 17h-old "1 failed" to amux-research). It must be swept
-/// automatically — on boot and before each sync — not left for manual dismiss.
-/// A blocked BOARD write is a real edit and must survive (message paths only).
-#[test]
-fn unrecoverable_uncertain_sends_are_swept_not_left_as_a_red_banner() {
-    let js = asset("app.js");
-    assert!(js.contains("function _pruneUnrecoverableOutbox"),
-        "the unrecoverable-outbox sweep must exist");
-    assert!(js.contains("_OUTBOX_UNRECOVERABLE") && js.contains("acceptance is uncertain"),
-        "the sweep must match the server's uncertain-acceptance refusal");
-    // Called from the sync loop AND at boot, so a stale blocked op cannot greet a fresh session.
-    assert!(js.matches("_pruneUnrecoverableOutbox()").count() >= 2,
-        "the sweep must run both at startup and before each sync attempt");
-    // Message paths only — the regex/guard must scope to send|steer, never board.
-    let i = js.find("function _pruneUnrecoverableOutbox").unwrap();
-    let body = &js[i..(i + 900).min(js.len())];
-    assert!(body.contains("/(send|steer)$/"),
-        "the sweep must be scoped to send/steer; a blocked board write still needs review");
 }
 
 /// Reconnecting must show the sync checklist draining item by item — the

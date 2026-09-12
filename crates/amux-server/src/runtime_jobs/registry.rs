@@ -439,17 +439,17 @@ pub const CATALOG: &[Doc] = &[
             EnvControl {
                 var: "AMUX_BROWSER_ACTIVITY_REAP_S",
                 effect: "seconds since last verb (navigate/screenshot/action) before release (default 300 = 5 min); 0 disables this arm",
-                off: Some("0"),
+                off: None, // disables one expiry arm, not the running job
             },
             EnvControl {
                 var: "AMUX_BROWSER_IDLE_REAP_S",
                 effect: "seconds a profile must be continuously empty (no real pages) before release (default 3600); 0 disables this arm",
-                off: Some("0"),
+                off: None, // disables one expiry arm, not the running job
             },
             EnvControl {
                 var: "AMUX_BROWSER_TTL_S",
                 effect: "hard age ceiling — any browser older than this is released even with open pages (default 14400 = 4 h); 0 disables",
-                off: Some("0"),
+                off: None, // disables one expiry arm, not the running job
             },
             EnvControl {
                 var: "AMUX_BROWSER_REAP_TICK_S",

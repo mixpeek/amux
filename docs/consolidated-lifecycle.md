@@ -9,8 +9,8 @@ first-class scenarios. Existing specs remain independently runnable; no coverage
 by importing test files into a giant order-dependent test.
 
 Current release evidence and every known unresolved lifecycle gap are tracked in
-[Lifecycle status and closure checklist](lifecycle-open-work.md), with a
-[portable evidence summary](evidence/lifecycle-2026-09-11.json). That status is
+[Lifecycle status and closure checklist](lifecycle-open-work.md), with the latest
+[steering and sync validation](lifecycle-validation-2026-09-12.md). That status is
 INCOMPLETE; the case catalog is not a completed test run.
 
 ## Run
@@ -43,6 +43,25 @@ export AMUX_LIFECYCLE_LAB_ACK=dedicated-test-instance
 # Optional: AMUX_LIFECYCLE_STORAGE_STATE=/path/to/test-browser-auth.json
 python3 scripts/lifecycle/run.py live
 ```
+
+For background browser expiry, run the real scratch-Chrome case explicitly:
+
+```bash
+AMUX_LIFECYCLE_BROWSER_TTL_S=20 python3 scripts/lifecycle/run.py browser   --project desktop --grep LC-BROWSER-BACKGROUND
+python3 scripts/lifecycle/run.py browser   --grep 'LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-COMPOSER-LAYOUT'
+AMUX_LIFECYCLE_PROVIDER=claude python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
+AMUX_LIFECYCLE_PROVIDER=gemini python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
+```
+
+The TTL setting is scoped to temporary test servers; it disables their idle and
+activity expiry so the hard lifetime is independently exercised. Only the browser
+reaper is enabled through existing per-job controls; every other catalogued loop
+stays disabled, and the test verifies that isolation before launching Chrome. Run
+the TTL selection separately from ordinary browser tests; those retain global
+fleet isolation. Omitting the TTL setting
+skips the real-Chrome case, which is not a pass. Native steering requires normal
+worker admission, uploaded bytes, confirmed automatic delivery and an original
+terminal task with evidence. Its preflight refuses a denied host before creation.
 
 The live phase also runs two three-worker coordination journeys: all peers in one
 group, then implementation in one group and review/integration in another. The
@@ -216,11 +235,11 @@ Supporting coverage: `e2e/worker-configurations.spec.ts`, `crates/amux-server/te
 
 ### LC-15 — Backlog autonomous pickup
 
-Create backlog work with a clear next action; leave the observer idle for several driver ticks.
+Create backlog work with a clear next action; leave the observer idle for several driver ticks. Exercise both Backlog and Todo on each of two real workers, with dependencies in opposite initial-state order and no chat prompt, observer claim, evidence write or status advancement.
 
-Pass requires: Work progresses to todo and doing without observer nudges; history attributes the promotion.
+Pass requires: Work progresses to todo and doing without observer nudges; history attributes the promotion. Every original seeded ID reaches an evidenced terminal state; completing only one worker is INCOMPLETE. Retain timelines for starvation or acknowledgement-generated work.
 
-Supporting coverage: `docs/e2e-acceptance.md`, `crates/amux-server/tests/golden_scenarios.rs`.
+Supporting coverage: `docs/e2e-acceptance.md`, `crates/amux-server/tests/golden_scenarios.rs`, `e2e/lifecycle/sonnet-queue.ts`.
 
 ### LC-16 — Overdue ordering
 
@@ -312,11 +331,11 @@ Supporting coverage: `e2e/worker-request-callback.spec.ts`.
 
 ### LC-27 — Terminal reading and controls
 
-Open terminal/transcript; navigate earlier/later messages, source/content filters, Find, copy, path links and focus mode; test long output.
+Open terminal/transcript; navigate earlier/later messages, source/content filters, Find, copy, path links and focus mode; test long output. For Gemini and Sonnet, send human and peer messages, produce enough output to require older-history loading, then find each exact message under its origin filter and open its linked task on desktop and phone.
 
-Pass requires: Scroll anchors and filter selection survive refresh; no cross-worker output/draft/card mixing; toolbar is reachable.
+Pass requires: Scroll anchors and filter selection survive refresh; no cross-worker output/draft/card mixing; toolbar is reachable. Durable peer history must remain navigable after it leaves the live terminal frame; paint-log fallback cannot count as verified structured provider history.
 
-Supporting coverage: `e2e/terminal-message-navigation.spec.ts`, `e2e/terminal-scroll-accuracy.spec.ts`, `e2e/peek-default-tab.spec.ts`.
+Supporting coverage: `e2e/terminal-message-navigation.spec.ts`, `e2e/terminal-scroll-accuracy.spec.ts`, `e2e/peek-default-tab.spec.ts`, `e2e/lifecycle/sonnet-crossgroup.ts`.
 
 ### LC-28 — Read-aloud and media controls
 
@@ -332,7 +351,7 @@ Upload a text file, close peek mid-transfer, cancel another, force failure, retr
 
 Pass requires: File bytes match; transfer survives closing; cancel is not an error; failed chip retains its retryable file.
 
-Supporting coverage: `e2e/upload-chip-escape.spec.ts`.
+Supporting coverage: `e2e/upload-chip-escape.spec.ts`, `e2e/lifecycle/uploads.spec.ts`, `e2e/lifecycle/files-upload.spec.ts`, `e2e/lifecycle/composer.spec.ts`, `e2e/lifecycle/sonnet-upload.ts`.
 
 ### LC-30 — Files and previews
 
@@ -556,7 +575,7 @@ Author supplies a deliberate empty-input defect and requests review. Reviewer di
 
 Pass requires: Reviewer is a different worker, cites actual task/file/failure, and the implementation cannot be treated as approved before repair.
 
-Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `e2e/worker-request-callback.spec.ts`, `e2e/isolated-worker.spec.ts`.
+Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `e2e/worker-request-callback.spec.ts`, `e2e/isolated-worker.spec.ts`, `e2e/lifecycle/live-sonnet-pair.spec.ts`.
 
 ### LC-59 — Revision and independent re-review
 
@@ -564,13 +583,13 @@ Author revises after reviewer feedback, records the changed artifact and tests, 
 
 Pass requires: Durable message timestamps prove rejection precedes approval; approval refers to the revised work and actual successful tests, not the old artifact.
 
-Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `e2e/worker-request-callback.spec.ts`, `e2e/isolated-worker.spec.ts`.
+Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `e2e/worker-request-callback.spec.ts`, `e2e/isolated-worker.spec.ts`, `e2e/lifecycle/live-sonnet-pair.spec.ts`.
 
 ### LC-60 — Dependent integration and callback
 
-Consumer reads author/reviewer tasks, creates its own dependent integration task, waits for approval, tests the artifact, and sends HANDOFF_DONE.
+Consumer reads author/reviewer tasks, creates its own dependent integration task, waits for approval, tests the artifact, and sends HANDOFF_DONE. After HANDOFF_DONE, observe three complete board-driver cycles with no new user input; record cycle boundaries, per-worker open task IDs, messages and model calls.
 
-Pass requires: Integration finishes after approval; linked task IDs belong to the correct peers; callback wakes requester and all three workers reach evidenced terminal states.
+Pass requires: Integration finishes after approval; linked task IDs belong to the correct peers; callback wakes requester and all three workers reach evidenced terminal states. A completion callback must not request another acknowledgement or manufacture another review task solely to process its receipt. Completion receipts do not generate recursively captured acknowledgement tasks; all original deliverables remain terminal and no new model turn exists solely to acknowledge a receipt.
 
 Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `e2e/worker-request-callback.spec.ts`, `e2e/isolated-worker.spec.ts`.
 
@@ -584,9 +603,9 @@ Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-c
 
 ### LC-62 — Unavailable peer and recovery
 
-Stop reviewer before request, resume it later; separately test archived, isolated, error and rate-limited reviewers.
+Stop reviewer before request, resume it later; separately test archived, isolated, error and rate-limited reviewers. Also test host admission denial separately from provider quota exhaustion; retry in a dedicated lab only after the actual blocking condition clears.
 
-Pass requires: Requester shows who/what it awaits, retains its next action, avoids false completion, and resumes when the actual reviewer returns.
+Pass requires: Requester shows who/what it awaits, retains its next action, avoids false completion, and resumes when the actual reviewer returns. Health may be OK while new worker admission is denied. Unavailable prerequisites remain BLOCKED/INCOMPLETE and never satisfy native delivery or task-completion assertions.
 
 Supporting coverage: `e2e/lifecycle/coordination.spec.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `e2e/worker-request-callback.spec.ts`, `e2e/isolated-worker.spec.ts`.
 
@@ -605,6 +624,142 @@ Inventory every run-owned entity; inspect all deliverables, verify results, stop
 Pass requires: All requested work is terminal with proof; no active leases, duplicate dispatches or orphan jobs; unresolved work is explicitly failed/incomplete.
 
 Supporting coverage: `e2e/lifecycle/live-journey.spec.ts`.
+
+### LC-LINKED-RECORD — Linked outcome board and task record
+
+Create an epic and linked dependent children; inspect evidence and acceptance criteria; follow task, message, file, file URL, HTTP URL and git commit links. Repeat at desktop and phone widths.
+
+Pass requires: Every link reaches its exact persisted target; evidence stays readable; no fabricated progress or overflow.
+
+Supporting coverage: `e2e/lifecycle/linked-record.spec.ts`.
+
+### LC-COMPLEX-VERIFIED — Autonomous complex decomposition and verification
+
+Send one substantive request to two real Sonnet workers. Require worker-created epic/children, dependencies, source-message links, peer review, produced artifacts and exact execution evidence. Change Verified criteria mid-work; observe discovery, extra work and independent verification.
+
+Pass requires: Workers create the decomposition and satisfy the current gate. Every required deliverable reaches Verified. Stale acknowledgments fail, and no observer writes work evidence or closes deliverable cards.
+
+Supporting coverage: `e2e/lifecycle/live-complex-verified.spec.ts`.
+
+### LC-GATE-REVISION — Gate changes and historical verification
+
+Edit inherited and overridden criteria before transition and after verification; retry an old checklist, then supply current checks; reload details.
+
+Pass requires: The effective gate is authoritative; changed criteria are visible; prior verification cannot silently claim the newer requirements.
+
+Supporting coverage: `crates/amux-server/tests/board_api.rs`, `e2e/lifecycle/gate-revision.spec.ts`, `crates/amux-server/tests/harness_enforcement.rs`.
+
+### LC-SEMANTIC-INTAKE — Semantic task intake
+
+Create tasks through both the direct board API and six actual composer messages to a real worker: initial request, paraphrase, added context, revised requirements, independent UI outcome and separate-domain output. Use the real helper model and inspect task/message links in desktop and phone views.
+
+Pass requires: The six messages produce exactly three tasks. Paraphrase/context/refinement preserve one survivor ID, increasing revision, all four linked full source messages and original requirements. Logs must record measured create/append/update decisions. Distinct outcomes remain separate. No explicit task IDs, mocked classifier, observer board/history writes or manual completion can manufacture the result; unavailable comparison fails the live case.
+
+Supporting coverage: `e2e/lifecycle/live-semantic-intake.spec.ts`, `e2e/lifecycle/live-semantic-messages.spec.ts`, `crates/amux-server/src/api/board_intake.rs`.
+
+### LC-LOCAL-OUTBOX — Durable local message acceptance
+
+Send multiline text and an uploaded file; delay the server response, type a newer draft, reload, lose the response after delivery, retry, refuse submission and simulate full device storage. Inspect terminal and pending Messages. Fill the real browser storage quota with disposable caches, keep another draft and a pending message, then send a large message. Repeat with unrecoverable storage failure and inspect Sync diagnostics.
+
+Pass requires: Local persistence clears only the accepted draft immediately; attachment paths and one stable message ID survive retry/reload. Delivery requires a confirmed/deferred/deduplicated receipt. Refused or ambiguous operations remain reviewable and preserve ordering. Failed local storage keeps the draft and sends nothing. Cache pressure is reclaimed before local refusal, without discarding user intent. Normal sends keep Send stable and emit no queue/sync completion flash. Irrecoverable storage failures have precise, content-free diagnostics.
+
+Supporting coverage: `e2e/lifecycle/composer.spec.ts`, `tests/dashboard-outage-recovery.mjs`, `e2e/lifecycle/live-complex-verified.spec.ts`, `e2e/lifecycle/composer-cards.spec.ts`, `e2e/mobile-offline-ux.spec.ts`.
+
+### LC-FOCUS-NAVIGATION — Worker creation focus and explicit navigation
+
+Type the worker directory while initial focus is delayed; reload a saved terminal and select the Workers tab before restoration runs.
+
+Pass requires: Directory typing stays in its selected field. Explicit navigation cancels a delayed old-terminal restoration, and the requested main page remains usable.
+
+Supporting coverage: `e2e/lifecycle/create-focus.spec.ts`.
+
+### LC-COMPOSER-LAYOUT — Long-draft composer layout
+
+Enter short and long multiline drafts; toggle Send/Queue on desktop, 320px mobile, iPhone Safari, landscape and reduced keyboard viewports. Open Attach file and cancel the chooser, then clear the draft.
+
+Pass requires: Phone inputs retain at least 120px of compact writing space beside aligned 44px controls. Actions and attachment menus remain inside the viewport, mode changes and cancelling file selection preserve text, and clearing a long draft reclaims its height.
+
+Supporting coverage: `e2e/lifecycle/composer-layout.spec.ts`.
+
+### LC-DEEPLINK — Linked task and worker navigation
+
+Edit a task without saving; follow a worker deep link in the same page; return to the task.
+
+Pass requires: The previous task overlay no longer intercepts worker actions, and the unsaved task edit survives.
+
+Supporting coverage: `e2e/lifecycle/deeplink-surfaces.spec.ts`.
+
+### LC-PROVIDER-FRESH — Provider conversation reset
+
+On a real Gemini worker with existing peer messages, choose New conversation, upload a file and submit a task. Restart normally afterward. Repeat the fresh reset contract for Codex.
+
+Pass requires: A fresh launch never resumes the prior provider ID. Uploaded input reaches the actual provider and its receipt task reaches an evidenced terminal state. A normal restart retains the newly created conversation identity. A following ordinary message is durably accepted during restart, retries produce one queue copy, and delivery waits for the replacement process.
+
+Supporting coverage: `e2e/lifecycle/sonnet-upload.ts`, `crates/amux-server/src/api/session_verbs.rs`.
+
+### LC-BOARD-SOURCE-MESSAGE — Task recovery and linked assignment
+
+Capture an assignment with required file paths and schema beyond its 300-character card preview. Read it through board show, then its --messages option, and recover the worker after restart.
+
+Pass requires: The compact view exposes source message IDs and a supported full-read command. Full linked assignments preserve attachment paths and acceptance criteria; recovery does not guess from truncated text or search terminal logs.
+
+Supporting coverage: `scripts/test-board-show-messages.py`, `e2e/lifecycle/sonnet-upload.ts`.
+
+### LC-BLOCKED-OUTBOX — Failed and retryable offline edits
+
+Create a real board revision conflict, go offline, inspect its review link, enqueue a second edit, dismiss only the failed change, then reconnect. Exercise all browser projects and a stale failed-row dismissal after another tab resumes the operation. Reload an 18-hour-old blocked uncertain message with a file reference.
+
+Pass requires: Blocked edits never promise automatic retry. Mixed queues count failed and retryable changes separately. Dismissal preserves resumed/pending work; reconnect applies only the pending edit and leaves the newer peer revision intact. Uncertain messages retain their original identity and file references across boot and sync until acknowledged or explicitly dismissed.
+
+Supporting coverage: `e2e/lifecycle/blocked-outbox.spec.ts`, `tests/dashboard-outage-recovery.mjs`.
+
+### LC-HELPER-FAILURE — Semantic helper failure and recovery
+
+In an isolated subprocess fixture make the configured helper exit nonzero with quota text on stdout, diagnostic stderr, empty output, and JSON-shaped stdout; also exercise timeout and successful JSON. Then restore an available real helper and resend a paraphrase through the actual composer. This is a guided closure case; no new automated implementation is claimed.
+
+Pass requires: Unsuccessful classifier processes never count as measured decisions or bad-JSON model answers. Bounded diagnostics identify exit/timeout and provider availability. Requests and original IDs remain attributable; the documented fallback is visible. Recovery produces a measured semantic append/update with all source links. Failed helper calls do not silently claim deduplication.
+
+Supporting coverage: `crates/amux-server/src/api/mdai.rs`, `crates/amux-server/src/api/board_intake.rs`, `e2e/lifecycle/live-semantic-messages.spec.ts`.
+
+### LC-TOKEN-EFFICIENCY — Measured tokens per completed outcome
+
+Run matched scratch workloads before and after an optimization with the same provider/model, input files, gate criteria and output checks. Record native-worker and helper calls separately, input/output/cache tokens when reported, task/message growth and elapsed time. Include a completed coordination chain with three quiet board-driver cycles. This is guided measurement, not an existing automated benchmark.
+
+Pass requires: Compare tokens per independently verified outcome, not per message. Quality, semantic target selection, source links and peer review stay equal. Missing provider counters are UNMEASURED, never zero. Duplicate acknowledgement turns cease; claimed savings have baseline and candidate evidence with model/settings and commit identities.
+
+Supporting coverage: `e2e/lifecycle/sonnet-queue.ts`, `e2e/lifecycle/live-coordination.spec.ts`, `crates/amux-server/src/api/board_intake.rs`, `crates/amux-server/src/api/mdai.rs`.
+
+### LC-SYNC-PROGRESS — Offline reconnect receipts
+
+Persist three edits offline. Reconnect and pause each transport step; acknowledge the first, conflict the second and acknowledge the third. Review the retained failure, retry it explicitly and reload. Also return uncertain native message submission.
+
+Pass requires: Only acknowledged operations receive checkmarks. Running and failed rows remain distinct; failed results stay visible for review. Uncertain message text, attachment references and client identity remain durable without a false synced receipt.
+
+Supporting coverage: `e2e/lifecycle/sync-progress.spec.ts`, `tests/dashboard-outage-recovery.mjs`.
+
+### LC-COMPOSER-FILES — Worker card and details upload/send parity
+
+On desktop, mobile Chromium and iPhone WebKit select a real file from both worker-card and worker-details controls. Read downloaded bytes, submit with Send and Queue while offline, reconnect, then reload with a newer draft. Separately run the interrupted large-file scenario and native file-reading assignment.
+
+Pass requires: Both surfaces provide reachable file pickers. Exact uploaded bytes and references survive offline acceptance; one stable operation reaches the transport and newer drafts survive. Controlled receipts prove client behavior only; native execution and large-file recovery have separate evidence.
+
+Supporting coverage: `e2e/lifecycle/composer-file-surfaces.spec.ts`, `e2e/lifecycle/composer-layout.spec.ts`, `e2e/lifecycle/live-steering-pickup.spec.ts`, `e2e/lifecycle/sonnet-upload.ts`.
+
+### LC-BROWSER-BACKGROUND — Non-disruptive automation and browser lifetime
+
+Run with AMUX_LIFECYCLE_BROWSER_TTL_S=20 in the isolated harness. Start a scratch browser through the real API with default settings, click a page button, capture its rendered output and compare foreground application before/after. Wait for real expiry with idle/activity expiry disabled, then verify saved profile bytes survive. Exercise capture failure in the CDP contract.
+
+Pass requires: Default automation is headless and never raises a window; screenshot failure never invokes bringToFront. Hard TTL still releases the process when idle expiry is disabled, retaining profile data. Explicit headed login remains a separate intentional UI action.
+
+Supporting coverage: `e2e/lifecycle/browser-background.spec.ts`, `crates/amux-server/src/integrations/browser.rs`, `crates/amux-server/src/runtime_jobs/browser_reaper.rs`.
+
+### LC-STEERING-AUTO — Automatic native pickup with linked file evidence
+
+In an admitted dedicated lab create a fresh Sonnet worker, then Gemini. Upload a JSON assignment through details, choose Queue and provide no Send-now, Enter or reminder. Observe the exact steering ID receive a confirmed submission verdict, read the produced receipt and inspect its original evidenced terminal board task. Repeat a busy-boundary arrival as a guided case. Run the existing paired backlog/todo observer and inspect all remaining owned cards.
+
+Pass requires: Automatic pickup produces real file-derived output and finishes the original task under normal gates. No manual state changes, replacement tasks or fabricated evidence satisfy completion. Backlog/todo work and redundant captures are resolved truthfully; three quiet driver cycles produce no acknowledgement loop. Admission/provider failure leaves native execution unverified. Busy-boundary delivery remains guided. The paired queue observer records three real quiet driver cycles; it is not verified until a native run completes.
+
+Supporting coverage: `e2e/lifecycle/live-steering-pickup.spec.ts`, `e2e/lifecycle/sonnet-queue.ts`, `e2e/lifecycle/live-coordination.spec.ts`.
 
 ## End-state and cleanup record
 
@@ -890,7 +1045,7 @@ This case is discovered automatically by `live`/`full`. The earlier direct-board
 The canonical scenarios and expected task/message counts are in `cases.json`.
 
 The `LC-COMPOSER-LAYOUT` browser case also covers the phone composer in Send and
-Queue modes. It measures full-width writing space and aligned 44px controls at
+Queue modes. It measures compact writing space and aligned 44px controls at
 320px, the normal project viewport, landscape, and a reduced keyboard viewport;
 opens the attachment menu and file chooser; and checks draft preservation and
 height recovery. Screenshot checkpoints include short drafts, long drafts and

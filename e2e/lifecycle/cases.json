@@ -705,7 +705,7 @@
     "id": "LC-COMPOSER-LAYOUT",
     "surface": "Long-draft composer layout",
     "actions": "Enter short and long multiline drafts; toggle Send/Queue on desktop, 320px mobile, iPhone Safari, landscape and reduced keyboard viewports. Open Attach file and cancel the chooser, then clear the draft.",
-    "expected": "Phone inputs occupy the full composer width with aligned 44px controls below. Actions and attachment menus remain inside the viewport, mode changes and cancelling file selection preserve text, and clearing a long draft reclaims its height.",
+    "expected": "Phone inputs retain at least 120px of compact writing space beside aligned 44px controls. Actions and attachment menus remain inside the viewport, mode changes and cancelling file selection preserve text, and clearing a long draft reclaims its height.",
     "sources": [
       "e2e/lifecycle/composer-layout.spec.ts"
     ]
@@ -742,8 +742,8 @@
   {
     "id": "LC-BLOCKED-OUTBOX",
     "surface": "Failed and retryable offline edits",
-    "actions": "Create a real board revision conflict, go offline, inspect its review link, enqueue a second edit, dismiss only the failed change, then reconnect. Exercise all browser projects and a stale failed-row dismissal after another tab resumes the operation.",
-    "expected": "Blocked edits never promise automatic retry. Mixed queues count failed and retryable changes separately. Dismissal preserves resumed/pending work; reconnect applies only the pending edit and leaves the newer peer revision intact.",
+    "actions": "Create a real board revision conflict, go offline, inspect its review link, enqueue a second edit, dismiss only the failed change, then reconnect. Exercise all browser projects and a stale failed-row dismissal after another tab resumes the operation. Reload an 18-hour-old blocked uncertain message with a file reference.",
+    "expected": "Blocked edits never promise automatic retry. Mixed queues count failed and retryable changes separately. Dismissal preserves resumed/pending work; reconnect applies only the pending edit and leaves the newer peer revision intact. Uncertain messages retain their original identity and file references across boot and sync until acknowledged or explicitly dismissed.",
     "sources": [
       "e2e/lifecycle/blocked-outbox.spec.ts",
       "tests/dashboard-outage-recovery.mjs"
@@ -770,6 +770,50 @@
       "e2e/lifecycle/live-coordination.spec.ts",
       "crates/amux-server/src/api/board_intake.rs",
       "crates/amux-server/src/api/mdai.rs"
+    ]
+  },
+  {
+    "id": "LC-SYNC-PROGRESS",
+    "surface": "Offline reconnect receipts",
+    "actions": "Persist three edits offline. Reconnect and pause each transport step; acknowledge the first, conflict the second and acknowledge the third. Review the retained failure, retry it explicitly and reload. Also return uncertain native message submission.",
+    "expected": "Only acknowledged operations receive checkmarks. Running and failed rows remain distinct; failed results stay visible for review. Uncertain message text, attachment references and client identity remain durable without a false synced receipt.",
+    "sources": [
+      "e2e/lifecycle/sync-progress.spec.ts",
+      "tests/dashboard-outage-recovery.mjs"
+    ]
+  },
+  {
+    "id": "LC-COMPOSER-FILES",
+    "surface": "Worker card and details upload/send parity",
+    "actions": "On desktop, mobile Chromium and iPhone WebKit select a real file from both worker-card and worker-details controls. Read downloaded bytes, submit with Send and Queue while offline, reconnect, then reload with a newer draft. Separately run the interrupted large-file scenario and native file-reading assignment.",
+    "expected": "Both surfaces provide reachable file pickers. Exact uploaded bytes and references survive offline acceptance; one stable operation reaches the transport and newer drafts survive. Controlled receipts prove client behavior only; native execution and large-file recovery have separate evidence.",
+    "sources": [
+      "e2e/lifecycle/composer-file-surfaces.spec.ts",
+      "e2e/lifecycle/composer-layout.spec.ts",
+      "e2e/lifecycle/live-steering-pickup.spec.ts",
+      "e2e/lifecycle/sonnet-upload.ts"
+    ]
+  },
+  {
+    "id": "LC-BROWSER-BACKGROUND",
+    "surface": "Non-disruptive automation and browser lifetime",
+    "actions": "Run with AMUX_LIFECYCLE_BROWSER_TTL_S=20 in the isolated harness. Start a scratch browser through the real API with default settings, click a page button, capture its rendered output and compare foreground application before/after. Wait for real expiry with idle/activity expiry disabled, then verify saved profile bytes survive. Exercise capture failure in the CDP contract.",
+    "expected": "Default automation is headless and never raises a window; screenshot failure never invokes bringToFront. Hard TTL still releases the process when idle expiry is disabled, retaining profile data. Explicit headed login remains a separate intentional UI action.",
+    "sources": [
+      "e2e/lifecycle/browser-background.spec.ts",
+      "crates/amux-server/src/integrations/browser.rs",
+      "crates/amux-server/src/runtime_jobs/browser_reaper.rs"
+    ]
+  },
+  {
+    "id": "LC-STEERING-AUTO",
+    "surface": "Automatic native pickup with linked file evidence",
+    "actions": "In an admitted dedicated lab create a fresh Sonnet worker, then Gemini. Upload a JSON assignment through details, choose Queue and provide no Send-now, Enter or reminder. Observe the exact steering ID receive a confirmed submission verdict, read the produced receipt and inspect its original evidenced terminal board task. Repeat a busy-boundary arrival as a guided case. Run the existing paired backlog/todo observer and inspect all remaining owned cards.",
+    "expected": "Automatic pickup produces real file-derived output and finishes the original task under normal gates. No manual state changes, replacement tasks or fabricated evidence satisfy completion. Backlog/todo work and redundant captures are resolved truthfully; three quiet driver cycles produce no acknowledgement loop. Admission/provider failure leaves native execution unverified. Busy-boundary delivery remains guided. The paired queue observer records three real quiet driver cycles; it is not verified until a native run completes.",
+    "sources": [
+      "e2e/lifecycle/live-steering-pickup.spec.ts",
+      "e2e/lifecycle/sonnet-queue.ts",
+      "e2e/lifecycle/live-coordination.spec.ts"
     ]
   }
 ]

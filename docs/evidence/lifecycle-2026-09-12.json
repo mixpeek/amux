@@ -1,0 +1,1026 @@
+{
+  "date": "2026-09-12",
+  "tracking": "AMUX-4417",
+  "overall_status": "INCOMPLETE",
+  "candidate_version": "0.9.919",
+  "source_base": "bc5e2385a82ee19658c940142bd4e6a89eb3d302",
+  "guided_cases": 80,
+  "native_live_discovery": {
+    "tests": 11,
+    "files": 7
+  },
+  "runs": [
+    {
+      "archive_key": "steering-sync-fixes-914",
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY"
+      },
+      "binary": {
+        "sha256": "91820ff10a6f79632aa15b0c89f77c13c8428d71ae020b314c439cfef444d367",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.5
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 64.5
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 27, \"failed\": 3, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY"
+          ],
+          "seconds": 102.5
+        }
+      ]
+    },
+    {
+      "archive_key": "background-layout-914",
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-BROWSER-BACKGROUND|LC-COMPOSER-LAYOUT"
+      },
+      "binary": {
+        "sha256": "1bb1f4a7ea875d55bccee0f5b7ca553cf49292a5d9bba7e6b571ae649b2a1534",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 75.6
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 3, \"failed\": 3, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-BROWSER-BACKGROUND|LC-COMPOSER-LAYOUT"
+          ],
+          "seconds": 43.9
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-ttl-enabled-914",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "1bb1f4a7ea875d55bccee0f5b7ca553cf49292a5d9bba7e6b571ae649b2a1534",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.5
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 44.3
+        }
+      ]
+    },
+    {
+      "archive_key": "steering-sync-final-915",
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-BROWSER-BACKGROUND|LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "e0e2e37f955e64ad885d15738b4f6f17fa8f268712639b8de4f3c4544a62fd13",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 118.7
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 26, \"failed\": 10, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-BROWSER-BACKGROUND|LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 286.6
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-final-915",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "1ecbeba26fc55d3efe6f883de73a5075ae9ba13d21bfbc093755ebdbe9113548",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.5
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 103.9
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 33, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 97.4
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-background-final-915",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "1ecbeba26fc55d3efe6f883de73a5075ae9ba13d21bfbc093755ebdbe9113548",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 41.3
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-final-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "3d3b49e5a9059d5198fcec5301724407f63963f3844ba1179e5baf629afffb62",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.3
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 47.3
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 33, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 95.8
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-background-final-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "3d3b49e5a9059d5198fcec5301724407f63963f3844ba1179e5baf629afffb62",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 39.4
+        }
+      ]
+    },
+    {
+      "archive_key": "native-steering-sonnet-914",
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-STEERING-AUTO"
+      },
+      "binary": null,
+      "stages": [
+        {
+          "name": "live-journey",
+          "status": "FAIL",
+          "note": "{\"passed\": 0, \"failed\": 1, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/live.config.ts",
+            "--grep",
+            "LC-STEERING-AUTO"
+          ],
+          "seconds": 2.4
+        }
+      ]
+    },
+    {
+      "archive_key": "native-steering-gemini-914",
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-STEERING-AUTO"
+      },
+      "binary": null,
+      "stages": [
+        {
+          "name": "live-journey",
+          "status": "FAIL",
+          "note": "{\"passed\": 0, \"failed\": 1, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/live.config.ts",
+            "--grep",
+            "LC-STEERING-AUTO"
+          ],
+          "seconds": 1.9
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-release-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "d8f8ea2bec664ef26a74810358fe7ae9d6736b900ac08a43382fe82edbb90050",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.3
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 49.2
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 33, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 109.1
+        }
+      ]
+    },
+    {
+      "archive_key": "large-file-release-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "ios-safari",
+        "grep": "large mobile file survives interrupted upload"
+      },
+      "binary": {
+        "sha256": "d8f8ea2bec664ef26a74810358fe7ae9d6736b900ac08a43382fe82edbb90050",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "ios-safari",
+            "--grep",
+            "large mobile file survives interrupted upload"
+          ],
+          "seconds": 22.2
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-background-release-916",
+      "status": "FAIL",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "d8f8ea2bec664ef26a74810358fe7ae9d6736b900ac08a43382fe82edbb90050",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 0, \"failed\": 1, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 20.9
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-owned-focus-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "d8f8ea2bec664ef26a74810358fe7ae9d6736b900ac08a43382fe82edbb90050",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 41.4
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-visible-toast-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "d47affec9f24b05f924c070f43b4134e90476e79056f95796bb525d7bb2313af",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.3
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 76.3
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 33, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 116.7
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-painted-toast-916",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "c058a9358663e26c9340ca22dc9ae7a27dc05dedbd4fb1fbc349bde159ff8fbf",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 20.9
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 33, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 112.8
+        }
+      ]
+    },
+    {
+      "archive_key": "uncertain-sweep-negative-916",
+      "status": "FAIL",
+      "selection": {
+        "project": "ios-safari",
+        "grep": "old uncertain message survives reload"
+      },
+      "binary": {
+        "sha256": "b9ec1cb04849b6086406be18a87b8265122d1f1c9d40ec0a44f929616c39f400",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 36.0
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 0, \"failed\": 1, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "ios-safari",
+            "--grep",
+            "old uncertain message survives reload"
+          ],
+          "seconds": 18.1
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-final-917",
+      "status": "FAIL",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "1b90c606c174b1582df7260c36ff3c4ea6004c6a539edd385f999569480439b4",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.5
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 20.5
+        },
+        {
+          "name": "browser",
+          "status": "FAIL",
+          "note": "{\"passed\": 35, \"failed\": 1, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 117.3
+        }
+      ]
+    },
+    {
+      "archive_key": "messaging-final-918",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "af6e86613fd3ca6f45cae6a5cf491a1c7eb34b6d246b6001d03e609d9f705706",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 34.6
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 36, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-CARD-COMPOSER|LC-RECEIPT|LC-COMPOSER-LAYOUT|LC-LATENCY|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 112.9
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-final-918",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "af6e86613fd3ca6f45cae6a5cf491a1c7eb34b6d246b6001d03e609d9f705706",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 43.2
+        }
+      ]
+    }
+  ],
+  "broad_server": {
+    "archive_key": "server-tests-915.log",
+    "command": "scripts/test-contended.sh -p amux-server --no-fail-fast",
+    "completed_targets": 60,
+    "passed": 2611,
+    "failed": 13,
+    "ignored": 32,
+    "status": "FAIL",
+    "followups": [
+      {
+        "archive_key": "board-api-final-915.log",
+        "passed": 89,
+        "failed": 0
+      },
+      {
+        "archive_key": "dashboard-assets-final-916.log",
+        "passed": 35,
+        "failed": 0
+      },
+      {
+        "archive_key": "cache-isolated-916.log",
+        "passed": 7,
+        "failed": 0
+      },
+      {
+        "archive_key": "dashboard-assets-final-917.log",
+        "passed": 35,
+        "failed": 0
+      }
+    ],
+    "remaining_failure_reason": "Seven host-admission failures; other failing fixtures corrected or transient discovery race passed in isolated module rerun. This is not a new full-suite pass."
+  },
+  "negative_control": {
+    "archive_key": "uncertain-negative-control-914.log",
+    "restored_old_drop_behavior": true,
+    "passed": 0,
+    "failed": 1,
+    "restored_candidate": true
+  },
+  "native_limit": "Both provider attempts failed admission before worker creation. Automatic native pickup, busy-boundary arrival, final backlog cleanup and quiet-cycle execution remain unverified.",
+  "deployment": null,
+  "large_file": {
+    "size": 268435579,
+    "sha256": "e9c0dc533938bb86970cafa1e42dc9e0eba1a439a498be99cf78ba7c1f67cd7e",
+    "download_matches": true,
+    "interrupted_requests": 4,
+    "persisted_chunks": 52,
+    "project": "ios-safari"
+  },
+  "background_browser": {
+    "actual_process_headless_flag": true,
+    "foreground_owned_pid": false,
+    "foreground_sample_count": 3,
+    "user_foreground_app": "Safari Web App",
+    "ttl_s": 20,
+    "idle_ttl_s": 0,
+    "activity_ttl_s": 0,
+    "profile_survived": true,
+    "note": "Earlier overly strict predicate failed when the user changed unrelated foreground apps. Final predicate checks the owned Chrome PID and actual headless process argument."
+  },
+  "clippy": {
+    "archive_key": "clippy-final-918.log",
+    "status": "PASS",
+    "command": "scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings"
+  },
+  "integration_note": "Retains missing-file preview explanation; supersedes b3a06028 automatic uncertain-intent deletion, detected by real iPhone reload negative control.",
+  "visual_evidence": [
+    {
+      "path": "docs/evidence/lifecycle-sync-checkmarks-2026-09-12.png",
+      "sha256": "a5d9296bd7b1ff0cd3468eb5d3baaed3e2f740a3088f70355f1c5e65958e708e",
+      "scope": "isolated fixture, manually opened"
+    },
+    {
+      "path": "docs/evidence/lifecycle-browser-background-2026-09-12.png",
+      "sha256": "29d222a2204b18393ef7679c7cd4fc6ae5c080ce135a3325b97fe78243c3bcc0",
+      "scope": "isolated fixture, manually opened"
+    }
+  ],
+  "candidate_assets_before_final_integration": {
+    "/app.js": "2bddabd8ec0f246c5f3b3c04a3a915f783d6658eebba761b778bbdbafc402adc",
+    "/app.css": "d3e3f780f1b315f69b0f9baf04c5840fa16515606a1e2ee037aaa20586e81e53",
+    "/sw.js": "bfe3660dde919627fad97c4e183a063ccbb51d8bd1d87d7f9028d694d17fb848"
+  }
+}

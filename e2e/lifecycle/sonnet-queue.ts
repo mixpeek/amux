@@ -5,7 +5,7 @@ import { boot, auth, checkpoint, getSessionsResilient } from './evidence';
 // Seed actual board work, then observe. There is deliberately no /send, claim,
 // status PATCH, evidence write or completion call from the test driver.
 export async function runSonnetQueue({ page, request }: { page: Page, request: APIRequestContext }, info: TestInfo) {
-  test.setTimeout(1_200_000);
+  test.setTimeout(1_500_000);
   expect(process.env.AMUX_LIFECYCLE_LAB_ACK).toBe('dedicated-test-instance');
   const run = process.env.AMUX_LIFECYCLE_PAIR_RUN!;
   const cwd = process.env.AMUX_LIFECYCLE_LAB_WORKSPACE!;
@@ -25,7 +25,7 @@ export async function runSonnetQueue({ page, request }: { page: Page, request: A
     expect(row?.auto_drain_backlog, 'default backlog dispatch must be enabled').toBe(true);
     expect(row?.auto_pickup, 'default todo dispatch must be enabled').toBe(true);
   }
-  const seeded: any[] = [], timeline: any[] = [];
+  const seeded: any[] = [], timeline: any[] = [], quietCycles: any[] = [];
   for (const [index, name] of names.entries()) {
     let previous: any;
     // Backlog prerequisite -> dependent Todo on author; Todo prerequisite ->
@@ -89,11 +89,29 @@ export async function runSonnetQueue({ page, request }: { page: Page, request: A
         await checkpoint(page, info, `queue-complete-${fixture.id}-${size.width}`);
       }
     }
+    // Completion must remain quiet across real driver cycles, not just one
+    // lucky snapshot between acknowledgement-created tasks. Read only here.
+    const baselineIds = allCards.map(c => c.id).sort();
+    const initialDrive = await (await request.get('/api/debug/board-drive', {headers})).json();
+    expect(initialDrive.loop_running, 'a stopped driver cannot prove quiet cycles').toBe(true);
+    const firstTick = initialDrive.last.tick;
+    await expect.poll(async () => {
+      const drive = await (await request.get('/api/debug/board-drive', {headers})).json();
+      const current: any[] = [];
+      for (const name of names) {
+        const response = await request.get(`/api/board?session=${name}&done_limit=0`, {headers});
+        expect(response.ok()).toBe(true); current.push(...await response.json());
+      }
+      quietCycles.push({tick:drive.last?.tick, cards:current.map(c=>({id:c.id,status:c.status}))});
+      expect(current.map(c=>c.id).sort(), 'completed work must not create acknowledgement tasks').toEqual(baselineIds);
+      expect(current.every(c=>['done','verified','discarded','cancelled'].includes(c.status)), 'original terminal work must remain settled').toBe(true);
+      return (drive.last?.tick || 0) - firstTick;
+    }, {timeout:240_000, intervals:[5000], message:'observe three actual quiet board-driver cycles'}).toBeGreaterThanOrEqual(3);
     expect((await (await request.get('/health')).json()).build).toBe(health.build);
   } finally {
     const debug = await request.get('/api/debug/board-drive', { headers });
     await info.attach('queue-pickup-proof', { body: JSON.stringify({ run, observeOnly,
-      intervention: 'none after board creation', health, seeded, timeline, details, allCards,
+      intervention: 'none after board creation', health, seeded, timeline, quietCycles, details, allCards,
       boardDrive: debug.ok() ? await debug.json() : { status: debug.status() } }, null, 2), contentType: 'application/json' });
   }
 }

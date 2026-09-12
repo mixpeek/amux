@@ -1731,17 +1731,17 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // codex one. The border char on the cursor's own line is the chrome
     // anchor prose cannot fake (same trick as the `│ ❯ 1.` claude form).
     //
-    // Scanned over `clean` (the WHOLE frame), not `current`: `current_start`
-    // anchors to the LAST composer-placeholder line, so a picker whose text
-    // sits ahead of that anchor — e.g. a picker still open while a stale
-    // placeholder happens to remain visible below it — was invisible to this
-    // check entirely and read as idle (caught by
-    // `gemini_058_composer_and_boundary_follow_actual_terminal`'s synthetic
-    // picker-over-frame case). The chrome anchor is exactly why widening the
-    // scan is safe: prose cannot fake `│ ●` bordering the cursor, so scanning
-    // the whole frame does not turn quoted text into a false "waiting".
-    if clean.contains("\u{2502} \u{25cf} 1.") {
-        return "waiting".into();
+    // Gemini can retain its boxed composer placeholder beneath a live picker.
+    // A newer bare Claude/Codex prompt, however, closes a quoted historical
+    // picker. Reading that old box as current blocks automatic steering.
+    if let Some(picker) = lines.iter().rposition(|line| line.contains("\u{2502} \u{25cf} 1.")) {
+        let newer_prompt = lines[picker + 1..].iter()
+            .any(|line| matches!(line.trim(), "❯" | "›"));
+        if !newer_prompt {
+            return "waiting".into();
+        }
+        tracing::debug!(target: "amux::steering", verdict = "stale_picker_ignored",
+            "historical boxed picker precedes the current empty composer");
     }
     let raw_lines: Vec<&str> = raw_output.lines().filter(|l| !strip_ansi(l).trim().is_empty()).collect();
     let stripped: Vec<String> = raw_lines.iter().map(|l| strip_ansi(l)).collect();
