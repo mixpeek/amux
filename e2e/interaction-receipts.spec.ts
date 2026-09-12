@@ -22,7 +22,9 @@ async function seedReviewReceipts(page: Page, ids: string[], phase = 'applied'):
 
 test('review: completed command recovers effects after a failed read and reload without replay', async ({page},testInfo) => {
   const id='int_review_effect_retry';let probes=0;let mutations=0;
-  page.on('request',request=>{if(request.method()==='POST' && new URL(request.url()).pathname==='/api/prefs')mutations++;});
+  // Default tab-layout bootstrap is an unrelated preference write. Count all
+  // other prefs mutations so recovering a receipt cannot replay its command.
+  page.on('request',request=>{if(request.method()==='POST' && new URL(request.url()).pathname==='/api/prefs' && request.postDataJSON()?.key !== 'peek_tab_layout')mutations++;});
   await page.route(`**/api/interactions/${id}/effects`,route=>{
     probes++;
     return probes===1 ? route.fulfill({status:503,json:{error:'Unavailable'}})

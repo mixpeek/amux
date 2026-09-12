@@ -1,6 +1,7 @@
 # Lifecycle status and closure checklist
 
 Updated September 12, 2026. See the [steering and sync validation](lifecycle-validation-2026-09-12.md) for the latest candidate, runtime fixes and explicit native-run limits. Tracking work: **AMUX-4417**.
+The expanded [cold offline reconnect validation](lifecycle-offline-validation-2026-09-12.md) covers cached UI edits, messages, large files and per-operation checkmarks.
 Overall status: **INCOMPLETE**. This register covers all known unresolved items
 from the mobile messaging, board, Sonnet and Gemini lifecycle work. It is not a
 claim that every undiscovered product defect is enumerated.
@@ -159,3 +160,12 @@ owner queue/retry and UI-toggle coverage plus a native queued-file scenario. It
 records the peer Queue bypass fix and the still-open disagreement between board
 lane selection and isolated wake/steering refusals. Native isolated task drain,
 restart and offline continuations remain unverified.
+
+## Additional observation from the offline reconnect run
+
+The upstream interaction-receipt middleware reports `interaction_outcome` with
+`phase=unknown` for successful `/api/upload/start` and `/finish` subrequests.
+The upload workflow and reconnect checklist independently validate the finish
+path/URL and downloaded bytes; those subrequest receipts are not proof of native
+worker consumption or a fully reconciled server effect graph. Their classification
+remains open. The September 12 offline artifact logs preserve the observations.

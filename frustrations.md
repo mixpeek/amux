@@ -2333,3 +2333,36 @@ CARD: none — user requested isolated-worker consolidated lifecycle coverage
 SYMPTOM: The expanded LC-ISOLATED-BOUNDARY browser case received HTTP 200 from a same-group peer's POST /steer, although the identical peer's POST /send correctly returned 403 for the isolated target.
 COST: Peer messages could enter a raw worker through the steering queue, violating the same isolation boundary enforced on Send.
 FIX: Share an early isolated-peer refusal across direct and queued sends before dedupe/history/queue mutation. Preserve owner and authenticated member access; an explicit peer allowance cannot bypass isolation. Each refusal emits send.isolated_refused and a WARN with verdict=isolated_target. Rust controls verify no rejected message/history rows and exactly one owner queue/history row across retries; lifecycle browsers cover same/outside groups, UI toggles, reloads and cached discovery.
+
+## Cached board cards could not be edited offline, and retries covered Save
+AREA: board
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: none — run-owned offline lifecycle fixture cards are deleted after verification
+SYMPTOM: A real network-off browser run retained only two message operations out of five expected writes: the three cached card edits failed the hydration guard. After enabling complete offline snapshots, automatic retry failures painted the sync banner over the third card's Save button while the browser was still explicitly offline.
+COST: The earlier 90-case outage/upload/checklist suite passed while the cold offline UI journey failed; task edits were not enqueued and a visible failure panel blocked further editing.
+FIX: Persist complete authoritative task snapshots in the existing IDB mirror and hydrate offline with identity/revision guards. Refuse incomplete snapshots and explicit HTTP refusals. Avoid replay while navigator.onLine is false, then resume through the real online event. File uploads now share the per-operation acknowledgement checklist and retry scheduling. Cache failures emit card-cache-write-failed; offline hydration names its verdict, and unconfirmed file replay emits upload-storage sync-unconfirmed.
+
+## Retrying sync erased file checkmarks that had already been acknowledged
+AREA: notices
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: none — consolidated offline lifecycle acceptance
+SYMPTOM: The cold offline run restored seven operations. Two files finished while earlier network failures retried; the next checklist showed only five synced, despite all seven operations reaching their destination. A startup history migration could add a separate import operation to that list.
+COST: The final checklist did not account for every queued action. Terminal/history diagnostics also reported duplicate-history text when optimistic local message history was imported ahead of queued messages.
+FIX: Retain acknowledged rows across visible retries using stable operation keys. Removed operations are skipped without an acknowledgement checkmark. Background history imports bypass the user outbox, require an actual successful response, and defer while messages remain pending. LC-OFFLINE-ROUNDTRIP verifies every stable key and server result; negative controls fail if completed-row retention or acknowledgement guards are removed.
+
+## Completed mobile sync still showed a stale offline toast over its checkmarks
+AREA: notices
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: none — visual review of the consolidated offline lifecycle
+SYMPTOM: All 138 browser assertions passed, but the captured desktop/mobile/WebKit screenshots showed “Server unreachable — offline mode” covering rows below “7 synced” while the header showed Live.
+COST: Successful server acknowledgements appeared contradictory and the phone's last two checkmarks were obscured.
+FIX: Clear only obsolete connectivity/queue toasts and their active animations when the checklist opens and completes successfully; preserve unrelated failure notices. The real offline lifecycle now asserts the toast is hidden before capturing every acknowledged row, and a shipped-function test preserves a separate upload failure notice.

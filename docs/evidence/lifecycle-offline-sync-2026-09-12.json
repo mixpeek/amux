@@ -1,0 +1,1503 @@
+{
+  "date": "2026-09-12",
+  "base_commit": "eebbb58f",
+  "dashboard_version": "0.9.923",
+  "measured": true,
+  "n_considered": 174,
+  "browser_results": {
+    "startTime": "2026-09-12T19:08:16.042Z",
+    "duration": 208027.85,
+    "expected": 138,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "contracts": {
+    "passed": 46,
+    "failed": 0
+  },
+  "state_kernel": {
+    "passed": 27,
+    "failed": 0
+  },
+  "rust_focused": {
+    "dashboard_assets": 38,
+    "interactions_api": 11,
+    "failed": 0
+  },
+  "projects": {
+    "desktop": {
+      "status": "passed",
+      "duration_ms": 25521,
+      "per-operation-sync-transitions": [
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240265540
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240265543
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240265556
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240265565
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer \u2014 waiting for earlier change",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item running"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240265575
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer \u2014 waiting for earlier change",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item running"
+            }
+          ],
+          "at": 1789240266652
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer \u2014 waiting for earlier change",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            }
+          ],
+          "at": 1789240266869
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240268874
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240268886
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240268895
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240268904
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item running"
+            }
+          ],
+          "at": 1789240268976
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:2cdeffa9-a1c3-4b51-8a97-7fa60b47acb1",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e80d8c02-a93f-4224-9cc2-0a497a42a92f",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b2d0207c-4c24-482f-94cb-5acd982e146f",
+              "label": "PATCH /api/board/LOD1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:88827c1e-ddd7-4313-a2c6-e3663cad901a",
+              "label": "PATCH /api/board/LOD1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:e2b6ef5c-d1a1-442c-8673-44c48b89f150",
+              "label": "PATCH /api/board/LOD1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:f6e5a638-ec83-4244-bc09-52ebd58acf21",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:8e33ba69-810d-4608-b3bd-118986ee4270",
+              "label": "POST lc-offline-desktop-1789240249117/steer",
+              "status": "sync-item done"
+            }
+          ],
+          "at": 1789240269032
+        }
+      ],
+      "offline-file-byte-proof": [
+        {
+          "name": "large-offline-output.bin",
+          "bytes": 33554449,
+          "sha256": "dff5b2f0725ee66b6c1fec1e6118b91622d727cda303e120c46c6e53d2deae96"
+        },
+        {
+          "name": "offline-\u00e9vidence.txt",
+          "bytes": 49,
+          "sha256": "5601c24590870ee80ad9f0f8a282f1e8e549427ed48d6378b90ce77b4789f5ea"
+        }
+      ]
+    },
+    "mobile": {
+      "status": "passed",
+      "duration_ms": 23602,
+      "per-operation-sync-transitions": [
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240273754
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240273757
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240273760
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240273772
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer \u2014 waiting for earlier change",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item running"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240273774
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer \u2014 waiting for earlier change",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item running"
+            }
+          ],
+          "at": 1789240274870
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3 \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer \u2014 Failed to fetch",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer \u2014 waiting for earlier change",
+              "status": "sync-item failed"
+            },
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            }
+          ],
+          "at": 1789240275222
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240275240
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240275254
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240275262
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240275269
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item running"
+            }
+          ],
+          "at": 1789240275328
+        },
+        {
+          "rows": [
+            {
+              "key": "upload:b85abe95-0e46-4f9c-a24c-726285db7b79",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:e889a7bc-c04c-41fd-90d6-d666b7b55e54",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:104999f9-03b6-4a6c-8c3b-13d4a6d66418",
+              "label": "PATCH /api/board/LOM1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:91e3f1d7-e234-44a1-90e3-faee1dfa471c",
+              "label": "PATCH /api/board/LOM1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1d9ea9ab-4603-430c-8195-b2422d76281b",
+              "label": "PATCH /api/board/LOM1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:f5c947ee-e1a0-410a-8cd6-9e640abd1570",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:531885f8-0c85-40eb-8723-5a4b1a8b2f72",
+              "label": "POST lc-offline-mobile-1789240257338/steer",
+              "status": "sync-item done"
+            }
+          ],
+          "at": 1789240275378
+        }
+      ],
+      "offline-file-byte-proof": [
+        {
+          "name": "large-offline-output.bin",
+          "bytes": 33554449,
+          "sha256": "dff5b2f0725ee66b6c1fec1e6118b91622d727cda303e120c46c6e53d2deae96"
+        },
+        {
+          "name": "offline-\u00e9vidence.txt",
+          "bytes": 49,
+          "sha256": "5601c24590870ee80ad9f0f8a282f1e8e549427ed48d6378b90ce77b4789f5ea"
+        }
+      ]
+    },
+    "ios-safari": {
+      "status": "passed",
+      "duration_ms": 30704,
+      "per-operation-sync-transitions": [
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240300992
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240301034
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240301049
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item running"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240301066
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item running"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item pending"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240301148
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item running"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item pending"
+            }
+          ],
+          "at": 1789240301228
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item running"
+            }
+          ],
+          "at": 1789240301286
+        },
+        {
+          "rows": [
+            {
+              "key": "queue:ec00ed93-f07c-47eb-8c17-76279d0ef2c8",
+              "label": "PATCH /api/board/LOIS1-1",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:1926f980-c34e-47bd-ad98-11391d5e06c2",
+              "label": "PATCH /api/board/LOIS1-2",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:b72f1575-e0ff-42b9-82d7-2e3089dd24df",
+              "label": "PATCH /api/board/LOIS1-3",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:c716aac1-008a-4314-baf4-b3082ad19abd",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "queue:d90d7eb0-5cdd-4983-b806-0e71e3c5960a",
+              "label": "POST lc-offline-ios-safari-1789240276242/steer",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:0af40cb5-e477-4b58-b9b9-3024a806c5fa",
+              "label": "Upload offline-\u00e9vidence.txt",
+              "status": "sync-item done"
+            },
+            {
+              "key": "upload:120ec874-3811-43f6-a692-9850e2741d5c",
+              "label": "Upload large-offline-output.bin",
+              "status": "sync-item done"
+            }
+          ],
+          "at": 1789240301736
+        }
+      ],
+      "offline-file-byte-proof": [
+        {
+          "name": "large-offline-output.bin",
+          "bytes": 33554449,
+          "sha256": "dff5b2f0725ee66b6c1fec1e6118b91622d727cda303e120c46c6e53d2deae96"
+        },
+        {
+          "name": "offline-\u00e9vidence.txt",
+          "bytes": 49,
+          "sha256": "5601c24590870ee80ad9f0f8a282f1e8e549427ed48d6378b90ce77b4789f5ea"
+        }
+      ]
+    }
+  },
+  "screenshots": [
+    {
+      "path": "docs/evidence/offline-sync-2026-09-12-desktop-all-seven-acknowledgements.png",
+      "sha256": "e77e56584a377e4832594b7d545e958ffc5987c8e3cceab5efc574305e25df98",
+      "visually_reviewed": true
+    },
+    {
+      "path": "docs/evidence/offline-sync-2026-09-12-mobile-cold-offline-reload.png",
+      "sha256": "496359f94dcfe53d493fae024f2222ac351822d75bdd5f0310e61db41bae283c",
+      "visually_reviewed": true
+    },
+    {
+      "path": "docs/evidence/offline-sync-2026-09-12-mobile-all-seven-acknowledgements.png",
+      "sha256": "2e7ac05a238e55a52b563d66f35f21b058fd23b36e25ddc8681795cddbdd78e4",
+      "visually_reviewed": true
+    },
+    {
+      "path": "docs/evidence/offline-sync-2026-09-12-ios-safari-all-seven-acknowledgements.png",
+      "sha256": "61502d10e7922b116a4661cd1b9ae6dd75d6f8f8e589c7942c258f32a0078519",
+      "visually_reviewed": true
+    }
+  ],
+  "native_worker_consumption": {
+    "measured": false,
+    "n_considered": 0,
+    "why_unmeasured": "This outage scenario uses stopped fixture workers. It verifies server acceptance, not model execution; separate native scenarios remain in the lifecycle register."
+  },
+  "assets": {
+    "app.js": "cfeda0677ad52dc31f871099561a97093da13a6fe21974faa0c65fe99879b42a",
+    "app.css": "b92836a2550c3390f330daea68f7232a51581fff196b11bceda48641a74c3ed6",
+    "sw.js": "19dc7984ec3a0506eecf6b84f760a4ba35d0da32b4795d90e82c236dcd77004a",
+    "state/kernel.js": "0be7983eed6f6aeaed9ae313cd77c2cec3d9b0844adc3a02a5c018ad2c149393"
+  },
+  "browser_binary_sha256": "c3ede66bac01c4f920247c3cd9ee4ed3ccf3ad364465492f14c8376f06766d62",
+  "artifact_directory": "/Users/ethan/Documents/Codex/2026-09-09/go-t/work/offline-sync-20260912/reviewed",
+  "compiler_gates": {
+    "cargo check --workspace": "PASS",
+    "cargo clippy --workspace --all-targets -- -D warnings": "PASS"
+  },
+  "negative_controls": {
+    "offline-cache": "LANDED; matching test failed; reverted; baseline passed",
+    "offline-replay": "LANDED; matching test failed; reverted; baseline passed",
+    "file-ack": "LANDED; matching test failed; reverted; baseline passed",
+    "retained-checkmarks": "LANDED; matching test failed; reverted; baseline passed",
+    "history-outbox": "LANDED; matching test failed; reverted; baseline passed"
+  },
+  "supplemental_attachments": {
+    "results": {
+      "startTime": "2026-09-12T19:18:29.635Z",
+      "duration": 105495.341,
+      "expected": 36,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "binary_sha256": "c3ede66bac01c4f920247c3cd9ee4ed3ccf3ad364465492f14c8376f06766d62",
+    "source_provenance": "Same SHA-256 as the source-built reviewed run; no product changes between runs.",
+    "artifact_directory": "/Users/ethan/Documents/Codex/2026-09-09/go-t/work/offline-sync-20260912/attachments-reviewed"
+  }
+}

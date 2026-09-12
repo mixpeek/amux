@@ -777,7 +777,7 @@
     "id": "LC-SYNC-PROGRESS",
     "surface": "Offline reconnect receipts",
     "actions": "Persist three edits offline. Reconnect and pause each transport step; acknowledge the first, conflict the second and acknowledge the third. Review the retained failure, retry it explicitly and reload. Also return uncertain native message submission.",
-    "expected": "Only acknowledged operations receive checkmarks. Running and failed rows remain distinct; failed results stay visible for review. Uncertain message text, attachment references and client identity remain durable without a false synced receipt.",
+    "expected": "Only acknowledged operations receive checkmarks. Running and failed rows remain distinct; failed results stay visible for review. Uncertain message text, attachment references and client identity remain durable without a false synced receipt. Earlier acknowledged rows remain visible across retries; a removed operation is skipped without a success checkmark.",
     "sources": [
       "e2e/lifecycle/sync-progress.spec.ts",
       "tests/dashboard-outage-recovery.mjs"
@@ -786,8 +786,8 @@
   {
     "id": "LC-COMPOSER-FILES",
     "surface": "Worker card and details upload/send parity",
-    "actions": "On desktop, mobile Chromium and iPhone WebKit select a real file from both worker-card and worker-details controls. Read downloaded bytes, submit with Send and Queue while offline, reconnect, then reload with a newer draft. Separately run the interrupted large-file scenario and native file-reading assignment.",
-    "expected": "Both surfaces provide reachable file pickers. Exact uploaded bytes and references survive offline acceptance; one stable operation reaches the transport and newer drafts survive. Controlled receipts prove client behavior only; native execution and large-file recovery have separate evidence.",
+    "actions": "On desktop, mobile Chromium and iPhone WebKit paste a real File into a worker card and select one through the worker-details file picker. Read downloaded bytes, submit with Send and Queue while offline, reconnect, then reload with a newer draft. Separately run the interrupted large-file scenario and native file-reading assignment.",
+    "expected": "The card accepts pasted files and details provides a reachable file picker; the intentionally removed card Attach button stays absent. Exact uploaded bytes and references survive offline acceptance; one stable operation reaches the transport and newer drafts survive. Controlled receipts prove client behavior only; native execution and large-file recovery have separate evidence.",
     "sources": [
       "e2e/lifecycle/composer-file-surfaces.spec.ts",
       "e2e/lifecycle/composer-layout.spec.ts",
@@ -902,6 +902,17 @@
       "e2e/lifecycle/live-complex-verified.spec.ts",
       "crates/amux-server/src/runtime_jobs/board_drive.rs",
       "crates/amux-server/src/api/session_verbs.rs"
+    ]
+  },
+  {
+    "id": "LC-OFFLINE-ROUNDTRIP",
+    "surface": "Cold offline app, board edits, messages and large files",
+    "actions": "Warm the real service worker and complete task snapshots. Disable browser networking. Edit three cached cards through their detail controls, queue two owner messages and upload two files including 32 MiB plus 17 bytes. Reload while still offline, verify durable identities and bytes, then restore networking without clicking Retry. Observe every running/checkmarked row, verify server revisions, message identities and file hashes, and reload again to detect replay duplicates.",
+    "expected": "All seven operations survive the offline reload. Each receives a checkmark only after its own acknowledgement; all seven reach server state exactly as submitted. Offline retries never cover the editor with spurious failures. Complete cached cards remain editable with their original revision; incomplete snapshots and explicit server refusals do not authorize writes. A queued server message is not claimed as native worker consumption. Controlled conflict, ambiguous receipt and body timeout cases remain part of LC-SYNC-PROGRESS.",
+    "sources": [
+      "e2e/lifecycle/offline-roundtrip.spec.ts",
+      "e2e/lifecycle/offline-fixtures.ts",
+      "tests/dashboard-outage-recovery.mjs"
     ]
   }
 ]

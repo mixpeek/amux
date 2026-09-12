@@ -2236,47 +2236,32 @@ async function _upqCancel(id) {
   showToast('Removed from the upload queue (NOT uploaded)');
 }
 
-// Drain is idempotent and single-flight: a second call while draining is a
-// no-op rather than a double upload.
-let _upqDraining = false;
-async function _upqDrain() {
-  if (_upqDraining) return;
-  _upqDraining = true;
-  let sent = 0, failed = 0;
-  try {
-    const deliver = async () => {
-    for (const item of await _upqList()) {
-      try {
-        if (item.surface === 'directory') {
-          const f = {...item, file:_storedUploadFile(item), stored:true, chunk:0};
-          await _runUpload(f, {render:() => {}});
-          if (f.path) { await _upqRemove(f.id); sent++; } else failed++;
-          continue;
-        }
-        const fd = new FormData();
-        fd.append('dir', item.dir);
-        fd.append('file', item.blob, item.name);
-        const r = await fetch(API + '/api/fs/upload',
-                              { method: 'POST', body: fd, _skipOutbox: true, signal:AbortSignal.timeout(30000) });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok && (d.saved || []).length) { await _upqRemove(item.id); sent++; }
-        else failed++;
-      } catch (e) { failed++; }
+// Files share the reconnect checklist and replay flight with ordinary writes.
+// The byte store stays separate: it is chunked IDB, never JSON/localStorage.
+let _uploadSyncPending = false;
+function _upqDrain() { return runSyncBanner(true); }
+async function _syncOneUpload(item) {
+  const deliver = async () => {
+    const current = (await _upqList()).find(row => row.id === item.id);
+    if (!current) throw new Error('Upload changed in another tab — refresh to review');
+    if (current.surface === 'directory') {
+      const f = {...current, file:_storedUploadFile(current), stored:true, chunk:0};
+      // A finish receipt may already be durable if the page closed before removal.
+      if (!f.path || !f.url) await _runUpload(f, {render:() => {}});
+      if (!f.path || !f.url) throw new Error(f.error || 'Server has not confirmed this file');
+    } else {
+      const fd = new FormData();
+      fd.append('dir', current.dir);
+      fd.append('file', current.blob, current.name);
+      const response = await fetch(API + '/api/fs/upload', {
+        method:'POST', body:fd, _skipOutbox:true, signal:AbortSignal.timeout(30000)});
+      const result = await response.json();
+      if (!response.ok || !(result.saved || []).length) throw new Error('Server has not confirmed this file');
     }
-    };
-    if (navigator.locks?.request) await navigator.locks.request('amux-upload-replay', {ifAvailable:true}, lock => lock ? deliver() : undefined);
-    else await deliver();
-  } catch (error) { _uploadStorageError('replay-failed', error); }
-  finally { _upqDraining = false; }
-  if (sent) {
-    showToast('Uploaded ' + sent + ' queued file' + (sent === 1 ? '' : 's')
-              + (failed ? ' \u00b7 ' + failed + ' still queued' : ''));
-    if (typeof loadFiles === 'function' && typeof _filesPath !== 'undefined') loadFiles(_filesPath);
-    if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
-      try { loadExplore(_explorePath); } catch (e) {}
-    }
-  }
-  _upqRenderBadge();
+    await _upqRemove(item.id);
+  };
+  if (navigator.locks?.request) return navigator.locks.request('amux-upload-replay', deliver);
+  return deliver();
 }
 
 // ONE pending count over BOTH offline stores (AMUX-2317).
@@ -2333,7 +2318,7 @@ async function _uploadOrQueue(files, dir, kind) {
 }
 
 function _resumePendingUploads() {
-  if (document.hidden) return;
+  if (document.hidden || navigator.onLine === false) return;
   _upqDrain().catch(error => _uploadStorageError('resume-failed', error));
   _restoreAttachments().then(() => {
     for (const {f, sink} of _durableAttachments.values()) {
@@ -2351,7 +2336,6 @@ function setOnline(val) {
   if (!was && val) {
     // The visible sync checklist is the receipt; a toast would cover its rows.
     if (!offlineQueue.length && !drafts.length) showToast('Reconnected');
-    try { _upqDrain(); } catch (e) {}
     runSyncBanner(false);
     // Reconnect SSE (reset fallback so we can get back to Live mode)
     _sseFallback = false; _sseRetries = 0;
@@ -2383,7 +2367,7 @@ const _SYNC_MIN_MS = 2000, _SYNC_MAX_MS = 60000;
 function _syncBackoffReset() { _syncBackoffMs = 0; }
 function _scheduleSyncRetry() {
   clearTimeout(_syncRetryTimer);
-  const pending = offlineQueue.some(q => q.state !== 'blocked') || drafts.length;
+  const pending = offlineQueue.some(q => q.state !== 'blocked') || drafts.length || _uploadSyncPending;
   if (!pending) { _syncBackoffMs = 0; return; }
   _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
   _syncRetryTimer = setTimeout(() => { runSyncBanner(true); }, _syncBackoffMs);
@@ -2413,7 +2397,20 @@ function runSyncBanner(quiet = false) {
     });
   return _syncFlight;
 }
+function _clearSyncTransientToast() {
+  const toast = document.getElementById('toast');
+  if (!toast || !/^(Queued \(|Reconnected$|Server unreachable — offline mode$)/.test(toast.textContent)) return;
+  clearTimeout(toastTimer);
+  toast.getAnimations?.().forEach(animation => animation.cancel());
+  toast.style.opacity = ''; toast.style.transform = '';
+  toast.classList.remove('visible');
+}
+let _syncChecklist = [];
 async function _runSyncBanner(quiet = false) {
+  // A real browser offline switch cannot deliver anything. Keep work durable
+  // without painting a failed checklist over the editor on each timer tick.
+  // Server reachability still retries freely when the browser is online.
+  if (navigator.onLine === false) return;
   const banner = document.getElementById('sync-banner');
   const itemsEl = document.getElementById('sync-items');
   const titleEl = document.getElementById('sync-title-text');
@@ -2425,22 +2422,33 @@ async function _runSyncBanner(quiet = false) {
     if (q.state === 'blocked') blockedResources.add(q.url);
     return !blockedResources.has(q.url) && !_outboxActive.has(q.id);
   });
-  const skipped = 0;
-  const totalOps = draftCount + queue.length;
+  let skipped = 0;
+  const uploads = await _upqList();
+  _uploadSyncPending = uploads.length > 0;
+  const totalOps = draftCount + queue.length + uploads.length;
   if (!totalOps) return;
 
   // Build item list
   const items = [];
-  drafts.forEach(d => items.push({ label: 'Create & start "' + d.name + '"', status: 'pending', type: 'draft', draft: d }));
-  queue.forEach(q => items.push({ label: describeOp(q), status: 'pending', type: 'queue', item: q }));
+  drafts.forEach(d => items.push({ key:'draft:' + d.name, label: 'Create & start "' + d.name + '"', status: 'pending', type: 'draft', draft: d }));
+  queue.forEach(q => items.push({ key:'queue:' + q.id, label: describeOp(q), status: 'pending', type: 'queue', item: q }));
+  uploads.forEach(file => items.push({ key:'upload:' + file.id, label: 'Upload ' + file.name, status: 'pending', type: 'upload', file }));
 
+  // A retry updates its rows; it must not erase already-acknowledged files or
+  // blocked changes from the visible reconnect receipt. Dismiss starts a new list.
+  if (banner.classList.contains('active')) {
+    const currentKeys = new Set(items.map(item => item.key));
+    items.unshift(..._syncChecklist.filter(item => !currentKeys.has(item.key)).map(item => ({...item, replay:false})));
+  }
+  _syncChecklist = items;
+  skipped = items.filter(item => item.status === 'skipped').length;
   function renderBanner() {
     const done = items.filter(i => i.status === 'done').length;
     const failed = items.filter(i => i.status === 'failed').length;
     titleEl.textContent = 'Syncing ' + done + '/' + items.length + (failed ? ' (' + failed + ' failed)' : '') + (skipped ? ' (' + skipped + ' skipped)' : '');
     itemsEl.innerHTML = items.map(i => {
-      const icon = i.status === 'done' ? '&#x2714;' : i.status === 'failed' ? '&#x2718;' : i.status === 'running' ? '&#x27A4;' : '&#x2022;';
-      return '<div class="sync-item ' + i.status + '">' + icon + ' ' + esc(i.label) + '</div>';
+      const icon = i.status === 'done' ? '&#x2714;' : i.status === 'failed' ? '&#x2718;' : i.status === 'running' ? '&#x27A4;' : i.status === 'skipped' ? '&mdash;' : '&#x2022;';
+      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '">' + icon + ' ' + esc(i.label) + '</div>';
     }).join('');
   }
 
@@ -2449,20 +2457,13 @@ async function _runSyncBanner(quiet = false) {
   if (show) {
     // The checklist replaces transient queue feedback, including a toast from
     // an offline write immediately before reconnect. Keep failure toasts intact.
-    const toast = document.getElementById('toast');
-    if (toast && /^(Queued \(|Reconnected$)/.test(toast.textContent)) {
-      clearTimeout(toastTimer);
-      // Motion's fill can outlive the visible class and keep a toast painted.
-      toast.getAnimations?.().forEach(animation => animation.cancel());
-      toast.style.opacity = ''; toast.style.transform = '';
-      toast.classList.remove('visible');
-    }
+    _clearSyncTransientToast();
     banner.classList.add('active');
   }
 
   // A draft is a sequence of accepted writes. Keep its completed steps and
   // prompt identity across failure/reload; never call a failed start "synced".
-  for (const item of items.filter(i => i.type === 'draft')) {
+  for (const item of items.filter(i => i.type === 'draft' && i.replay !== false)) {
     item.status = 'running'; renderBanner();
     try {
       await _syncOneDraft(item.draft);
@@ -2483,14 +2484,14 @@ async function _runSyncBanner(quiet = false) {
   // re-capture its own replay (double-queue), with auth headers applied FRESH
   // (they were not stamped at queue time, and a stale token would 401).
   const failedResources = new Set();
-  for (const item of items.filter(i => i.type === 'queue')) {
+  for (const item of items.filter(i => i.type === 'queue' && i.replay !== false)) {
     const q = item.item;
-    if (failedResources.has(q.url)) { item.status = 'failed'; continue; }
+    if (failedResources.has(q.url)) { item.status = 'failed'; item.label += ' — waiting for earlier change'; renderBanner(); continue; }
     item.status = 'running';
     renderBanner();
     await _outboxLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
-    if (!fresh) { offlineQueue = _readQueue(); item.status = 'done'; return; }
+    if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
     Object.assign(q, fresh);
     if (q.state === 'blocked') { item.status = 'failed'; return; }
     const interaction = _interactionReplay(q);
@@ -2502,7 +2503,7 @@ async function _runSyncBanner(quiet = false) {
       q.attempted_at ||= Date.now();
       let stillQueued = false;
       await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) { saved.attempted_at = q.attempted_at; saved.not_attempted = false; stillQueued = true; } });
-      if (!stillQueued) { item.status = 'done'; return; }
+      if (!stillQueued) { item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++; return; }
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
       const r = await _boundedMutationFetch(q.url, opts);
@@ -2536,7 +2537,24 @@ async function _runSyncBanner(quiet = false) {
     });
     renderBanner();
   }
-  if (!offlineQueue.length && !drafts.length) _writeError = '';
+  for (const item of items.filter(i => i.type === 'upload' && i.replay !== false)) {
+    item.status = 'running'; renderBanner();
+    try { await _syncOneUpload(item.file); item.status = 'done'; }
+    catch (error) {
+      item.status = 'failed'; item.label += ' — ' + String(error.message || error);
+      _uploadStorageError('sync-unconfirmed', error);
+    }
+    renderBanner();
+  }
+  _uploadSyncPending = (await _upqList()).length > 0;
+  if (uploads.length) {
+    _upqRenderBadge();
+    if (typeof loadFiles === 'function' && typeof _filesPath !== 'undefined') loadFiles(_filesPath);
+    if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
+      try { loadExplore(_explorePath); } catch (error) {}
+    }
+  }
+  if (!offlineQueue.length && !drafts.length && !_uploadSyncPending) _writeError = '';
 
   const doneCount = items.filter(i => i.status === 'done').length;
   const failCount = items.filter(i => i.status === 'failed').length;
@@ -2549,7 +2567,10 @@ async function _runSyncBanner(quiet = false) {
   try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
   // Reconnect progress keeps failed steps reviewable until dismissed. Ordinary
   // online sends stay quiet; only completed visible runs auto-dismiss.
-  if (!failCount) setTimeout(() => { if (!_syncFlight) banner.classList.remove('active'); }, 2000);
+  if (!failCount) {
+    _clearSyncTransientToast();
+    setTimeout(() => { if (!_syncFlight) banner.classList.remove('active'); }, 2000);
+  }
 }
 
 async function _syncOneDraft(draft) {
@@ -10270,7 +10291,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.922';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.923';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -16066,13 +16087,16 @@ async function _loadCmdHistoryFromServer() {
     const r = await fetch(API + '/api/history?limit=500');
     if (!r.ok) return;
     const rows = await r.json();
-    if (!rows.length && _cmdHistory.length) {
+    if (!rows.length && _cmdHistory.length && !_readQueue().some(q => /\/(send|steer)$/.test(q.url.split('?')[0]))) {
+      // Pending messages are optimistic history, not past deliveries. Importing
+      // them ahead of replay manufactures sent-history before server acceptance.
       // First load with empty server but local data — migrate localStorage entries up
       const entries = _cmdHistory.map(e => typeof e === 'string' ? { text: e, type: 'direct', session: '', time: Date.now() } : e);
-      await fetch(API + '/api/history/import', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+      const imported = await fetch(API + '/api/history/import', {
+        _skipOutbox:true, method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ entries })
       });
+      if (!imported.ok) return;
       _cmdHistoryServerLoaded = true;
       return;
     }
@@ -29885,15 +29909,42 @@ function _bdRenderMeta(item) {
 /// 3.5MB -> 554KB) it is absent entirely — so the textarea would open empty and
 /// saving would BLANK the description. This makes the modal read from the one
 /// place that always has it.
+// Only a complete, server-versioned row can authorize an offline edit. The
+// slim board list deliberately omits prose; treating it as a full row erases it.
+function _bdCompleteSnapshot(row, id) {
+  return Boolean(row && row.id === id && !row.deleted && Number.isInteger(row.rev)
+    && ['title', 'desc', 'status'].every(key => typeof row[key] === 'string')
+    && ['session', 'due', 'due_time'].every(key => Object.hasOwn(row, key) && (row[key] === null || typeof row[key] === 'string'))
+    && ['tags', 'gate'].every(key => Array.isArray(row[key]) && row[key].every(value => typeof value === 'string')));
+}
+async function _bdReadSnapshot(id) {
+  if (online && navigator.onLine !== false) {
+    try {
+      const response = await fetch(API + '/api/board/' + id, { headers: _authHeaders() });
+      // An explicit refusal/deletion is authoritative. Never resurrect it from cache.
+      if (!response.ok) { showToast(await _apiErrText(response)); return null; }
+      const full = await response.json();
+      if (!full || full.id !== id) return null;
+      if (_bdCompleteSnapshot(full, id)) {
+        try { await _idb.putIssue(full); }
+        catch (error) { _bdAudit('card-cache-write-failed', { id, verdict: 'offline_copy_unavailable', measured: true, n_considered: 1 }); }
+      }
+      return full;
+    } catch (error) { /* A transport failure may use the versioned offline copy. */ }
+  }
+  const full = await _idb.getIssue(id);
+  const complete = _bdCompleteSnapshot(full, id);
+  _bdAudit('card-offline-hydration', { id, verdict: complete ? 'versioned_copy' : 'complete_copy_missing', measured: true, n_considered: 1 });
+  return complete ? full : null;
+}
+
 async function _bdHydrate(id) {
   const generation = _boardDetailOpenGeneration;
   // Compare controls with the snapshot used when hydration began. A board
   // poll may update the cache during this GET without changing the editor.
   const cached = { ...(boardItems.find(item => item.id === id) || {}) };
   try {
-    const r = await apiCall(API + '/api/board/' + id);
-    if (!r || !r.ok) return false;
-    const full = await r.json();
+    const full = await _bdReadSnapshot(id);
     if (!full || full.id !== id || boardDetailId !== id || generation !== _boardDetailOpenGeneration) return false;  // modal moved on
     const idx = boardItems.findIndex(i => i.id === id);
     if (idx >= 0) boardItems[idx] = Object.assign({}, boardItems[idx], full);
@@ -32230,6 +32281,14 @@ const _idb = (() => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
     }).catch(() => {}),
+    // Detail snapshots use the existing mirror and wait for the durable commit.
+    putIssue: row => transaction('issues', os => os.put(row)),
+    getIssue: id => open().then(d => new Promise((resolve, reject) => {
+      const tx = d.transaction('issues', 'readonly');
+      const request = tx.objectStore('issues').get(id);
+      tx.oncomplete = () => resolve(request.result || null);
+      tx.onabort = tx.onerror = () => reject(tx.error || new Error('Offline card read aborted'));
+    })).catch(() => null),
     // Apply delta: upsert live items, remove soft-deleted ones from local mirror
     applyIssueDelta: (issues) => _txw('issues', os => {
       issues.forEach(item => { if (item.deleted) os.delete(item.id); else os.put(item); });

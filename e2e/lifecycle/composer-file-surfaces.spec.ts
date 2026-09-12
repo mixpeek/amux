@@ -3,7 +3,7 @@ import {boot,auth,checkpoint,getSessionsResilient,deleteOwnedWorkers} from './ev
 
 for(const surface of ['card','details'] as const) for(const mode of ['Send','Queue'] as const) {
  test(`LC-COMPOSER-FILES: ${surface} ${mode} preserves uploaded bytes through offline recovery and newer drafts across reload`,async({page,request,context},info)=>{
-  test.setTimeout(90_000); await boot(page); const headers=await auth(page);
+  test.setTimeout(90_000); page.setDefaultTimeout(15_000); await boot(page); const headers=await auth(page);
   const name=`lc-files-${surface}-${mode.toLowerCase()}-${info.project.name}-${Date.now()}`;
   expect((await request.post('/api/sessions',{headers,data:{name,dir:'/tmp'}})).status()).toBe(201);
   const rows=await(await getSessionsResilient(request,headers)).json();
@@ -15,18 +15,28 @@ for(const surface of ['card','details'] as const) for(const mode of ['Send','Que
   const held=new Promise<void>(r=>release=r); const verb=mode==='Queue'?'steer':'send';
   await page.route(`**/api/sessions/${name}/${verb}`,async r=>{if(offline)return r.abort('internetdisconnected');payloads.push(r.request().postDataJSON());await held;await r.fulfill({json:{ok:true,submitted:true,id:'accepted-'+name}})});
   const open=async()=>{
-    await page.goto('/');const card=page.locator(`#cards .card[data-session="${name}"]`).locator('visible=true').first();
+    await page.goto('/');if(await page.locator('#peek-overlay.active').isVisible())await page.getByRole('button',{name:'Close worker',exact:true}).click();const card=page.locator(`#cards .card[data-session="${name}"]`).locator('visible=true').first();
     if(surface==='card'){await card.locator('.card-name').click();return card;}
     await card.locator('.card-menu-btn').click();await page.locator('.card-menu.open [data-worker-action="peek-terminal"]').click();return page.locator('#peek-overlay');
   };
   const queue=()=>page.evaluate(name=>JSON.parse(localStorage.getItem('amux_offline_queue')||'[]').filter((q:any)=>q.url.includes('/'+name+'/')),name);
   try {
     let view=await open();
-    if(surface==='details') await page.locator('#peek-composer-more-btn').click();
-    const picker=surface==='card'?view.getByRole('button',{name:'Attach file',exact:true}):page.locator('#peek-more-menu').getByRole('button',{name:'Attach file',exact:false});
-    const choice=page.waitForEvent('filechooser');await picker.click();
     const bytes=Buffer.from(`Exact ${surface} ${mode} attachment\n`.repeat(400));
-    await(await choice).setFiles({name:'lifecycle-evidence.txt',mimeType:'text/plain',buffer:bytes});
+    if(surface==='card') {
+      // The owner removed the card's Attach button. Exercise its supported paste
+      // event with actual File bytes; details still uses the native file picker.
+      await view.locator('textarea.send-input').evaluate((input,text)=>{
+        const data=new DataTransfer();data.items.add(new File([text],'lifecycle-evidence.txt',{type:'text/plain'}));
+        input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+      },bytes.toString());
+    } else {
+      await page.locator('#peek-composer-more-btn').click();
+      const picker=page.locator('#peek-more-menu').getByRole('button',{name:'Attach file',exact:false});
+      await expect(picker).toBeVisible();
+      const choice=page.waitForEvent('filechooser');await picker.click();
+      await(await choice).setFiles({name:'lifecycle-evidence.txt',mimeType:'text/plain',buffer:bytes});
+    }
     await expect(view.locator('.peek-attach-chip')).toHaveCount(1);await expect(view.locator('.uploading')).toHaveCount(0);
     const file=await page.evaluate(({name,surface})=>surface==='card'?eval('_cardFiles')[name][0]:eval('peekFiles')[0],{name,surface});
     expect(file.path).toBeTruthy();expect(await(await request.get(file.url,{headers})).body()).toEqual(bytes);

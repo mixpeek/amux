@@ -2757,8 +2757,8 @@
   .sync-banner .sync-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 0.75rem; }
   .sync-banner .sync-item.pending { color: var(--dim); }
   .sync-banner .sync-item.running { color: var(--accent); }
-  .sync-banner .sync-item.done { color: #4ade80; }
-  .sync-banner .sync-item.failed { color: #f87171; }
+  .sync-banner .sync-item.done { color: var(--green); }
+  .sync-banner .sync-item.failed { color: var(--red); }
 
   /* Sending indicator */
   .sending-indicator {

@@ -47,9 +47,10 @@ test('LC-SYNC-PROGRESS: reconnect checks off only acknowledged changes and keeps
     allowConflict=true;
     await page.locator('[onclick="forceRetry()"]').locator('visible=true').first().click();
     await expect.poll(()=>Boolean(releases[1])).toBe(true);
-    await expect(page.locator('#sync-items .done')).toHaveCount(0);
+    await expect(page.locator('#sync-items .done')).toHaveCount(2); // earlier acknowledgements remain visible
     releases[1](); await expect.poll(async()=>(await queue()).length).toBe(0);
-    await expect(page.locator('#sync-title-text')).toHaveText('1 synced');
+    await expect(page.locator('#sync-title-text')).toHaveText('3 synced');
+    await expect(page.locator('#sync-items .done')).toHaveCount(3);
     await checkpoint(page,info,'sync-failed-step-recovered');
   } finally {
     for(const release of releases) release?.(); await context.setOffline(false);

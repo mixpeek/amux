@@ -746,15 +746,15 @@ Supporting coverage: `e2e/lifecycle/sonnet-queue.ts`, `e2e/lifecycle/live-coordi
 
 Persist three edits offline. Reconnect and pause each transport step; acknowledge the first, conflict the second and acknowledge the third. Review the retained failure, retry it explicitly and reload. Also return uncertain native message submission.
 
-Pass requires: Only acknowledged operations receive checkmarks. Running and failed rows remain distinct; failed results stay visible for review. Uncertain message text, attachment references and client identity remain durable without a false synced receipt.
+Pass requires: Only acknowledged operations receive checkmarks. Running and failed rows remain distinct; failed results stay visible for review. Uncertain message text, attachment references and client identity remain durable without a false synced receipt. Earlier acknowledged rows remain visible across retries; a removed operation is skipped without a success checkmark.
 
 Supporting coverage: `e2e/lifecycle/sync-progress.spec.ts`, `tests/dashboard-outage-recovery.mjs`.
 
 ### LC-COMPOSER-FILES — Worker card and details upload/send parity
 
-On desktop, mobile Chromium and iPhone WebKit select a real file from both worker-card and worker-details controls. Read downloaded bytes, submit with Send and Queue while offline, reconnect, then reload with a newer draft. Separately run the interrupted large-file scenario and native file-reading assignment.
+On desktop, mobile Chromium and iPhone WebKit paste a real File into a worker card and select one through the worker-details file picker. Read downloaded bytes, submit with Send and Queue while offline, reconnect, then reload with a newer draft. Separately run the interrupted large-file scenario and native file-reading assignment.
 
-Pass requires: Both surfaces provide reachable file pickers. Exact uploaded bytes and references survive offline acceptance; one stable operation reaches the transport and newer drafts survive. Controlled receipts prove client behavior only; native execution and large-file recovery have separate evidence.
+Pass requires: The card accepts pasted files and details provides a reachable file picker; the intentionally removed card Attach button stays absent. Exact uploaded bytes and references survive offline acceptance; one stable operation reaches the transport and newer drafts survive. Controlled receipts prove client behavior only; native execution and large-file recovery have separate evidence.
 
 Supporting coverage: `e2e/lifecycle/composer-file-surfaces.spec.ts`, `e2e/lifecycle/composer-layout.spec.ts`, `e2e/lifecycle/live-steering-pickup.spec.ts`, `e2e/lifecycle/sonnet-upload.ts`.
 
@@ -837,6 +837,14 @@ Run LC-ISOLATED-NATIVE for Claude Sonnet and Gemini: create a raw worker through
 Pass requires: Raw spawn has no injected amux harness/hooks/MCP. Owner messages and files remain usable and are counted delivered only with native submission evidence; owner work can still be linked on the board. Peer delivery stays refused. Automatic task drain must never be certified from selection or a mocked fleet: wake, enqueue, pickup and evidenced terminal state must all agree. Current isolated board selection versus wake/delivery policy conflict is an open failure, not a passing exemption. Normal mode after restart must restore ordinary lifecycle behavior without duplicate messages or lost evidence.
 
 Supporting coverage: `e2e/lifecycle/live-isolated.spec.ts`, `e2e/isolated-worker.spec.ts`, `e2e/lifecycle/live-steering-pickup.spec.ts`, `e2e/lifecycle/live-complex-verified.spec.ts`, `crates/amux-server/src/runtime_jobs/board_drive.rs`, `crates/amux-server/src/api/session_verbs.rs`.
+
+### LC-OFFLINE-ROUNDTRIP — Cold offline app, board edits, messages and large files
+
+Warm the real service worker and complete task snapshots. Disable browser networking. Edit three cached cards through their detail controls, queue two owner messages and upload two files including 32 MiB plus 17 bytes. Reload while still offline, verify durable identities and bytes, then restore networking without clicking Retry. Observe every running/checkmarked row, verify server revisions, message identities and file hashes, and reload again to detect replay duplicates.
+
+Pass requires: All seven operations survive the offline reload. Each receives a checkmark only after its own acknowledgement; all seven reach server state exactly as submitted. Offline retries never cover the editor with spurious failures. Complete cached cards remain editable with their original revision; incomplete snapshots and explicit server refusals do not authorize writes. A queued server message is not claimed as native worker consumption. Controlled conflict, ambiguous receipt and body timeout cases remain part of LC-SYNC-PROGRESS.
+
+Supporting coverage: `e2e/lifecycle/offline-roundtrip.spec.ts`, `e2e/lifecycle/offline-fixtures.ts`, `tests/dashboard-outage-recovery.mjs`.
 
 ## End-state and cleanup record
 
