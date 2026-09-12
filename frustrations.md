@@ -2366,3 +2366,14 @@ CARD: none — visual review of the consolidated offline lifecycle
 SYMPTOM: All 138 browser assertions passed, but the captured desktop/mobile/WebKit screenshots showed “Server unreachable — offline mode” covering rows below “7 synced” while the header showed Live.
 COST: Successful server acknowledgements appeared contradictory and the phone's last two checkmarks were obscured.
 FIX: Clear only obsolete connectivity/queue toasts and their active animations when the checklist opens and completes successfully; preserve unrelated failure notices. The real offline lifecycle now asserts the toast is hidden before capturing every acknowledged row, and a shipped-function test preserves a separate upload failure notice.
+
+## Helper quota errors were accepted as classifier answers
+AREA: board
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The subprocess regression returned Ok("session limit reached") after the helper exited 7. The same path accepted JSON-shaped stdout from a failed process, so failed model work could be parsed as a measured intake decision.
+COST: Semantic intake failure/recovery could not be certified; quota diagnostics were misreported as invalid classifier JSON and unavailable comparison preserved extra records.
+FIX: Honor process exit status before accepting stdout, retain at most 400 diagnostic characters, log distinct helper_exit_failed/helper_timeout/helper_empty_output verdicts, and reap killed children. The real-child regression matrix and before/final results are recorded in docs/lifecycle-helper-validation-2026-09-12.md. This does not claim that provider quota or native admission has recovered.

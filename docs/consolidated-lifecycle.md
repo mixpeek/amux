@@ -728,7 +728,7 @@ Supporting coverage: `e2e/lifecycle/blocked-outbox.spec.ts`, `tests/dashboard-ou
 
 ### LC-HELPER-FAILURE — Semantic helper failure and recovery
 
-In an isolated subprocess fixture make the configured helper exit nonzero with quota text on stdout, diagnostic stderr, empty output, and JSON-shaped stdout; also exercise timeout and successful JSON. Then restore an available real helper and resend a paraphrase through the actual composer. This is a guided closure case; no new automated implementation is claimed.
+In an isolated subprocess fixture make the configured helper exit nonzero with quota text on stdout, diagnostic stderr, empty output, and JSON-shaped stdout; also exercise timeout and successful JSON. Then restore an available real helper and resend a paraphrase through the actual composer. The subprocess matrix is automated in mdai::tests::helper_failure; real model recovery remains a separate live prerequisite.
 
 Pass requires: Unsuccessful classifier processes never count as measured decisions or bad-JSON model answers. Bounded diagnostics identify exit/timeout and provider availability. Requests and original IDs remain attributable; the documented fallback is visible. Recovery produces a measured semantic append/update with all source links. Failed helper calls do not silently claim deduplication.
 
