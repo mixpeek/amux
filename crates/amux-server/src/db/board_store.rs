@@ -1008,10 +1008,18 @@ pub fn default_gates_for(item_type_raw: &str, target: TaskStatus) -> Vec<String>
             "Ready for another set of eyes",
         ],
         (ItemType::Code, TaskStatus::Done) => &["Implemented and merged", "Tests / lint pass"],
+        // AF-719: criteria 2/3 used to have no truthful path for a code card in
+        // a repo/domain with no deployment concept at all (a local analysis
+        // script, a one-shot data-repo fix) — unlike criterion 1, which already
+        // had the "if not applicable, note why" escape. amux-server's own code
+        // genuinely deploys to a running service, so the bar is unchanged for
+        // it; the escape only matters for a code card where it is honestly
+        // inapplicable, and noting why is not a weaker bar than asserting a
+        // deployment that never happened.
         (ItemType::Code, TaskStatus::Verified) => &[
             "CI/CD green (if e2e infra is unavailable, note why — that is not a failure)",
-            "Deployed to prod",
-            "Confirmed working in prod",
+            "Deployed to prod (if this card has no deployment target, note why)",
+            "Confirmed working in prod (if this card has no deployment target, note why)",
             "Zero regressions",
         ],
         // Decision (AF-323): a card whose only output is an answer from the
@@ -5840,8 +5848,8 @@ column=silent type:code=outranked(2)"
             &groups(&["amux"]),
         );
         for want in [
-            "Deployed to prod",
-            "Confirmed working in prod",
+            "Deployed to prod (if this card has no deployment target, note why)",
+            "Confirmed working in prod (if this card has no deployment target, note why)",
             "Zero regressions",
         ] {
             assert!(
@@ -5890,7 +5898,9 @@ column=silent type:code=outranked(2)"
             &groups(&["amux"]),
         );
         assert!(
-            only_marker.iter().any(|g| g == "Confirmed working in prod"),
+            only_marker
+                .iter()
+                .any(|g| g == "Confirmed working in prod (if this card has no deployment target, note why)"),
             "a marker-only gate holds no rule and must fall through, not open the gate: {only_marker:?}"
         );
     }
