@@ -1,0 +1,71 @@
+{
+  "status": "PARTIAL_LIVE_VERIFICATION",
+  "health": {
+    "status": "ok",
+    "store": "ok",
+    "pid": 8407,
+    "commit": "7c84d5a5c095",
+    "build": "468329db6bb42655",
+    "admission": "deny"
+  },
+  "tests": {
+    "final_full_server": {
+      "targets": 60,
+      "passed": 2625,
+      "failed": 8,
+      "ignored": 33,
+      "failures": "seven host-admission failures and one sessions-discovery race"
+    },
+    "rebased_board": 169,
+    "rebased_submission": 13,
+    "rebased_real_tmux_replay": 1,
+    "dashboard_assets_after_test_repair": 38,
+    "runner_contracts": 9,
+    "clippy": "passed in final commit hook",
+    "negative_controls": [
+      "old busy-composer confirmation makes real tmux replay fail",
+      "absolute mobile positioning makes repaired asset test fail"
+    ]
+  },
+  "live_steering_receipt": {
+    "id": "steer-1789226672433",
+    "session": "launch-videos",
+    "queued_at": 1789226672.433707,
+    "delivered_at": 1789227127.971328,
+    "outcome": "sent",
+    "guard": "sched:SCHED-454",
+    "observed_terminal_response": "Worker automatically ran the scheduled memory-pressure check, reported level 2 at 15:32Z, and correctly did not start the render.",
+    "manual_send_now_used": false,
+    "build": "468329db6bb42655",
+    "commit": "7c84d5a5c095"
+  },
+  "latest_board_tick": {
+    "assigned": 0,
+    "completed_epics": 0,
+    "finished_at": 1789227273.264601,
+    "held_on_trigger": 12,
+    "normalized_blocked_doing": 0,
+    "nudged": 1,
+    "promoted": 0,
+    "promoted_due": 0,
+    "revisit_due_total": 8,
+    "started_at": 1789227227.984355,
+    "tick": 2
+  },
+  "busy_lane": [
+    {
+      "card": null,
+      "detail": "lane is not at a turn boundary (self-report `active` 7s old, authoritative, subagents_live=Some(0))",
+      "eligible_todos": 20,
+      "open_cards": 2,
+      "outcome": "skipped",
+      "reason": "mid-turn",
+      "session": "mixpeek-cicd"
+    }
+  ],
+  "remaining": [
+    "No claim of fleet-wide terminal completion; mixpeek-cicd was actively working during the post-deploy observations.",
+    "rtsp-connection retains a queued message under its provider rate limit.",
+    "Fresh Sonnet/Gemini lifecycle workers remain blocked by host admission."
+  ]
+}

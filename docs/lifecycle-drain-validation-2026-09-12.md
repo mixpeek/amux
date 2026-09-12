@@ -25,7 +25,7 @@ The initial new claim regressions caught a capture-card cooldown path that still
 
 `python3 -m unittest discover -s scripts/lifecycle -p 'test_*.py'`: 9 passed. All-target workspace clippy passed. Final `scripts/test-contended.sh -p amux-server --no-fail-fast`: 60 targets, 2,625 passed, 8 failed, 33 ignored. All six new regression tests passed. The seven admission failures remain; the cache discovery race also recurred under full concurrency despite its isolated pass. Restart persistence and the tmux target audit now pass. The final real tmux replay passed again (1 test); both exact-claim recovery tests passed on the final source (2 tests). No replay terminals remain.
 
-Final `scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings`: exit 0. Deployment identity and observed live recovery will be recorded after publication.
+Final `scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings`: exit 0. Deployment results are recorded below and in `docs/evidence/lifecycle-drain-2026-09-12.json`.
 
 ## Live limits
 
@@ -36,3 +36,13 @@ At inspection, `/api/debug/steering` measured zero server-queued messages. This 
 Rebased onto `5eaf25e0` without altering its UI changes. Cargo-owned runs on the rebased implementation passed: board drive 169 tests; submission checks 13; opt-in real tmux replay 1. The incoming mobile asset test initially failed because its 500-character slice stopped inside a long comment. It now reads the mobile CSS declaration block; all 38 asset tests pass. Replacing that rule's fixed positioning with absolute positioning made the pinned test fail, and the mutation restored the CSS.
 
 A supplemental direct invocation of the shared unit-test executable found zero tests after another build replaced it. Those zero-match invocations are invalid evidence and are excluded above; the Cargo-owned reruns are the authoritative results.
+
+## Deployment and live observation
+
+Published `7c84d5a5c095f6ec7f57c8aab3167123ecb2230c` to main and installed its signed release. The running local server adopted that commit with build `468329db6bb42655`, PID 8407, health/store both `ok`. The release build completed in 4m 07s.
+
+Observed real automatic steering pickup after adoption: `launch-videos` queue item `steer-1789226672433` moved to delivery history with outcome `sent`; its terminal then showed the requested scheduled pressure check running and the worker reporting level 2 at 15:32Z. No manual send-now was used. This proves that message reached and was acted on by an existing live worker; it is not a fresh Sonnet/Gemini lifecycle pass.
+
+Across the first three board ticks, the driver advanced `amux-research` while `mixpeek-cicd` remained mid-turn with a fresh active report and 20 eligible To Do cards. Its abandoned-claim recovery therefore remains demonstrated by the regression test, not yet by a post-deploy live reclaim. The only remaining server steering row at the last observation belonged to provider-rate-limited `rtsp-connection`, with a reported reset at 14:20 local time. It stayed queued as intended. Fleet-wide terminal completion is not claimed.
+
+GitHub's `checks` workflow passed for the published commit; the Rust workflow was still running at the last check.
