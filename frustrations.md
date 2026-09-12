@@ -2284,3 +2284,9 @@ Board reminders also discarded enqueue errors and stamped cooldowns anyway. All 
 ### 2026-09-12 — Incoming mobile CSS guard inspected its comment instead of its rule
 
 Integrating 5eaf25e0 made dashboard_assets fail despite the fixed positioning declaration being present. The test read only 500 characters after a long rationale; the declaration was outside that window. Inspect the mobile selector's declaration block instead. This changes the test only; the visual fix and version remain intact.
+
+### 2026-09-12 — Cargo resource growth and cleanup could feed repeated rebuilds
+
+The two-invocation throttle did not bound compiler/test parallelism, RSS, elapsed runtime, or target growth. Full debug data and incremental artifacts repeatedly crossed the release builder's 10 GiB cleanup threshold; unchanged failing build inputs also retried every minute. The wrapper now defaults to two compiler/test threads, disables routine dev/test DWARF and incremental output, and supervises owned Cargo groups with measured RSS/time/disk ceilings. JSON cargo_budget_* records explain refusals, stops and unmeasured probes. Idle debug cleanup moves to 32 GiB; unchanged failures back off 15 minutes and changed build inputs retry immediately (cargo_build_backoff).
+
+The hourly stale-target sweep bypassed the shared Cargo guard with remove_dir_all, including for arbitrary old target names. Route every discovered target through that guard, preserving active leases and native lock files; cargo_reclaim_deferred identifies refusals. The consolidated lifecycle now exercises resource budgets, failed-build retries, active-target preservation and normal completion. Worker-created evidence folders and persistent profiles remain explicitly documented outside these cache quotas rather than being silently deleted.

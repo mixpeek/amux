@@ -27,6 +27,15 @@
 #   scripts/safe-cargo.sh clippy -p amux-server --all-targets -- -D warnings
 set -euo pipefail
 
+# A concurrency slot bounds invocations, not rustc's internal parallelism or
+# libtest's threads. Cargo otherwise defaults to every CPU on the host, per
+# invocation. Avoid full DWARF and incremental trees for routine fleet checks.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
+export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
+
 # NO SYSTEMD AT ALL means the hazard above cannot happen (AMUX-4022).
 #
 # The whole reason this wrapper exists is that a cargo OOM inside the pane's
@@ -83,6 +92,10 @@ set -euo pipefail
 # slot records its holder's pid; a blocked acquirer that finds a dead pid
 # reclaims the slot instead of queuing behind a lock nobody will ever release.
 _throttle_max="${AMUX_CARGO_MAX_CONCURRENT:-2}"
+case "$_throttle_max" in
+  ''|*[!0-9]*|0) echo 'cargo_budget_refused: AMUX_CARGO_MAX_CONCURRENT must be positive' >&2; exit 75 ;;
+esac
+[ "$_throttle_max" -gt 0 ] || { echo 'cargo_budget_refused: concurrency must be positive' >&2; exit 75; }
 _throttle_dir="$HOME/.amux/cargo-throttle"
 mkdir -p "$_throttle_dir" 2>/dev/null || true
 _throttle_slot=""
@@ -135,6 +148,7 @@ if [ "${1:-}" = "test" ] && [ -z "${_TC_RECEIPT:-}" ]; then
 fi
 
 _target_guard="$(cd "$(dirname "$0")" && pwd)/cargo-target-guard.py"
+_budget="$(cd "$(dirname "$0")" && pwd)/cargo-budget.py"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 _guard_cmd=(python3 "$_target_guard" run --target "$CARGO_TARGET_DIR")
 # Cargo's explicit --target-dir wins over the environment. Lease both roots.
@@ -158,11 +172,11 @@ if [ -d /run/systemd/system ]; then
        --setenv=CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
        --setenv=PATH="$PATH"
        --setenv=HOME="$HOME"
-       -- "${_guard_cmd[@]}" -- cargo "$@")
+       -- "${_guard_cmd[@]}" -- python3 "$_budget" -- cargo "$@")
 else
   echo "safe-cargo.sh: no systemd on this host — running cargo directly." \
        "There is no pane scope for an OOM to cascade into here." >&2
-  CMD=("${_guard_cmd[@]}" -- cargo "$@")
+  CMD=("${_guard_cmd[@]}" -- python3 "$_budget" -- cargo "$@")
 fi
 
 # No more `exec` here (see the throttle comment above) -- the EXIT trap that

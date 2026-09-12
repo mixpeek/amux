@@ -802,6 +802,14 @@ Pass requires: The exact-claim guard cannot veto canonical stale recovery foreve
 
 Supporting coverage: `crates/amux-server/src/runtime_jobs/board_drive.rs`.
 
+### LC-CARGO-RESOURCE-BOUNDS — Build and retention resource limits
+
+Run normal, failing, memory-heavy, hung, and disk-growing Cargo fixtures; verify owned children stop, peer processes survive, active target leases prevent cleanup, and unchanged failed builds back off.
+
+Pass requires: Bounded parallelism, sampled RSS/time/disk limits, visible budget receipts, no active-artifact deletion, changed source retries immediately, and ordinary Cargo exit codes survive.
+
+Supporting coverage: `scripts/test-cargo-budget.py`, `scripts/test-cargo-target-guard.py`, `scripts/test-build-disk-clear.sh`, `crates/amux-server/src/cargo_target_guard.rs`.
+
 ## End-state and cleanup record
 
 For every created worker, card, dependency, schedule, browser profile, group,

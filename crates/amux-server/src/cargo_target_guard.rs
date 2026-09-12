@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 
 const GUARD: &str = include_str!("../../../scripts/cargo-target-guard.py");
 
-fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[String]) -> Result<(), String> {
+fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[String], extra_roots: &[PathBuf]) -> Result<(), String> {
     let home = crate::api::reclaim::home_dir();
     let mut roots = vec![home.join(".amux/rust-build-target"), home.join(".amux/rust-build-target-e2e-head")];
     if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
         roots.push(PathBuf::from(target));
     }
+    roots.extend_from_slice(extra_roots);
     if !overlaps_targets(path, destination, originals, &roots) {
         return match destination {
             Some(dest) => std::fs::rename(path, dest).map_err(|e| e.to_string()),
@@ -48,11 +49,17 @@ fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[St
 }
 
 pub(crate) fn rename(path: &Path, destination: &Path) -> Result<(), String> {
-    mutate("move", path, Some(destination), &[])
+    mutate("move", path, Some(destination), &[], &[])
 }
 
 pub(crate) fn purge(path: &Path, originals: &[String]) -> Result<(), String> {
-    mutate("purge", path, None, originals)
+    mutate("purge", path, None, originals, &[])
+}
+
+/// Retention discovers arbitrary old target names. They must be leased even
+/// when they are absent from the two conventional roots above.
+pub(crate) fn purge_build_target(path: &Path) -> Result<(), String> {
+    mutate("purge", path, None, &[], &[path.to_path_buf()])
 }
 
 // Resolve existing symlink ancestors even when a restore destination is absent.
@@ -76,6 +83,27 @@ fn overlaps_targets(path: &Path, destination: Option<&Path>, originals: &[String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retention_keeps_arbitrarily_named_target_with_a_live_lease() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("rust-build-target-old-proof");
+        std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+        let marker = target.join("debug/deps/running-test");
+        std::fs::write(&marker, "active artifact").unwrap();
+        let lease = std::fs::File::create(dir.path().join(".rust-build-target-old-proof.reclaim.lock")).unwrap();
+        // Same advisory lock held by safe-cargo through compiler/test lifetime.
+        assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_SH) }, 0);
+        let error = purge_build_target(&target).unwrap_err();
+        assert!(error.contains("lock busy"), "{error}");
+        std::fs::File::open(&target)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH))
+            .unwrap();
+        assert_eq!(crate::runtime_jobs::storage::prune_stale_build_targets(dir.path()), (0, 0));
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "active artifact");
+    }
 
     #[test]
     fn unrelated_reclaim_stays_native_and_cargo_sources_destinations_originals_are_guarded() {

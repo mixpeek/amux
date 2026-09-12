@@ -137,6 +137,8 @@ def main():
         run('discovery', ['node', 'node_modules/@playwright/test/cli.js', 'test', '--config=e2e/lifecycle/playwright.config.ts', '--list'])
     if args.mode == 'full':
         run('runner-contracts', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/lifecycle', '-p', 'test_*.py'])
+        run('cargo-resource-budgets', [sys.executable, 'scripts/test-cargo-budget.py'])
+        run('cargo-active-cleanup', [sys.executable, 'scripts/test-cargo-target-guard.py'])
         run('syntax', ['bash', 'scripts/safe-cargo.sh', 'check', '--workspace'])
         run('contracts', ['bash', 'scripts/test-contended.sh', '--workspace', '--no-fail-fast'], live=True)
         run('steering-submission-replay', ['bash', 'scripts/test-contended.sh', '-p', 'amux-server', '--lib',

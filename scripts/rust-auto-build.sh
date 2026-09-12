@@ -330,6 +330,23 @@ fi
   # which is the shape where reading EITHER one alone leaves you confident and
   # wrong. The trigger is still worth printing; it just may not pose as the
   # thing that got built.
+  # A bad committed source used to rebuild every 60-second launchd tick. Bound
+  # repeated attempts, but retry immediately when the build inputs change.
+  retry_s="${AMUX_BUILD_FAILURE_RETRY_SECS:-900}"
+  case "$retry_s" in
+    ''|*[!0-9]*|0) echo '== cargo_build_retry_invalid: retry seconds must be positive'; exit 1 ;;
+  esac
+  failed_head=''; failed_at=0
+  if [ -r "${STAMP}.failed" ]; then
+    read -r failed_head failed_at < "${STAMP}.failed" || true
+    case "$failed_at" in ''|*[!0-9]*) failed_at=0 ;; esac
+  fi
+  retry_now=$(date +%s)
+  if [ "${AMUX_RS_DISK_CLEAR_ONLY:-0}" != 1 ] && [ "$failed_head" = "$head" ] \
+      && [ "$failed_at" -le "$retry_now" ] && [ "$((retry_now - failed_at))" -lt "$retry_s" ]; then
+    echo "== cargo_build_backoff trigger=$head retry_in_s=$((retry_s - retry_now + failed_at))"
+    exit 0
+  fi
   echo "== $(date '+%F %T') building $built_sha (trigger: $head, previous stamp: ${last:-none})"
   if [ "$on_main" != "yes" ]; then
     echo "== !! OFF-MAIN: $built_sha is on '$head_ref', which is not contained in main."
@@ -398,7 +415,10 @@ fi
   # cargo check/test runs from fleet sessions land in debug/ using the same
   # CARGO_TARGET_DIR. Debug artifacts are never reused by this script and can
   # accumulate without bound — 229 GB was observed on 2026-08-29. The threshold
-  # is generous (10 GB) to avoid thrashing on a small accumulation; the floor is
+  # is 32 GB: full workspace tests legitimately exceeded the old 10 GB limit,
+  # so every release build destroyed their cache and forced another cold build.
+  # safe-cargo now reduces debug data and enforces a 40 GB target ceiling while
+  # running. This idle cleanup stays below that ceiling; the floor is
   # measured BEFORE clearing so the log line is honest.
   #
   # ATE-92 supersedes AF-415: disk pressure never authorizes deleting a live
@@ -423,7 +443,7 @@ fi
   DEBUG_DIR="$HOME/.amux/rust-build-target/debug"
   if [ -d "$DEBUG_DIR" ]; then
     DEBUG_GB=$(du -sk "$DEBUG_DIR" 2>/dev/null | awk '{print int($1/1048576)}')
-    if [ "${DEBUG_GB:-0}" -gt "${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-10}" ]; then
+    if [ "${DEBUG_GB:-0}" -gt "${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-32}" ]; then
       echo "== DEBUG ARTIFACTS: ${DEBUG_GB:-?}GB in $DEBUG_DIR. Clearing eligible artifacts only after the Cargo safety guard permits it."
       reclaim_target "$HOME/.amux/rust-build-target" "$DEBUG_DIR"
     fi
@@ -624,6 +644,7 @@ PYIDENTITY
     fi
     INSTALL_TMP=""
     echo "$head" > "$STAMP"
+    rm -f "${STAMP}.failed"
     printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
     echo "== ACTIVATION INSTALLED identity=$PROV_JSON"
     # AEAB-50: only NOW is this true. Written after the atomic install so the
@@ -632,13 +653,15 @@ PYIDENTITY
     # build — which is exactly what that branch says is still running.
     echo "== installation action=$install_action; running server will verify identity before adoption"
   else
+    printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.failed"
     echo "== BUILD FAILED for $head — running server keeps the last good build"
     echo "-- diagnostics (every error, with context) ---------------------------"
     grep -nE '^error(\[E[0-9]+\])?:|^error: ' -A 8 "$BUILD_OUT" | head -200 || true
     echo "-- last 20 lines of cargo output -------------------------------------"
     tail -20 "$BUILD_OUT"
     echo "-- end diagnostics ($(wc -l < "$BUILD_OUT" | tr -d ' ') lines total) ---"
-    # Stamp is NOT updated: the next cycle retries. A failed build never
+    # Successful stamp is NOT updated: retry after the bounded cooldown, or
+    # immediately for changed build inputs. A failed build never
     # takes the fleet down (the AC-309 class: a bad save must not crash-loop
     # the server).
   fi

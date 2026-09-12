@@ -499,6 +499,7 @@ jobs:
           ./scripts/test-build-provenance.sh
           ./scripts/test-build-disk-clear.sh
           python3 scripts/test-cargo-target-guard.py
+          python3 scripts/test-cargo-budget.py
           ./scripts/test-build-activation-authority.sh
           ./scripts/test-build-activation-launcher.sh
           # A replacement is complete and signed before its one visible rename;

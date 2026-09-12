@@ -789,13 +789,16 @@ pub fn prune_stale_build_targets(home: &Path) -> (usize, u64) {
             continue;
         }
         let size = dir_size_fast(&e.path());
-        if std::fs::remove_dir_all(e.path()).is_ok() {
-            n += 1;
-            bytes += size;
+        if crate::cargo_target_guard::purge_build_target(&e.path()).is_ok() {
+            // Cargo lock ancestors may remain; report actual bytes reclaimed,
+            // not the pre-clear size of a directory that still owns lock files.
+            let freed = size.saturating_sub(dir_size_fast(&e.path()));
+            n += usize::from(!e.path().exists());
+            bytes += freed;
             tracing::info!(
-                path = %e.path().display(), freed_bytes = size,
+                path = %e.path().display(), freed_bytes = freed,
                 knob = "AMUX_STALE_BUILD_TARGET_RETAIN_DAYS",
-                "storage sweep removed stale build target"
+                "storage sweep reclaimed stale build target artifacts"
             );
         }
     }
