@@ -462,6 +462,46 @@ async fn element(d: &Driver, body: &Value) -> Result<String> {
         "Element missing or stale; GET /state again".into(),
     ))
 }
+// DOM hit testing cannot see UIKit's keyboard. A WebTap on a covered page
+// button otherwise types whichever keyboard key occupies that screen point.
+async fn clear_native_keyboard(d: &Driver) -> Result<bool> {
+    let path = "/appium/device/is_keyboard_shown";
+    let shown = d.command(reqwest::Method::GET, path, None).await?;
+    if shown == false {
+        return Ok(false);
+    }
+    if shown != true {
+        return Err(failure(
+            "Native keyboard visibility is unavailable; page tap refused",
+        ));
+    }
+    tracing::warn!(target:"amux::browser_ios",session=%d.owner,verdict="keyboard_blocks_page_tap",measured=true,n_considered=1,"dismissing native keyboard before locating the requested page control");
+    // Safari's Done lives in its input accessory toolbar, outside the native
+    // keyboard subtree searched by Appium's generic hideKeyboard command.
+    let context = d.command(reqwest::Method::GET, "/context", None).await?;
+    if !context.is_string() || context == "NATIVE_APP" {
+        return Err(failure("Safari web context unavailable; page tap refused"));
+    }
+    d.post("/context", json!({"name":"NATIVE_APP"})).await?;
+    let dismissed=async {
+        let matches=d.post("/elements",json!({"using":"xpath","value":"//XCUIElementTypeToolbar//XCUIElementTypeButton[@name='Done' and @visible='true']"})).await?;
+        let matches=matches.as_array().filter(|v|v.len()==1).ok_or(failure("Safari keyboard Done control unavailable or ambiguous; page tap refused"))?;
+        let id=matches[0][ELEMENT].as_str().ok_or(failure("Native Done control has no element identity"))?;
+        d.post(&format!("/element/{id}/click"),json!({})).await
+    }.await;
+    // Always restore the web context, including native lookup/tap refusal.
+    let restored = d.post("/context", json!({"name":context})).await;
+    restored?;
+    dismissed?;
+    if d.command(reqwest::Method::GET, path, None).await? != false {
+        return Err((
+            StatusCode::CONFLICT,
+            "Native keyboard still covers the page; tap refused without dispatch".into(),
+        ));
+    }
+    Ok(true)
+}
+
 async fn perform(d: &Driver, body: &Value) -> Result<Value> {
     let action = body["action"].as_str().unwrap_or("");
     match action {
@@ -489,13 +529,16 @@ async fn perform(d: &Driver, body: &Value) -> Result<Value> {
             if body["selector"].is_string() || body["index"].is_u64() {
                 let id=element(d,body).await?;
                 if d.native {
+                    let keyboard_dismissed=clear_native_keyboard(d).await?;
+                    let id=element(d,body).await?;
                     d.eval("arguments[0].scrollIntoView({block:'nearest',inline:'center',behavior:'instant'})",json!([{ELEMENT:id}])).await?;
                     // Let Safari settle any scroll-snap before checking the hit target.
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    if d.eval("(function(e){var r=e.getBoundingClientRect();var hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return !!(r.width&&r.height&&hit&&e.contains(hit))})(arguments[0])",json!([{ELEMENT:id}])).await? != true {
+                    if d.eval("(function(e){var r=e.getBoundingClientRect();var x=r.x+r.width/2,y=r.y+r.height/2,v=visualViewport;var visible=!v||(x>=v.offsetLeft&&x<=v.offsetLeft+v.width&&y>=v.offsetTop&&y<=v.offsetTop+v.height);var hit=document.elementFromPoint(x,y);return !!(r.width&&r.height&&visible&&hit&&e.contains(hit))})(arguments[0])",json!([{ELEMENT:id}])).await? != true {
                         return Err((StatusCode::BAD_REQUEST,"Element is hidden or covered; scroll it into view or close the covering overlay".into()));
                     }
-                    return d.post(&format!("/element/{id}/click"),json!({})).await;
+                    d.post(&format!("/element/{id}/click"),json!({})).await?;
+                    return Ok(json!({"input_method":"xcuitest","dispatched":true,"keyboard_dismissed":keyboard_dismissed}));
                 }
                 let point=d.eval("(function(e){e.scrollIntoView({block:'center',inline:'center'});var r=e.getBoundingClientRect();if(!r.width||!r.height)throw Error('Element is not visible');return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})(arguments[0])",json!([{ELEMENT:id}])).await?;
                 d.post("/actions",json!({"actions":[{"type":"pointer","id":"pointer","parameters":{"pointerType":"mouse"},"actions":[
@@ -626,6 +669,119 @@ mod tests {
         assert_eq!(result["input_method"], "xcuitest");
         assert_eq!(result["coordinate_space"], "device-points");
         server.abort();
+    }
+    #[tokio::test]
+    async fn native_click_dismisses_keyboard_or_refuses_without_dispatch() {
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+        for mode in ["refused", "still-visible", "dismissed"] {
+            let refuse = mode != "dismissed";
+            let visible = Arc::new(AtomicBool::new(true));
+            let native_context = Arc::new(AtomicBool::new(false));
+            let taps = Arc::new(AtomicUsize::new(0));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let keyboard = visible.clone();
+            let dismiss = visible.clone();
+            let clicks = taps.clone();
+            let contexts = native_context.clone();
+            let app = Router::new()
+                .route(
+                    "/session/test/element",
+                    post(|| async { Json(json!({"value":{ELEMENT:"save"}})) }),
+                )
+                .route(
+                    "/session/test/elements",
+                    post(|Json(v): Json<Value>| async move {
+                        assert!(v["value"]
+                            .as_str()
+                            .unwrap()
+                            .contains("XCUIElementTypeToolbar"));
+                        Json(json!({"value":[{ELEMENT:"native-done"}]}))
+                    }),
+                )
+                .route(
+                    "/session/test/context",
+                    get(|| async { Json(json!({"value":"WEBVIEW_test"})) }).post(
+                        move |Json(v): Json<Value>| {
+                            let contexts = contexts.clone();
+                            async move {
+                                contexts.store(v["name"] == "NATIVE_APP", Ordering::SeqCst);
+                                Json(json!({"value":null}))
+                            }
+                        },
+                    ),
+                )
+                .route(
+                    "/session/test/appium/device/is_keyboard_shown",
+                    get(move || {
+                        let keyboard = keyboard.clone();
+                        async move { Json(json!({"value":keyboard.load(Ordering::SeqCst)})) }
+                    }),
+                )
+                .route(
+                    "/session/test/execute/sync",
+                    post(|| async { Json(json!({"value":true})) }),
+                )
+                .route(
+                    "/session/test/element/native-done/click",
+                    post(move || {
+                        let dismiss = dismiss.clone();
+                        async move {
+                            if mode == "refused" {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({"value":{"error":"invalid element state"}})),
+                                );
+                            }
+                            if mode == "dismissed" {
+                                dismiss.store(false, Ordering::SeqCst);
+                            }
+                            (StatusCode::OK, Json(json!({"value":null})))
+                        }
+                    }),
+                )
+                .route(
+                    "/session/test/element/save/click",
+                    post(move || {
+                        let clicks = clicks.clone();
+                        async move {
+                            clicks.fetch_add(1, Ordering::SeqCst);
+                            Json(json!({"value":null}))
+                        }
+                    }),
+                );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let d = Driver {
+                owner: "test".into(),
+                port,
+                pid: 0,
+                id: "test".into(),
+                udid: "test".into(),
+                capabilities: Value::Null,
+                native: true,
+                child: None,
+            };
+            let result = perform(&d, &json!({"action":"click","selector":"#save"})).await;
+            assert!(
+                !native_context.load(Ordering::SeqCst),
+                "web context is restored even after refusal"
+            );
+            if refuse {
+                assert!(
+                    result.is_err(),
+                    "a native keyboard must not receive the intended DOM tap"
+                );
+                assert_eq!(taps.load(Ordering::SeqCst), 0);
+            } else {
+                assert!(result.is_ok());
+                assert!(!visible.load(Ordering::SeqCst));
+                assert_eq!(taps.load(Ordering::SeqCst), 1);
+            }
+            server.abort();
+        }
     }
     #[test]
     fn discovered_version_comes_from_runtime_not_frozen_user_agent() {

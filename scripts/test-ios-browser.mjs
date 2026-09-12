@@ -151,11 +151,11 @@ try {
     assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'));
   }
   await messages.run({setMode:value=>{mode=value;},navigate:suffix=>api('start',{udid,url:origin+suffix}),until,evaluate,api,shot,pass,runId});
-  if (process.env.AMUX_IOS_LIFECYCLE === '1') {
+  { // Board editing is a baseline native regression, including keyboard occlusion.
     mode='plain';
     const coverage=[];
     const visible=selector=>`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return !!e&&!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'})()`;
-    for (const surface of ['sessions','board','groups','calendar','scheduler','files','mdai','proxies','email','connectors','logs','messages','skills','sql','map','metrics','cost','torrents','terminal','browser']) {
+    for (const surface of (process.env.AMUX_IOS_LIFECYCLE === '1' ? ['sessions','board','groups','calendar','scheduler','files','mdai','proxies','email','connectors','logs','messages','skills','sql','map','metrics','cost','torrents','terminal','browser'] : [])) {
       try {
         await api('start',{udid,url:origin+'/#view=sessions'});await until('!!window.__amuxState && !document.querySelector("#peek-overlay").classList.contains("active")',v=>v);
         const tab='#tab-'+surface;
@@ -181,9 +181,14 @@ try {
       const title='iOS lifecycle '+Date.now()+' — preserve this complete title across creation, reload and search';
       await api('action',{action:'input',selector:'#be-title',text:title});
       await api('action',{action:'input',selector:'#be-desc',text:'Acceptance: keep this exact simulator lifecycle note.'});
-      await shot('lifecycle-board-new');await api('action',{action:'click',selector:'.be-save'});
+      await shot('lifecycle-board-new');
+      const saved=await api('action',{action:'click',selector:'.be-save'});
+      if(native)assert.equal(saved.data.result.keyboard_dismissed,true,'The real keyboard must be dismissed before tapping below it');
       const rows=await until(`fetch('/api/board?done_limit=0').then(r=>r.json()).then(rows=>rows.filter(r=>r.title===${JSON.stringify(title)}))`,v=>v?.length===1);
-      const card=rows[0];await api('start',{udid,url:origin+'/#issue='+encodeURIComponent(card.id)});await until('document.querySelector("#bd-key")?.textContent',v=>v===card.id);
+      const card=rows[0];
+      const full=await evaluate(`fetch('/api/board/'+${JSON.stringify(card.id)}).then(r=>r.json())`);
+      assert.equal(full.desc,'Acceptance: keep this exact simulator lifecycle note.','A page tap must not append a native keyboard character');
+      await api('start',{udid,url:origin+'/#issue='+encodeURIComponent(card.id)});await until('document.querySelector("#bd-key")?.textContent',v=>v===card.id);
       assert((await evaluate('document.querySelector("#bd-preview").innerText')).includes('exact simulator lifecycle note'));
       await shot('lifecycle-board-persisted');await api('start',{udid,url:origin+'/#issue='+encodeURIComponent(card.id)});
       await until('document.querySelector("#bd-key")?.textContent',v=>v===card.id);

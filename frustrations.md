@@ -2399,3 +2399,14 @@ CARD: AF-731
 SYMPTOM: The owner could not reach Settings beside the fleet's connection and limit labels. A first compact draft passed outer-button bounds but native Safari placed the red limited count beneath the next button.
 COST: Unreachable mobile controls and an extra native verification/correction cycle after desktop geometry passed.
 FIX: This candidate uses compact labels with full 44-point targets, a real count element, and measured mobile-header-clipped beacons for both control bounds and label containment. Phone-width tests and a visually inspected real iOS 26.5 screenshot cover a loaded 52-worker fleet with 18 limited; all eight targets are unobstructed. Deployment remains separate.
+
+## Native Simulator page tap hit the keyboard instead of the requested Save button
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-732
+SYMPTOM: Native board-create typing was correct, but clicking Save appended J to the note and sent no board POST. DOM elementFromPoint saw the page button behind UIKit's keyboard; the native screen received that coordinate as a keyboard key.
+COST: Board persistence failed after the 20-view walkthrough, despite a successful tap response and the simpler native input probe passing.
+FIX: Candidate checks native keyboard visibility, dismisses through the native Safari input toolbar Done control, confirms it is gone, and checks visualViewport before dispatch. A failed dismissal refuses the tap. keyboard_blocks_page_tap emits measured=true/n_considered=1 before recovery. The new regression first failed on e48bc2a8 and then passed; native board-create/reload is now in the baseline harness, with exact persisted-note verification. Native correction: 12 passed, 0 failed on unchanged API build 5c158f091d1eba15; exact title/note survived creation, detail and reload. Focused Rust tests: 7 passed; workspace/all-target Clippy: exit 0.

@@ -16,8 +16,8 @@ control and clipping-ancestor bounds (`measured`, `n_considered`, clipped IDs).
 
 - Native iOS 26.5 / iPhone 17, obtained from Simulator runtime discovery (not
   Safari's frozen user agent). `node scripts/test-ios-browser.mjs` → `RESULT:
-  11 passed, 0 failed`. This run used the isolated test API build
-  `8ab1e8c487a8308b` (based on `fb7d746c`) and candidate dashboard assets. The screenshot above was
+  12 passed, 0 failed`. This run used the isolated test API build
+  `5c158f091d1eba15` (keyboard correction above `e48bc2a8`) and candidate dashboard assets. The screenshot above was
   visually inspected after fixing the native-only count clipping.
 - `npx playwright test --config scratch/ios-simulator-review/playwright-header.config.ts`
   with `AMUX_E2E_DASHBOARD_SOURCE`, `AMUX_E2E_DASHBOARD_CSS`, and
@@ -32,26 +32,31 @@ control and clipping-ancestor bounds (`measured`, `n_considered`, clipped IDs).
   per-operation acknowledgements.
 - `npm run lint:spa` → 0 errors, 48 existing warnings; state bundle freshness passes.
 - Workspace/all-target Clippy → exit 0. Dashboard assets → 38 passed; diagnostic
-  contract → 4 passed; browser error causes → 3 passed. Focused iOS API unit tests → 6 passed;
+  contract → 4 passed; browser error causes → 3 passed. Focused iOS API unit tests → 7 passed;
   Tailnet auth unit tests → 3 passed; read-only steering identity query → 1 passed.
 
 ## Coverage limits and remaining work
 
-The native 11-probe run covers real text editing, key dispatch, clicking,
+The native 12-probe run covers real text editing, key dispatch, clicking,
 scrolling, back navigation, screenshot/state, backend selection, owner/device
 refusals, receipt recovery, duplicate display identity, safe uncertain-send
-reload recovery (zero command POSTs), and the loaded header menus. Fault cases
+reload recovery (zero command POSTs), the loaded header menus, and exact board creation/detail/reload persistence. Fault cases
 use an isolated proxy; they do not drive production workers. Its service worker
 is disabled for deterministic fault injection, so this run does not verify
 cold offline PWA startup.
 
 A separate native walkthrough reached 20 top-level views without page overflow
 or clipped header controls. This is navigation coverage, not proof of each
-view's functionality or a completed aesthetic audit. Native board creation did
-not persist in that exploratory run and remains unresolved. Terminal touch
+view's functionality or a completed aesthetic audit. That walkthrough exposed a keyboard-covered Save tap that inserted J instead
+of saving. The corrected native baseline dismisses Safari’s input-toolbar
+Done control, confirms the keyboard is absent, relocates and hit-tests Save,
+and verifies one server card with the exact title and note after reload.
+Its regression first failed on e48bc2a8; seven focused Rust tests and the
+12 native probes now pass. The measured keyboard_blocks_page_tap warning
+was observed in the isolated server log. Terminal touch
 scrolling, the full canonical lifecycle matrix, physical-device behavior,
 background suspension, live provider actions and production deployment remain
-unverified. AF-732 and AF-733 retain that work; this report does not close it.
+unverified. AF-733 retains the terminal investigation; the broader lifecycle audit remains open; this report does not close it.
 
 ## Integration scope
 
