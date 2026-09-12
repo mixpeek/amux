@@ -2349,7 +2349,12 @@ function setOnline(val) {
   if (!was && val) {
     showToast('Reconnected');
     try { _upqDrain(); } catch (e) {}
-    runSyncBanner(true);
+    // NON-quiet on reconnect: this is exactly when the user wants to watch the
+    // queue drain, item by item, as checkmarks (Ethan, 2026-09-12: "when
+    // reconnecting it should show that list of checkboxes and check marks of
+    // different synced things"). Ordinary online single-sends stay silent; only
+    // a reconnect (or a multi-item batch, see _runSyncBanner) raises the list.
+    runSyncBanner(false);
     // Reconnect SSE (reset fallback so we can get back to Live mode)
     _sseFallback = false; _sseRetries = 0;
     if (!_sse) connectSSE();
@@ -2445,7 +2450,12 @@ async function _runSyncBanner(quiet = false) {
   }
 
   renderBanner();
-  if (!quiet) banner.classList.add('active');
+  // Show the checklist for a reconnect/explicit run (!quiet) OR whenever there
+  // is a real BATCH to watch drain (2+ items). A lone background single-send
+  // stays silent — the "unsaved changes is too much" rule — but a queue that
+  // built up offline flushes visibly, checkmark by checkmark.
+  const show = !quiet || items.length >= 2;
+  if (show) banner.classList.add('active');
 
   // A draft is a sequence of accepted writes. Keep its completed steps and
   // prompt identity across failure/reload; never call a failed start "synced".
@@ -2548,7 +2558,7 @@ async function _runSyncBanner(quiet = false) {
   // Pending messages just flushed — clear the amber pending UI and re-pull the
   // server-side history so the Messages tab flips ⏳pending → delivered.
   try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
-  if (doneCount && !quiet) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
+  if (doneCount && show) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
   // Auto-dismiss: immediately if failures (the offline-banner already shows
   // the pending ops, so two banners for the same thing is redundant), or after
   // 2s on full success so the user sees the completion flash.
@@ -10334,7 +10344,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.917';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.918';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

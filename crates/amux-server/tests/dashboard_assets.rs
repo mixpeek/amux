@@ -1338,3 +1338,30 @@ fn unrecoverable_uncertain_sends_are_swept_not_left_as_a_red_banner() {
     assert!(body.contains("/(send|steer)$/"),
         "the sweep must be scoped to send/steer; a blocked board write still needs review");
 }
+
+/// Reconnecting must show the sync checklist draining item by item — the
+/// checkmark list (Ethan, 2026-09-12: "when reconnecting it should show that
+/// list of checkboxes and check marks of different synced things"). The
+/// mechanism (renderBanner's per-item ✔/✘/➤ states) already existed but was
+/// gated behind !quiet, and the reconnect drain ran quiet, so it never showed.
+#[test]
+fn reconnect_shows_the_sync_checklist() {
+    let js = asset("app.js");
+    // The reconnect edge (setOnline false->true) raises the banner non-quiet.
+    let so = js.find("function setOnline(").expect("setOnline exists");
+    let so_end = js[so..].find("\n}\n").map(|k| so + k).unwrap_or(js.len());
+    assert!(
+        js[so..so_end].contains("runSyncBanner(false)"),
+        "reconnect must raise the sync banner non-quiet so the checklist is visible"
+    );
+    // A multi-item batch shows even from a quiet caller.
+    assert!(
+        js.contains("const show = !quiet || items.length >= 2;"),
+        "a 2+ item batch must show the checklist even when the caller is quiet"
+    );
+    // The per-item checkmark states must still exist.
+    assert!(
+        js.contains("i.status === 'done'") && js.contains("&#x2714;"),
+        "the checklist must mark each item done with a checkmark as it syncs"
+    );
+}
