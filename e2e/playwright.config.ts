@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { E2E_ANTHROPIC_KEY } from './test-env';
+import { reapStaleTmp } from './tmp-reap';
 
 // ONE SERVER AND ONE AMUX_HOME PER PROJECT — not one shared by all of them
 // (AF-46, measured 2026-08-13).
@@ -59,6 +60,18 @@ const TARGETS = [
 // in the configured-install state they actually assume.
 
 // One temp home per TARGET, created eagerly so each server and its tests agree.
+// Reap what earlier (usually interrupted) runs left behind before minting more
+// — see e2e/tmp-reap.ts. First real run on this box took 5,079 dirs / 2.58 GB.
+//
+// BOTH ROOTS on macOS. `os.tmpdir()` is the per-user `/var/folders/.../T`, but
+// a run whose TMPDIR was forced to `/tmp` (the lifecycle harness does exactly
+// that, because the long per-user path overflows the Unix socket limit) leaves
+// its homes in `/private/tmp` instead, where a reaper watching only
+// `os.tmpdir()` never sees them. Measured: 5,079 in one root and 349 in the
+// other, from the same prefix.
+for (const root of new Set([os.tmpdir(), ...(process.platform === 'darwin' ? ['/tmp'] : [])])) {
+  reapStaleTmp(root, 'amux-e2e-');
+}
 const homes: Record<string, string> = Object.fromEntries(
   TARGETS.map((t) => [t.name, fs.mkdtempSync(path.join(os.tmpdir(), `amux-e2e-${t.name}-`))]),
 );

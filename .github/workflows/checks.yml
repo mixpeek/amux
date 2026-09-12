@@ -225,6 +225,17 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-selector-clauses.sh
+      # The debris reaper deletes directories without asking, so what keeps it
+      # safe is worth pinning: it takes only amux's own prefixes, only past the
+      # age floor, never a live session's scratchpad, and nothing at all without
+      # --apply. Runs against a mktemp fixture (AMUX_DEBRIS_ROOTS) and a throwaway
+      # git repo, so it touches no real temp root and needs no server or cargo.
+      # Two of its cells were vacuous when first written and were rewritten until
+      # mutating the guard they name reddens them.
+      - name: the debris reaper reaps only amux's own, and only when told (AMUX-4357)
+        run: |
+          set -uo pipefail
+          ./scripts/test-reap-amux-debris.sh
       # AF-677. AF-346's ratchet (above) recorded 31 harnesses as unwired rather
       # than wiring them blind, because that decision belongs to each one's
       # owner (ethos rule 8). This is that decision, made for 28 of the 31:
