@@ -2280,3 +2280,7 @@ User: workers still fail to drain backlog/todo/done and queued steering is not p
 Live board-drive showed mixpeek-cicd holding two Doing cards untouched 11–14 hours with 18 eligible todos. The current-generation exact-claim guard returned before the canonical stale-reclaim selector could execute. Permit that guarded recovery and the existing capture-shell WIP exemption; revalidate the reclaim on the serialized writer. Log stalled_claim_yields_to_canonical_pickup.
 
 Board reminders also discarded enqueue errors and stamped cooldowns anyway. All reminder paths now check queue acceptance before recording budgets; failures log board_nudge_enqueue_failed and retry next tick. Verification was globally throttled for 24 hours after each eight-card batch; finishing a batch now re-arms the next one, without repeating an unchanged batch. Log verify_batch_queued. Dedicated driver tests and a real tmux capture replay cover these boundaries; fresh model-worker admission remains a separate live prerequisite.
+
+### 2026-09-12 — Incoming mobile CSS guard inspected its comment instead of its rule
+
+Integrating 5eaf25e0 made dashboard_assets fail despite the fixed positioning declaration being present. The test read only 500 characters after a long rationale; the declaration was outside that window. Inspect the mobile selector's declaration block instead. This changes the test only; the visual fix and version remain intact.

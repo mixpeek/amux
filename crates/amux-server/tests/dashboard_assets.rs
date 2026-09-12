@@ -1366,9 +1366,11 @@ fn the_worker_list_card_has_no_attach_file_button() {
 #[test]
 fn the_mobile_settings_menu_escapes_the_sticky_header() {
     let css = asset("app.css");
-    let marker = "MOBILE: the menu must ESCAPE the sticky .header-row";
-    let i = css.find(marker).expect("the mobile settings-menu escape rule and its rationale must be present");
-    let block = &css[i..(i + 500).min(css.len())];
+    // Locate the actual selector and declarations. A character budget after
+    // a prose marker failed as soon as the rationale exceeded that budget.
+    let rule = regex::Regex::new(r"(?s)@media\s*\(max-width:\s*600px\)\s*\{\s*\.settings-menu\s*\{([^}]+)").unwrap();
+    let captures = rule.captures(&css).expect("the mobile settings-menu rule must be present");
+    let block = &captures[1];
     assert!(
         block.contains("position: fixed"),
         "the mobile settings-menu override must use position:fixed to leave the header stacking context"

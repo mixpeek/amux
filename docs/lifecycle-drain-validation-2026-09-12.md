@@ -30,3 +30,9 @@ Final `scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings`: e
 ## Live limits
 
 At inspection, `/api/debug/steering` measured zero server-queued messages. This proves queue depth only, not that every provider consumed a message. The local host still denies new worker admission due to reported swap usage; Sonnet/Gemini native end-to-end completion cannot be claimed while that prerequisite is denied. Existing workers can still receive steering and board dispatch. One worker (`desktop`) explicitly showed its provider session limit in the terminal. Work waiting on human decisions, live imports, dependencies or provider limits must retain truthful blocked state rather than being marked complete.
+
+## Integration with the concurrent mobile fix
+
+Rebased onto `5eaf25e0` without altering its UI changes. Cargo-owned runs on the rebased implementation passed: board drive 169 tests; submission checks 13; opt-in real tmux replay 1. The incoming mobile asset test initially failed because its 500-character slice stopped inside a long comment. It now reads the mobile CSS declaration block; all 38 asset tests pass. Replacing that rule's fixed positioning with absolute positioning made the pinned test fail, and the mutation restored the CSS.
+
+A supplemental direct invocation of the shared unit-test executable found zero tests after another build replaced it. Those zero-match invocations are invalid evidence and are excluded above; the Cargo-owned reruns are the authoritative results.
