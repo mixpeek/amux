@@ -119,17 +119,27 @@ async fn webdriver(
         .timeout(Duration::from_secs(deadline))
         .build()
         .map_err(failure)?;
+    let verb = method.to_string();
+    let transport_error = |error: reqwest::Error| {
+        let timed_out = error.is_timeout();
+        tracing::warn!(target:"amux::browser_ios",verdict="webdriver_transport_failed",measured=true,
+            n_considered=1,method=%verb,operation=%path,deadline_s=deadline,timed_out,
+            "iOS WebDriver did not acknowledge the operation");
+        (if timed_out { StatusCode::GATEWAY_TIMEOUT } else { StatusCode::BAD_GATEWAY },
+            format!("Safari WebDriver {verb} {path}: {}; deadline {deadline}s; action outcome may be unknown",
+                if timed_out { "timed out" } else { "transport failed" }))
+    };
     let mut request = client.request(method, format!("http://127.0.0.1:{port}{path}"));
     if let Some(b) = body {
         request = request.json(&b);
     }
-    let response = request.send().await.map_err(failure)?;
+    let response = request.send().await.map_err(&transport_error)?;
     let status = response.status();
-    let data: Value = response.json().await.map_err(failure)?;
+    let data: Value = response.json().await.map_err(transport_error)?;
     if !status.is_success() || data["value"]["error"].is_string() {
         // Don't log URLs, scripts or typed text echoed by the browser.
         return Err(failure(format!(
-            "Safari WebDriver HTTP {status}: {}",
+            "Safari WebDriver {verb} {path} HTTP {status}: {}",
             data["value"]["error"].as_str().unwrap_or("request failed")
         )));
     }
@@ -478,21 +488,25 @@ async fn clear_native_keyboard(d: &Driver) -> Result<bool> {
     tracing::warn!(target:"amux::browser_ios",session=%d.owner,verdict="keyboard_blocks_page_tap",measured=true,n_considered=1,"dismissing native keyboard before locating the requested page control");
     // Safari's Done lives in its input accessory toolbar, outside the native
     // keyboard subtree searched by Appium's generic hideKeyboard command.
+    // Class chain uses native XCTest queries; XPath serializes the entire
+    // accessibility tree and stalls on large live terminal histories.
     let context = d.command(reqwest::Method::GET, "/context", None).await?;
     if !context.is_string() || context == "NATIVE_APP" {
         return Err(failure("Safari web context unavailable; page tap refused"));
     }
     d.post("/context", json!({"name":"NATIVE_APP"})).await?;
     let dismissed=async {
-        let matches=d.post("/elements",json!({"using":"xpath","value":"//XCUIElementTypeToolbar//XCUIElementTypeButton[@name='Done' and @visible='true']"})).await?;
+        let matches=d.post("/elements",json!({"using":"-ios class chain","value":"**/XCUIElementTypeToolbar/**/XCUIElementTypeButton[`name == 'Done' AND visible == 1`]"})).await?;
         let matches=matches.as_array().filter(|v|v.len()==1).ok_or(failure("Safari keyboard Done control unavailable or ambiguous; page tap refused"))?;
         let id=matches[0][ELEMENT].as_str().ok_or(failure("Native Done control has no element identity"))?;
         d.post(&format!("/element/{id}/click"),json!({})).await
     }.await;
     // Always restore the web context, including native lookup/tap refusal.
     let restored = d.post("/context", json!({"name":context})).await;
+    if let Err((status, error)) = dismissed {
+        return Err((status, format!("Keyboard dismissal failed: {error}; web context restored={}", restored.is_ok())));
+    }
     restored?;
-    dismissed?;
     if d.command(reqwest::Method::GET, path, None).await? != false {
         return Err((
             StatusCode::CONFLICT,
@@ -676,7 +690,7 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
             Arc,
         };
-        for mode in ["refused", "still-visible", "dismissed"] {
+        for mode in ["refused", "still-visible", "dismissed", "dismiss-and-restore-refused"] {
             let refuse = mode != "dismissed";
             let visible = Arc::new(AtomicBool::new(true));
             let native_context = Arc::new(AtomicBool::new(false));
@@ -695,6 +709,8 @@ mod tests {
                 .route(
                     "/session/test/elements",
                     post(|Json(v): Json<Value>| async move {
+                        assert_eq!(v["using"], "-ios class chain",
+                            "keyboard lookup must not serialize the entire live page as XPath XML");
                         assert!(v["value"]
                             .as_str()
                             .unwrap()
@@ -708,6 +724,9 @@ mod tests {
                         move |Json(v): Json<Value>| {
                             let contexts = contexts.clone();
                             async move {
+                                if mode == "dismiss-and-restore-refused" && v["name"] != "NATIVE_APP" {
+                                    return Json(json!({"value":{"error":"restoration refused"}}));
+                                }
                                 contexts.store(v["name"] == "NATIVE_APP", Ordering::SeqCst);
                                 Json(json!({"value":null}))
                             }
@@ -730,7 +749,7 @@ mod tests {
                     post(move || {
                         let dismiss = dismiss.clone();
                         async move {
-                            if mode == "refused" {
+                            if mode == "refused" || mode == "dismiss-and-restore-refused" {
                                 return (
                                     StatusCode::INTERNAL_SERVER_ERROR,
                                     Json(json!({"value":{"error":"invalid element state"}})),
@@ -765,10 +784,13 @@ mod tests {
                 child: None,
             };
             let result = perform(&d, &json!({"action":"click","selector":"#save"})).await;
-            assert!(
-                !native_context.load(Ordering::SeqCst),
-                "web context is restored even after refusal"
-            );
+            assert_eq!(native_context.load(Ordering::SeqCst), mode == "dismiss-and-restore-refused",
+                "restore is attempted even after dismissal refusal");
+            if mode == "dismiss-and-restore-refused" {
+                let error = &result.as_ref().unwrap_err().1;
+                assert!(error.contains("invalid element state"), "original failure must survive: {error}");
+                assert!(error.contains("web context restored=false"), "restore failure must remain explicit: {error}");
+            }
             if refuse {
                 assert!(
                     result.is_err(),

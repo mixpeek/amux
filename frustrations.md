@@ -2575,3 +2575,14 @@ CARD: AMUX-4460
 SYMPTOM: After fixing the earlier checks failure, pushed 638b7203 reached the next guard and reported five newly unwired harnesses: board acknowledgement, Cargo provenance, two native Simulator scripts, and Tailscale owner bootstrap.
 COST: One additional failed main CI run (34723123687) despite the individual regression probes passing locally.
 FIX: Invoke portable acknowledgement and Cargo provenance tests in checks.yml; record explicit local device/daemon prerequisites and commands for the three native acceptance harnesses. The existing harness-wired guard continues to report the full population and any new omission.
+
+## Native keyboard dismissal stalled on the deployed worker's large history
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-745
+SYMPTOM: Native Safari keyboard/menu acceptance passed on small fixtures, but the real working-worker log hit a 70-second dismissal/restoration failure. The last context error masked the original dismissal failure. The toolbar lookup used XPath, whose driver path serializes the complete accessibility tree.
+COST: Live deployment verification stopped; roughly 15 minutes reproducing against real data and distinguishing a retained-keyboard test setup error from the driver failure.
+FIX: Use a native class-chain query scoped to Safari's toolbar Done control, keep ambiguity/visibility checks, preserve the original failure when context restoration also fails, and emit webdriver_transport_failed with operation, deadline, timeout and measured/count fields. Native live board taps now complete through the replacement query. The real Safari keyboard/menu rerun against production page data passed (1 passed, 0 failed), preserved the unsent draft, and its screenshots were inspected. The four-case refusal/dismissal/context-restoration regression passed; final deployment evidence is tracked on AF-745.
