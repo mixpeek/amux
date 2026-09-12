@@ -1794,6 +1794,24 @@
     padding: 10px 0;
   }
   .settings-menu.open { display: block; }
+  /* MOBILE: the menu must ESCAPE the sticky .header-row stacking context.
+     .header-row is position:sticky; z-index:40, which traps an absolutely
+     positioned child: on a phone the dropdown painted BEHIND #session-view and
+     the whole menu was invisible (Ethan, 2026-09-12: "when I press the settings
+     button on mobile I don't see anything"). Verified: raising the menu's
+     z-index or the header's does nothing; only leaving the context (fixed)
+     works. Desktop keeps the absolute anchor, which is fine there. Anchored
+     under the gear, capped to the viewport, scrolls internally. */
+  @media (max-width: 600px) {
+    .settings-menu {
+      position: fixed;
+      top: calc(max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) + 60px);
+      right: 8px; left: auto;
+      max-width: calc(100vw - 16px);
+      max-height: calc(100dvh - max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) - 72px);
+      z-index: 6000;
+    }
+  }
   /* AMUX-2975: the 17-section list is grouped into 5 tabs. The strip is sticky
      so it stays reachable while a panel scrolls, and overflow-x:auto so it never
      overflows the 260px menu on a 375px phone — it scrolls instead. */

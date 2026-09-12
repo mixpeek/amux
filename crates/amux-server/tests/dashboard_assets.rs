@@ -1356,3 +1356,21 @@ fn the_worker_list_card_has_no_attach_file_button() {
          (drag-and-drop + paste still attach)"
     );
 }
+
+/// The settings menu must ESCAPE the sticky .header-row (position:sticky;
+/// z-index:40) on mobile, or its absolutely-positioned dropdown paints behind
+/// #session-view and is invisible (Ethan, 2026-09-12: "when I press the
+/// settings button on mobile I don't see anything"). Only leaving that stacking
+/// context (position:fixed) works; raising z-index does not. Pin the mobile
+/// fixed override so a later refactor cannot silently re-trap it.
+#[test]
+fn the_mobile_settings_menu_escapes_the_sticky_header() {
+    let css = asset("app.css");
+    let marker = "MOBILE: the menu must ESCAPE the sticky .header-row";
+    let i = css.find(marker).expect("the mobile settings-menu escape rule and its rationale must be present");
+    let block = &css[i..(i + 500).min(css.len())];
+    assert!(
+        block.contains("position: fixed"),
+        "the mobile settings-menu override must use position:fixed to leave the header stacking context"
+    );
+}
