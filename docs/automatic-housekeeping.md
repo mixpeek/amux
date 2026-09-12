@@ -25,7 +25,7 @@ Existing evidence/audit/upload retention settings remain available.
 
 Hidden housekeeping folders are excluded from run-folder retention. The diagnostic-folder scan is limited to 20,000 metadata entries and two seconds
 per directory category. It does not follow symlinks. An open-file/working-directory
-probe uses `lsof` (included with macOS; required on Linux), with a five-second
+probe uses `/usr/sbin/lsof` on macOS and `lsof` on Linux (required there), with a five-second
 timeout and an 8 MiB output limit. Reference snapshots
 are capped at 16 MiB. Probe errors defer the affected cleanup and expose a reason;
 they never substitute an empty list of references or active processes.

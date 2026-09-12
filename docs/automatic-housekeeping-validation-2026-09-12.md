@@ -60,3 +60,24 @@ Raw command logs, mutation logs, source fingerprints, and pre/post-deployment
 health/storage/job snapshots are retained in the task's private
 `results/automatic-housekeeping-20260912/` evidence directory. Deployment is checked
 against `/health.commit_full`; a build command exiting zero alone is not adoption.
+
+## Live deployment follow-up: the service PATH
+
+The complete server run above applies to `506dfc0d`. That build was adopted as
+`235fbf3edcddc2a5`, with the server/database healthy and PID 8407 unchanged.
+Its first automatic sweep removed 14 aged rotated logs (253,032 logical bytes),
+kept five referenced uploads, and applied database-history retention. Directory
+cleanup explicitly deferred with `measured: false` and ENOENT.
+
+The installed launch agent's PATH omitted `/usr/sbin`, where macOS supplies
+`lsof`. The follow-up resolves `/usr/sbin/lsof` directly on macOS and includes the
+executable in spawn-failure diagnostics. It leaves worker/service environment
+settings unchanged. A new native test sets PATH to `/usr/bin:/bin` and requires
+the probe to observe a real held file. Reverting to bare `lsof` makes that test
+fail with the same missing-executable error observed in the service.
+
+For this narrow executable-resolution follow-up, workspace check and all-target
+Clippy passed again; the focused retention run passed **16 tests, 0 failed**.
+The full server suite was not repeated after this adapter change. The six
+mutation checks across both commits all failed for the intended reason and were
+restored. Native probe coverage supplements the earlier controlled probe fixtures.

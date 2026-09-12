@@ -79,8 +79,14 @@ pub struct Report {
 
 /// A single bounded system probe includes open files AND process working dirs.
 /// Missing lsof, permissions, truncation or timeout defer cleanup altogether.
-async fn open_paths() -> anyhow::Result<Vec<PathBuf>> {
-    let mut command = tokio::process::Command::new("lsof");
+fn open_file_command() -> tokio::process::Command {
+    // launchd's service PATH need not contain /usr/sbin. Use the OS-provided
+    // executable directly, without changing the worker/service environment.
+    #[cfg(target_os = "macos")]
+    let program = "/usr/sbin/lsof";
+    #[cfg(not(target_os = "macos"))]
+    let program = "lsof";
+    let mut command = tokio::process::Command::new(program);
     command.args([
         "-nP",
         "-F",
@@ -88,7 +94,16 @@ async fn open_paths() -> anyhow::Result<Vec<PathBuf>> {
         "-u",
         &unsafe { libc::geteuid() }.to_string(),
     ]);
-    probe_open_paths(&mut command, Duration::from_secs(5), 8 * 1024 * 1024).await
+    command
+}
+
+async fn open_paths() -> anyhow::Result<Vec<PathBuf>> {
+    probe_open_paths(
+        &mut open_file_command(),
+        Duration::from_secs(5),
+        8 * 1024 * 1024,
+    )
+    .await
 }
 
 async fn probe_open_paths(
@@ -101,7 +116,13 @@ async fn probe_open_paths(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "cannot start open-file probe {:?}: {error}",
+                command.as_std().get_program()
+            )
+        })?;
     let stdout = child
         .stdout
         .take()
@@ -356,6 +377,23 @@ mod tests {
             Instant::now() + Duration::from_secs(1)
         )
         .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn native_open_file_probe_works_with_launchd_path_and_observes_held_file() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("held.txt");
+        let _held = std::fs::File::create(&path).unwrap();
+        let mut command = open_file_command();
+        command.env("PATH", "/usr/bin:/bin");
+        let paths = probe_open_paths(&mut command, Duration::from_secs(5), 8 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(
+            paths.contains(&path) || paths.contains(&path.canonicalize().unwrap()),
+            "held file missing from native probe"
+        );
     }
 
     #[tokio::test]

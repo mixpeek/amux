@@ -2310,3 +2310,15 @@ FIX: Hourly guarded diagnostic retention, descendant recency/open-file/reference
 The old upload reference regex also truncated valid filenames containing spaces or Unicode. Match decoded references against actual filenames; the regression fixture keeps two such linked files and deletes an unrelated aged upload.
 
 The live-data probe also found ordinary text mentioning “logs” would consume the reference snapshot budget (over 18 MiB in board text before filtering). Filter on normalized path separators in SQL, so plain prose cannot prevent cleanup. A large-prose control accompanies the missing/oversized-reference tests.
+
+
+## Diagnostic-folder cleanup deferred because launchd could not locate lsof
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: none — live deployment verification for the user's housekeeping request
+SYMPTOM: The first deployed sweep reported unmeasured run/evidence/audit directory cleanup with ENOENT. The service PATH omitted /usr/sbin, although lsof was available from an interactive shell.
+COST: Directory cleanup deferred; 14 old log files were removed and five linked uploads were protected, but no diagnostic folders were examined.
+FIX: Resolve macOS's /usr/sbin/lsof explicitly and include the executable in spawn-failure diagnostics. A native test restricts PATH to /usr/bin:/bin and checks that the probe observes a real held file; reverting to bare lsof must fail that test.
