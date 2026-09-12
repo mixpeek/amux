@@ -74,8 +74,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+mod ios;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .nest("/ios", ios::routes())
         .route("/start", post(start))
         .route("/status", get(status))
         .route("/stop", post(stop))
@@ -3499,6 +3502,8 @@ fn catalog_body(path: &str) -> Response {
                 "GET /api/browser/status", "GET /api/browser/state", "GET /api/browser/screenshot",
                 "GET /api/browser/profiles", "GET /api/browser/pw-profiles", "GET /api/browser/sessions",
                 "GET /api/browser/history (durable redacted action trail)",
+                "GET /api/browser/ios/targets (local iOS Simulator runtime/device inventory)",
+                "POST /api/browser/ios/start (session, udid, url); /ios/{status,state,screenshot,action,stop} (explicit session required)",
                 "GET /api/browser/inspect", "GET /api/browser/search",
                 "POST /api/browser/start (profile, url, session; viewport at launch via device or width+height)",
                 "POST /api/browser/navigate", "POST /api/browser/action",

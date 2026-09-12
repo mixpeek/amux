@@ -124,3 +124,62 @@ CSS px = screenshot px / DPR
 - Daemons auto-exit after 20 minutes of inactivity.
 - Prefer `snap` over `html` for understanding page structure.
 - Use `type` (not eval) to enter text — click to focus first, then type.
+
+## iOS Simulator Safari (amux Browser target picker)
+
+On a Mac with Xcode, the Browser view now offers the locally detected iOS
+runtime/device alongside Desktop Chrome. Open the desired device in Simulator,
+select it, enter a URL and press Go. This runs real iOS Safari through Apple's
+WebDriver or the configured Appium/XCTest driver; Chrome's phone viewport preset still only resizes Chrome.
+
+For native taps and software-keyboard input, run `scripts/ios-browser-driver.sh setup`
+once, then `scripts/ios-browser-driver.sh install-agent` for a supervised local service
+(or `scripts/ios-browser-driver.sh run` in the foreground). Set
+`AMUX_IOS_WEBDRIVER_PORT=18102` in amux's server.env and restart amux. The helper
+binds only loopback; Appium starts XCTest for the explicitly selected simulator.
+First XCTest launch has a 180-second deadline; subsequent driver operations have 35-second deadlines. Page evaluation awaits promises and reports rejected scripts as failures.
+A missing configured driver produces a visible error, never a fallback to Chrome.
+
+Workers use the same mechanical browser verbs under `/api/browser/ios`:
+
+```bash
+curl -sk "$(amux url)/api/browser/ios/targets"
+curl -sk "$(amux url)/api/browser/ios/start" -H 'Content-Type: application/json' \
+  -d '{"session":"YOUR_WORKER","udid":"UDID_FROM_TARGETS","url":"https://example.com"}'
+curl -sk "$(amux url)/api/browser/ios/state?session=YOUR_WORKER"
+curl -sk "$(amux url)/api/browser/ios/action" -H 'Content-Type: application/json' \
+  -d '{"session":"YOUR_WORKER","action":"click","selector":"button.submit"}'
+curl -sk "$(amux url)/api/browser/ios/screenshot?session=YOUR_WORKER"
+curl -sk "$(amux url)/api/browser/ios/stop" -H 'Content-Type: application/json' \
+  -d '{"session":"YOUR_WORKER"}'
+```
+
+`start` also navigates an existing same-worker session. `action` supports
+`click` (selector/index/coordinates), `type`, `input`, `key`, `scroll`,
+`back`, `eval`, and `extract`. Native mode uses XCTest taps, typing and scroll gestures; optional scroll `x,y` targets a specific region in device points. Responses
+and audit rows name `input_method: xcuitest`. Safari-only mode uses WebKit editing
+commands, explicitly named `webkit-editor`. Observe the effect after an action.
+Native screenshots include browser chrome and the software keyboard; coordinate
+clicks use the returned device-point viewport. Safari-only screenshots use web
+viewport coordinates. Always use the screenshot response’s coordinate space. `state` supplies the same indexed element list
+as Chrome. Screenshot responses include `serve`, a remotely readable PNG route;
+read the image after taking it. Pass `X-Amux-Simulator: UDID` on subsequent verbs
+to reject an accidental device mismatch. Session is mandatory (or use
+`X-Amux-Session`); Safari automation is exclusive and another worker gets 409,
+never takeover. Stop releases the owned automation session; it does not shut down
+the simulator. Native mode preserves Safari rather than resetting its data. Ownership survives amux server restarts.
+
+`targets` distinguishes unavailable discovery (`measured:false`) from no
+installed iOS devices (`measured:true`, `n_considered:0`). Versions come from
+CoreSimulator/capabilities, not Safari's frozen user-agent OS token. Chrome
+profiles, CDP console/network capture and viewport emulation aren't offered in
+Safari. Native mode allows real keyboard and browser-chrome tests. Background
+lifecycle and physical-device differences still require explicit coverage; a
+WebDriver success response alone is not an end-to-end verdict. Reference: https://webkit.org/blog/9395/webdriver-is-coming-to-safari-in-ios-13/
+
+Run `AMUX_IOS_TEST_URL=https://localhost:18854 node scripts/test-ios-browser.mjs`
+against an isolated amux server for real-Simulator browser and interaction-state
+regressions. This harness deliberately refuses the production port.
+
+Set `AMUX_IOS_LIFECYCLE=1` for the native main-view and board-creation walkthrough.
+The JSON report retains each failed surface; screenshots must be inspected.

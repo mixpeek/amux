@@ -2071,6 +2071,8 @@ function updateConnectionStatus() {
       el.className = 'conn-status polling';
       el.textContent = 'Polling';
     }
+    el.setAttribute('aria-label', el.textContent + ' — connection details');
+    if (el.id === 'conn-status') el.title = el.textContent + ' — connection details';
   });
   const notice = document.getElementById('session-read-notice');
   if (notice && notice.innerHTML) { notice.innerHTML = ''; notice._noticeHTML = ''; }
@@ -2109,18 +2111,20 @@ function updateConnectionStatus() {
     return;
   }
   banner.classList.add('active');
-  const blockedOps = offlineQueue.filter(q => q.state === 'blocked');
-  const pendingOps = offlineQueue.filter(q => q.state !== 'blocked');
+  const blockedOps = offlineQueue.filter(q => q.state === 'blocked' && !_outboxUncertainMessage(q));
+  const pendingOps = offlineQueue.filter(q => q.state !== 'blocked' || _outboxUncertainMessage(q));
   if (blockedOps.length && !pendingOps.length && !drafts.length) {
     title.innerHTML = '&#x26A0; ' + (online ? '' : 'Offline &mdash; ') + blockedOps.length + ' failed op' + (blockedOps.length === 1 ? '' : 's') +
       ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
       ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
   } else if (online) {
-    const stalledOps = pendingOps.filter(_outboxIsStalled);
-    const movingOps = pendingOps.filter(q => !_outboxIsStalled(q));
+    const confirmingOps = pendingOps.filter(_outboxUncertainMessage);
+    const stalledOps = pendingOps.filter(q => !_outboxUncertainMessage(q) && _outboxIsStalled(q));
+    const movingOps = pendingOps.filter(q => !_outboxUncertainMessage(q) && !_outboxIsStalled(q));
     const parts = [];
     if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
     if (movingOps.length) parts.push(movingOps.length + ' sending');
+    if (confirmingOps.length) parts.push(confirmingOps.length + ' awaiting confirmation · checking automatically');
     // Named by how long it has been stuck, because "sending" for 3.5 hours is
     // the claim that stopped anyone acting on it.
     if (stalledOps.length) {
@@ -2151,12 +2155,12 @@ function updateConnectionStatus() {
   offlineQueue.forEach(item => {
     const age = Math.floor((Date.now() - item.timestamp) / 60000);
     const timeStr = age < 1 ? 'just now' : age + 'm ago';
-    const isBlocked = item.state === 'blocked';
+    const isBlocked = item.state === 'blocked' && !_outboxUncertainMessage(item);
     const dismissBtn = isBlocked
       ? ' <button type="button" class="offline-op-dismiss" onclick="_dismissQueuedOp(\'' + escJs(item.id) + '\')" aria-label="Dismiss failed change" title="Dismiss">&#x2715;</button>'
       : '';
     rows.push('<div class="offline-op' + (isBlocked ? ' blocked' : '') + '">' +
-      '<span class="op-action">' + esc(describeOp(item)) + (item.error ? ' <span style="color:var(--red,#e55)">[' + esc(item.error).substring(0, 80) + ']</span>' : '') + '</span>' +
+      '<span class="op-action">' + esc(describeOp(item)) + (item.error ? ' <span style="color:' + (_outboxUncertainMessage(item) ? 'var(--yellow,#d29922)' : 'var(--red,#e55)') + '">[' + esc(item.error).substring(0, 80) + ']</span>' : '') + '</span>' +
       '<span class="op-time">' + timeStr + dismissBtn + '</span>' +
     '</div>');
   });
@@ -2367,7 +2371,7 @@ const _SYNC_MIN_MS = 2000, _SYNC_MAX_MS = 60000;
 function _syncBackoffReset() { _syncBackoffMs = 0; }
 function _scheduleSyncRetry() {
   clearTimeout(_syncRetryTimer);
-  const pending = offlineQueue.some(q => q.state !== 'blocked') || drafts.length || _uploadSyncPending;
+  const pending = offlineQueue.some(q => q.state !== 'blocked' || _outboxUncertainMessage(q)) || drafts.length || _uploadSyncPending;
   if (!pending) { _syncBackoffMs = 0; return; }
   _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
   _syncRetryTimer = setTimeout(() => { runSyncBanner(true); }, _syncBackoffMs);
@@ -2419,7 +2423,7 @@ async function _runSyncBanner(quiet = false) {
   // reload, timeout, or second replay must never erase an in-flight write.
   const blockedResources = new Set();
   const queue = offlineQueue.filter(q => {
-    if (q.state === 'blocked') blockedResources.add(q.url);
+    if (q.state === 'blocked' && !_outboxUncertainMessage(q)) blockedResources.add(q.url);
     return !blockedResources.has(q.url) && !_outboxActive.has(q.id);
   });
   let skipped = 0;
@@ -2486,17 +2490,17 @@ async function _runSyncBanner(quiet = false) {
   const failedResources = new Set();
   for (const item of items.filter(i => i.type === 'queue' && i.replay !== false)) {
     const q = item.item;
-    if (failedResources.has(q.url)) { item.status = 'failed'; item.label += ' — waiting for earlier change'; renderBanner(); continue; }
+    if (failedResources.has(q.url)) { item.status = 'waiting'; item.label += ' — waiting for the previous message'; renderBanner(); continue; }
     item.status = 'running';
     renderBanner();
     await _outboxLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
     if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
     Object.assign(q, fresh);
-    if (q.state === 'blocked') { item.status = 'failed'; return; }
+    if (q.state === 'blocked' && !_outboxUncertainMessage(q)) { item.status = 'failed'; return; }
     const interaction = _interactionReplay(q);
     try {
-      if (!_outboxQueueable(q.url, q.options || {}) || (q.timestamp && Date.now() - (q.reviewed_at || q.timestamp) > 7 * 86400000)) {
+      if (!_outboxQueueable(q.url, q.options || {}) || (!_outboxUncertainMessage(q) && q.timestamp && Date.now() - (q.reviewed_at || q.timestamp) > 7 * 86400000)) {
         q.state = 'blocked';
         throw new Error('Needs review before retry: expired or unsupported operation');
       }
@@ -2506,7 +2510,14 @@ async function _runSyncBanner(quiet = false) {
       if (!stillQueued) { item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++; return; }
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
-      const r = await _boundedMutationFetch(q.url, opts);
+      const r = _outboxUncertainMessage(q)
+        ? await _outboxConfirmMessage(q, opts) : await _boundedMutationFetch(q.url, opts);
+      if (r.status === 409 && /\/(send|steer)$/.test(q.url.split('?')[0])) {
+        const d = await r.clone().json().catch(() => ({}));
+        if (d.submission === 'uncertain') {
+          throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
+        }
+      }
       if (!r.ok) {
         if (!(r.status >= 500 || [401, 408, 429].includes(r.status))) q.state = 'blocked';
         throw new Error(await _apiErrText(r));
@@ -2523,14 +2534,20 @@ async function _runSyncBanner(quiet = false) {
       await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
       item.status = 'done';
     } catch(e) {
-      if (e.outboxBlocked) q.state = 'blocked';
-      q.error = String(e.message || e);
-      _interactionSet(interaction.id, {phase:q.state === 'blocked' ? 'refused' : 'queued', feedback:{message:q.error}});
+      if (e.outboxUncertain || _outboxUncertainMessage(q)) {
+        q.delivery_uncertain = true;
+        // A receipt read is safe after reload, even for a legacy blocked entry.
+        q.state = _outboxMessageId(q) ? 'pending' : 'blocked';
+      } else if (e.outboxBlocked) q.state = 'blocked';
+      q.error = q.delivery_uncertain && _outboxMessageId(q)
+        ? 'Awaiting confirmation — checking automatically' : String(e.message || e);
+      _interactionSet(interaction.id, {phase:q.delivery_uncertain ? 'unknown' : q.state === 'blocked' ? 'refused' : 'queued',
+        ...(q.delivery_uncertain ? {measured:false, why_unmeasured:'Server has not confirmed message acceptance'} : {}), feedback:{message:q.error}});
       q.attempts = (q.attempts || 0) + 1;
       _writeError = q.error;
-      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts}); });
+      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts, delivery_uncertain:!!q.delivery_uncertain}); });
       failedResources.add(q.url);
-      item.status = 'failed';
+      item.status = q.delivery_uncertain ? 'checking' : 'failed';
       item.label += ' — ' + q.error;
       try { amuxTrack('outbox_retry_failed', {id: q.id, status: q.state || 'pending', error: q.error}); } catch (_) {}
     }
@@ -2558,7 +2575,9 @@ async function _runSyncBanner(quiet = false) {
 
   const doneCount = items.filter(i => i.status === 'done').length;
   const failCount = items.filter(i => i.status === 'failed').length;
-  titleEl.textContent = doneCount + ' synced' + (failCount ? ', ' + failCount + ' failed' : '') + (skipped ? ', ' + skipped + ' skipped' : '');
+  const checkingCount = items.filter(i => i.status === 'checking').length;
+  const waitingCount = items.filter(i => i.status === 'waiting').length;
+  titleEl.textContent = doneCount + ' synced' + (checkingCount ? ', ' + checkingCount + ' awaiting confirmation' : '') + (waitingCount ? ', ' + waitingCount + ' waiting' : '') + (failCount ? ', ' + failCount + ' failed' : '') + (skipped ? ', ' + skipped + ' skipped' : '');
   updateConnectionStatus();
   fetchSessions();
   fetchBoard();
@@ -2567,7 +2586,7 @@ async function _runSyncBanner(quiet = false) {
   try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
   // Reconnect progress keeps failed steps reviewable until dismissed. Ordinary
   // online sends stay quiet; only completed visible runs auto-dismiss.
-  if (!failCount) {
+  if (!failCount && !checkingCount) {
     _clearSyncTransientToast();
     setTimeout(() => { if (!_syncFlight) banner.classList.remove('active'); }, 2000);
   }
@@ -2628,6 +2647,29 @@ async function _clearBlockedOps() {
   if (!offlineQueue.length && !drafts.length) _writeError = '';
   updateConnectionStatus();
 }
+// Unknown acceptance is neither failure nor permission to inject again. Retry
+// the durable receipt read automatically; never mint a new transport identity.
+function _outboxMessageId(q) {
+  if (!/\/api\/sessions\/[^/?]+\/(send|steer)$/.test(q.url || '')) return '';
+  try { const id = JSON.parse(q.options?.body || '{}').msg_id; return typeof id === 'string' && id.length <= 256 ? id : ''; } catch (_) { return ''; }
+}
+function _outboxUncertainMessage(q) {
+  return !!_outboxMessageId(q) && (q.delivery_uncertain === true ||
+    (q.state === 'blocked' && /acceptance is uncertain|delivery unconfirmed/i.test(q.error || '')));
+}
+async function _outboxConfirmMessage(q, opts) {
+  q.delivery_uncertain = true;
+  const msgId = (/\/steer$/.test(q.url) ? 'steer:' : '') + _outboxMessageId(q);
+  const url = q.url.replace(/\/(send|steer)$/, '/send') + '?msg_id=' + encodeURIComponent(msgId);
+  const response = await _boundedMutationFetch(url, {method:'GET', headers:opts.headers, cache:'no-store'});
+  const receipt = response.ok ? await response.json() : null;
+  const confirmed = receipt?.accepted === true && receipt.msg_id === msgId && typeof receipt.id === 'string' && !!receipt.id;
+  _outboxDiagnostic('acceptance_recheck', {id:q.id, measured:response.ok, n_considered:1, confirmed, status:response.status});
+  if (!confirmed) throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
+  _outboxDiagnostic('acceptance_recovered', {id:q.id, measured:true, n_considered:1});
+  return new Response(JSON.stringify({ok:true,deduped:true,id:receipt.id}), {status:200,headers:{'Content-Type':'application/json'}});
+}
+
 // Queue modal
 function showQueueModal() {
   const el = document.getElementById('queue-list');
@@ -3030,7 +3072,7 @@ function _validateMessageAcknowledgement(receipt, url) {
         receipt.submitted === true || receipt.submission === 'deferred'))) return;
   // An ambiguous HTTP 200 is not a delivery receipt. Keep the intent for
   // explicit review instead of repeatedly injecting text into a live terminal.
-  throw Object.assign(new Error('Message delivery unconfirmed — review the queued message and terminal before retrying'), {outboxBlocked:true});
+  throw Object.assign(new Error('Message delivery unconfirmed — review the queued message and terminal before retrying'), {outboxUncertain:true});
 }
 function _localMessageRequest(url, init) {
   if ((init?.method || '').toUpperCase() !== 'POST' || !/\/api\/sessions\/[^/]+\/(send|steer)$/.test(url.split('?')[0])) return false;
@@ -3054,6 +3096,7 @@ async function _waitForMessageReceipt(input, init, signal) {
   let msgId;
   try { msgId = JSON.parse(init?.body || '{}').msg_id; } catch (_) {}
   if (!msgId || !/\/api\/sessions\/[^/?]+\/(send|steer)$/.test(input)) return new Promise(() => {});
+  if (/\/steer$/.test(input)) msgId = 'steer:' + msgId;
   const url = input.replace(/\/(send|steer)$/, '/send') + '?msg_id=' + encodeURIComponent(msgId);
   while (!signal.aborted) {
     await new Promise((resolve, reject) => {
@@ -6402,6 +6445,9 @@ function updateRateLimitPill() {
   txt.textContent = blocked.length
     ? n + ' limited · reset ' + _fmtClockTime(Math.min(...blocked.map(s => s.rate_limited_until)))
     : n + ' limited';
+  txt.dataset.count = String(n);
+  document.getElementById('rate-limit-pill-count').textContent = n;
+  pill.setAttribute('aria-label', n + ' workers limited — open bulk actions');
   pill.title = blocked.concat(credit).map(s => s.name).join(', ') + ' (tap to jump)';
   pill.classList.add('show');
 }
@@ -6412,6 +6458,53 @@ function _scrollToFirstRateLimited() {
   const card = document.querySelector(sel);
   if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
+
+// AF-731: document overflow alone misses a button clipped by its flex parent.
+// Measure the actual visible control bounds, including clipping ancestors.
+function _headerLayoutCheck() {
+  if (innerWidth > 480) return [];
+  const buttons = ['brand-header','conn-status','notif-btn','rate-limit-pill','active-btn','add-btn','settings-btn','interaction-feedback'];
+  const clipped = buttons.filter(id => {
+    const el = id==='interaction-feedback' ? document.querySelector('#interaction-feedback > summary') : document.getElementById(id);
+    if (!el || !el.getClientRects().length) return false;
+    const r = el.getBoundingClientRect();
+    if (r.left < -1 || r.right > innerWidth + 1) return true;
+    if (id === 'rate-limit-pill') {
+      const label = document.getElementById('rate-limit-pill-count')?.getBoundingClientRect();
+      if (label && (label.left < r.left - 1 || label.right > r.right + 1)) return true;
+    }
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (!['hidden','clip','auto','scroll'].includes(getComputedStyle(p).overflowX)) continue;
+      const bounds = p.getBoundingClientRect();
+      if (r.left < bounds.left - 1 || r.right > bounds.right + 1) return true;
+    }
+    return false;
+  });
+  return clipped;
+}
+(function observeMobileHeader() {
+  const header = document.querySelector('.header-row');
+  if (!header || typeof ResizeObserver === 'undefined') return;
+  let previous = '', pending = false;
+  const observer = new ResizeObserver(() => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      document.documentElement.style.setProperty('--mobile-header-bottom', (header.getBoundingClientRect().bottom + 6) + 'px');
+      const clipped = _headerLayoutCheck();
+      const signature = clipped.join(',');
+      if (signature && signature !== previous) {
+        console.warn('[amux] mobile header controls clipped', clipped);
+        fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({kind:'mobile-header-clipped',measured:true,n_considered:8,clipped,viewport:innerWidth,ver:APP_VER})}).catch(() => {});
+      }
+      previous = signature;
+    });
+  });
+  observer.observe(header);
+  header.querySelectorAll(':scope > div, :scope > div > *').forEach(el => observer.observe(el));
+})();
 
 // ── Header + dropdown ──
 let addMenuOpen = false;
@@ -7522,7 +7615,7 @@ function _stampSendTime(text, now, author) {
   return `[${ts}${author ? ` ${author}` : ''}] ${text}`;
 }
 
-async function doSend(name, text) {
+async function doSend(name, text, identity = {}) {
   if (/^\/[a-z]/.test(text.trim())) showSendingIndicator();
   // Slash commands (e.g. /clear, /compact) must be sent verbatim — no timestamp prefix
   const isSlashCmd = /^\/[a-z]/.test(text.trim());
@@ -7531,7 +7624,8 @@ async function doSend(name, text) {
   // One msg_id per logical send, reused verbatim by the offline-queue replay:
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
-  const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
+  identity.msg_id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+  const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: identity.msg_id});
   // Ordinary messages return after durable local acceptance. The outbox owns
   // network delivery and retry; only interactive slash commands await the API.
   const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
@@ -7562,7 +7656,7 @@ async function doSend(name, text) {
           if (!started.ok || _isLocallyQueued(started)) return 'failed';
           showToast('Starting ' + name + '...');
           await new Promise(resolve => setTimeout(resolve, 3000));
-          return doSend(name, text);
+          return doSend(name, text, identity);
         }
         return 'declined';        // user said no — nothing sent, nothing queued
       }
@@ -7770,15 +7864,16 @@ async function sendFromInput(name) {
   _composerPendingSends.add(name);
   _syncComposerPending();
   try {
-    const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
-      : await doSend(name, _expandAtMentions(msg));
+    const identity = {};
+    const result = queued ? (await steerSession(name, _expandAtMentions(msg), identity) ? 'queued' : 'failed')
+      : await doSend(name, _expandAtMentions(msg), identity);
     if (!['sent', 'queued'].includes(result)) {
       _composerUnconfirmed(name, result, _files.length);
       showToast(result === 'local-failed' ? _writeError + ' — draft and attachments kept'
         : 'Message not confirmed — draft and attachments kept');
       return;
     }
-    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
+    cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct', msg_id:identity.msg_id });
     _composerAcceptLocal(name, original, draftRevision);
     // Remove the SENT attachments durably, not just from the on-screen array.
     // _cancelUpload deletes the IndexedDB upload row; a plain array filter left
@@ -8795,6 +8890,15 @@ function setPeekTab(tab) {
   const logsP = document.getElementById('peek-logs-panel');
   if (tab === 'logs') { logsP.classList.add('active'); _peekLogsLoad(); }
   else { logsP.classList.remove('active'); }
+  requestAnimationFrame(() => {
+    const selected=document.getElementById('peek-tab-'+tab);
+    if (!selected || _peekTab!==tab || !selected.getClientRects().length) return;
+    const r=selected.getBoundingClientRect(), bounds=selected.parentElement.getBoundingClientRect();
+    if(r.left<bounds.left || r.right>bounds.right-44) {
+      selected.scrollIntoView({block:'nearest',inline:'center',behavior:'instant'});
+      amuxTrack('mobile_tab_revealed',{tab,measured:true,n_considered:1});
+    }
+  });
 }
 
 // ── Standing instructions (autonomy config) ──
@@ -8833,14 +8937,20 @@ let _steerHistLoadedFor = null;
 
 // Human-queued rows only — system pushes (m.system, server-classified) are
 // amux's own drive prompts and never count as "queued" on any surface.
+// Read optimistic steering from the durable outbox. A server row supersedes
+// its local representation by transport identity, never by matching text.
 function _steerQueueFor(sess) {
-  const server = (sess && sess.steering) || [];
+  const server = sess?.steering || [];
   if (!sess) return server;
   const url = '/api/sessions/' + encodeURIComponent(sess.name) + '/steer';
+  const known = new Set(server.map(m => m.transport_id).filter(Boolean));
   const local = offlineQueue.filter(q => q.url.split('?')[0].endsWith(url)).flatMap(q => {
-    try { const body = JSON.parse(q.options.body); return [{id:q.id, text:body.text,
-      queued_at:q.timestamp/1000, pending:true, local:true, error:q.error || '', guard:''}]; }
-    catch (_) { return []; }
+    try {
+      const body = JSON.parse(q.options.body);
+      if (body.msg_id && known.has(body.msg_id)) return [];
+      return [{id:q.id, transport_id:body.msg_id, text:body.text, queued_at:q.timestamp/1000,
+        pending:true, local:true, error:q.error || '', guard:''}];
+    } catch (_) { return []; }
   });
   return server.concat(local);
 }
@@ -10291,7 +10401,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.923';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.924';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13993,15 +14103,16 @@ async function sendPeekCmd() {
   _syncComposerPending();
   let result = 'failed';
   try {
-    result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
-      : await doSend(session, message);
+    const identity = {};
+    result = queued ? (await steerSession(session, message, identity) ? 'queued' : 'failed')
+      : await doSend(session, message, identity);
     if (!['sent', 'queued'].includes(result)) {
       _composerUnconfirmed(session, result, files.length);
       showToast(result === 'local-failed' ? _writeError + ' — draft and attachments kept'
         : 'Message not confirmed — draft and attachments kept');
       return;
     }
-    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
+    cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct', msg_id:identity.msg_id });
     _composerAcceptLocal(session, original, draftRevision);
     // Remove only the acknowledged files, never a new attachment added while
     // waiting, or attachments belonging to a different worker's composer.
@@ -14117,12 +14228,13 @@ function _showSteerPrompt(text) {
     bg.onclick = (e) => { if (e.target === bg) cleanup('cancel'); };
   });
 }
-async function steerSession(name, text) {
+async function steerSession(name, text, identity = {}) {
   if (!text) return false;
+  identity.msg_id = crypto.randomUUID();
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text, record_history:true, msg_id:crypto.randomUUID()})
+      body:JSON.stringify({text, record_history:true, msg_id:identity.msg_id})
     });
     if (!_isLocallyQueued(r)) {
       if (!r.ok) return false;
@@ -16113,10 +16225,13 @@ _loadCmdHistoryFromServer();
 
 function cmdHistoryAdd(text, opts) {
   if (!text.trim()) return;
-  const entry = { text, type: (opts && opts.type) || 'direct', session: (opts && opts.session) || peekSession || '', time: Date.now() };
+  const entry = { text, type: (opts && opts.type) || 'direct', session: (opts && opts.session) || peekSession || '', time: Date.now(), msg_id:opts?.msg_id };
   const prev = _cmdHistory[_cmdHistory.length - 1];
-  if (prev && typeof prev !== 'string' && prev.text === text && prev.session === entry.session && prev.type === entry.type) { _cmdHistoryIdx = -1; return; }
+  if (!entry.msg_id && prev && typeof prev !== 'string' && prev.text === text && prev.session === entry.session && prev.type === entry.type) { _cmdHistoryIdx = -1; return; }
   _cmdHistory.push(entry);
+  if (entry.msg_id && _pendingSendsFor(entry.session).some(p => p.msg_id === entry.msg_id)) {
+    _outboxDiagnostic('message_display_joined', {measured:true,n_considered:1,msg_id:entry.msg_id});
+  }
   if (_cmdHistory.length > 500) _cmdHistory = _cmdHistory.slice(-500);
   // localStorage is best-effort bookkeeping — it must NEVER kill the send.
   // On a full store (iOS PWA quota), setItem throws QuotaExceededError; the
@@ -16643,7 +16758,7 @@ function _msgCtxMessages() {
 function _msgNorm(x) {
   if (typeof x === 'string') return x;
   const t = (x.time !== undefined && x.time !== null) ? x.time : x.ts;
-  return { id: x.id, text: x.text, type: x.type, session: x.session,
+  return { id: x.id, msg_id:x.msg_id, text: x.text, type: x.type, session: x.session,
            time: t, ts: t, origin: x.origin || '', kind: x.kind,
            queued: x.queued, delivery: x.delivery, queued_at: x.queued_at,
            delivered_at: x.delivered_at, queue_wait_ms: x.queue_wait_ms,
@@ -16748,11 +16863,27 @@ function _pendingSendsFor(session) {
   (offlineQueue || []).forEach((op, idx) => {
     const m = (op.url || '').match(/\/api\/sessions\/([^/]+)\/(send|steer)$/);
     if (!m || decodeURIComponent(m[1]) !== session) return;
-    let text = '';
-    try { text = (JSON.parse(op.options?.body || '{}').text) || ''; } catch(e) {}
-    if (text) out.push({ text, ts: op.timestamp, kind: m[2], idx, attempted: !!(op.attempted_at || op.attempts || !op.not_attempted), id:op.id });
+    let text = '', msg_id = '';
+    try { const body = JSON.parse(op.options?.body || '{}'); text = body.text || ''; msg_id = body.msg_id || ''; } catch(e) {}
+    if (text) out.push({ text, msg_id, ts: op.timestamp, kind: m[2], idx, attempted: !!(op.attempted_at || op.attempts || !op.not_attempted), id:op.id });
   });
   return out;
+}
+function _pendingMessageProjection(history, pending) {
+  const grouped = pending.map(p => ({...p, local_notes:[]}));
+  const normalized = text => String(text || '').replace(/^\[\d{1,2}:\d{2} [AP]M\]\s*/, '').trim();
+  const candidates = e => grouped.filter(p => e.msg_id ? p.msg_id === e.msg_id :
+    !e.id && Math.abs(Number(e.time || e.ts) - Number(p.ts)) < 5000 && normalized(e.text) === normalized(p.text));
+  const items = history.filter(e => {
+    if (!e || typeof e === 'string' || (e.session || '') !== peekSession) return true;
+    const matches = candidates(e);
+    if (matches.length !== 1) return true;
+    // Multiple intentional repeats must remain distinct, including legacy ones.
+    if (!e.msg_id && history.filter(other => !other?.id && !other?.msg_id && candidates(other).includes(matches[0])).length !== 1) return true;
+    matches[0].local_notes.push(e);
+    return false;
+  });
+  return {items, pending:grouped};
 }
 async function _pendingCancel(id) {
   if (typeof id !== 'string' || !id) return;
@@ -16780,8 +16911,9 @@ function _updatePendingPill() {
 function _peekMessagesBadge() {
   const badge = document.getElementById('peek-tab-messages-count');
   if (!badge) return;
-  const n = _peekMessagesFor().length;
-  const p = peekSession ? _pendingSendsFor(peekSession).length : 0;
+  const projection = _pendingMessageProjection(_peekMessagesFor(), _pendingSendsFor(peekSession));
+  const n = projection.items.length;
+  const p = projection.pending.length;
   badge.textContent = p ? (n + '+' + p) : (n ? n : '');
   badge.classList.toggle('has-count', (n + p) > 0);
   badge.classList.toggle('has-pending', p > 0);
@@ -16825,8 +16957,9 @@ function _peekMessagesRender() {
   const list = document.getElementById('peek-messages-list');
   if (!list) return;
   const q = (document.getElementById('peek-messages-search')?.value || '').trim().toLowerCase();
-  let items = _peekMessagesFor();
-  _peekMsgRenderChips(items);   // chips reflect the full (pre-filter) set's counts
+  const projection = _pendingMessageProjection(_peekMessagesFor(), _pendingSendsFor(peekSession));
+  let items = projection.items;
+  _peekMsgRenderChips(items.concat(projection.pending.map(p => ({type:'user',text:p.text}))));   // chips reflect the full (pre-filter) set's counts
   if (_peekMsgFilter !== 'all') items = items.filter(e => _msgKind(e) === _peekMsgFilter);
   if (q) items = items.filter(e => (typeof e === 'string' ? e : e.text).toLowerCase().includes(q));
   // Pending (offline-queued, NOT yet on the server) shown FIRST — clearly marked,
@@ -16834,15 +16967,15 @@ function _peekMessagesRender() {
   // always YOURS, so they belong to the human filter and must disappear under
   // session/schedule — otherwise a "Scheduled" view shows a message you typed.
   const _showPending = (_peekMsgFilter === 'all' || _peekMsgFilter === 'human');
-  let pending = _showPending ? _pendingSendsFor(peekSession) : [];
+  let pending = _showPending ? projection.pending : [];
   if (q) pending = pending.filter(p => p.text.toLowerCase().includes(q));
   const pendingHTML = pending.map(p => {
     const ts = p.ts ? new Date(p.ts).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
     const safe = _hlSearch(p.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'), q);
     return `<div style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);display:flex;gap:10px;align-items:flex-start;">
-      <div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">
+      <div style="flex:1;min-width:0;word-break:break-word;line-height:1.45;">
         <div style="margin-bottom:4px;"><span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${p.attempted ? 'Awaiting confirmation' : 'Saved on this device'}</span><span style="color:var(--dim);font-size:0.7rem;">${ts} &mdash; ${p.attempted ? 'may already be with the worker' : online ? 'waiting to sync' : 'waiting for connection'}</span></div>
-        ${safe}</div>
+        <div style="white-space:pre-wrap">${safe}</div>${p.local_notes.some(e => !e.msg_id) ? '<details style="margin-top:4px;color:var(--dim)"><summary>Matching local history note</summary>' + p.local_notes.map(e => esc(e.text)).join('<br>') + '</details>' : ''}</div>
       <button ${p.attempted ? 'hidden disabled' : ''} onclick="event.stopPropagation();_pendingCancel('${escJs(p.id)}')" title="Remove this unattempted local message" style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;padding:2px 6px;min-width:24px;min-height:24px;">&#215;</button>
     </div>`;
   }).join('');
@@ -16980,7 +17113,8 @@ function _mergeUnechoed(serverRows, session) {
   const seen = new Set(serverRows.map(r => (r.text || '') + '|' + (r.session || '')));
   const local = _cmdHistory.filter(e => typeof e !== 'string' && !e.id
     && (!session || (e.session || '') === session)
-    && !seen.has((e.text || '') + '|' + (e.session || '')));
+    && ((e.msg_id && offlineQueue.some(q => _outboxMessageId(q) === e.msg_id))
+      || !seen.has((e.text || '') + '|' + (e.session || ''))));
   return serverRows.concat(local).sort((a, b) => (a.time || a.ts || 0) - (b.time || b.ts || 0));
 }
 
@@ -32075,10 +32209,12 @@ async function sendGridCmd(name) {
     _submitSuggestion(name, false, 'Enter');
     return;
   }
-  cmdHistoryAdd(text, {session: name});
+  const identity = {};
   inp.value = '';
   autoGrow(inp);
-  await doSend(name, text);
+  const result = await doSend(name, text, identity);
+  if (!['sent','queued'].includes(result)) { inp.value = text; autoGrow(inp); return; }
+  cmdHistoryAdd(text, {session:name, msg_id:identity.msg_id});
   inp.style.borderColor = 'var(--green)';
   setTimeout(() => { inp.style.borderColor = ''; }, 400);
   setTimeout(() => _updateGridPane(name), 500);
@@ -32897,6 +33033,8 @@ if (window._peekEmbed) {
   fetchBoard();
   connectSSE();
   fetchSchedules().then(() => render());
+  // Resume confirmation for retained uncertain sends after a reload.
+  _scheduleSyncRetry();
 }
 _notifUpdateBadge();
 loadBranding();
@@ -33918,6 +34056,8 @@ function _settingsTab(name) {
 }
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');
+  const header = document.querySelector('.header-row');
+  if (header) document.documentElement.style.setProperty('--mobile-header-bottom', (header.getBoundingClientRect().bottom + 6) + 'px');
   const open = menu.classList.toggle('open');
   if (open) {
     // Restore the last-used settings tab (default: account) before painting.
@@ -39744,6 +39884,7 @@ async function _bwInit() {
   _bwInited = true;
   _bwSessionLabelSync();
   await _bwLoadProfiles();
+  await _bwLoadTargets();
 }
 
 // Show WHICH session's browser is on screen. The view defaults to 'amux' and
@@ -39824,7 +39965,7 @@ async function _bwLoadProfiles() {
     // container has no Chrome of the user's to drive, so CDP is not offered
     // there rather than offered and always failing.
     const bs = document.getElementById('bw-backend');
-    if (bs) bs.style.display = (d.backends || []).includes('live') ? '' : 'none';
+    if (bs) bs.style.display = '';
   } catch(e) {}
 }
 
@@ -39833,15 +39974,70 @@ function _bwBackend() {
   return (el && el.style.display !== 'none') ? el.value : '';
 }
 
+// A target is explicit on EVERY request. Changing the picker cannot silently
+// route a simulator action to an existing Chrome session with the same owner.
+let _bwTargetGeneration = 0;
+async function _bwFetch(path, options) {
+  const generation = _bwTargetGeneration;
+  if (_bwBackend().startsWith('ios:')) {
+    path = path.replace('/api/browser/', '/api/browser/ios/');
+    options = { ...options, headers: { ...(options && options.headers), 'X-Amux-Simulator': _bwBackend().slice(4) } };
+  }
+  const response = await fetch(path, options);
+  const data = await response.json();
+  if (generation !== _bwTargetGeneration) throw new Error('Browser target changed; retry on the selected target');
+  if (!response.ok || data.error) throw new Error(data.error || ('HTTP ' + response.status));
+  return { ok: true, json: async () => data };
+}
+async function _bwLoadTargets() {
+  const sel = document.getElementById('bw-backend');
+  if (!sel) return;
+  const current = sel.value;
+  try {
+    const response = await fetch('/api/browser/ios/targets');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+    sel.querySelectorAll('option[data-ios]').forEach(o => o.remove());
+    (data.targets || []).forEach(target => {
+      const option = document.createElement('option');
+      option.value = 'ios:' + target.udid;
+      option.dataset.ios = 'true';
+      option.textContent = target.label + (target.state === 'Booted' ? '' : ' (open in Simulator first)');
+      option.disabled = target.state !== 'Booted';
+      sel.appendChild(option);
+    });
+    if (current && Array.from(sel.options).some(o => o.value === current && !o.disabled)) sel.value = current;
+    else if (current.startsWith('ios:')) { sel.value = ''; _bwOnBackend(); }
+    sel.title = data.measured ? 'Browser on the server machine; iOS uses real Simulator Safari' : 'Desktop Chrome. iOS unavailable: ' + data.why_unmeasured;
+  } catch (e) { _bwStatus('Simulator discovery unavailable: ' + e.message); }
+}
 function _bwOnBackend() {
-  // Live Chrome drives the user's own browser, which brings its own logins —
-  // a profile would be meaningless, so grey it out instead of silently
-  // ignoring whatever is selected.
-  const live = _bwBackend() === 'live';
+  ++_bwTargetGeneration;
+  _bwStopLive();
+  _bwViewport = null;
+  _bwWantFrame = false; _bwHasFrame = false;
+  const img = document.getElementById('bw-img');
+  if (img) { img.removeAttribute('src'); img.style.display = 'none'; }
+  const ph = document.getElementById('bw-placeholder');
+  if (ph) { ph.style.display = 'flex'; ph.textContent = 'Enter a URL and press Go to open the selected browser.'; }
+  const ios = _bwBackend().startsWith('ios:');
+  const ownProfile = ios || _bwBackend() === 'live';
   const p = document.getElementById('bw-profile');
-  if (p) { p.disabled = live; p.style.opacity = live ? 0.45 : 1; }
-  _bwStatus(live ? 'Live: your own Chrome (first use of a tab needs the "Allow debugging?" click)'
-                 : 'Playwright: isolated, profile-backed browser');
+  if (p) { p.disabled = ownProfile; p.style.opacity = ownProfile ? 0.45 : 1; p.style.display = ios ? 'none' : ''; }
+  document.querySelectorAll('[data-bw-chrome]').forEach(el => { el.disabled = ios; el.style.display = ios ? 'none' : ''; });
+  if (ios) { document.getElementById('bw-inspect-btn')?.classList.remove('active'); const panel=document.getElementById('bw-inspect-panel'); if(panel)panel.style.display='none'; }
+  const stop = document.getElementById('bw-ios-stop');
+  if (stop) stop.style.display = ios ? '' : 'none';
+  _bwShowProfile('');
+  _bwStatus(ios ? 'Simulator Safari · press Go to connect' : 'Desktop Chrome · press Go to connect');
+}
+async function _bwStopIos() {
+  _bwStopLive();
+  try {
+    await _bwFetch('/api/browser/stop', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session:_bwSession}) });
+    _bwOnBackend();
+    _bwStatus('Safari automation stopped');
+  } catch (e) { _bwStatus('Stop failed: ' + e.message); }
 }
 
 function _bwStatus(msg) {
@@ -39871,9 +40067,10 @@ async function _bwGo() {
   try {
     const body = { url, session: _bwSession };
     const backend = _bwBackend();
-    if (backend) body.backend = backend;
+    if (backend.startsWith('ios:')) body.udid = backend.slice(4);
+    else if (backend) body.backend = backend;
     else if (profile) body.profile = profile;   // empty = auto-select by URL
-    const r = await fetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const r = await _bwFetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (d.error) { _bwStatus('Error: ' + d.error); return; }
     // SAY WHERE IT LANDED, and say so when that is not where you asked.
@@ -39923,7 +40120,7 @@ async function _bwGo() {
 
 async function _bwFetchViewport() {
   try {
-    const r = await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'eval', script: '({w:window.innerWidth,h:window.innerHeight})', session: _bwSession }) });
+    const r = await _bwFetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'eval', script: '({w:window.innerWidth,h:window.innerHeight})', session: _bwSession }) });
     const d = await r.json();
     const res = (d.data || {}).result;
     if (res && res.w && res.h) _bwViewport = { w: res.w, h: res.h };
@@ -39936,12 +40133,13 @@ async function _bwScreenshot(retries, silent) {
   _bwShotInFlight = true;
   if (!silent) _bwStatus('Taking screenshot…');
   try {
-    const r = await fetch('/api/browser/screenshot?session=' + _bwSession + '&t=' + Date.now());
+    const r = await _bwFetch('/api/browser/screenshot?session=' + _bwSession + '&t=' + Date.now());
     const d = await r.json();
     if (d.path) {
+      if (d.viewport) _bwViewport = d.viewport;
       const img = document.getElementById('bw-img');
       img.onerror = () => _bwViewportFail('the screenshot could not be loaded');
-      img.src = _authUrl('/api/file/raw?path=' + encodeURIComponent(d.path) + '&t=' + Date.now());
+      img.src = _authUrl(d.serve ? d.serve + '&t=' + Date.now() : '/api/file/raw?path=' + encodeURIComponent(d.path) + '&t=' + Date.now());
       img.style.display = '';
       document.getElementById('bw-placeholder').style.display = 'none';
       _bwHasFrame = true; _bwShotFails = 0;
@@ -40010,7 +40208,7 @@ function _bwViewportFail(reason) {
         + '<button class="bw-btn" onclick="_bwGo()">Restart browser</button></div>';
   };
   render(null);                       // paint immediately; never block on the probe
-  fetch(API + '/api/browser/status')  // then correct it once the truth is known
+  _bwFetch('/api/browser/status' + (_bwBackend().startsWith('ios:') ? '?session=' + encodeURIComponent(_bwSession) : ''))  // then correct it once the truth is known
     .then(r => r.json())
     .then(s => { if (!_bwHasFrame) render(s && s.running === true); })
     .catch(() => {});
@@ -40051,7 +40249,7 @@ async function _bwClick(event) {
   try { document.getElementById('bw-viewport').focus({ preventScroll: true }); } catch(e) {}
   _bwStatus('Click ' + x + ',' + y + '…');
   try {
-    await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'click', x, y, session: _bwSession }) });
+    await _bwFetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'click', x, y, session: _bwSession }) });
     setTimeout(() => _bwScreenshot(1), 800);
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
@@ -40061,7 +40259,7 @@ async function _bwAction(payload, note) {
   try {
     payload.session = _bwSession;
     if (note) _bwStatus(note);
-    await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    await _bwFetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     setTimeout(() => _bwScreenshot(1), 500);
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
@@ -40092,7 +40290,7 @@ function _bwViewportKey(event) {
 async function _bwBack() {
   _bwStatus('Going back…');
   try {
-    await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'back', session: _bwSession }) });
+    await _bwFetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'back', session: _bwSession }) });
     setTimeout(() => _bwScreenshot(1), 800);
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
@@ -40110,7 +40308,7 @@ async function _bwLoadElements() {
   const list = document.getElementById('bw-elements-list');
   list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">Loading…</div>';
   try {
-    const r = await fetch('/api/browser/state?session=' + _bwSession);
+    const r = await _bwFetch('/api/browser/state?session=' + _bwSession);
     const d = await r.json();
     if (d.viewport) _bwViewport = d.viewport;
     const els = d.elements || [];
@@ -40129,7 +40327,7 @@ async function _bwLoadElements() {
 async function _bwClickIndex(index) {
   _bwStatus('Click element [' + index + ']…');
   try {
-    await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'click', index, session: _bwSession }) });
+    await _bwFetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'click', index, session: _bwSession }) });
     setTimeout(() => { _bwScreenshot(1); _bwLoadElements(); }, 800);
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
@@ -40160,7 +40358,7 @@ async function _bwLoadInspect() {
   const list = document.getElementById('bw-inspect-list');
   if (list && !list.children.length) list.innerHTML = '<div class="il-empty">Loading…</div>';
   try {
-    const r = await fetch('/api/browser/inspect?session=' + _bwSession + '&limit=300');
+    const r = await _bwFetch('/api/browser/inspect?session=' + _bwSession + '&limit=300');
     const d = await r.json();
     if (d.error) { list.innerHTML = '<div class="il-empty">' + esc(d.error) + '</div>'; return; }
     _bwInspData = { console: d.console || [], network: d.network || [], errors: d.errors || [] };
@@ -40252,7 +40450,7 @@ async function _bwLoadTrail() {
   }
 }
 async function _bwClearInspect() {
-  try { await fetch('/api/browser/inspect/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session: _bwSession }) }); } catch(e) {}
+  try { await _bwFetch('/api/browser/inspect/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session: _bwSession }) }); } catch(e) {}
   _bwInspData = { console: [], network: [], errors: [], trail: _bwInspData.trail || [] };
   ['console','network','errors'].forEach(k => { const el = document.getElementById('bw-ic-' + k); if (el) el.textContent = ''; });
   _bwRenderInspect();

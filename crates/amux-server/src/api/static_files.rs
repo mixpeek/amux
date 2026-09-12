@@ -104,7 +104,7 @@ async fn index(
     peer: Peer,
     legacy: Legacy,
 ) -> Response {
-    serve_shell(&state, legacy_port_of(legacy), &headers, &uri, peer_ip(peer))
+    serve_shell(&state, legacy_port_of(legacy), &headers, &uri, peer_ip(peer)).await
 }
 
 async fn serve_path(
@@ -138,7 +138,7 @@ async fn serve_path(
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     if matches!(path, "business" | "business/" | "business/index.html") {
-        return serve_shell(&state, legacy_port_of(legacy), &headers, &uri, peer_ip(peer));
+        return serve_shell(&state, legacy_port_of(legacy), &headers, &uri, peer_ip(peer)).await;
     }
     match DashboardAssets::get(path) {
         Some(content) => {
@@ -155,7 +155,7 @@ async fn serve_path(
         }
         // SPA fallback: unknown NON-API paths get the shell so client routing
         // works offline-first.
-        None => serve_shell(&state, legacy_port_of(legacy), &headers, &uri, peer_ip(peer)),
+        None => serve_shell(&state, legacy_port_of(legacy), &headers, &uri, peer_ip(peer)).await,
     }
 }
 
@@ -216,7 +216,7 @@ fn establish_owner_session(state: &AppState) -> Response {
     tracing::info!(
         target: "amux::local_invite",
         verdict = "owner_session_established",
-        "an explicit owner URL credential was exchanged for an HttpOnly session"
+        "verified owner access was exchanged for an HttpOnly session"
     );
     response
 }
@@ -249,7 +249,9 @@ pub async fn clear_sw_landing() -> Response {
     ).into_response()
 }
 
-fn serve_shell(
+mod tailnet_auth;
+
+async fn serve_shell(
     state: &AppState,
     legacy: Option<u16>,
     headers: &HeaderMap,
@@ -261,6 +263,16 @@ fn serve_shell(
     // `/` fetch and reload without leaving the bearer in history or caches.
     if super::auth::has_owner_query_token(state, uri) {
         return establish_owner_session(state);
+    }
+    // Same-owner Tailscale devices may opt into the existing HttpOnly owner
+    // session. Use the real socket peer and daemon identity, never a forwarded
+    // IP, hostname, or a claim supplied by the browser. Invitees remain scoped.
+    if state.auth_token.is_some() && !has_owner_session(state, headers)
+        && !super::org::has_local_member_cookie(headers)
+    {
+        if let Some(ip) = peer {
+            if tailnet_auth::verified(ip).await { return establish_owner_session(state); }
+        }
     }
     serve_index(state, legacy, headers, uri, peer)
 }

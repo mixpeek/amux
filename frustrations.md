@@ -2366,3 +2366,36 @@ CARD: none — visual review of the consolidated offline lifecycle
 SYMPTOM: All 138 browser assertions passed, but the captured desktop/mobile/WebKit screenshots showed “Server unreachable — offline mode” covering rows below “7 synced” while the header showed Live.
 COST: Successful server acknowledgements appeared contradictory and the phone's last two checkmarks were obscured.
 FIX: Clear only obsolete connectivity/queue toasts and their active animations when the checklist opens and completes successfully; preserve unrelated failure notices. The real offline lifecycle now asserts the toast is hidden before capturing every acknowledged row, and a shipped-function test preserves a separate upload failure notice.
+
+## A delivered mobile message stays failed, and its local copy appears beside its server copy
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-735
+SYMPTOM: Owner screenshots show messages received in this conversation remaining 409 acceptance-uncertain for an hour. Steering receipt polling used the unprefixed ID although the server stores steer:<id>; both Messages and Steering independently rendered local and server representations.
+COST: Repeated manual Retry, duplicate-looking rows, and a false failed-operation banner on the phone.
+FIX: In progress: retain unknown acceptance and retry bounded receipt reads, use the correct steering namespace, and join display rows by transport identity. AF-736 tracks the duplicate representation; simulator verification remains outstanding.
+
+## Safari Simulator acknowledges pointer input without applying the requested click
+AREA: browser
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-732
+SYMPTOM: Safari WebDriver on local iOS 26.5 returns success for element clicks and pointer actions while a form remains unfocused; send-keys similarly succeeds without changing the field. Native screenshots include insets absent from DOM coordinates.
+COST: Simulator end-to-end interaction tests fail despite successful API replies; repeated compile/test cycles delayed usable browser integration.
+FIX: In progress: test native XCTest input through Appium, require observed effects in the harness, and preserve input-method and failure diagnostics instead of claiming successful native input from transport status.
+
+## Loaded mobile header hid controls and its compact label escaped its button
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-731
+SYMPTOM: The owner could not reach Settings beside the fleet's connection and limit labels. A first compact draft passed outer-button bounds but native Safari placed the red limited count beneath the next button.
+COST: Unreachable mobile controls and an extra native verification/correction cycle after desktop geometry passed.
+FIX: This candidate uses compact labels with full 44-point targets, a real count element, and measured mobile-header-clipped beacons for both control bounds and label containment. Phone-width tests and a visually inspected real iOS 26.5 screenshot cover a loaded 52-worker fleet with 18 limited; all eight targets are unobstructed. Deployment remains separate.

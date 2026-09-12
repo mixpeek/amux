@@ -115,3 +115,21 @@ trusting a clean result.
 Grant TOKENS (not credentials) live per account under `~/.amux/connectors/<family>/<account>.json`
 and `~/.amux/gmail-tokens/<account>.json` — written by the broker callbacks, chmod 600, never
 committed. `GET /api/connectors/accounts` enumerates them with live health.
+
+## Local browser owner bootstrap
+
+`AMUX_TRUST_TAILNET_OWNER=1` enables automatic browser sign-in for devices which
+the local Tailscale daemon identifies as belonging to the same user as the server.
+It is disabled when unset. The socket peer must match the daemon's device record;
+forwarded headers, LAN addresses, other tailnet users, tagged devices and expired
+devices do not qualify. Existing invited-member sessions retain their scope.
+The server exchanges this verified identity for its existing Secure, HttpOnly owner
+session cookie; it never puts the owner key in a link or browser storage.
+Unavailable identity checks leave ordinary token sign-in available and log
+`tailnet_owner_unmeasured`; completed checks log `tailnet_owner_checked`.
+
+`AMUX_IOS_WEBDRIVER_PORT` selects the local Appium driver for real Simulator input.
+The maintained helper defaults to loopback port 18102. `AMUX_IOS_NATIVE_URL` and
+`AMUX_IOS_NATIVE_UDID` are optional test-runner overrides for an already running
+XCTest runner; they must identify the same simulator and a loopback URL. Ordinary
+use leaves these overrides unset so Appium starts the correct device runner.

@@ -187,9 +187,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="chrome-tabs-bar" class="chrome-tabs-bar"></div>
 <div id="chrome-tab-frames" class="chrome-tab-frames"></div>
 <div class="header-row">
-  <div style="display:flex;gap:8px;align-items:center;">
-    <h1 id="brand-header" style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="openAbout()"><span id="brand-icon-header"></span><span id="brand-name-header">amux</span></h1>
-    <span id="conn-status" class="conn-status online" title="Connection status — click for disconnection history" onclick="showConnHistory()"></span>
+  <div class="header-brand" style="display:flex;gap:8px;align-items:center;">
+    <h1 role="button" tabindex="0" aria-label="About amux" title="About amux" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAbout()}" id="brand-header" style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="openAbout()"><span id="brand-icon-header"></span><span id="brand-name-header">amux</span></h1>
+    <span role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showConnHistory()}" id="conn-status" class="conn-status online" title="Connection status — click for disconnection history" onclick="showConnHistory()"></span>
     <div style="position:relative;">
       <button id="notif-btn" onclick="toggleNotifPanel()" title="Notifications" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.7;line-height:1;position:relative;" aria-label="Notifications">&#x1F514;<span id="notif-badge" class="notif-badge" style="display:none;">0</span></button>
       <div id="notif-panel" class="notif-panel">
@@ -206,10 +206,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </div>
     </div>
   </div>
-  <div style="display:flex;gap:8px;align-items:center;">
+  <div class="header-actions" style="display:flex;gap:8px;align-items:center;">
     <div id="org-switcher-wrap" style="display:none;"></div>
     <button class="btn-rate-limit" id="rate-limit-pill" title="Continue all limited workers" onclick="event.stopPropagation();openBulkActions()">
       <span id="rate-limit-pill-text">0 limited</span>
+      <span id="rate-limit-pill-count" aria-hidden="true">0</span>
     </button>
     <div class="active-wrap">
       <button class="btn-active" id="active-btn" onclick="event.stopPropagation();toggleActiveDropdown()">
@@ -1473,10 +1474,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </style>
   <!-- Nav row -->
   <div class="bw-row" style="padding-top:8px;">
-    <select id="bw-backend" class="bw-in" style="min-width:104px;display:none;" onchange="_bwOnBackend()" title="How to run the browser — Playwright profiles, or your own Chrome over CDP">
-      <option value="">Playwright</option>
-      <option value="live">My Chrome</option>
+    <select id="bw-backend" class="bw-in" style="min-width:104px;max-width:100%;" onchange="_bwOnBackend()" aria-label="Browser operating system and device" title="Browser on the server machine">
+      <option value="">Desktop Chrome</option>
     </select>
+    <button id="bw-ios-stop" class="bw-btn" style="display:none;" onclick="_bwStopIos()">Stop Safari</button>
     <select id="bw-profile" class="bw-in" style="min-width:120px;" title="Profile — 'Auto' matches the URL to a logged-in profile">
       <option value="">Auto profile</option>
     </select>
@@ -1485,10 +1486,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="bw-btn primary" onclick="_bwGo()">Go</button>
     <button id="bw-live-btn" class="bw-btn" onclick="_bwToggleLive()" title="Live auto-refresh">&#9658; Live</button>
     <button class="bw-btn" onclick="_bwScreenshot()" title="Snapshot">&#128247;</button>
-    <button class="bw-btn" onclick="_bwIdentify()" title="AF-496 — amux opens a SECOND Chrome beside your own and they look identical. This raises the amux one and draws a blue bar across it naming its profile.">&#128269; Which window?</button>
-    <button class="bw-btn" onclick="_bwNewProfile()" title="Create a profile and sign in to it">&#43; Profile</button>
-    <button class="bw-btn" onclick="_bwImportProfile()" title="Import cookies from Chrome, Firefox, etc.">&#8615; Import</button>
-    <button class="bw-btn" onclick="_bwSaveProfile()" title="Register current site to a profile">&#128190; Save</button>
+    <button class="bw-btn" data-bw-chrome onclick="_bwIdentify()" title="AF-496 — amux opens a SECOND Chrome beside your own and they look identical. This raises the amux one and draws a blue bar across it naming its profile.">&#128269; Which window?</button>
+    <button class="bw-btn" data-bw-chrome onclick="_bwNewProfile()" title="Create a profile and sign in to it">&#43; Profile</button>
+    <button class="bw-btn" data-bw-chrome onclick="_bwImportProfile()" title="Import cookies from Chrome, Firefox, etc.">&#8615; Import</button>
+    <button class="bw-btn" data-bw-chrome onclick="_bwSaveProfile()" title="Register current site to a profile">&#128190; Save</button>
   </div>
   <!-- Status / logged-in indicator -->
   <div class="bw-row" style="padding-bottom:4px;">
@@ -1506,10 +1507,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="bw-btn" onclick="_bwScroll(-1)" title="Scroll up">&#9650;</button>
     <button class="bw-btn" onclick="_bwScroll(1)" title="Scroll down">&#9660;</button>
     <button id="bw-el-btn" class="bw-btn" onclick="_bwToggleElements()" title="Show clickable elements">&#9776; Elements</button>
-    <button id="bw-inspect-btn" class="bw-btn" onclick="_bwToggleInspect()" title="Console, network &amp; JS errors">&#128269; Inspect</button>
+    <button id="bw-inspect-btn" data-bw-chrome class="bw-btn" onclick="_bwToggleInspect()" title="Console, network &amp; JS errors">&#128269; Inspect</button>
   </div>
   <!-- Agent task row -->
-  <div class="bw-row">
+  <div class="bw-row" data-bw-chrome>
     <input id="bw-task" type="text" placeholder="Give the browser agent a task (autonomous, vision)&hellip;" class="bw-in" style="flex:1;min-width:180px;" onkeydown="if(event.key==='Enter')_bwAgentRun()">
     <button class="bw-btn primary" onclick="_bwAgentRun()">&#9658; Run agent</button>
     <button id="bw-agent-stop" class="bw-btn" style="display:none;" onclick="_bwAgentStop()">Stop</button>

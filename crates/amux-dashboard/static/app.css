@@ -1472,6 +1472,7 @@
     align-items: center; gap: 6px; font-variant-numeric: tabular-nums;
     -webkit-tap-highlight-color: transparent;
   }
+  #rate-limit-pill-count { display:none; }
   .btn-rate-limit.show { display: flex; }
   .btn-rate-limit:active { background: rgba(248,81,73,0.22); }
   .active-dropdown {
@@ -1575,14 +1576,29 @@
       content: ''; position: absolute; left: 50%; top: 50%;
       width: 44px; height: 44px; transform: translate(-50%, -50%);
     }
-    .header-row { gap: 4px; flex-wrap: nowrap; }
-    .header-row h1 { font-size: 1.1rem; flex-shrink: 0; }
-    /* overflow:hidden so a group that can't fit its own children (the bell
-       button next to the "Live" pill, both flex-shrink:0) clips at its OWN
-       boundary instead of bleeding into the sibling group and overlapping
-       the rate-limit pill's text (Ethan, phone screenshot, 2026-09-11). */
-    .header-row > div { gap: 6px !important; flex-shrink: 1; min-width: 0; overflow: hidden; }
-    .btn-rate-limit { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 8px; flex-shrink: 0; }
+    /* Compact labels, full touch targets. At 320px the action-status icon
+       can wrap; no control is clipped to make a nominally single row fit. */
+    .header-row { gap:1px; padding:8px; flex-wrap:wrap; justify-content:flex-start; }
+    .header-row > .header-brand, .header-row > .header-actions { display:contents !important; }
+    .header-row #brand-header, .header-row #conn-status, .header-row #notif-btn,
+    .header-row .header-add-btn, .header-row .settings-btn, .header-row .btn-active,
+    .header-row .btn-rate-limit { flex:0 0 44px; width:44px; min-width:44px; height:44px; min-height:44px; box-sizing:border-box; justify-content:center; padding:4px; }
+    .header-row #brand-header { font-size:1.25rem; }
+    .header-row #brand-icon-header { display:none; }
+    .header-row #brand-name-header { font-size:0; }
+    .header-row #brand-name-header::after { content:'a'; font-size:1.25rem; }
+    .header-row #conn-status { display:flex; font-size:0; gap:0; background:transparent; transition:color .2s,background-color .2s; }
+    .header-row #conn-status::before { width:12px; height:12px; margin:0; }
+    .header-row .active-wrap, .header-row .header-add-wrap, .header-row .settings-wrap { flex:0 0 auto; }
+    .header-row .btn-active { gap:3px; font-size:0.85rem; }
+    .header-row .btn-rate-limit { max-width:44px; overflow:visible; white-space:nowrap; }
+    .header-row #rate-limit-pill-text { display:none; }
+    .header-row #rate-limit-pill-count { display:inline-block; font-size:0.85rem; font-weight:600; }
+    .header-row #interaction-feedback { flex:0 0 44px; margin-left:auto; }
+    .header-row #interaction-feedback > summary { box-sizing:border-box; width:44px; height:44px; min-height:44px; padding:0; justify-content:center; }
+    .header-row #interaction-feedback > summary > span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    .header-row #interaction-feedback > summary > svg:last-child { display:none; }
+
   }
 
   /* Header + dropdown */
@@ -1805,10 +1821,10 @@
   @media (max-width: 600px) {
     .settings-menu {
       position: fixed;
-      top: calc(max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) + 60px);
+      top: var(--mobile-header-bottom, calc(max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) + 60px));
       right: 8px; left: auto;
       max-width: calc(100vw - 16px);
-      max-height: calc(100dvh - max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) - 72px);
+      max-height: calc(100dvh - var(--mobile-header-bottom, 60px) - 12px);
       z-index: 6000;
     }
   }

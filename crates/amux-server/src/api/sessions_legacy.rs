@@ -13,7 +13,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -3641,6 +3641,23 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
 /// pub(crate): session_verbs' bare GET /api/sessions/{name} serves ONE
 /// record from the SAME array (py:74892 — the natural URL answers the
 /// natural shape).
+fn steering_with_transport(conn: &rusqlite::Connection) -> rusqlite::Result<BTreeMap<String, Vec<Value>>> {
+    let mut steering: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut stmt=conn.prepare("SELECT id, session, text, queued_at, COALESCE(guard,''),
+        (SELECT substr(msg_id,7) FROM send_dedup d WHERE d.session=steering_queue.session
+          AND d.receipt_id=steering_queue.id AND d.msg_id LIKE 'steer:%' LIMIT 1)
+        FROM steering_queue ORDER BY queued_at ASC")?;
+    let rows=stmt.query_map([],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
+        r.get::<_,f64>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?)))?;
+    for row in rows {
+        let (id,session,text,queued_at,guard,transport_id)=row?;
+        let system=crate::api::session_verbs::steer_guard_is_system(&guard);
+        steering.entry(session).or_default().push(json!({"id":id,"text":text,"queued_at":queued_at,
+            "guard":guard,"system":system,"transport_id":transport_id}));
+    }
+    Ok(steering)
+}
+
 fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::Value>> {
     let mut signals = FleetSignals::load(conn);
     // Before any status is derived: the pane is the only signal that can
@@ -4045,33 +4062,11 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
     // in-memory queue's mirror. Entry shape matches Python's hydrate
     // (py:11873): {id, text, queued_at, guard} with guard "" for NULL.
     {
-        let mut steering: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, session, text, queued_at, COALESCE(guard,'') \
-             FROM steering_queue ORDER BY queued_at ASC",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, f64>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            }) {
-                for (id, session, text, queued_at, guard) in rows.flatten() {
-                    // `system`: amux's own push (board-drive, sched:…), not a
-                    // human's queued message — the SPA separates the surfaces
-                    // and Clear-all spares these (AMUX-2922).
-                    let system =
-                        crate::api::session_verbs::steer_guard_is_system(&guard);
-                    steering.entry(session).or_default().push(json!({
-                        "id": id, "text": text, "queued_at": queued_at, "guard": guard,
-                        "system": system,
-                    }));
-                }
-            }
-        }
+        let steering=steering_with_transport(conn).map_err(|error| {
+            tracing::warn!(target:"amux::message_acceptance",verdict="steering_identity_read_failed",measured=false,n_considered=0,%error,
+                "Steering snapshot unavailable; refusing to report an empty queue");
+            error
+        })?;
         for v in out.iter_mut() {
             if let Some(name) = v["name"].as_str() {
                 if let Some(q) = steering.get(name) {
@@ -4353,6 +4348,27 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
 pub(crate) mod tests {
     use super::*;
     static PROBE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn steering_transport_identity_joins_receipt_and_session_without_text_deduplication() {
+        let conn=crate::db::migrate::test_memdb_pub();
+        // A sessions snapshot uses a read-only pool, including before any send.
+        conn.pragma_update(None,"query_only","ON").unwrap();
+        assert!(steering_with_transport(&conn).unwrap().is_empty());
+        conn.pragma_update(None,"query_only","OFF").unwrap();
+        conn.execute_batch("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('row-1','lane','same',1,''),('row-2','lane','same',2,''),('system','lane','system',3,'board-drive');
+            INSERT INTO send_dedup(session,msg_id,ts,receipt_id) VALUES('lane','steer:transport-1',1,'row-1'),('other','steer:wrong-lane',1,'row-2');").unwrap();
+        conn.pragma_update(None,"query_only","ON").unwrap();
+        let rows=steering_with_transport(&conn).unwrap();
+        assert_eq!(rows["lane"].len(),3);
+        assert_eq!(rows["lane"][0]["transport_id"],"transport-1");
+        assert!(rows["lane"][1]["transport_id"].is_null());
+        assert_eq!(rows["lane"][2]["system"],true);
+        conn.pragma_update(None,"query_only","OFF").unwrap();
+        conn.execute("ALTER TABLE steering_queue RENAME COLUMN text TO missing_text",[]).unwrap();
+        conn.pragma_update(None,"query_only","ON").unwrap();
+        assert!(steering_with_transport(&conn).is_err(),"unmeasured must not be an empty queue");
+    }
 
     #[test]
     fn single_lane_fleet_probe_targets_the_active_window() {

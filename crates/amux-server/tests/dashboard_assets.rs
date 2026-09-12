@@ -1266,6 +1266,7 @@ fn a_slow_send_has_a_bounded_outer_deadline() {
     // Uncertain delivery must retain the original durable intent. The executable
     // dashboard-outage-recovery.mjs contract tests the real response path and
     // checkmark state, including a negative control restoring the old drop.
+    // Receipt-only automatic retries are covered by e2e/outbox-acceptance-recovery.test.mjs.
 
 }
 

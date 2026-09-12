@@ -18,7 +18,7 @@ function fixture(names = [], shared = {}) {
   const timers = new Map(); const timerDelays = new Map(); let tid = 0;
   const elements = new Map();
   const element = id => {
-    if (!elements.has(id)) elements.set(id, {value: '', textContent: '', innerHTML: '', style: {}, scrollHeight: 0, classList: {add() {}, remove() {}, contains() {return false;}}});
+    if (!elements.has(id)) elements.set(id, {value: '', textContent: '', innerHTML: '', style: {}, scrollHeight: 0, setAttribute() {}, classList: {add() {}, remove() {}, contains() {return false;}}});
     return elements.get(id);
   };
   const sandbox = { Response, AbortController, AbortSignal, DOMException, crypto: globalThis.crypto,
@@ -39,7 +39,7 @@ function fixture(names = [], shared = {}) {
     _apiErrText: async r => `${r.status}: ${await r.text()}`,
   };
   const ctx = vm.createContext(sandbox);
-  for (const name of ['_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
+  for (const name of ['_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -335,18 +335,20 @@ test('message receipt loss replays the same msg_id after reload; dedup receipt d
   assert.equal(JSON.parse(first.stored.get('amux_offline_queue')).length, 0);
 });
 
-test('ambiguous 200 blocks a message and preserves ordering behind it across retries', async () => {
+test('ambiguous 200 checks acceptance and preserves ordering behind it across retries', async () => {
   const {ctx, stored} = fixture();
   for (const text of ['first','second']) await ctx._queueOp('/api/sessions/owned/send', {method:'POST',body:JSON.stringify({text,msg_id:text})});
-  let calls = 0;
-  ctx._origFetch = async () => { calls++; return new Response(JSON.stringify({ok:true,submitted:false})); };
+  const calls = [];
+  ctx._origFetch = async (url,opts) => { calls.push({url,method:opts.method}); return new Response(JSON.stringify({ok:true,submitted:false})); };
   await ctx.runSyncBanner();
   const saved = JSON.parse(stored.get('amux_offline_queue'));
-  assert.equal(calls, 1);
+  assert.equal(calls.length, 1);
   assert.equal(saved.length, 2);
-  assert.equal(saved[0].state, 'blocked');
+  assert.equal(saved[0].state, 'pending');assert.equal(saved[0].delivery_uncertain,true);
   await ctx.runSyncBanner();
-  assert.equal(calls, 1, 'later messages cannot overtake a blocked predecessor');
+  assert.deepEqual(calls.map(r=>r.method),['POST','GET'],'only a receipt read may follow uncertain acceptance');
+  assert.equal(calls[1].url,'/api/sessions/owned/send?msg_id=first');
+  assert.equal(JSON.parse(stored.get('amux_offline_queue')).length,2,'later message remains durable and unsubmitted');
 });
 
 test('server deferred and steering receipts acknowledge storage without claiming terminal submission', async () => {
@@ -574,9 +576,9 @@ test('uncertain message receipt never becomes a synced checkmark or deletes inte
   ctx._origFetch=async()=>new Response(JSON.stringify({ok:false,submission:'uncertain'}),{status:409});
   await ctx.runSyncBanner();
   const rows=JSON.parse(stored.get('amux_offline_queue'));
-  assert.equal(rows.length,1);assert.equal(rows[0].state,'blocked');
+  assert.equal(rows.length,1);assert.equal(rows[0].state,'pending');assert.equal(rows[0].delivery_uncertain,true);
   assert.equal(JSON.parse(rows[0].options.body).msg_id,'uncertain');
-  assert.equal(element('sync-title-text').textContent,'0 synced, 1 failed');
+  assert.equal(element('sync-title-text').textContent,'0 synced, 1 awaiting confirmation');
   assert.doesNotMatch(element('sync-items').innerHTML,/sync-item done/);
 });
 

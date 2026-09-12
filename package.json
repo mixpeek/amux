@@ -3,6 +3,8 @@
   "scripts": {
     "build:state": "node scripts/build-state.mjs",
     "test:state": "node --test e2e/state-kernel.test.mjs",
+    "test:outbox": "node --test e2e/outbox-acceptance-recovery.test.mjs e2e/pending-message-projection.test.mjs",
+    "test:ios": "node scripts/test-ios-browser.mjs",
     "test:lifecycle": "python3 scripts/lifecycle/run.py full",
     "test:lifecycle:browser": "python3 scripts/lifecycle/run.py browser",
     "test:lifecycle:plan": "python3 scripts/lifecycle/run.py plan",
