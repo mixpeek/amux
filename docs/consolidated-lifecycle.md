@@ -816,11 +816,11 @@ Supporting coverage: `crates/amux-server/src/runtime_jobs/board_drive.rs`.
 
 ### LC-CARGO-RESOURCE-BOUNDS — Build and retention resource limits
 
-Run normal, failing, memory-heavy, hung, and disk-growing Cargo fixtures; verify owned children stop, peer processes survive, active target leases prevent cleanup, and unchanged failed builds back off.
+Run normal, failing, memory-heavy, hung, and disk-growing Cargo fixtures; verify owned children stop, peer processes survive, active target leases prevent cleanup, and unchanged failed builds back off. Build a real tiny crate repeatedly from detached and packed-branch worktrees, then change only the commit identity.
 
-Pass requires: Bounded parallelism, sampled RSS/time/disk limits, visible budget receipts, no active-artifact deletion, changed source retries immediately, and ordinary Cargo exit codes survive.
+Pass requires: Bounded parallelism, sampled RSS/time/disk limits, visible budget receipts, no active-artifact deletion, changed source retries immediately, and ordinary Cargo exit codes survive. Unchanged builds stay fresh; HEAD or branch advances update the embedded commit. Git watch paths must work when .git is a file.
 
-Supporting coverage: `scripts/test-cargo-budget.py`, `scripts/test-cargo-target-guard.py`, `scripts/test-build-disk-clear.sh`, `crates/amux-server/src/cargo_target_guard.rs`.
+Supporting coverage: `scripts/test-cargo-budget.py`, `scripts/test-cargo-target-guard.py`, `scripts/test-build-disk-clear.sh`, `crates/amux-server/src/cargo_target_guard.rs`, `scripts/test-cargo-worktree-provenance.py`, `crates/amux-server/build.rs`.
 
 ### LC-AUTOMATIC-HOUSEKEEPING — Recurring memory and disk retention
 

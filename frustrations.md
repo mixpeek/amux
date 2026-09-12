@@ -2377,3 +2377,14 @@ CARD: AMUX-4417
 SYMPTOM: The subprocess regression returned Ok("session limit reached") after the helper exited 7. The same path accepted JSON-shaped stdout from a failed process, so failed model work could be parsed as a measured intake decision.
 COST: Semantic intake failure/recovery could not be certified; quota diagnostics were misreported as invalid classifier JSON and unavailable comparison preserved extra records.
 FIX: Honor process exit status before accepting stdout, retain at most 400 diagnostic characters, log distinct helper_exit_failed/helper_timeout/helper_empty_output verdicts, and reap killed children. The real-child regression matrix and before/final results are recorded in docs/lifecycle-helper-validation-2026-09-12.md. This does not claim that provider quota or native admission has recovered.
+
+## Cargo rebuilds unchanged detached worktrees
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Consecutive helper/intake checks rebuilt amux-server for about 75 seconds each despite identical crate bytes. The tiny real Cargo regression confirmed that an unchanged detached-worktree build reported fresh=false because build.rs watched nonexistent .git/HEAD and .git/refs/heads/main paths.
+COST: Repeated full server compilation during verification, with avoidable CPU and memory pressure on a host already denying new workers.
+FIX: Resolve Git metadata using git rev-parse --git-path; watch the current HEAD and branch, including packed-ref transitions. The lifecycle resource case now runs a tiny real Cargo fixture proving cached repeats and correct identities after commit/branch changes. Restoring the broken HEAD watch makes the fixture fail.

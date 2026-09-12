@@ -71,3 +71,50 @@ Raw before/final/mutation logs and the timestamped native prerequisite receipt
 are retained in the local `helper-failure-20260912` evidence directory. The
 negative control demonstrates that returning failed stdout as an answer makes
 the real subprocess tests fail.
+
+
+## Repeated Cargo builds
+
+The continuation exposed a second defect relevant to the resource lifecycle:
+`build.rs` watched `.git/HEAD` and `.git/refs/heads/main` as if `.git` were always
+a directory. In the detached worktree used for safe verification it is a file,
+so both paths were permanently missing and Cargo reran the server build for
+unchanged source. Two consecutive focused checks spent approximately 75 seconds
+each rebuilding the same server crate.
+
+The build script now asks Git for its actual HEAD/current-branch metadata paths.
+Packed refs watch an existing parent until a loose ref is created; a detached
+worktree does not watch unrelated branch changes. Exported source without Git
+retains an explicit unknown identity diagnostic. Existing crate/source watches
+remain in place.
+
+`scripts/test-cargo-worktree-provenance.py` copies the shipped build script into
+a tiny real crate, uses a real linked worktree and the shared Cargo target, and
+checks eight Cargo builds. Repeated builds must be fresh. Empty commits, branch
+switches and packed-to-loose updates must produce the correct new identity.
+The fixture creates no separate Cargo target and removes its own temporary
+repository. It is included in LC-CARGO-RESOURCE-BOUNDS and the full runner.
+
+Before the fix, the unchanged second build failed the freshness assertion.
+The repaired fixture passed. Restoring the broken HEAD path is a separate
+negative control.
+
+
+Final Cargo verification:
+
+- `python3 scripts/test-cargo-worktree-provenance.py`: **1 passed**, eight real Cargo builds covering fresh repeats and identity changes.
+- `python3 -m unittest discover -s scripts/lifecycle -p 'test_*.py'`: **9 passed**.
+- `bash scripts/safe-cargo.sh check --workspace`: **PASS**, followed immediately by a second **PASS** with no compilation lines: Cargo finished in **0.55 seconds**, **1.46 seconds** including the wrapper process.
+- `bash scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings`: **PASS**.
+
+```bash
+bash scripts/mutate.sh run crates/amux-server/build.rs \
+  'root.join(head).display()' 'root.join(".git/HEAD").display()' -- \
+  python3 scripts/test-cargo-worktree-provenance.py
+# Mutation LANDED; unchanged-worktree assertion FAILED; inverse LANDED.
+# Fixed fixture subsequently passed.
+```
+
+[Portable gate counts, source hashes and native prerequisite receipt](evidence/lifecycle-helper-cargo-2026-09-12.json).
+The cache timing measures Cargo reuse, not native-model token savings. Both changes
+retain the host's worker admission guard and the configured Cargo resource bounds.

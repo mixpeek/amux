@@ -1,0 +1,82 @@
+{
+  "date": "2026-09-12",
+  "helper_commit": "42462b4c",
+  "measured": true,
+  "focused_tests": {
+    "mdai": 25,
+    "semantic_intake": 2,
+    "board_api": 89,
+    "lifecycle_runner": 9,
+    "cargo_worktree_fixture": 1
+  },
+  "cargo_fixture_builds": 8,
+  "negative_controls": {
+    "helper_exit_status": "LANDED; 2 regression failures; reverted; fixed baseline green",
+    "cargo_git_path": "LANDED; freshness regression failed; reverted; fixed baseline green"
+  },
+  "gates": [
+    {
+      "name": "cargo-provenance-final",
+      "code": 0,
+      "seconds": 13.51
+    },
+    {
+      "name": "runner-final",
+      "code": 0,
+      "seconds": 0.71
+    },
+    {
+      "name": "check-final",
+      "code": 0,
+      "seconds": 24.73
+    },
+    {
+      "name": "check-repeat",
+      "code": 0,
+      "seconds": 1.46
+    },
+    {
+      "name": "clippy-final",
+      "code": 0,
+      "seconds": 40.3
+    }
+  ],
+  "repeat_workspace_check": {
+    "cargo_seconds": 0.55,
+    "wrapper_seconds": 1.46,
+    "recompiled": false
+  },
+  "native_prerequisites": {
+    "at": "2026-09-12T21:33:55.884179+00:00",
+    "measured": true,
+    "n_considered": 1,
+    "health": {
+      "status": "ok",
+      "commit_full": "fb7d746ce38e70ab3ba137faac8a842f865966ab",
+      "build": "1f259d580ca17813",
+      "mem": {
+        "pressure_level": 2,
+        "pressure": "warn",
+        "swap_used_mb": 41966.4375,
+        "swap_total_mb": 43008.0
+      },
+      "admission": "deny",
+      "disk": {
+        "free_gb": 764.074592590332,
+        "total_gb": 1858.1917190551758,
+        "state": "ok"
+      }
+    },
+    "native_execution": {
+      "measured": false,
+      "n_considered": 0,
+      "why_unmeasured": "Current host admission denies new workers; no admission override or native test worker was started."
+    }
+  },
+  "source_sha256": {
+    "crates/amux-server/src/api/mdai.rs": "185ee131ae59a4882cbdb7081e57182a1a8358208c45480e822ef3ec23ed8f7b",
+    "crates/amux-server/build.rs": "64cdc14cb77a5b3b9111d2ffd5073fbd8c2c526704f161df6c960d835f697f26",
+    "scripts/test-cargo-worktree-provenance.py": "1b1a13a62d14cf51e5c863d6f9e28f65b04b6a95959d3d29441cef898791ff50"
+  },
+  "artifact_directory": "/Users/ethan/Documents/Codex/2026-09-09/go-t/work/helper-failure-20260912"
+}
