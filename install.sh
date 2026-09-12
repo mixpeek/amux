@@ -173,7 +173,9 @@ fi
 
 echo ""
 echo "Building (cargo build --release --workspace) …"
-(cd "$SCRIPT_DIR" && cargo build --release --workspace)
+(cd "$SCRIPT_DIR" && CARGO_TARGET_DIR="$TARGET_DIR" \
+  CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-${AMUX_CARGO_JOBS:-2}}" \
+  ./scripts/safe-cargo.sh build --release --workspace)
 [[ -x "$TARGET_DIR/release/amux-server" ]] || die "build finished but $TARGET_DIR/release/amux-server is missing"
 [[ -x "$TARGET_DIR/release/amux-rs" ]]     || die "build finished but $TARGET_DIR/release/amux-rs is missing"
 say "built server + CLI"

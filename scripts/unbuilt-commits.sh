@@ -41,6 +41,7 @@
 #
 # Exit 0 = every commit in the range was built · 1 = some were not · 2 = broke.
 set -uo pipefail
+SAFE_CARGO="$(cd "$(dirname "$0")" && pwd)/safe-cargo.sh"
 # NO `cd` TO THIS SCRIPT'S OWN REPO. It needs no repo-relative paths (the log
 # path is absolute), and cd-ing there would make the report always describe the
 # amux checkout no matter which repo you ran it in — including when a test
@@ -142,7 +143,7 @@ if [ "$DO_BUILD" = "1" ]; then
     rm -rf "$sw"
     if git worktree add --detach -q "$sw" "$sha" >/dev/null 2>&1; then
       if ( cd "$sw" && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}" \
-             cargo check --workspace >/dev/null 2>&1 ); then
+             "$SAFE_CARGO" check --workspace >/dev/null 2>&1 ); then
         echo "  OK   $(git log -1 --format='%h %s' "$sha" | cut -c1-70)"
       else
         echo "  FAIL $(git log -1 --format='%h %s' "$sha" | cut -c1-70)"

@@ -1,7 +1,11 @@
 # Local build and Amux resource budgets
 
 `scripts/safe-cargo.sh` is the entry point for local checks, tests, clippy and
-release builds. It now supervises its own Cargo process group, preserving the
+release builds, including Make targets, installation, and historical build replay. The replay helper uses
+the current wrapper even when compiling a revision older than the wrapper.
+`make run` uses the signed atomic builder; `make dev` budgets compilation and
+then runs the explicitly requested development server outside the build timeout.
+It now supervises its own Cargo process group, preserving the
 existing target lease and systemd isolation. A budget failure returns a nonzero
 exit code and emits a JSON `cargo_budget_refused`, `cargo_budget_stopped`, or
 `cargo_budget_unmeasured` record into the invoking build/test log. It does not
