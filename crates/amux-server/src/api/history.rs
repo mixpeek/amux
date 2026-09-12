@@ -156,7 +156,7 @@ async fn get_history_item(
         );
     };
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = store.read()?;
         let sql = "SELECT id, text, type, session, ts, origin, card_id, \
                    delivery, queued_at, delivered_at, submit_verdict, \
@@ -507,7 +507,7 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
              page with &offset= instead"
         );
     }
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Value> {
         let conn = store.read()?;
         let offset: i64 = p.offset.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
         let session = p.session.clone().unwrap_or_default();

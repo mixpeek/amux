@@ -1,0 +1,20 @@
+#interaction-feedback { position:relative; margin-left:auto; flex:0 1 auto; min-width:0; font-size:12px; color:var(--text); letter-spacing:0; }
+#interaction-feedback > summary { display:flex; align-items:center; gap:5px; min-height:32px; padding:3px 6px; cursor:pointer; white-space:nowrap; }
+#interaction-feedback > summary::-webkit-details-marker { display:none; }
+#interaction-feedback[data-phase="running"] > summary { color:var(--accent, #3099c8); }
+#interaction-feedback[data-phase="blocked"] > summary, #interaction-feedback[data-phase="failed"] > summary, #interaction-feedback[data-phase="refused"] > summary { color:#e57474; }
+.interaction-list { position:absolute; right:0; top:100%; width:340px; max-width:calc(100vw - 24px); max-height:min(65dvh, 520px); overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 16px #0004; z-index:10050; padding:0 12px; }
+.interaction-list article { border-bottom:1px solid var(--border); padding:12px 0; overflow-wrap:anywhere; }
+.interaction-list strong { font-size:13px; display:block; }
+.interaction-target { display:block; color:var(--dim); margin-top:3px; }
+.interaction-status { margin-top:6px; }
+.interaction-list progress { display:block; width:100%; height:5px; margin-top:8px; accent-color:var(--accent, #3099c8); }
+.interaction-list p { margin:6px 0; }
+.interaction-list details { margin-top:7px; color:var(--dim); }
+.interaction-list [data-phase="refused"] .interaction-status, .interaction-list [data-phase="failed"] .interaction-status { color:#e57474; }
+.interaction-list [data-phase="applied"] .interaction-status, .interaction-list [data-phase="noop"] .interaction-status { color:#59b890; }
+[data-interaction-kind][aria-busy="true"] { cursor:progress; outline:2px solid var(--accent, #3099c8); outline-offset:2px; animation:amux-action-pending 1.3s ease-in-out infinite; }
+.action-responded { outline:2px solid var(--accent, #3099c8); outline-offset:2px; }
+@keyframes amux-action-pending { 50% { outline-color:transparent; } }
+@media (prefers-reduced-motion:reduce) { [data-interaction-kind][aria-busy="true"] { animation:none; } }
+@media (max-width:600px) { #interaction-feedback > summary { padding:3px; } .interaction-list { position:fixed; right:12px; top:105px; } }

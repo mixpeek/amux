@@ -299,7 +299,7 @@ pub struct ListParams {
 
 pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         let rows = list_schedules(&conn, p.session.as_deref())?;
         // Measured fires/day + fleet share (Python parity: the runaway-canary
@@ -389,7 +389,7 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
 
 pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(get_schedule(&conn, &id)?)
     })
@@ -1099,7 +1099,7 @@ pub async fn run_now(
     // now, got a green "Ran", and no command reached the session (AMUX-2647).
     let store = state.store.clone();
     let id_r = id.clone();
-    let sched = match tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let sched = match crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         let s = get_schedule(&conn, &id_r)?;
         // Fetch the deleter alongside, so a tombstone refusal can name it
@@ -1172,7 +1172,7 @@ pub async fn run_now(
             let sched_bg = sched.clone();
             let source_bg = source.clone();
             let run_id = claim.run_id();
-            tokio::spawn(async move {
+            crate::db::interactions::spawn(async move {
                 let outcome = LiveDeliverer::new(state_bg.clone())
                     .deliver(&sched_bg, &source_bg)
                     .await;
@@ -1341,7 +1341,7 @@ pub async fn recent_runs(
         );
     }
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
         let conn = store.read()?;
         let sql = format!(
             "SELECT sr.id, sr.schedule_id, sr.ran_at, sr.status, sr.note, sr.source,
@@ -1411,7 +1411,7 @@ pub async fn audit_trail(
 
     let store = state.store.clone();
     let sid2 = sid.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
         let conn = store.read()?;
         let mut wheres: Vec<&str> = Vec::new();
         let mut params: Vec<rusqlite::types::Value> = Vec::new();

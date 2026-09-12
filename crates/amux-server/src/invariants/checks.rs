@@ -639,6 +639,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_task_artifacts", "updated_at", false),
     ("_amux_verifications", "created_at", false),
     ("_amux_request_log", "ts", false),
+    // Interaction writers use timestamp_millis(), matching browser Date.now().
+    ("_amux_interactions", "created_at", true),
+    ("_amux_interactions", "updated_at", true),
     // AF-175's boot column: which process wrote the row. Same unit as `ts` by
     // construction — it is `heartbeat::boot_at()`, the same clock — and the
     // one-sided restart predicate depends on `boot_at <= ts` holding, so a unit
@@ -5916,6 +5919,8 @@ mod negative_controls {
             .map(|(t, c, _)| format!("{t}.{c}"))
             .collect();
         for name in [
+            "_amux_interactions.created_at",
+            "_amux_interactions.updated_at",
             "cmd_history.queued_at",
             "cmd_history.delivered_at",
             "cmd_history.ts",
@@ -5927,12 +5932,6 @@ mod negative_controls {
                 "{name} is MILLISECONDS in the live schema and must be declared: {ms:?}"
             );
         }
-        assert_eq!(
-            ms.iter().filter(|n| n.ends_with("_at")).count(),
-            2,
-            "two of the five millisecond columns are `_at`-named — that is why the \
-             filter cannot key on `ts` alone: {ms:?}"
-        );
         // No duplicate declarations: a column declared twice with different
         // units would make the lookup order-dependent and quietly authoritative.
         let mut names: Vec<String> = TIMESTAMP_COLUMNS

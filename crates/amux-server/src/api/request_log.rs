@@ -228,6 +228,10 @@ impl RequestLogger {
                         }
                         if sweep {
                             let cutoff = unix_now() - retain_days * 86400.0;
+                            conn.execute("DELETE FROM _amux_interaction_effects WHERE interaction_id IN
+                                (SELECT id FROM _amux_interactions WHERE updated_at < ?1)", [(cutoff * 1000.0) as i64])?;
+                            let receipts = conn.execute("DELETE FROM _amux_interactions WHERE updated_at < ?1", [(cutoff * 1000.0) as i64])?;
+                            if receipts > 0 { tracing::info!(verdict="interaction_retention", n_considered=receipts, "Expired interaction receipts removed"); }
                             let deleted = conn.execute(
                                 "DELETE FROM _amux_request_log WHERE ts < ?1",
                                 rusqlite::params![cutoff],
@@ -436,6 +440,12 @@ pub async fn middleware(State(logger): State<RequestLogger>, req: Request, next:
     };
 
     let mut meta = serde_json::Map::new();
+    if let Some(id) = res.headers().get("x-amux-interaction-id").and_then(|v| v.to_str().ok()) {
+        meta.insert("interaction_id".into(), json!(id));
+    }
+    if let Some(kind) = res.headers().get("x-amux-command-kind").and_then(|v| v.to_str().ok()) {
+        meta.insert("command_kind".into(), json!(kind));
+    }
     if !query.is_empty() {
         meta.insert("query".into(), json!(truncate_chars(&query, QUERY_CHARS)));
     }
@@ -1233,6 +1243,12 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/gmail/callback", methods: &["GET"] },
     RouteEntry { path: "/invite/{token}", methods: &["GET", "POST"] },
     // -- core state
+    RouteEntry { path: "/api/interactions/recent", methods: &["GET"] },
+    RouteEntry { path: "/api/interactions/{id}", methods: &["GET"] },
+    RouteEntry { path: "/api/interactions/{id}/effects", methods: &["GET"] },
+    RouteEntry { path: "/api/interactions/{id}/why", methods: &["GET"] },
+    RouteEntry { path: "/api/debug/interactions", methods: &["GET"] },
+    RouteEntry { path: "/api/state/summary", methods: &["GET"] },
     RouteEntry { path: "/api/sync", methods: &["GET"] },
     RouteEntry { path: "/api/events", methods: &["GET"] },
     // -- board
@@ -2012,6 +2028,7 @@ async fn analyze(
                 client_ip.as_deref().unwrap_or(""),
             );
             let has_body = error_body.as_deref().is_some_and(|b| !b.is_empty());
+            let interaction = req_meta.as_deref().and_then(|m| serde_json::from_str::<Value>(m).ok()).unwrap_or(Value::Null);
             let sample = json!({
                 "ts": ts, "when": local_when(ts), "method": method, "path": path,
                 "status": status, "latency_ms": latency_ms,
@@ -2019,6 +2036,8 @@ async fn analyze(
                 "amux_session": amux_session, "worker": worker,
                 "answered_by": answered_by, "error_body": error_body,
                 "req_meta": req_meta,
+                "interaction_id": interaction["interaction_id"],
+                "command_kind": interaction["command_kind"],
             });
             let key = (status, method.clone(), family.clone(), target.clone());
             let g = groups.entry(key).or_insert_with(|| ErrGroup {

@@ -112,9 +112,9 @@ const _authToken = window._AMUX_AUTH_TOKEN || '';
 // window, and no reload can change it). The server answers which one.
 const _authWithheld = !!window._AMUX_AUTH_WITHHELD;
 function _authHeaders(headers) {
-  const h = headers ? { ...headers } : {};
-  if (_authToken) h['Authorization'] = 'Bearer ' + _authToken;
-  return h;
+  const h = new Headers(headers || {});
+  if (_authToken) h.set('Authorization', 'Bearer ' + _authToken);
+  return Object.fromEntries(h.entries());
 }
 function _authUrl(url) {
   if (!_authToken) return url;
@@ -1920,7 +1920,7 @@ async function bulkSendContinue(cappedOnly) {
   let sent = 0;
   for (const s of matched) {
     try {
-      await _origFetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+      await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({text: 'continue'}),
         signal: AbortSignal.timeout(10000)
@@ -1941,7 +1941,7 @@ async function bulkSendContinueApiErr() {
   let sent = 0, failed = 0;
   for (const s of matched) {
     try {
-      const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+      const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
         method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
         body: JSON.stringify({text: 'continue'}),
         signal: AbortSignal.timeout(10000)
@@ -2214,11 +2214,14 @@ function _uploadStorageError(action, error) {
 }
 async function _upqAdd(file, dir, kind) {
   const id = crypto.randomUUID();
+  const interactionId = 'int_upload_' + id;
+  _interactions.accept({interactionId, command:{id:interactionId,kind:'filesystem.upload',target:{primitive:'filesystem',id,label:file.name}}, request:{method:'POST',path:'/api/upload/start'}});
   try {
     await _idb.putUpload({id, surface:'directory', name:file.name || 'upload.bin',
       dir:dir || '', kind:kind || 'file', size:file.size, mime:file.type, ts:Date.now(), file,
       totalChunks:Math.ceil(file.size / CHUNK_SIZE) || 1});
-  } catch (error) { _uploadStorageError('enqueue-failed', error); throw error; }
+  } catch (error) { _interactionFail(interactionId,error,false); _uploadStorageError('enqueue-failed', error); throw error; }
+  _interactionSet(interactionId, {phase:'queued', feedback:{message:'File saved on this device; queued for upload'}});
   _upqRenderBadge();
   return (await _upqList()).length;
 }
@@ -2229,6 +2232,7 @@ async function _upqRemove(id) {
 }
 async function _upqCancel(id) {
   await _upqRemove(id);
+  _interactionSet('int_upload_' + id, {phase:'refused', feedback:{message:'Upload cancelled'}});
   showToast('Removed from the upload queue (NOT uploaded)');
 }
 
@@ -2489,6 +2493,7 @@ async function _runSyncBanner(quiet = false) {
     if (!fresh) { offlineQueue = _readQueue(); item.status = 'done'; return; }
     Object.assign(q, fresh);
     if (q.state === 'blocked') { item.status = 'failed'; return; }
+    const interaction = _interactionReplay(q);
     try {
       if (!_outboxQueueable(q.url, q.options || {}) || (q.timestamp && Date.now() - (q.reviewed_at || q.timestamp) > 7 * 86400000)) {
         q.state = 'blocked';
@@ -2513,11 +2518,13 @@ async function _runSyncBanner(quiet = false) {
       if (/\/(send|steer)$/.test(q.url.split('?')[0])) {
         _validateMessageAcknowledgement(await r.clone().json(), q.url);
       }
+      await _interactionAcknowledge(interaction.id, r);
       await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
       item.status = 'done';
     } catch(e) {
       if (e.outboxBlocked) q.state = 'blocked';
       q.error = String(e.message || e);
+      _interactionSet(interaction.id, {phase:q.state === 'blocked' ? 'refused' : 'queued', feedback:{message:q.error}});
       q.attempts = (q.attempts || 0) + 1;
       _writeError = q.error;
       await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts}); });
@@ -2879,163 +2886,111 @@ function _isLocallyQueued(r) {
 }
 
 // ── Interaction receipts: first slice of the AI-native command contract ──
-//
-// This ledger is deliberately browser-local for now. It gives humans, e2e, and
-// agents one inspectable answer to "what happened to my command?" while the
-// durable server-side interaction/effects table lands in a later slice.
-const _INTERACTION_MAX = 200;
-let _interactionReceipts = [];
-
-function _interactionId() {
-  return 'int_' + (crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+const AmuxState = window.AmuxState;
+const _stateUI = AmuxState.createStore({activityOpen:false});
+const _stateQuery = AmuxState.createQueries();
+function _interactionDiagnostic(event) {
+  console.warn('[amux] interaction', event.verdict, event.interaction_id || '');
+  let version = 'initializing';
+  try { version = APP_VER; } catch (_) {}
+  _origFetch(API + '/api/client-debug', {method:'POST',
+    headers:_authHeaders({'Content-Type':'application/json'}), signal:AbortSignal.timeout(5000),
+    body:JSON.stringify({...event, kind:event.kind || 'interaction-receipt', ver:version})}).catch(() => {});
 }
-function _interactionHeaders(headers) {
-  try {
-    if (headers instanceof Headers) return Object.fromEntries(headers.entries());
-    if (Array.isArray(headers)) return Object.fromEntries(headers);
-  } catch (_) {}
-  return headers ? { ...headers } : {};
+let _receiptStorage;
+try { _receiptStorage = localStorage; } catch (_) {}
+const _interactions = AmuxState.createInteractions({storage:_receiptStorage, diagnostic:_interactionDiagnostic});
+const _stateFeedback = AmuxState.installFeedback(_interactions, _stateUI);
+const _effectReconciler = AmuxState.createEffectReconciler({interactions:_interactions,
+  read:async (id, signal) => {
+    const response = await fetch(API + '/api/interactions/' + encodeURIComponent(id) + '/effects', {signal});
+    if (!response.ok) throw new Error('Effects unavailable (' + response.status + ')');
+    return response.json();
+  },
+  diagnostic:_interactionDiagnostic,
+});
+const _stateSync = AmuxState.createSync({query:_stateQuery,
+  fetchSync:async rev => {
+    const response = await fetch(API + '/api/sync?since_rev=' + rev);
+    if (!response.ok) throw new Error('State sync failed (' + response.status + ')');
+    return response.json();
+  },
+  refresh:() => Promise.all([fetchSessions(), fetchBoard()]),
+});
+function _interactionAccept(url, init = {}) {
+  const path = new URL(url, location.origin).pathname;
+  const method = (init.method || 'GET').toUpperCase();
+  const interactionId = new Headers(init.headers || {}).get('X-Amux-Interaction-Id');
+  const source = _stateFeedback.source();
+  if (source && method !== 'GET' && !source.dataset.interactionKind) {
+    _interactionDiagnostic({verdict:'unregistered_command_control', action:source.dataset.action, path, measured:true, n_considered:1});
+  }
+  const command = AmuxState.commandFor(method, path);
+  const label = source && (source.getAttribute('aria-label') || source.title || source.innerText)?.trim();
+  if (label && label.length <= 80) command.label = label;
+  return _interactions.accept({interactionId, command, request:{method,path}});
 }
-function _interactionPath(url) {
-  try { return new URL(url, location.origin).pathname; }
-  catch (_) { return String(url || '').split('?')[0]; }
+function _interactionSet(id, patch) { return _interactions.update(id, patch); }
+function _interactionRequestOptions(receipt, init) {
+  const headers = new Headers(init?.headers || {});
+  headers.set('X-Amux-Interaction-Id', receipt.id);
+  headers.set('X-Amux-Command-Kind', receipt.command.kind);
+  return {...init, headers:Object.fromEntries(headers.entries())};
 }
-function _interactionTarget(path) {
-  const clean = String(path || '');
-  if (/\/api\/sessions\/[^/]+\/(send|steer)/.test(clean)) return {primitive:'message', id:decodeURIComponent((clean.match(/\/api\/sessions\/([^/]+)/)||[])[1] || '')};
-  if (/\/api\/(sessions|workers)\b/.test(clean)) return {primitive:'worker', id:decodeURIComponent((clean.match(/\/api\/(?:sessions|workers)\/([^/]+)/)||[])[1] || '')};
-  if (/\/api\/board\b/.test(clean)) return {primitive:'board', id:decodeURIComponent((clean.match(/\/api\/board\/([^/]+)/)||[])[1] || '')};
-  if (/\/api\/schedules\b/.test(clean)) return {primitive:'scheduler', id:decodeURIComponent((clean.match(/\/api\/schedules\/([^/]+)/)||[])[1] || '')};
-  if (/\/api\/(fs|file|files|uploads?)\b/.test(clean)) return {primitive:'filesystem'};
-  if (/\/api\/(groups|tags)\b/.test(clean)) return {primitive:'group'};
-  if (/\/api\/(memories|memory)\b/.test(clean)) return {primitive:'memory'};
-  if (/\/api\/(prefs|settings|config|scope|env|branding)\b/.test(clean)) return {primitive:'environment'};
-  return {primitive:'environment'};
-}
-function _interactionKind(method, path) {
-  const p = String(path || '');
-  if (/\/api\/sessions\/[^/]+\/send$/.test(p)) return 'message.send';
-  if (/\/api\/sessions\/[^/]+\/steer$/.test(p)) return 'message.steer';
-  if (/\/api\/sessions\/[^/]+\/start$/.test(p)) return 'worker.start';
-  if (/\/api\/sessions\/[^/]+\/stop$/.test(p)) return 'worker.stop';
-  if (/\/api\/(sessions|workers)\b/.test(p)) return 'worker.' + method.toLowerCase();
-  if (/\/api\/board\b/.test(p)) return 'board.' + method.toLowerCase();
-  if (/\/api\/schedules\b/.test(p)) return 'scheduler.' + method.toLowerCase();
-  if (/\/api\/(fs|file|files|uploads?)\b/.test(p)) return 'filesystem.' + method.toLowerCase();
-  if (/\/api\/(groups|tags)\b/.test(p)) return 'group.' + method.toLowerCase();
-  if (/\/api\/(memories|memory)\b/.test(p)) return 'memory.' + method.toLowerCase();
-  return 'environment.' + method.toLowerCase();
-}
-function _interactionAccept(url, init) {
-  const path = _interactionPath(url);
-  const method = ((init && init.method) || 'GET').toUpperCase();
-  const receipt = {
-    id: _interactionId(),
-    command: {
-      id: _interactionId(),
-      kind: _interactionKind(method, path),
-      target: _interactionTarget(path),
-    },
-    origin: {actor:'human', surface:'dashboard'},
-    phase: 'accepted',
-    feedback: {required:true, persistence:'until-settled', severity:'info'},
-    request: {method, path},
-    acknowledgement: {},
-    effects: [],
-    measured: true,
-    n_considered: 1,
-    created_at: Date.now(),
-    updated_at: Date.now(),
-  };
-  _interactionReceipts.push(receipt);
-  if (_interactionReceipts.length > _INTERACTION_MAX) _interactionReceipts = _interactionReceipts.slice(-_INTERACTION_MAX);
+async function _interactionAcknowledge(id, response) {
+  const receipt = await _interactions.acknowledge(id, response);
+  if (receipt && ['applied','noop','reconciled'].includes(receipt.phase)) {
+    const key = {worker:'sessions',message:'messages',scheduler:'schedules',group:'groups',memory:'memories',filesystem:'files',environment:'prefs',board:'board'}[receipt.command.target.primitive];
+    await _stateQuery.invalidate([key]);
+  }
+  if (response.headers.get('X-Amux-Interaction-Id') === id && !_isLocallyQueued(response)) {
+    // Failure state and diagnostics are persisted by the reconciler; the poller retries.
+    _interactionReconcile(id).catch(() => {});
+  }
   return receipt;
 }
-function _interactionSet(id, patch) {
-  const r = _interactionReceipts.find(x => x.id === id);
-  if (!r) return null;
-  Object.assign(r, patch || {});
-  r.updated_at = Date.now();
-  return r;
+async function _interactionReconcile(id) {
+  return _effectReconciler(id);
 }
-function _interactionRequestOptions(receipt, init) {
-  const headers = _interactionHeaders(init && init.headers);
-  headers['X-Amux-Interaction-Id'] = receipt.id;
-  headers['X-Amux-Command-Kind'] = receipt.command.kind;
-  return { ...(init || {}), headers };
-}
-function _interactionAddEffect(receipt, effect) {
-  if (!receipt || !effect) return;
-  receipt.effects.push(Object.assign({id:_interactionId()}, effect));
-  receipt.updated_at = Date.now();
-}
-function _interactionAcknowledge(id, response) {
-  const receipt = _interactionReceipts.find(x => x.id === id);
-  if (!receipt) return;
-  const status = response ? response.status : 0;
-  if (_isLocallyQueued(response)) {
-    _interactionSet(id, {phase:'queued', acknowledgement:{status, queued:true}, feedback:{required:true, persistence:'until-settled', severity:'info', message:'Queued'}});
-    return;
-  }
-  if (!response || !response.ok) {
-    const phase = status >= 400 && status < 500 ? 'refused' : 'failed';
-    _interactionSet(id, {phase, acknowledgement:{status}, feedback:{required:true, persistence:'durable', severity:'error'}});
-    return;
-  }
-  _interactionSet(id, {phase:'applied', acknowledgement:{status}, feedback:{required:true, persistence:'until-settled', severity:'success'}});
-  response.clone().json().then(body => {
-    if (!body || typeof body !== 'object') return;
-    const phase = body.applied === false ? 'noop' : 'applied';
-    const ack = {
-      status,
-      applied: body.applied,
-      rev: body.rev,
-      version: body.version,
-      ignored_fields: Array.isArray(body.ignored_fields) ? body.ignored_fields : [],
-      entity_id: body.entity_id || body.id || '',
-    };
-    _interactionSet(id, {phase, acknowledgement: ack});
-    const entityId = body.entity_id || body.id;
-    if (entityId || body.rev) {
-      _interactionAddEffect(receipt, {
-        kind: receipt.command.kind + '.acknowledged',
-        entity: {primitive: receipt.command.target.primitive, id: String(entityId || receipt.command.target.id || receipt.request.path)},
-        rev: body.rev,
-      });
-    }
-  }).catch(() => {});
-}
+function _directInteractionFetch(input, init) { return fetch(input, {...init, _skipOutbox:true}); }
 function _interactionFail(id, error, queued) {
-  _interactionSet(id, {
-    phase: queued ? 'queued' : 'failed',
-    acknowledgement: {queued: !!queued, error:String((error && error.message) || error || '')},
-    feedback: {required:true, persistence:queued ? 'until-settled' : 'durable', severity:queued ? 'info' : 'error', message:queued ? 'Queued' : 'Failed'},
-  });
-  if (!queued) {
-    try {
-      fetch(API + '/api/client-debug', {method:'POST', _skipOutbox:true,
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({kind:'interaction-receipt', verdict:'failed',
-          interaction_id:id, error:String((error && error.message) || error || ''),
-          measured:true, n_considered:1, ver:APP_VER})}).catch(() => {});
-    } catch (_) {}
-  }
+  return _interactionSet(id, {phase:queued ? 'queued' : 'failed',
+    acknowledgement:{queued:!!queued, locally_queued:!!queued, error:String(error?.message || error || '')},
+    feedback:{message:queued ? 'Queued on this device' : String(error?.message || error || 'Failed')}});
 }
-function _installAmuxStateProbe() {
-  window.__amuxInteractions = {
-    recent: (n = 50) => _interactionReceipts.slice(-n).map(r => JSON.parse(JSON.stringify(r))),
-    get: id => {
-      const r = _interactionReceipts.find(x => x.id === id);
-      return r ? JSON.parse(JSON.stringify(r)) : null;
-    },
-  };
-  window.__amuxState = Object.assign(window.__amuxState || {}, {
-    interactions: window.__amuxInteractions,
-    effects: { forInteraction: id => (window.__amuxInteractions.get(id)?.effects || []) },
-    connection: () => ({online, conn_state:_connState, pending:offlineQueue.length + drafts.length}),
-  });
+function _interactionReplay(q) {
+  const receipt = _interactionAccept(q.url, q.options || {});
+  q.options = _interactionRequestOptions(receipt, q.options || {});
+  _interactionSet(receipt.id, {phase:'sending', request:{...receipt.request, outbox_id:q.id}});
+  return receipt;
 }
-_installAmuxStateProbe();
+window.__amuxInteractions = {recent:_interactions.recent, get:_interactions.get};
+window.__amuxState = {
+  query:{get:_stateQuery.get, state:_stateQuery.state},
+  interactions:window.__amuxInteractions,
+  effects:{forInteraction:id => _interactions.get(id)?.effects || []},
+  connection:() => ({online, conn_state:_connState, pending:offlineQueue.length + drafts.length}),
+  explain:id => _interactions.get(id),
+  events:{forInteraction:id => {
+    const receipt = _interactions.get(id);
+    return receipt ? [AmuxState.projectEvent({kind:'amux.interaction', payload:receipt}),
+      ...receipt.effects.map(effect => AmuxState.projectEvent({kind:effect.kind, payload:effect}))] : [];
+  }},
+  coverage:_stateFeedback.coverage,
+};
+setInterval(() => _interactions.expire(), 30000);
+const _interactionPoll = AmuxState.createInteractionPoller({interactions:_interactions,
+  read:async (id, signal) => {
+    const response = await fetch(API + '/api/interactions/' + encodeURIComponent(id), {signal});
+    if (!response.ok) throw new Error('Interaction status unavailable (' + response.status + ')');
+    return response.json();
+  },
+  reconcile:_interactionReconcile,
+  diagnostic:_interactionDiagnostic,
+});
+setInterval(() => {
+  if (online && !document.hidden) void _interactionPoll();
+}, 5000);
 
 function _outboxRequestOptions(url, init) {
   // Assign the server's deduplication key before the FIRST attempt. Creating
@@ -3118,7 +3073,7 @@ async function _boundedMutationFetch(input, init) {
   }
 }
 
-window.fetch = async function(input, init) {
+async function _outboxFetch(input, init) {
   const url = typeof input === 'string' ? input : (input && input.url) || '';
   if (!_outboxQueueable(url, init)) return _origFetch(input, init);
   init = _outboxRequestOptions(url, init || {});
@@ -3173,7 +3128,7 @@ window.fetch = async function(input, init) {
       }
       updateConnectionStatus();
     }
-    _interactionAcknowledge(receipt.id, r);
+    await _interactionAcknowledge(receipt.id, r);
     return r;
   }).catch(async e => {
     if (durableId && e.outboxBlocked) {
@@ -3208,6 +3163,44 @@ window.fetch = async function(input, init) {
   }).finally(() => { if (durableId) _outboxActive.delete(durableId); });
   };
   return durableId ? _outboxLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
+}
+window.fetch = async function(input, init) {
+  if (input instanceof Request) {
+    const request = new Request(input, init);
+    input = request.url;
+    init = {...init, method:request.method, headers:request.headers, signal:request.signal,
+      body:['GET','HEAD'].includes(request.method) ? undefined : await request.blob()};
+  }
+  const url = new URL(String(input), location.origin);
+  const method = (init?.method || 'GET').toUpperCase();
+  if (url.origin === location.origin && url.pathname.startsWith('/api/') && method === 'GET' && _stateFeedback.source()) {
+    const receipt = _interactionAccept(url.href, init);
+    _interactionSet(receipt.id, {phase:'sending', feedback:{message:'Loading'}});
+    try {
+      const response = await _origFetch(input, init);
+      await _interactionAcknowledge(receipt.id, response);
+      return response;
+    } catch (error) { _interactionFail(receipt.id, error, false); throw error; }
+  }
+  if (url.origin !== location.origin || !url.pathname.startsWith('/api/') ||
+      !_OUTBOX_METHODS[method] || url.pathname === '/api/client-debug') return _origFetch(input, init);
+  // Upload chunks belong to their parent's workflow; do not claim that each
+  // successful chunk is a completed file upload.
+  if (init?._interactionWorkflow) return _origFetch(input, init);
+  if (_outboxQueueable(url.href, init)) return _outboxFetch(String(input), init);
+  const receipt = _interactionAccept(url.href, init);
+  const options = _interactionRequestOptions(receipt, init);
+  _interactionSet(receipt.id, {phase:'sending'});
+  try {
+    const response = await _origFetch(input, options);
+    await _interactionAcknowledge(receipt.id, response);
+    return response;
+  } catch (error) {
+    _interactionSet(receipt.id, {phase:'unknown', measured:false,
+      why_unmeasured:'Connection ended without an acknowledgement; inspect before retrying',
+      acknowledgement:{error:String(error.message || error)}});
+    throw error;
+  }
 };
 
 // Reconcile queue: remove contradictory/stale operations before replay
@@ -3838,7 +3831,7 @@ async function _fetchSessionsOnce() {
     // AMUX-3504: conditional fetch — the server hashes the (now byte-stable)
     // payload, so an unchanged fleet answers 304 with no body. That is the
     // whole cost of the reconnect/resume refetches intermittent mobile fires.
-    const r = await fetch(API + '/api/sessions', _sessEtag ? { headers: { 'If-None-Match': _sessEtag } } : undefined);
+    const r = await _stateQuery.response(['sessions', 'response'], () => fetch(API + '/api/sessions', _sessEtag ? { headers: { 'If-None-Match': _sessEtag } } : undefined));
     if (r.status === 304) {
       consecutiveFailures = 0;
       _lastDataTime = Date.now();
@@ -3878,6 +3871,7 @@ async function _fetchSessionsOnce() {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
       sessions = data;
+      _stateQuery.set(['sessions'], data);
       _sessionsSnapshotEpoch++;
       // Quota-full store: drop the cache rather than let the throw break rendering.
       // IDB is the durable fallback (no 5MB cap), so a quota eviction here still
@@ -8937,7 +8931,7 @@ async function _steeringSendNow(msgId) {
   if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
   showToast('Sending now to ' + peekSession + '…');
   try {
-    const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({text: msg.text, deliver_now: true}),
       signal: AbortSignal.timeout(90000)
@@ -8948,7 +8942,7 @@ async function _steeringSendNow(msgId) {
       showToast(d.message ? ('Not sent: ' + d.message) : 'Not sent — kept in queue');
       return;
     }
-    await _origFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
+    await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: msgId, sent: true})
     });
@@ -10276,7 +10270,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.921';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.922';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13313,6 +13307,7 @@ function _cancelUpload(f) {
     return false;
   }
   f.cancelled = true;
+  if (f.interactionId) _interactionSet(f.interactionId, {phase:'refused', feedback:{message:'Upload cancelled'}});
   if (f.id) _persistAttachment(f).then(() => {
     _durableAttachments.delete(f.id);
     localStorage.removeItem(_attachmentCancelKey(f.id));
@@ -13564,11 +13559,13 @@ async function _queueAttachment(f, sink) {
     await _persistAttachment(f);
     if (f.cancelled) return;
     f.status = 'Queued';
+    if (f.interactionId) _interactionSet(f.interactionId, {phase:'queued', feedback:{message:'File saved on this device; queued for upload'}});
     _uploadQueue.push({ f, sink });
     sink.render();
     _drainUploadQueue();
   } catch (error) {
     f.queued = false; f.error = 'Not saved locally — retry or keep the original file'; f.retryable = false;
+    if (f.interactionId) _interactionFail(f.interactionId, f.error, false);
     _uploadStorageError('attachment-save-failed', error);
     sink.render();
   }
@@ -13596,6 +13593,7 @@ function _persistAttachment(f) {
     await _idb.putUpload({id:f.id, session:f.session, surface:f.surface, name:f.name, file:f.file,
       dir:f.dir, path:f.path, url:f.url, isImage:f.isImage, sizeMB:f.sizeMB, totalChunks:f.totalChunks}, (done, total) => {
         f.status = 'Saving locally ' + Math.round(done / total * 100) + '%';
+        if (f.interactionId) _interactionSet(f.interactionId, {phase:'running', progress:{completed:done,total}, feedback:{message:'Saving file on this device'}});
         _durableAttachments.get(f.id)?.sink.render();
       });
     f.stored = true;
@@ -13671,6 +13669,9 @@ function _createAttachment(file, sink) {
   const placeholder = { id:crypto.randomUUID(), session:sink.session, surface:sink.surface, name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
                         chunk: 0, totalChunks, file, error: null, inflight: false,
                         cancelled: false, aborter: null, queued: false, status: 'Queued' };
+  placeholder.interactionId = 'int_upload_' + placeholder.id;
+  _interactions.accept({interactionId:placeholder.interactionId,
+    command:{id:placeholder.interactionId,kind:'filesystem.upload',target:{primitive:'filesystem',id:placeholder.id,label:file.name}}, request:{method:'POST',path:'/api/upload/start'}});
   _durableAttachments.set(placeholder.id, {f:placeholder, sink});
   sink.push(placeholder);
   sink.render();
@@ -13731,7 +13732,8 @@ async function _uploadRequest(f, phase, url, options) {
   });
   try {
     return await Promise.race([deadline, cancelled, (async () => {
-      const response = await fetch(url, {...options, headers:_authHeaders(options.headers || {}), signal:controller.signal});
+      const response = await fetch(url, {...options, _interactionWorkflow:true,
+        headers:_authHeaders({...options.headers, 'X-Amux-Interaction-Id':f.interactionId + '_' + phase + '_' + (f.chunk || 0), 'X-Amux-Command-Kind':'filesystem.upload'}), signal:controller.signal});
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) {
         const status = response.status;
@@ -13748,8 +13750,14 @@ async function _uploadRequest(f, phase, url, options) {
 }
 async function _runUpload(f, sink) {
   if (f.inflight || f.cancelled) return;
+  f.interactionId ||= 'int_upload_' + f.id;
+  _interactions.accept({interactionId:f.interactionId,
+    command:{id:f.interactionId, kind:'filesystem.upload', target:{primitive:'filesystem', id:f.id, label:f.name || f.file?.name}},
+    request:{method:'POST', path:'/api/upload/start'}});
+  const workflow = AmuxState.uploadActor(_interactions, f.interactionId);
+  workflow.send({type:'SEND'});
   const file = f.file;
-  if (!file) { f.error = 'file no longer held — re-attach it'; f.inflight = false; sink.render(); return; }
+  if (!file) { f.error = 'file no longer held — re-attach it'; f.inflight = false; workflow.send({type:'FAIL'}); workflow.stop(); sink.render(); return; }
   f.error = null; f.inflight = true; f.queued = false;
   try {
     for (let attempt = 1; attempt <= _UPLOAD_ATTEMPTS; attempt++) {
@@ -13772,16 +13780,20 @@ async function _runUpload(f, sink) {
             method:'PUT', headers:{'Content-Type':'application/octet-stream'},
             body:await file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size))});
           f.chunk = i + 1; f.nextChunk = i + 1;
+          _interactionSet(f.interactionId, {phase:'sending', progress:{completed:Math.min((i + 1) * CHUNK_SIZE, file.size), total:file.size}, feedback:{message:'Uploading'}});
           await _persistAttachment(f);
         }
         if (f.cancelled) return;
         f.status = 'Finishing…'; sink.render();
+        workflow.send({type:'WAIT'});
         const destination = f.surface === 'directory' ? '?dir=' + encodeURIComponent(f.dir) + '&name=' + encodeURIComponent(f.name) : '';
         const done = await _uploadRequest(f, 'finish', uploadUrl + '/finish' + destination, {method:'POST'});
         if (typeof done.path !== 'string' || !done.path || typeof done.url !== 'string' || !done.url)
           throw new Error('Server did not confirm the uploaded file');
         if (f.cancelled) return;
         f.path = done.path; f.url = done.url; f.error = null; f.status = '';
+        _interactions.effect(f.interactionId, {id:'upload:' + f.uploadId, kind:'file.created', entity:{primitive:'filesystem', id:done.path}});
+        workflow.send({type:'COMPLETE'});
         await _persistAttachment(f);
         _uploadDiagnostic(f, 'complete');
         return;
@@ -13795,15 +13807,19 @@ async function _runUpload(f, sink) {
         _uploadDiagnostic(f, retryable && attempt < _UPLOAD_ATTEMPTS ? 'retry' : 'failed', error);
         if (!retryable || attempt === _UPLOAD_ATTEMPTS) throw error;
         f.status = 'Retrying ' + (attempt + 1) + '/' + _UPLOAD_ATTEMPTS + '…'; sink.render();
+        workflow.send({type:'SEND'});
         await new Promise(resolve => setTimeout(resolve, attempt * 1000));
       }
     }
   } catch (error) {
     if (!f.cancelled) {
+      workflow.send({type:'FAIL'});
       f.error = error.message || 'Upload failed'; f.status = '';
       showToast('Upload failed: ' + f.error + ' — use Retry on the chip');
     }
   } finally {
+    if (f.cancelled) workflow.send({type:'CANCEL'});
+    workflow.stop();
     f.inflight = false; f.aborter = null; sink.render();
   }
 }
@@ -26582,7 +26598,7 @@ async function fetchBoard() {
       // save guard. The edit modal is the one that mattered: it filled its
       // textarea from the list item and saved that back, so flipping this line
       // first would have blanked the description of every card anyone opened.
-      fetch(API + '/api/board?archived=0&slim=1&quota=1', _boardEtag ? { headers: boardHeaders } : undefined),
+      _stateQuery.response(['board', 'response', {archived:0, slim:1, quota:1}], () => fetch(API + '/api/board?archived=0&slim=1&quota=1', _boardEtag ? { headers: boardHeaders } : undefined)),
       fetch(API + '/api/board/statuses'),
       fetch(API + '/api/board/session-gates'),
     ]);
@@ -26636,6 +26652,7 @@ async function fetchBoard() {
     }
     const j = JSON.stringify(data);
     const itemsChanged = j !== lastBoardJSON;
+    _stateQuery.set(['board'], data);
     if (itemsChanged || statusesChanged) {
       lastBoardJSON = j;
       // While a full-corpus text search is live, the default page must not
@@ -27852,7 +27869,7 @@ async function _focusPatch(id, body) {
   catch (e) { return null; }
 }
 async function _focusSend(name, text) {
-  try { const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send',
+  try { const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send',
     { method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
       body: JSON.stringify({ text, record_history: true }),
       signal: AbortSignal.timeout(10000) }); return r.ok; }
@@ -32509,6 +32526,7 @@ function connectSSE() {
     // Note: _sseRetries is reset above, so we key off wasOffline alone.
     if (wasOffline) {
       setTimeout(_runDeltaSync, 200);
+      _stateSync.catchUp().catch(error => _interactionDiagnostic({verdict:'sync_catchup_failed', error:String(error), measured:true, n_considered:1}));
       setTimeout(() => { fetchSessions(); fetchBoard(); }, 250);
     }
     try {
@@ -32581,6 +32599,7 @@ function connectSSE() {
           if (a.type === 'steering_delivered' && a.session === peekSession) _steeringUpdateBadge();
         }
       } else if (msg.type === 'invalidate') {
+        _stateSync.invalidate(msg).catch(error => _interactionDiagnostic({verdict:'query_invalidation_failed', error:String(error), measured:true, n_considered:1}));
         for (const key of (msg.keys || [])) {
           // 'notes' was handled here until the notes view was removed, and
           // 'crm' until the People/CRM view followed it (AMUX-2590); the
@@ -32622,6 +32641,8 @@ function connectSSE() {
             }, 400);
           }
         }
+      } else if (msg.type === 'lagged') {
+        _stateSync.catchUp().catch(error => _interactionDiagnostic({verdict:'sync_catchup_failed', error:String(error), measured:true, n_considered:1}));
       } else if (msg.type === 'ping') {
         // Liveness signal — _lastDataTime already updated above. Also carries the
         // served app version: if the server moved on, this window is running stale
@@ -37983,7 +38004,7 @@ async function _resendRows(rows) {
   let sent = 0, failed = 0;
   for (const r of rows) {
     try {
-      const resp = await _origFetch(API + '/api/sessions/' + encodeURIComponent(r.session) + '/send', {
+      const resp = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(r.session) + '/send', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: r.text }),
         signal: AbortSignal.timeout(10000)

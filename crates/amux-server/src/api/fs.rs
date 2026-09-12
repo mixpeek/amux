@@ -1921,7 +1921,7 @@ mod name_search_tests {
             // anyone is waiting on it. A 30s stand-in made the cell take 30.15s,
             // which is real drag on a suite this card's sibling exists to keep
             // fast. 2s against a 150ms timeout proves the same thing.
-            tokio::task::spawn_blocking(|| {
+            crate::db::interactions::spawn_blocking(|| {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 (Vec::<String>::new(), false)
             }),
@@ -2082,7 +2082,7 @@ pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response
         let q_for_walk = query.clone();
         let (hits, exhausted) = match tokio::time::timeout(
             AUTOCOMPLETE_WALK_TIMEOUT,
-            tokio::task::spawn_blocking(move || dirs_matching_name(&q_for_walk, &roots, 10)),
+            crate::db::interactions::spawn_blocking(move || dirs_matching_name(&q_for_walk, &roots, 10)),
         )
         .await
         {

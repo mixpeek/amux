@@ -1747,7 +1747,7 @@ fn header_session(headers: &HeaderMap) -> Option<String> {
 /// `GET /api/files/mdai` - every `.mdai` file under the root with metadata.
 async fn list(State(state): State<AppState>) -> Response {
     let store = state.store.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let res = crate::db::interactions::spawn_blocking(move || {
         let root = mdai_root();
         let root_canon = match canon_root(&root) {
             Ok(r) => r,
@@ -1822,13 +1822,16 @@ async fn run(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    if let Err(error) = crate::db::interactions::progress(&state.store, "running").await {
+        tracing::warn!(verdict="interaction_progress_failed", %error);
+    }
     let path = body["path"].as_str().unwrap_or("").trim().to_string();
     if path.is_empty() {
         return MdaiError::BadRequest("path required".into()).into_response();
     }
     let session = header_session(&headers);
     let store = state.store.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let res = crate::db::interactions::spawn_blocking(move || {
         let root = mdai_root();
         let model = best_model();
         run_dag(&store, &root, &path, model.as_ref(), session.as_deref())
@@ -1857,7 +1860,7 @@ async fn history(
     // Normalize to the same root-relative key the runs are stored under, so a
     // caller passing an absolute or relative path both find their history.
     let store = state.store.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let res = crate::db::interactions::spawn_blocking(move || {
         let root = mdai_root();
         let key = match canon_root(&root) {
             Ok(root_canon) => match resolve_existing(&root_canon, &root_canon, &path) {
@@ -1922,7 +1925,7 @@ async fn connect(State(_state): State<AppState>, Json(body): Json<Value>) -> Res
     if source.is_empty() || target.is_empty() {
         return MdaiError::BadRequest("source and target required".into()).into_response();
     }
-    let res = tokio::task::spawn_blocking(move || connect_edge(&source, &target, &prompt)).await;
+    let res = crate::db::interactions::spawn_blocking(move || connect_edge(&source, &target, &prompt)).await;
     match res {
         Ok(Ok(v)) => Json(v).into_response(),
         Ok(Err(e)) => e.into_response(),

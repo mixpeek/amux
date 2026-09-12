@@ -15,5 +15,6 @@ cd "$(dirname "$0")/.."
 # Regenerate the globals allowlist from the actual code every run, so the
 # lint can never pass against a stale picture of the SPA's global surface.
 node scripts/gen-spa-globals.mjs
+node scripts/build-state.mjs --check
 
 exec ./node_modules/.bin/eslint 'crates/amux-dashboard/static/*.js'

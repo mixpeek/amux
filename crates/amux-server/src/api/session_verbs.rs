@@ -7379,7 +7379,7 @@ async fn send_text_inner(
         if boot_in_flight {
             let st2 = state.clone();
             let (n, t) = (name.to_string(), text.to_string());
-            tokio::spawn(async move { send_after_ready(st2, n, t, 30, origin).await });
+            crate::db::interactions::spawn(async move { send_after_ready(st2, n, t, 30, origin).await });
             return (true, "sent (waiting for in-flight boot)".into());
         }
         if !env_path(name).exists() {
@@ -7392,7 +7392,7 @@ async fn send_text_inner(
         }
         let st2 = state.clone();
         let (n, t) = (name.to_string(), text.to_string());
-        tokio::spawn(async move { send_after_ready(st2, n, t, 60, origin).await });
+        crate::db::interactions::spawn(async move { send_after_ready(st2, n, t, 60, origin).await });
         return (true, "sent (auto-woke)".into());
     }
     let mut text = text.to_string();
@@ -9131,7 +9131,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     if !instr.is_empty() {
         let st2 = state.clone();
         let n = name.to_string();
-        tokio::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
+        crate::db::interactions::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
     }
     (true, "started".into())
 }
@@ -11802,7 +11802,7 @@ pub(crate) async fn boundary_signals(
 ) -> Option<crate::api::sessions_legacy::FleetSignals> {
     let store = state.store.clone();
     let lane = lane.map(str::to_string);
-    tokio::task::spawn_blocking(move || {
+    crate::db::interactions::spawn_blocking(move || {
         let conn = store.read().ok()?;
         Some(match lane.as_deref() {
             Some(name) => crate::api::sessions_legacy::FleetSignals::load_lane(&conn, name),
@@ -13450,7 +13450,7 @@ pub async fn pipe_reconcile_loop() {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(PIPE_RECONCILE_SECS)).await;
         crate::runtime_jobs::registry::tick(crate::runtime_jobs::registry::ids::PIPE_RECONCILE);
-        if let Err(e) = tokio::spawn(pipe_reconcile_tick()).await {
+        if let Err(e) = crate::db::interactions::spawn(pipe_reconcile_tick()).await {
             tracing::error!(error = %e, "pipe reconcile tick panicked");
         }
     }
@@ -13760,7 +13760,7 @@ pub async fn steer_deliver_loop(state: AppState) {
         crate::runtime_jobs::registry::tick(crate::runtime_jobs::registry::ids::STEER_DELIVER);
         // A panic in one tick must not kill delivery for the whole fleet.
         let st = state.clone();
-        if let Err(e) = tokio::spawn(async move { steer_deliver_tick(&st).await }).await {
+        if let Err(e) = crate::db::interactions::spawn(async move { steer_deliver_tick(&st).await }).await {
             tracing::warn!(error = %e, "steering delivery tick panicked");
         }
         // Time-gated so the 5s steering cadence does not become a 5s fleet-wide
@@ -13778,7 +13778,7 @@ pub async fn steer_deliver_loop(state: AppState) {
         };
         if due {
             let st2 = state.clone();
-            if let Err(e) = tokio::spawn(async move { rate_limit_sweep(&st2).await }).await {
+            if let Err(e) = crate::db::interactions::spawn(async move { rate_limit_sweep(&st2).await }).await {
                 tracing::warn!(error = %e, "rate-limit sweep panicked");
             }
         }
@@ -14414,7 +14414,7 @@ async fn get_dispatch(
             // a screenshot investigation (AMUX-3426; ethos rule 4).
             let store = state.store.clone();
             let nm = name.to_string();
-            let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
                 let conn = store.read()?;
                 let mut fs = crate::api::sessions_legacy::FleetSignals::load(&conn);
                 fs.capture_panes();
@@ -15465,7 +15465,7 @@ async fn post_dispatch(
             }
             let st2 = state.clone();
             let n = name.to_string();
-            tokio::spawn(async move {
+            crate::db::interactions::spawn(async move {
                 let (ok, msg) = start_session(&st2, &n, "", false).await;
                 if ok {
                     if !prompt.is_empty() {
@@ -15504,7 +15504,7 @@ async fn post_dispatch(
         "stop" => {
             let st2 = state.clone();
             let n = name.to_string();
-            tokio::spawn(async move {
+            crate::db::interactions::spawn(async move {
                 let (ok, msg) = stop_session(&st2, &n).await;
                 if ok {
                     emit_event(&st2, &n, "session.stopped", None, None, "api-stop").await;
@@ -16168,7 +16168,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     if let Some(response)=send_dedup_gate(state,name,&msg_id).await {return response;}
     if text.trim().starts_with("/compact") {
         let n = name.to_string();
-        tokio::task::spawn_blocking(move || backup_session_jsonl(&n, "pre_compact"));
+        crate::db::interactions::spawn_blocking(move || backup_session_jsonl(&n, "pre_compact"));
     }
     let record_history = body.get("record_history").map(py_truthy).unwrap_or(false);
     let deliver_now = body.get("deliver_now").map(py_truthy).unwrap_or(false);
@@ -16686,7 +16686,7 @@ pub(crate) async fn instructions_post_verb(state: &AppState, name: &str, body: &
             } else {
                 let st2 = state.clone();
                 let n = name.to_string();
-                tokio::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
+                crate::db::interactions::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
             }
             applied = true;
         }
@@ -18575,7 +18575,7 @@ pub(crate) async fn report_post(state: &AppState, name: &str, headers: &HeaderMa
             if st == "idle" {
                 let st_clone = state.clone();
                 let name_clone = name.to_string();
-                tokio::spawn(async move {
+                crate::db::interactions::spawn(async move {
                     steer_deliver_for_session(&st_clone, &name_clone).await;
                     let _ = crate::runtime_jobs::board_drive::drive_session(&st_clone, &name_clone).await;
                     steer_deliver_for_session(&st_clone, &name_clone).await;
@@ -19225,7 +19225,7 @@ fn config_switch_confirm_key(pane: &str) -> Option<String> {
 /// the dashboard — stalled and SEEN, never stalled and silent.
 fn spawn_switch_confirm_watcher(name: &str) {
     let name = name.to_string();
-    tokio::spawn(async move {
+    crate::db::interactions::spawn(async move {
         let deadline = std::time::Instant::now() + QUEUED_CONFIRM_WATCH;
         while std::time::Instant::now() < deadline {
             sleep_ms(2000).await;
@@ -19749,7 +19749,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         if new_dir != old_dir && is_running(name).await {
             let st2 = state.clone();
             let n = name.to_string();
-            tokio::spawn(async move {
+            crate::db::interactions::spawn(async move {
                 // py:76651 _restart_in_new_dir: hard-kill then start. The
                 // graceful stop records the resumable name first.
                 let _ = stop_session(&st2, &n).await;
@@ -20180,7 +20180,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         }
         let st2 = state.clone();
         let n = name.to_string();
-        tokio::spawn(async move {
+        crate::db::interactions::spawn(async move {
             let _restart_notice = restart_notice;
             let _send_guard = restart_send_guard;
             tracing::info!(session = %n, verdict = "conversation_restart_send_boundary",
@@ -28090,7 +28090,7 @@ mod steer_max_age_tests {
         let mut tasks = Vec::new();
         for _ in 0..8 {
             let (inside, worst) = (inside.clone(), worst.clone());
-            tasks.push(tokio::spawn(async move {
+            tasks.push(crate::db::interactions::spawn(async move {
                 let lock = super::lane_send_lock("lane-x");
                 let _g = lock.lock().await;
                 let n = inside.fetch_add(1, Ordering::SeqCst) + 1;

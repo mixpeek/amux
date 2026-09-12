@@ -126,7 +126,7 @@ pub async fn list_memories(
     Query(p): Query<ListParams>,
 ) -> Response {
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Result<_, Response>> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Result<_, Response>> {
         let conn = store.read()?;
         let mut target = ResolutionTarget::default();
         if let Some(w) = &p.worker {
@@ -297,7 +297,7 @@ pub async fn create_memory(
 pub async fn get_memory(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let store = state.store.clone();
     let key = id.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(memories::get(&conn, &key)?)
     })

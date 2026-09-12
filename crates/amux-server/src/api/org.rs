@@ -1976,6 +1976,15 @@ mod tests {
         let (sync, _, _) = raw_send(&app, "GET", "/api/sync", "", &[("cookie", cookie)]).await;
         assert_eq!(sync, StatusCode::FORBIDDEN);
 
+        // Receipts describe workspace-wide commands. A scoped membership must
+        // not read another worker's metadata through a caller-supplied filter.
+        for path in ["/api/interactions/recent", "/api/interactions/int_other",
+            "/api/interactions/int_other/effects", "/api/interactions/int_other/why",
+            "/api/debug/interactions", "/api/state/summary?scope=worker:other"] {
+            let (status, _, body) = raw_send(&app, "GET", path, "", &[("cookie", cookie)]).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+        }
+
         let member_id: String = rusqlite::Connection::open(&db)
             .unwrap()
             .query_row(

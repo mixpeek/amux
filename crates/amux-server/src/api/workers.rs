@@ -374,7 +374,7 @@ pub async fn list_workers(
     let offset = p.offset;
     let limit = p.limit.clamp(1, 1000);
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(queries::list_workers(&conn, offset, limit)?)
     })
@@ -605,7 +605,7 @@ async fn create_worker_inner(
 pub async fn get_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
     let store = state.store.clone();
     let k = key.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(queries::get_worker(&conn, &k)?)
     })
@@ -1182,7 +1182,7 @@ pub async fn peek_worker(
 ) -> Response {
     let store = state.store.clone();
     let k = key.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         let Some(row) = queries::get_worker(&conn, &k)? else {
             return Ok(None);
@@ -1318,7 +1318,7 @@ pub async fn send_worker(
 ) -> Response {
     let store = state.store.clone();
     let k = key.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(queries::get_worker(&conn, &k)?)
     })
@@ -1348,7 +1348,7 @@ pub async fn send_worker(
 async fn resolve_key(state: &AppState, key: String) -> Result<String, Response> {
     let store = state.store.clone();
     let k = key.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(queries::get_worker(&conn, &k)?)
     })
@@ -1695,7 +1695,7 @@ pub async fn duplicate_worker(
 ) -> Response {
     let store = state.store.clone();
     let k = key.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(queries::get_worker(&conn, &k)?)
     })

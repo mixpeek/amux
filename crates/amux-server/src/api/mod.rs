@@ -43,6 +43,7 @@ pub mod history;
 pub mod reports;
 pub mod terminal;
 pub mod invariants_api;
+pub mod interactions;
 pub mod journal;
 pub mod layout_presets;
 pub mod log_search;
@@ -281,6 +282,7 @@ pub fn router(state: AppState) -> Router {
         // Logs tab (AMUX-2605): python-shape /api/logs + /api/logs/raw over
         // the structured request log + tracing tail (api/request_log.rs).
         .nest("/api/logs", request_log::routes())
+        .merge(interactions::routes())
         .nest("/api/settings", settings::routes())
         .nest("/api/push", crate::push::routes())
         .nest("/api/dictation", dictation::routes())
@@ -511,6 +513,8 @@ pub fn router(state: AppState) -> Router {
     // Synthesizes ONLY into an empty body: a handler that returned its own 405
     // with prose knows more than this layer does and must not be overwritten.
     let app = app.layer(axum::middleware::from_fn(explain_method_not_allowed));
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        store_for_reqlog.clone(), interactions::middleware));
 
     // Transparent gzip compression for every response whose client sends
     // Accept-Encoding: gzip. Board slim drops from 690KB to 162KB,

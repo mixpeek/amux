@@ -167,7 +167,7 @@ async fn list(Query(q): Query<PathParam>) -> Response {
     if !dir.is_dir() {
         return err(StatusCode::BAD_REQUEST, json!({ "error": "not a directory", "path": q.path }));
     }
-    let entries = match tokio::task::spawn_blocking(move || list_dir(&dir)).await {
+    let entries = match crate::db::interactions::spawn_blocking(move || list_dir(&dir)).await {
         Ok(Ok(entries)) => entries,
         Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),

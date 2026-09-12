@@ -355,7 +355,7 @@ const NEEDSYOU_VIEW_CAP: usize = 10;
 ///   6. otherwise: the stored status itself
 async fn derived_board(State(state): State<AppState>) -> Response {
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         let rows =
             bs::list_issues(&conn, &[], &[], ArchivedFilter::ActiveOnly)?;
@@ -3591,7 +3591,7 @@ pub async fn list_board(
     let prose = if slim { bs::Prose::SlimDerivations } else { bs::Prose::Full };
     let quota = qp_truthy(p.quota.as_deref());
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         // Fused filter+cap with lazy hydration (AMUX-3491): the old
         // list_issues + cap_terminal pair decoded every undeleted row's
@@ -4879,7 +4879,7 @@ pub async fn get_item(
     let store = state.store.clone();
     let key = id.clone();
     let member_scope = super::org::local_member_scope(&headers).filter(|scope| !scope.is_global());
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         let Some(row) = bs::get_issue(&conn, &key)? else {
             return Ok(None);
@@ -7126,7 +7126,7 @@ pub async fn claim_item(
     // 409 the caller cannot act on.
     let store = state.store.clone();
     let key = id.clone();
-    let row = match tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let row = match crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
         Ok(bs::get_issue(&conn, &key)?)
     })
@@ -11628,7 +11628,7 @@ pub async fn patch_item(
                     && !session.is_empty()
                 {
                     let st = state.clone();
-                    tokio::spawn(async move {
+                    crate::db::interactions::spawn(async move {
                         let _ = crate::runtime_jobs::board_drive::drive_session(&st, &session).await;
                         crate::api::session_verbs::steer_deliver_for_session(&st, &session).await;
                     });

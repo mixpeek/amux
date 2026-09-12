@@ -22,6 +22,7 @@ pub mod trace_store;
 pub mod throughput_store;
 pub mod commands;
 pub mod harness_store;
+pub mod interactions;
 pub mod memories;
 pub mod migrate;
 pub mod queries;
@@ -89,6 +90,7 @@ type WriteFn = Box<dyn FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + S
 
 struct WriteRequest {
     work: WriteFn,
+    interaction_id: Option<String>,
     reply: mpsc::Sender<rusqlite::Result<WriteReply>>,
 }
 
@@ -188,10 +190,18 @@ impl Store {
     where
         F: FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + Send + 'static,
     {
+        self.write_correlated(f, interactions::current_id())
+    }
+
+    fn write_correlated<F>(&self, f: F, interaction_id: Option<String>) -> anyhow::Result<WriteReply>
+    where
+        F: FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + Send + 'static,
+    {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.write_tx
             .send(WriteRequest {
                 work: Box::new(f),
+                interaction_id,
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("writer thread is gone"))?;
@@ -205,7 +215,8 @@ impl Store {
         F: FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + Send + 'static,
     {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || this.write(f)).await?
+        let interaction_id = interactions::current_id();
+        tokio::task::spawn_blocking(move || this.write_correlated(f, interaction_id)).await?
     }
 
     /// A read acquire this slow means the pool is already saturated. Well under
@@ -385,7 +396,7 @@ fn writer_loop(
         // A panicking caller must not kill the sole writer and strand every
         // later mutation. The transaction guard rolls back during unwinding.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply_write(&conn, req.work, &events_tx)
+            apply_write(&conn, req.work, &events_tx, req.interaction_id.as_deref())
         })).unwrap_or_else(|_| {
             tracing::error!(target: "store", verdict = "writer_mutation_panicked",
                 "mutation panicked; transaction rolled back, writer remains available");
@@ -408,6 +419,7 @@ fn apply_write(
     conn: &Connection,
     work: WriteFn,
     events_tx: &tokio::sync::broadcast::Sender<StateEvent>,
+    interaction_id: Option<&str>,
 ) -> rusqlite::Result<WriteReply> {
     // Roll back EVERY failure path, including revision/event writes, failed
     // COMMIT and unwinding. A bare BEGIN left the connection in a transaction
@@ -422,6 +434,11 @@ fn apply_write(
         conn.execute("UPDATE _amux_rev SET rev = rev + 1 WHERE id = 1", [])?;
         let rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
         let now = chrono::Utc::now();
+        if let Some(id) = interaction_id {
+            conn.execute("UPDATE _amux_interactions SET applied_writes=applied_writes+1,
+                unjournaled_writes=unjournaled_writes+?2, updated_at=?3 WHERE id=?1",
+                rusqlite::params![id, i64::from(outcome.events.is_empty()), now.timestamp_millis()])?;
+        }
         for ev in outcome.events {
             // The COLUMN stores the BARE tag ("worker", "task",
             // "fleet_progress"), never serde's adjacently-tagged object.
@@ -452,6 +469,11 @@ fn apply_write(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![rev, entity_type_str, ev.entity_id, mutation_json, now.to_rfc3339(), payload_json],
             )?;
+            if let Some(id) = interaction_id {
+                conn.execute("INSERT INTO _amux_interaction_effects (interaction_id,event_id,kind,entity_kind,entity_id,rev)
+                    VALUES (?1,?2,?3,?4,?5,?6)", rusqlite::params![id, conn.last_insert_rowid(),
+                        mutation_json, entity_type_str, ev.entity_id, rev])?;
+            }
             committed_events.push(StateEvent {
                 rev: StateRevision(rev),
                 entity_type: ev.entity_type,
