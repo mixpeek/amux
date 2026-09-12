@@ -2015,7 +2015,11 @@ function describeOp(item) {
 // Normal outbox transport stays in Messages; connection warnings describe a
 // delayed or refused operation, not every brief local acceptance.
 function _outboxNeedsAttention(q) {
-  return q.state === 'blocked' || !!q.error || _outboxAgeMs(q) > 20000;
+  // Blocked, or stalled past the send deadline. NOT "has ever errored" and
+  // NOT "older than 20s": one transient 5xx set q.error for the op's whole
+  // life, and 20s is inside the retry backoff, so a healthy queue on a slow
+  // server read as an incident (Ethan, 2026-09-11: "something new I don't like").
+  return q.state === 'blocked' || _outboxIsStalled(q);
 }
 function _outboxAgeMs(q) { return Date.now() - (q.timestamp || 0); }
 // AN OP THAT HAS BEEN "SENDING" FOR HOURS IS NOT SENDING.
@@ -2485,6 +2489,23 @@ async function _runSyncBanner(quiet = false) {
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
       const r = await _boundedMutationFetch(q.url, opts);
+      if (r.status === 409 && /\/(send|steer)$/.test(q.url.split('?')[0])) {
+        // The server's dedup gate: this msg_id was reserved by an earlier
+        // request whose acceptance it cannot confirm. Re-sending can never
+        // succeed (the reservation is permanent), so keeping the op only makes
+        // a red banner that a human dismiss alone can clear (measured 3h35m,
+        // 2026-09-11). Drop it, say so once, and leave the truth where it
+        // lives: the worker's terminal and its Messages tab.
+        const d = await r.clone().json().catch(() => ({}));
+        if (d.submission === 'uncertain') {
+          const who = decodeURIComponent((q.url.match(/\/api\/sessions\/([^/]+)\//) || [])[1] || '');
+          await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
+          _outboxDiagnostic('uncertain_send_dropped', {session: who, age_ms: _outboxAgeMs(q), attempts: q.attempts || 0});
+          showToast('Delivery to ' + who + ' could not be confirmed — check its terminal before resending');
+          item.status = 'done';
+          return;
+        }
+      }
       if (!r.ok) {
         if (!(r.status >= 500 || [401, 408, 429].includes(r.status))) q.state = 'blocked';
         throw new Error(await _apiErrText(r));
@@ -7489,7 +7510,17 @@ async function doSend(name, text) {
   const sendUrl = API + '/api/sessions/' + encodeURIComponent(name) + '/send';
   const sendOpts = { method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, _authHeaders()), body: sendBody };
   try {
-    const r = await fetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(10000) }));
+    // WAIT FOR THE REAL ANSWER. This was a 10s abort, and on this host /send
+    // routinely takes longer (the CLI's own beacons log curl exit 28 on the
+    // same route). The abort fell through to the outbox with the same msg_id;
+    // the replay then met the server's dedup gate, which answers 503 "pending"
+    // for two minutes and 409 "uncertain" after that, and the 409 marked the
+    // op BLOCKED. That is the whole chain behind "1 message waiting — view
+    // details" sitting over a message the worker had already received (Ethan,
+    // 2026-09-11 22:46, mixpeek-orchestrator and amux-research). 90s is a
+    // ceiling for a server that is genuinely hung, not a budget for a slow
+    // one; an abort still queues below, exactly like a network error.
+    const r = await fetch(sendUrl, Object.assign({}, sendOpts, { signal: AbortSignal.timeout(90000) }));
     if (_isLocallyQueued(r)) return 'queued';
     if (!isSlashCmd && r.status === 507) return 'local-failed';
     if (r.ok) return 'sent';
@@ -7707,33 +7738,35 @@ async function sendFromInput(name) {
   }
   const original = inp.value;
   const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
-  if (_composerPendingSends.has(name)) return;
+  // Same contract as sendPeekCmd: clear now, deliver in the background, put
+  // the text back on refusal.
   const draftRevision = _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _syncComposerPending();
+  _composerAcceptLocal(name, original, draftRevision);
+  if (!queued) showToast('Sending to ' + name + '…');
+  (async () => {
   try {
     const result = queued ? (await steerSession(name, _expandAtMentions(msg)) ? 'queued' : 'failed')
       : await doSend(name, _expandAtMentions(msg));
     if (!['sent', 'queued'].includes(result)) {
       _composerUnconfirmed(name, result, _files.length);
-      showToast(result === 'local-failed' ? _writeError + ' — draft and attachments kept'
-        : 'Message not confirmed — draft and attachments kept');
+      _composerRestore(name, original);
+      if (result !== 'declined') showToast(result === 'local-failed' ? _writeError + ' — text put back in the composer'
+        : 'Not delivered — text put back in the composer');
       return;
     }
     cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(name, original, draftRevision);
     const sent = new Set(_files);
     for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
     _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
     renderCardFiles(name);
-    if (result === 'sent') showToast('Sent to ' + name);
+    if (result === 'sent') showToast('Delivered to ' + name);
+    else if (result === 'queued' && !queued) showToast(online ? 'Sent to ' + name : 'Offline — queued for ' + name + ', sends when reconnected');
   } catch (e) {
     _composerUnconfirmed(name, 'exception', _files.length);
-    showToast('Message not confirmed — draft and attachments kept');
-  } finally {
-    _composerPendingSends.delete(name);
-    _syncComposerPending();
+    _composerRestore(name, original);
+    showToast('Not delivered — text put back in the composer');
   }
+  })();
 }
 
 // Composer labels describe the selected action, never background transport.
@@ -8763,14 +8796,40 @@ let _steerHistLoadedFor = null;
 
 // Human-queued rows only — system pushes (m.system, server-classified) are
 // amux's own drive prompts and never count as "queued" on any surface.
+// OPTIMISTIC STEER ROWS survive the poll (Ethan, 2026-09-11: a queued message
+// "takes a while to enter the steering"). The queued row lives on the session
+// object, which every /api/sessions poll REPLACES wholesale (`sessions = data`,
+// three sites) — so a row added between presses and the server persisting it is
+// wiped ~350ms later and reappears only once the server echoes it, a visible
+// flicker. Pending rows live HERE instead, keyed by session, and are merged in
+// at read time until the server's own steering list carries the same text.
+const _pendingSteers = new Map();   // session -> [{id,text,queued_at,pending,ts}]
+function _steerQueueFor(sess) {
+  const server = (sess && sess.steering) || [];
+  const name = sess && sess.name;
+  const pend = (name && _pendingSteers.get(name)) || [];
+  if (!pend.length) return server;
+  const serverTexts = new Set(server.map(m => m.text));
+  // A pending row the server now carries is confirmed — drop it. Also expire
+  // anything that never landed within 2 minutes, so a lost one cannot linger.
+  const kept = pend.filter(pe => !serverTexts.has(pe.text) && (Date.now() - (pe.ts || 0) < 120000));
+  if (kept.length !== pend.length) { if (kept.length) _pendingSteers.set(name, kept); else _pendingSteers.delete(name); }
+  return server.concat(kept);
+}
+function _steerDropPending(name, id) {
+  const pend = _pendingSteers.get(name);
+  if (!pend) return;
+  const kept = pend.filter(m => m.id !== id);
+  if (kept.length) _pendingSteers.set(name, kept); else _pendingSteers.delete(name);
+}
 function _steerHumanCount(sess) {
-  return ((sess && sess.steering) || []).filter(m => !m.system).length;
+  return _steerQueueFor(sess).filter(m => !m.system).length;
 }
 
 function _steeringRender() {
   if (!peekSession) return;
   const sess = sessions.find(s => s.name === peekSession);
-  const queue = (sess && sess.steering) || [];
+  const queue = _steerQueueFor(sess);
   const countEl = document.getElementById('peek-steering-count');
   const list = document.getElementById('peek-steering-list');
   // SYSTEM pushes (board-drive, schedules — server-classified by the guard
@@ -8785,15 +8844,19 @@ function _steeringRender() {
   const row = m => {
     const ago = timeAgo(m.queued_at);
     const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
-    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid var(--border);border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
+    // A row we optimistically added and have not yet heard back on. It shows a
+    // spinner and disabled actions so it reads as "landing", not "stuck".
+    const pendTag = m.pending ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">&#x23F3; queuing…</span>` : '';
+    const dis = m.pending ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
+    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
-        ${sysTag ? `<div style="margin-bottom:4px;">${sysTag}</div>` : ''}
+        ${(sysTag || pendTag) ? `<div style="margin-bottom:4px;">${sysTag}${pendTag}</div>` : ''}
         <div style="font-size:0.85rem;color:${m.system ? 'var(--dim)' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
         <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;">
-        <button class="btn primary" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringSendNow('${m.id}')">Send now</button>
-        <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringCancel('${m.id}')">✕</button>
+        <button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>
+        <button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>
       </div>
     </div>`;
   };
@@ -8860,15 +8923,16 @@ function _steeringUpdateBadge() {
 async function _steeringSendNow(msgId) {
   if (!peekSession) return;
   const sess = sessions.find(s => s.name === peekSession);
-  const msg = ((sess && sess.steering) || []).find(m => m.id === msgId);
+  const msg = _steerQueueFor(sess).find(m => m.id === msgId);
   if (!msg) return;
   const btn = document.querySelector(`[onclick*="_steeringSendNow('${msgId}')"]`);
   if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
+  showToast('Sending now to ' + peekSession + '…');
   try {
     const r = await _origFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({text: msg.text, deliver_now: true}),
-      signal: AbortSignal.timeout(10000)
+      signal: AbortSignal.timeout(90000)
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok || String(d.message || '').startsWith('queued')) {
@@ -8881,11 +8945,12 @@ async function _steeringSendNow(msgId) {
       body: JSON.stringify({id: msgId, sent: true})
     });
     if (sess && sess.steering) sess.steering = sess.steering.filter(m => m.id !== msgId);
+    _steerDropPending(peekSession, msgId);
     _steeringRender();
     _steeringLoadHistory();
     _steeringUpdateBadge();
     render();
-    showToast('Sent to ' + peekSession);
+    showToast('Sent now to ' + peekSession);
     fetchSessions();
   } catch(e) { if (btn) { btn.textContent = 'Send now'; btn.disabled = false; btn.style.opacity = ''; } showToast('Failed to send'); }
 }
@@ -8894,9 +8959,11 @@ async function _steeringCancel(msgId) {
   if (!peekSession) return;
   const sess = sessions.find(s => s.name === peekSession);
   if (sess && sess.steering) sess.steering = sess.steering.filter(m => m.id !== msgId);
+  _steerDropPending(peekSession, msgId);
   _steeringRender();
   _steeringUpdateBadge();
   render();
+  showToast('Removed from queue');
   try {
     await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
@@ -10203,7 +10270,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.911';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.912';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13835,7 +13902,7 @@ function _syncComposerPending() {
 
 async function sendPeekCmd() {
   const session = peekSession;
-  if (!session || _composerPendingSends.has(session)) return;
+  if (!session) return;
   if (_blockedByAttachment(peekFiles)) return;
   const inp = document.getElementById('peek-cmd-input');
   const original = inp.value;
@@ -13856,23 +13923,40 @@ async function sendPeekCmd() {
     }
     message = _expandAtMentions(message);
   }
-  // Persist text and upload references in the local outbox before clearing.
-  // A network refusal remains reviewable in Sync and pending Messages.
+  // CLEAR NOW, DELIVER IN THE BACKGROUND (Ethan, 2026-09-11 11:30 "optimistic
+  // send clears input instantly, fires in background"; 15:58 "it should just
+  // queue and send"). The box empties the moment you press Send; the request
+  // waits for the server on its own; a refusal puts the text back. Nothing is
+  // held in a local outbox on the ordinary path, and nothing is waited for.
   const draftRevision = _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _syncComposerPending();
+  _composerAcceptLocal(session, original, draftRevision);
+  if (peekSession === session) {
+    inp.style.borderColor = 'var(--green)';
+    setTimeout(() => { inp.style.borderColor = ''; }, 400);
+  }
+  // Immediate feedback (Ethan, 2026-09-11: "use toasts as much as possible").
+  // Queue mode's toast comes from steerSession (it owns the optimistic row);
+  // direct mode says it is on its way now, then confirms below.
+  if (!queued) showToast('Sending to ' + session + '…');
+  (async () => {
   let result = 'failed';
   try {
     result = queued ? (await steerSession(session, message) ? 'queued' : 'failed')
       : await doSend(session, message);
     if (!['sent', 'queued'].includes(result)) {
       _composerUnconfirmed(session, result, files.length);
-      showToast(result === 'local-failed' ? _writeError + ' — draft and attachments kept'
-        : 'Message not confirmed — draft and attachments kept');
+      _composerRestore(session, original);
+      if (result !== 'declined') showToast(result === 'local-failed' ? _writeError + ' — text put back in the composer'
+        : 'Not delivered — text put back in the composer');
       return;
     }
+    // doSend returns 'queued' for the ORDINARY online path too: the outbox
+    // interceptor accepts every composer send locally (202) and drains it in
+    // the background. So 'queued' while online means "sent, on its way", and
+    // only 'queued' while OFFLINE is the wait-for-reconnect case.
+    if (result === 'sent') showToast('Delivered to ' + session);
+    else if (result === 'queued' && !queued) showToast(online ? 'Sent to ' + session : 'Offline — queued for ' + session + ', sends when reconnected');
     cmdHistoryAdd(text || message, { session, type: queued ? 'steering' : 'direct' });
-    _composerAcceptLocal(session, original, draftRevision);
     // Remove only the acknowledged files, never a new attachment added while
     // waiting, or attachments belonging to a different worker's composer.
     const sent = new Set();
@@ -13885,19 +13969,25 @@ async function sendPeekCmd() {
       peekFiles = peekFiles.filter(f => !sent.has(f));
       _peekFilesStash(session);
       renderPeekFiles();
-      inp.style.borderColor = 'var(--green)';
-      setTimeout(() => { inp.style.borderColor = ''; }, 400);
       _refreshPeekSoon();
     } else if (_peekFilesBySession[session]) {
       _peekFilesBySession[session] = _peekFilesBySession[session].filter(f => !sent.has(f));
     }
   } catch (e) {
     _composerUnconfirmed(session, 'exception', files.length);
-    showToast('Message not confirmed — draft and attachments kept');
-  } finally {
-    _composerPendingSends.delete(session);
-    _syncComposerPending();
+    _composerRestore(session, original);
+    showToast('Not delivered — text put back in the composer');
   }
+  })();
+}
+/// A refused send puts the text back where it was typed. If the next message
+/// is already being typed there, the refused one goes above it rather than
+/// over it.
+function _composerRestore(session, original) {
+  const live = _liveComposerValue(session);
+  const text = (live != null && live !== '' && live !== original) ? original + '\n' + live : original;
+  _draftSave(session, text);
+  _draftSyncInputs(session, text);
 }
 // One bounded live-frame poll loop after input. Full history can be hundreds
 // of KB; it must not delay seeing the bytes that just reached the terminal.
@@ -13981,24 +14071,39 @@ function _showSteerPrompt(text) {
 async function steerSession(name, text) {
   if (!text) return;
   const msgId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
-  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text, record_history: true, msg_id: msgId })
-  });
-  if (_isLocallyQueued(r)) return true;
+  // OPTIMISTIC: the queued row appears in Steering the instant you press Queue,
+  // not after the server round-trips (Ethan, 2026-09-11 22:52: "when I click a
+  // queued message it takes a while for it to enter the steering"). On this
+  // host /steer can take seconds; waiting for it to paint the row is the whole
+  // delay. Show the row now, marked `pending`, and reconcile its id — or remove
+  // it — when the server answers.
+  const tempId = 'steer-pending-' + msgId;
+  const optimistic = { id: tempId, text, queued_at: Date.now() / 1000, guard: '', pending: true, ts: Date.now() };
+  _pendingSteers.set(name, [...(_pendingSteers.get(name) || []), optimistic]);
+  const _repaint = () => { if (peekSession === name && _peekTab === 'steering') _steeringRender(); _steeringUpdateBadge(); render(); };
+  _repaint();
+  showToast('Queued for ' + name);
+  let r;
+  try {
+    r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text, record_history: true, msg_id: msgId })
+    });
+  } catch (e) { r = null; }
+  if (_isLocallyQueued(r)) { optimistic.pending = false; _repaint(); return true; }
   if (r && r.ok) {
     const d = await r.json().catch(() => ({}));
-    const newEntry = { id: d.id || ('steer-' + Date.now()), text, queued_at: Date.now() / 1000, guard: '' };
-    const sess = sessions.find(s => s.name === name);
-    if (sess) {
-      if (!sess.steering) sess.steering = [];
-      sess.steering.push(newEntry);
-    }
-    if (peekSession === name && _peekTab === 'steering') _steeringRender();
-    _steeringUpdateBadge();
-    render();
+    // Keep the row until the next poll's server list carries it (matched on
+    // text in _steerQueueFor), then it is pruned. Real id so Send now / ✕ work.
+    optimistic.id = d.id || ('steer-' + Date.now());
+    optimistic.pending = false;
+    _repaint();
     return true;
   }
+  // Server refused (a permanently-blocked target, an error): drop the row we
+  // optimistically added and tell the user, rather than leaving a ghost queued.
+  _steerDropPending(name, tempId);
+  _repaint();
   return false;
 }
 function peekDownloadLog() {
@@ -16636,11 +16741,13 @@ async function _pendingCancel(id) {
 function _updatePendingPill() {
   const pill = document.getElementById('peek-pending-pill');
   if (!pill) return;
-  const n = peekSession ? _pendingSendsFor(peekSession)
-    .filter(message => !online || _outboxNeedsAttention(offlineQueue[message.idx])).length : 0;
+  // The pill of 2026-09-04: a send only reaches the outbox when the server
+  // was unreachable, so each queued one is worth a small note that says what
+  // happens next. "N messages waiting — view details" (fe8cd4d4) read as an
+  // incident and sat under messages the worker already had.
+  const n = peekSession ? _pendingSendsFor(peekSession).length : 0;
   pill.style.display = n ? '' : 'none';
-  if (n) pill.innerHTML = '&#x23F3; ' + n + ' message' + (n === 1 ? '' : 's')
-    + (online ? ' waiting' : ' saved offline') + ' &mdash; view details';
+  if (n) pill.innerHTML = '&#x23F3; ' + n + ' queued ' + (online ? '(sending soon)' : '&middot; offline') + ' &mdash; tap to view';
 }
 function _peekMessagesBadge() {
   const badge = document.getElementById('peek-tab-messages-count');

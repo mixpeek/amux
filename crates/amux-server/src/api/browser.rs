@@ -1309,7 +1309,39 @@ async fn start(
                     }
                 }
             }
-            if let Some(p) = headed_launch_pointer(body.headless.unwrap_or(false), &body.profile) {
+            // MINIMISED BY DEFAULT (AMUX-4357). A headed launch takes the
+            // owner's screen; the fleet starts browsers all day. The window is
+            // minimised over CDP right after CDP answers. `window` in the
+            // response says what happened, `minimize_error` says why not, and
+            // the INFO line below is the log signal for the sweep. Off with
+            // AMUX_BROWSER_START_MINIMIZED=0 in server.env.
+            let headless = body.headless.unwrap_or(false);
+            let mut minimized = false;
+            if !headless && chrome::start_minimized_by_default() {
+                match connect_session(&session, None).await {
+                    Ok((_page, mut cdp)) => match chrome::minimize_window(&mut cdp).await {
+                        Ok(_) => {
+                            minimized = true;
+                            tracing::info!(
+                                profile = %body.profile, session = %session,
+                                "browser: window minimised after start (AMUX-4357; AMUX_BROWSER_START_MINIMIZED=0 keeps it on screen)"
+                            );
+                        }
+                        Err(e) => {
+                            v["minimize_error"] = json!(with_cause(&e));
+                            tracing::warn!(profile = %body.profile, session = %session, error = %with_cause(&e),
+                                "browser: could not minimise the window after start (AMUX-4357)");
+                        }
+                    },
+                    Err(_) => {
+                        v["minimize_error"] = json!("could not attach to the started tab to minimise the window");
+                    }
+                }
+            }
+            if !headless {
+                v["window"] = json!(if minimized { "minimized" } else { "normal" });
+            }
+            if let Some(p) = headed_launch_pointer(headless, minimized, &body.profile) {
                 v["tell_the_human"] = json!(p);
             }
             // Echo what was dropped (AMUX-3403): an accepted-and-ignored
@@ -1563,13 +1595,18 @@ async fn status() -> Response {
 ///
 /// `None` for a headless launch: there is no window, so the sentence would be a
 /// lie about the one state where it is easiest to believe.
-fn headed_launch_pointer(headless: bool, profile: &str) -> Option<String> {
+fn headed_launch_pointer(headless: bool, minimized: bool, profile: &str) -> Option<String> {
     if headless {
         return None;
     }
+    let opened = if minimized {
+        "This opened a SECOND Chrome window and minimised it to the Dock (AMUX-4357), so it is \
+         not on their screen; raised, it looks identical to their own."
+    } else {
+        "This opened a SECOND Chrome window beside their own and the two look identical."
+    };
     Some(format!(
-        "This opened a SECOND Chrome window beside their own and the two look identical. \
-         Before asking anyone to sign in, run `amux browser identify` (or POST \
+        "{opened} Before asking anyone to sign in, run `amux browser identify` (or POST \
          /api/browser/identify) — it raises the amux window and draws a blue bar across it \
          naming profile {profile:?}. A Chrome window WITHOUT that bar is theirs."
     ))
@@ -1581,7 +1618,7 @@ mod headed_pointer_tests {
 
     #[test]
     fn a_headed_start_is_told_how_to_point_at_the_window_it_opened() {
-        let p = headed_launch_pointer(false, "hubspot").expect("a headed start opens a window");
+        let p = headed_launch_pointer(false, false, "hubspot").expect("a headed start opens a window");
         assert!(p.contains("amux browser identify"), "the pointer names no verb: {p}");
         assert!(p.contains("hubspot"), "the pointer does not name the profile: {p}");
         assert!(
@@ -1595,7 +1632,7 @@ mod headed_pointer_tests {
     /// confident instruction to look at nothing.
     #[test]
     fn a_headless_start_is_told_nothing_because_there_is_no_window() {
-        assert_eq!(headed_launch_pointer(true, "hubspot"), None);
+        assert_eq!(headed_launch_pointer(true, false, "hubspot"), None);
     }
 }
 

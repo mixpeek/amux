@@ -1086,9 +1086,19 @@
        short, fixed-width and the ones you scan for state, so they keep their
        space and the name yields. Do not restore the 55% floor without asking —
        the wrap it causes is the reported defect, not a side effect. */
-    #peek-title-row { flex-wrap: nowrap; gap: 6px; }
-    #peek-title { flex: 1 1 auto; min-width: 0; }
-    #peek-session-status, #peek-model-badge { flex-shrink: 0; }
+    #peek-title-row { flex-wrap: nowrap; gap: 6px; justify-content: flex-start !important; }
+    /* The NAME keeps a floor: with "rate limited" + "Rate-limited until …"
+       both up, the status alone measured 324 of 378px and the name was 12px.
+       The status group shrinks and clips its tail (the reset time) before the
+       name gives up its 30%. Nothing wraps; the row stays one line. */
+    #peek-title { flex: 1 1 auto; min-width: 30% !important; }
+    #peek-session-status { flex: 0 1 auto !important; min-width: 0; overflow: hidden; }
+    /* The model chip yields before the status does. Ethan's 2026-09-11 22:42
+       screenshot: "mixpeek-orchestr" clipped and "RATE LIMITED" half hidden
+       behind "claude-fable-5-1", because the row was centred and no chip
+       would shrink. The h2 and the chip carry inline styles that outrank a
+       plain rule, hence !important on exactly these. */
+    #peek-model-badge { flex-shrink: 1 !important; min-width: 0; max-width: 34% !important; }
     .file-overlay-header { flex-wrap: nowrap; gap: 6px; align-items: center; position: relative; }
     /* Full title (no more 32vw cutoff) — actions move into the ⋮ menu. */
     .file-overlay-header .file-title-wrap { flex: 1 1 auto; min-width: 0; max-width: none; margin-right: 4px; }
@@ -1950,8 +1960,20 @@
        the middle of the row and read as two disconnected clusters (Ethan,
        2026-09-10: "the toolbar on the top of the worker is wonky"). Even
        distribution uses the same width without inventing a void. */
-    .peek-msg-nav { flex:0 1 auto; }
-    .peek-toolbar { justify-content:space-between; max-width:none; gap:6px; }
+    /* ONE STRIP, NOT FOUR BOXES (Ethan, 2026-09-11 22:42, the row circled).
+       Three passes moved the same six controls around inside separate
+       bordered boxes: a dead gap, then "spread", then still wonky. They are
+       now one segmented control: the nav group, Find, ⋮ and Close share a
+       single border and split the width evenly, every cell >= 44px. */
+    .peek-msg-nav { flex:1 1 auto; border:0; border-radius:0; }
+    .peek-msg-filter { flex:1 1 auto; }
+    .peek-filter-btn { width:100%; }
+    .peek-toolbar { justify-content:stretch; max-width:none; gap:0; border:1px solid var(--border); border-radius:8px; }
+    .peek-toolbar .peek-toolbar-btn { flex:1 1 0; width:auto; min-width:44px; border:0; border-left:1px solid var(--border); border-radius:0; background:transparent; }
+    .peek-toolbar > .peek-more-wrap { flex:1 1 0; display:flex; min-width:44px; border-left:1px solid var(--border); }
+    .peek-toolbar > .peek-more-wrap .peek-toolbar-btn { flex:1 1 auto; width:100%; border-left:0; }
+    .peek-toolbar .peek-nav-btn { flex:1 1 0; width:auto; min-width:44px; }
+    #peek-close-btn { border-radius:0 7px 7px 0; }
   }
   .peek-filter-panel { position:absolute; top:calc(100% + 7px); left:0; width:min(320px,calc(100vw - 24px)); box-sizing:border-box; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,0.25); z-index:65; max-height:calc(100dvh - 180px); overflow-y:auto; }
   .peek-filter-panel[hidden] { display:none; }
@@ -2042,13 +2064,19 @@
      page (device traces show zero events). Keep the controls clear of that
      zone; the installed PWA has no Safari chrome and stays flush. */
   body.safari-tab .peek-cmd-bar { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
-  /* Keep phone chrome compact without narrowing the writing field. The input
-     owns a full row; More and Send share the 44px toolbar below it. */
+  /* ONE COMPOSER LINE ON THE PHONE: input, ⋮ and Send side by side.
+     Ethan, 2026-09-11 22:42, screenshot with the composer circled: the input
+     on its own row with the two buttons on a second row is the layout he
+     called out. This rule shipped in acbad74e and was deleted nine minutes
+     later by 241b92ac ("preserve mobile writing space"), so the phone went
+     back to two rows. tests/dashboard_assets.rs now pins it; change it there,
+     with him, not here alone. Measured 390x844: bar 200px -> ~150px. */
   @media (max-width: 600px) {
     .peek-cmd-toggle { font-size: 0.7rem; padding: 0; min-height: 0; line-height: 1.1; opacity: 0.75; }
     .peek-cmd-bar { padding-top: 2px; }
     .peek-cmd-row { gap: 4px; align-items: flex-end; }
     #peek-chips { margin-bottom: 4px; }
+    .peek-cmd-row .ac-wrap { flex: 1 1 0; min-width: 0; }
     .peek-cmd-row .peek-more-wrap { flex: 0 0 44px; }
     .peek-cmd-row .send-split { flex: 0 0 auto; }
     .peek-cmd-row .send-split .btn { padding-left: 10px; padding-right: 6px; }
@@ -2157,10 +2185,10 @@
     background: rgba(127,127,127,0.16); border: none; color: var(--dim); font-size: 0.82rem;
     padding: 3px 5px; border-radius: 5px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .peek-input-expand:hover { color: var(--text); background: rgba(127,127,127,0.3); }
-  /* Keep the phone's writing space independent of the Send/Queue label. Both
-     actions share a 44px toolbar below the input, including multiline drafts. */
+  /* Phone composer menus open from the ⋮ and stay inside the viewport. (The
+     full-row input rule that lived here is gone on purpose: see the ONE
+     COMPOSER LINE block above.) */
   @media (max-width: 600px) {
-    .peek-composer-input { flex: 1 0 100%; }
     .peek-cmd-row > .send-split { margin-left: auto; }
     .peek-cmd-row .peek-more-menu,
     .peek-cmd-row .dict-popup { left: 0; right: auto; }
@@ -3135,7 +3163,7 @@
     background: var(--bg);
     border-left: 1px solid var(--border);
     box-shadow: -10px 0 10px -8px rgba(0, 0, 0, 0.45);
-    min-width: 60px; min-height: 44px; font-size: 0.75rem; white-space: nowrap; padding: 4px 8px;
+    min-width: 44px; min-height: 44px; font-size: 1.15rem; line-height: 1; white-space: nowrap; padding: 4px 6px;
   }
   /* AF-45. Ethan, three reports: "I click it and nothing happens. It doesn't show."
      Measured on his viewport (screenshot 1125x2436 @3x = 375x812) under WebKit: the
