@@ -8,6 +8,11 @@ changes-requested review, independent re-review and dependent integration are
 first-class scenarios. Existing specs remain independently runnable; no coverage is deleted or duplicated
 by importing test files into a giant order-dependent test.
 
+Current release evidence and every known unresolved lifecycle gap are tracked in
+[Lifecycle status and closure checklist](lifecycle-open-work.md), with a
+[portable evidence summary](evidence/lifecycle-2026-09-11.json). That status is
+INCOMPLETE; the case catalog is not a completed test run.
+
 ## Run
 
 ```bash
