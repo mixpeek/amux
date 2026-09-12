@@ -1796,6 +1796,19 @@ pub async fn start(
         None => tracing::warn!(session, port, "launch tab not claimed — CDP listed no page tab"),
     }
 
+    // MINIMISE BY DEFAULT (AMUX-4357), against this browser's own port so no
+    // other profile is touched. FIRE AND FORGET: the window already appeared on
+    // spawn, so blocking the start return on it buys nothing and only adds
+    // latency (which raced a unit test's exit-monitor into reaping a seeded
+    // browser). The spawned task logs its own outcome for the sweep.
+    if !headless && start_minimized_by_default() {
+        let mport = port;
+        tokio::spawn(async move {
+            if minimize_launched(mport).await {
+                tracing::info!(port = mport, "browser: window minimised after start (AMUX-4357; AMUX_BROWSER_START_MINIMIZED=0 keeps it on screen)");
+            }
+        });
+    }
     let started_at = chrono::Utc::now().timestamp();
     let info = StartedBrowser {
         profile: profile.to_string(),
@@ -3631,6 +3644,41 @@ pub fn start_minimized_by_default() -> bool {
     match std::env::var("AMUX_BROWSER_START_MINIMIZED") {
         Ok(v) => !(v.trim() == "0" || v.trim().eq_ignore_ascii_case("false")),
         Err(_) => true,
+    }
+}
+
+/// Minimise the browser we JUST launched, addressed by its own CDP port. This
+/// deliberately does NOT go through `connect_session`/`resolve_page`, which run
+/// `adopt_if_orphaned` machine-wide and would disturb OTHER profiles' registry
+/// entries (that reaped a peer's staged browser in a unit test — AMUX-4357).
+/// Best-effort: a failure logs and returns false, never fails the start.
+async fn minimize_launched(port: u16) -> bool {
+    let ws = match cdp_list(port).await.ok().and_then(|tabs| {
+        tabs.as_array().and_then(|ts| {
+            ts.iter()
+                .find(|t| t.get("type").and_then(Value::as_str) == Some("page"))
+                .and_then(|t| t.get("webSocketDebuggerUrl").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+    }) {
+        Some(ws) => ws,
+        None => {
+            tracing::warn!(port, "browser: no page target to minimise after launch (AMUX-4357)");
+            return false;
+        }
+    };
+    match CdpClient::connect(&ws).await {
+        Ok(mut cdp) => match minimize_window(&mut cdp).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(port, error = %e, "browser: minimise-after-launch failed (AMUX-4357)");
+                false
+            }
+        },
+        Err(e) => {
+            tracing::warn!(port, error = %e, "browser: could not connect to minimise after launch (AMUX-4357)");
+            false
+        }
     }
 }
 

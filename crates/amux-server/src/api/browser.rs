@@ -1309,38 +1309,13 @@ async fn start(
                     }
                 }
             }
-            // MINIMISED BY DEFAULT (AMUX-4357). A headed launch takes the
-            // owner's screen; the fleet starts browsers all day. The window is
-            // minimised over CDP right after CDP answers. `window` in the
-            // response says what happened, `minimize_error` says why not, and
-            // the INFO line below is the log signal for the sweep. Off with
-            // AMUX_BROWSER_START_MINIMIZED=0 in server.env.
+            // MINIMISED BY DEFAULT (AMUX-4357): chrome::start fires a background
+            // task that minimises the window right after CDP answers, so it is
+            // off the owner's screen a beat after it appears. Off with
+            // AMUX_BROWSER_START_MINIMIZED=0. The pointer notes it so a caller
+            // that wants the window can raise it with `amux browser identify`.
             let headless = body.headless.unwrap_or(false);
-            let mut minimized = false;
-            if !headless && chrome::start_minimized_by_default() {
-                match connect_session(&session, None).await {
-                    Ok((_page, mut cdp)) => match chrome::minimize_window(&mut cdp).await {
-                        Ok(_) => {
-                            minimized = true;
-                            tracing::info!(
-                                profile = %body.profile, session = %session,
-                                "browser: window minimised after start (AMUX-4357; AMUX_BROWSER_START_MINIMIZED=0 keeps it on screen)"
-                            );
-                        }
-                        Err(e) => {
-                            v["minimize_error"] = json!(with_cause(&e));
-                            tracing::warn!(profile = %body.profile, session = %session, error = %with_cause(&e),
-                                "browser: could not minimise the window after start (AMUX-4357)");
-                        }
-                    },
-                    Err(_) => {
-                        v["minimize_error"] = json!("could not attach to the started tab to minimise the window");
-                    }
-                }
-            }
-            if !headless {
-                v["window"] = json!(if minimized { "minimized" } else { "normal" });
-            }
+            let minimized = !headless && chrome::start_minimized_by_default();
             if let Some(p) = headed_launch_pointer(headless, minimized, &body.profile) {
                 v["tell_the_human"] = json!(p);
             }
