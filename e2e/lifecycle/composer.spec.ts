@@ -11,7 +11,14 @@ for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const)
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     const payloads: any[] = [];
-    await page.route(`**/api/sessions/${name}/send`, async route => {
+    let receiptReads = 0;
+    await page.route(`**/api/sessions/${name}/send**`, async route => {
+      if (route.request().method() === 'GET') {
+        receiptReads++;
+        await route.fulfill({ status: 202, json: { accepted: false,
+          msg_id: new URL(route.request().url()).searchParams.get('msg_id') } });
+        return;
+      }
       payloads.push(route.request().postDataJSON());
       await pending;
       await route.fulfill({ status: outcome === 'refused' ? 422 : outcome === 'queued' ? 503 : 200,
@@ -60,7 +67,8 @@ for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const)
       if (outcome === 'accepted') await expect.poll(async () => (await entries()).length).toBe(0);
       else {
         await expect.poll(async () => (await entries())[0]?.attempts).toBe(1);
-        expect((await entries())[0].state).toBe(outcome === 'queued' ? 'pending' : 'blocked');
+        expect((await entries())[0].state).toBe(outcome === 'refused' ? 'blocked' : 'pending');
+        if (outcome === 'unconfirmed') expect((await entries())[0].delivery_uncertain).toBe(true);
       }
       await expect(input).toHaveValue('A newer draft must survive the old delivery receipt');
       if (outcome === 'accepted') expect(await page.evaluate(() => (window as any).__composerToasts)).not.toEqual(
@@ -70,6 +78,13 @@ for (const outcome of ['refused', 'accepted', 'queued', 'unconfirmed'] as const)
       if (outcome !== 'accepted') {
         expect(persisted).toHaveLength(1);
         expect(JSON.parse(persisted[0].options.body)).toEqual(intent);
+        if (outcome === 'unconfirmed') {
+          const before = receiptReads;
+          await page.evaluate(() => (window as any).runSyncBanner(true));
+          expect(receiptReads, 'uncertain delivery retries only the receipt lookup').toBeGreaterThan(before);
+          expect(payloads, 'confirmation must never resend the original command').toHaveLength(1);
+          expect(JSON.parse((await entries())[0].options.body)).toEqual(intent);
+        }
       }
     } finally {
       release();
