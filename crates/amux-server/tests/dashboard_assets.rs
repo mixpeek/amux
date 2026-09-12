@@ -1289,3 +1289,30 @@ fn a_card_send_clears_its_attachments_durably() {
          IndexedDB row is removed; a bare array filter leaks it and the chip returns on reload"
     );
 }
+
+/// A session change must refresh the OPEN worker-details view, not just the
+/// list. The server pushes invalidate:['sessions'] and the client answers with
+/// fetchSessions (AMUX-3503); fetchSessions only re-rendered the list, so the
+/// open peek stayed stale until its own poll or a manual reload (Ethan,
+/// 2026-09-12: "there's a delay and i have to refresh page to see it"). Both the
+/// fetch path and the direct-payload SSE branch must route through the one
+/// helper so they cannot drift.
+#[test]
+fn a_session_update_refreshes_the_open_details_view() {
+    let js = asset("app.js");
+    assert!(
+        js.contains("function _refreshOpenPeekOnSessions"),
+        "the shared open-peek refresh helper must exist so list and details update from one event"
+    );
+    // The helper is CALLED from both the fetch path and the SSE branch (two
+    // call sites, `_refreshOpenPeekOnSessions();`), separate from its one
+    // definition (`function _refreshOpenPeekOnSessions()`). If either call site
+    // is dropped, a session change refreshes only one surface.
+    let calls = js.matches("_refreshOpenPeekOnSessions();").count();
+    assert!(
+        calls >= 2,
+        "expected the open-details refresh to be called from both the fetch path and the SSE \
+         branch (>=2 call sites); found {calls} — a status/queue change would update the list \
+         while the peek stays stale until a manual refresh"
+    );
+}

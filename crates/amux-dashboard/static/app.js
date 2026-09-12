@@ -3811,6 +3811,25 @@ function _scheduleSessionReadRetry() {
     fetchSessions();
   }, delay);
 }
+// Keep the OPEN worker-details (peek) view live on every session-data update,
+// not just the card list. The server moved session updates to an
+// `invalidate:['sessions']` push that the client answers with fetchSessions
+// (AMUX-3503), and fetchSessions only re-rendered the LIST — so a status or
+// queue change showed there while the open detail view stayed stale until its
+// own slower poll tick or a manual refresh (Ethan, 2026-09-12: "there's a delay
+// and i have to refresh page to see it"). The peek-refresh that DID exist lived
+// only in the now-unused direct-payload SSE branch. One helper, called from both
+// the fetch path and that branch, so the two never drift again (ethos rule 1).
+// The frame refetch is a cheap 304 when the peeked frame is unchanged.
+function _refreshOpenPeekOnSessions() {
+  try {
+    const pov = document.getElementById('peek-overlay');
+    if (typeof peekSession !== 'undefined' && peekSession && pov && pov.classList.contains('active')) {
+      if (typeof updatePeekStatus === 'function') updatePeekStatus();
+      if (!document.hidden && typeof refreshPeek === 'function') refreshPeek();
+    }
+  } catch (e) {}
+}
 function fetchSessions() {
   // Focus, SSE invalidation, reconnect and the fallback poll can all ask for
   // the same list at once. One browser tab should never contribute its own
@@ -3875,6 +3894,7 @@ async function _fetchSessionsOnce() {
       catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
       if (typeof _idb !== 'undefined') _idb.set('sessions_cache', data);
       render();
+      _refreshOpenPeekOnSessions();   // list AND details update from the one event
       // Board live-emphasis tracks session activity: re-render the board when the
       // ACTIVE set changes (signature-guarded so this is rare; never mid-drag).
       try {
@@ -10281,7 +10301,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.914';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.915';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -32566,13 +32586,7 @@ function connectSSE() {
           // than wait for the next poll tick. The refetch is a cheap 304 when the
           // peeked frame is unchanged; the while-open poll still carries the
           // continuous mid-turn stream that SSE-on-change alone would miss.
-          try {
-            const _pov = document.getElementById('peek-overlay');
-            if (typeof peekSession !== 'undefined' && peekSession && _pov && _pov.classList.contains('active')) {
-              if (typeof updatePeekStatus === 'function') updatePeekStatus();
-              if (!document.hidden && typeof refreshPeek === 'function') refreshPeek();
-            }
-          } catch (ePk) {}
+          _refreshOpenPeekOnSessions();
           // If workspace is open but no panes were restored yet (e.g. sessions
           // cache was empty on startup), retry restoration now that we have data.
           if (firstLoad && _grid && Object.keys(_gridPanes).length === 0) {
