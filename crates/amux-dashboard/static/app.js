@@ -10334,7 +10334,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.916';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.917';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -19025,7 +19025,24 @@ async function openFilePreview(path) {
     const r = await fetch(url);
     const data = await r.json();
     if (data.error) {
-      document.getElementById('file-body').textContent = 'Error: ' + data.error;
+      // Say WHAT failed and WHERE, not a bare "Error: file not found" dead end
+      // (Ethan, 2026-09-12: a terminal file link opened to that and nothing
+      // else). A missing file is usually one a worker NAMED in its output but
+      // never created — make that legible and show the exact path tried, so it
+      // reads as "this path is not on disk" rather than "the viewer is broken".
+      const bodyEl = document.getElementById('file-body');
+      bodyEl.className = 'file-overlay-body';
+      const notFound = /not found|no such|does not exist|enoent/i.test(data.error);
+      bodyEl.innerHTML = notFound
+        ? '<div style="padding:16px;line-height:1.55;color:var(--dim);">'
+          + '<div style="color:var(--text);font-weight:600;margin-bottom:8px;">This file is not on disk</div>'
+          + '<div style="font-family:ui-monospace,monospace;font-size:0.8rem;word-break:break-all;'
+          + 'background:rgba(127,127,127,0.12);padding:8px 10px;border-radius:6px;margin-bottom:10px;">' + esc(path) + '</div>'
+          + 'It was referenced in the terminal but does not exist here — most often a file a worker '
+          + 'planned or named but has not created yet. Tap the folder path above to see what is around it.'
+          + '</div>'
+        : '<div style="padding:16px;color:var(--dim);word-break:break-all;">Error: ' + esc(data.error)
+          + '<div style="font-family:ui-monospace,monospace;font-size:0.8rem;margin-top:8px;">' + esc(path) + '</div></div>';
       return;
     }
     _fileData = data;
