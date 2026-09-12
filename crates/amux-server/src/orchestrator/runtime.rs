@@ -1725,8 +1725,7 @@ impl Runtime {
         let needs_self_desc = amux_core::board::title_needs_self_description(&title);
         let wid = worker.to_string();
         let body = body.to_string();
-        let desc_body: String = body.chars().take(300).collect();
-        let captured_desc = format!("**Prompt:** {desc_body}");
+        let captured_desc = crate::api::session_verbs::format_captured_desc(&body);
         // Carries (card id, session name) out of the writer so the nudge can
         // be addressed AFTER the card exists — the consequence hangs off the
         // write that already happens, with a named consumer and a durable

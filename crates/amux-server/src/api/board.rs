@@ -3778,6 +3778,36 @@ fn body_opt_str(map: &Map<String, Value>, key: &str) -> Option<Option<String>> {
     }
 }
 
+/// Validates and JSON-encodes a PATCH value for `acceptance_criteria`
+/// (AF-711). `None` = clear; `Some(s)` = the string to store, already
+/// JSON-encoded so the read side's `parse_json_or_raw_string` round-trips it
+/// exactly — a plain string stores as a JSON string (`"..."`, reads back as
+/// the identical string) and an array of strings stores as a JSON array
+/// (`[...]`, matching what `board decompose` itself writes). Any other JSON
+/// shape (number, bool, object, or an array with a non-string entry) is
+/// rejected rather than silently coerced into a clear, which is the one
+/// behavior every reporter of this bug agreed was wrong.
+fn encode_acceptance_criteria(v: &Value) -> Result<Option<String>, String> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) if s.trim().is_empty() => Ok(None),
+        Value::String(_) => Ok(Some(serde_json::to_string(v).expect("a JSON string always encodes"))),
+        Value::Array(items) if items.iter().all(Value::is_string) => {
+            if items.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(serde_json::to_string(v).expect("an array of JSON strings always encodes")))
+            }
+        }
+        Value::Array(_) => {
+            Err("acceptance_criteria array entries must all be strings".to_string())
+        }
+        other => Err(format!(
+            "acceptance_criteria must be a string, an array of strings, or null, got {other}"
+        )),
+    }
+}
+
 /// tags/depends_on style list: array of strings; a bare string is coerced to
 /// a one-element list (SP-539: iterating a str exploded it into one tag per
 /// character — 200, no error, silently corrupted card).
@@ -8725,7 +8755,46 @@ pub async fn patch_item(
             }
             set_opt("unresolved", &mut next.unresolved, &mut changed);
             set_opt("blocked_on", &mut next.blocked_on, &mut changed);
-            set_opt("acceptance_criteria", &mut next.acceptance_criteria, &mut changed);
+            // AF-711: acceptance_criteria used to route through `set_opt` like a
+            // plain nullable string column, via `body_opt_str`'s
+            // `Some(v) => Some(v.as_str().map(str::to_string))`. An incoming
+            // JSON ARRAY (the shape `board decompose` itself writes, and the
+            // shape every caller of a field literally named "criteria, plural"
+            // would reasonably send) makes `Value::as_str()` return `None` —
+            // INDISTINGUISHABLE from an explicit null-clears-the-field request
+            // in that same match arm. The write proceeded as a silent CLEAR,
+            // not a no-op: it destroyed seven tubescience cards' and three
+            // mixpeek-general cards' acceptance criteria in two separate
+            // incidents before this was caught, with the response still
+            // reporting `applied:true`.
+            //
+            // Fixed by encoding whatever the caller sent (string or array of
+            // strings) as JSON before storing, matching the encoding
+            // `board decompose` already uses — so a plain string PATCH also
+            // reads back as the identical string, not silently unrenderable
+            // (see `parse_json_or_raw_string` on the read side) — and
+            // rejecting any other JSON shape outright rather than coercing it
+            // into a clear.
+            if let Some(v) = map.get("acceptance_criteria") {
+                match encode_acceptance_criteria(v) {
+                    Ok(encoded) => {
+                        if next.acceptance_criteria != encoded {
+                            next.acceptance_criteria = encoded;
+                            changed.push("acceptance_criteria".into());
+                        }
+                    }
+                    Err(msg) => {
+                        return finish(
+                            &slot_w,
+                            PatchOut::Refused(
+                                StatusCode::BAD_REQUEST,
+                                json!({"error": msg, "item": row.id}),
+                            ),
+                            no_write(),
+                        );
+                    }
+                }
+            }
             set_opt("decision_question", &mut next.decision_question, &mut changed);
             set_opt("decision_rationale", &mut next.decision_rationale, &mut changed);
             set_opt("decision_supersedes", &mut next.decision_supersedes, &mut changed);
@@ -9050,6 +9119,17 @@ pub async fn patch_item(
                     // by mixpeek-orchestrator at 98 such cards, most weeks old,
                     // several with no attributable actor at all.
                     //
+                    // AF-712 generalizes this from needsyou alone to every
+                    // non-terminal status: measured fleet-wide at 885
+                    // archived+non-terminal rows (todo/doing/backlog/blocked/
+                    // needsyou), UP from AF-555's 785-of-2133 baseline two weeks
+                    // earlier — new instances kept forming because only needsyou
+                    // was ever gated. `survives_archive()` (amux-core::board)
+                    // still names needsyou as the one status that is DESIGNED to
+                    // stay non-terminal while archived (the ask is still owed);
+                    // every other non-terminal status has no such design intent,
+                    // it is just a card nobody closed before hiding it.
+                    //
                     // NOT gated on "the same request also changes status": tried
                     // that first, and `next.archived` is set (a few lines below)
                     // before the status-transition code runs later in this same
@@ -9060,35 +9140,57 @@ pub async fn patch_item(
                     // gate did. That escape never worked; documenting it as a
                     // valid path would have been the ethos-rule-3 lie this fix
                     // exists to remove. The real two-step path (change status
-                    // away from needsyou in one request, archive in the next)
+                    // to a terminal one in one request, archive in the next)
                     // still works and needs no help from this gate.
-                    if row.status == "needsyou" {
+                    if !bs::is_terminal_status(&row.status) {
                         let outcome = map
                             .get("archive_outcome")
                             .and_then(Value::as_str)
                             .map(str::trim)
                             .unwrap_or("");
                         if outcome.is_empty() {
+                            let why = if row.status == "needsyou" {
+                                format!(
+                                    "{} is in needsyou, which means someone is still owed \
+                                     an answer. Archiving it removes it from the owner's \
+                                     queue and every autonomy loop without answering the \
+                                     ask, which is how it goes quiet instead of getting \
+                                     resolved.",
+                                    row.id
+                                )
+                            } else {
+                                format!(
+                                    "{} is still {}, not a terminal status (done/verified/\
+                                     discarded). Archiving it removes it from every board \
+                                     view and autonomy loop while the work is still open, \
+                                     which is how an archived-but-unfinished card accumulates \
+                                     silently instead of ever getting resolved (AF-712).",
+                                    row.id, row.status
+                                )
+                            };
+                            let how = if row.status == "needsyou" {
+                                "add \
+                                 {\"archive_outcome\": \"<answered|withdrawn|discarded, and why>\"} \
+                                 to archive it while recording why, or first PATCH \
+                                 `status` away from needsyou in its own request (the \
+                                 ask was answered or the card is done), then archive \
+                                 it in a second request."
+                            } else {
+                                "add \
+                                 {\"archive_outcome\": \"<why this is being hidden while still open>\"} \
+                                 to archive it while recording why, or first PATCH \
+                                 `status` to done/verified/discarded in its own request, \
+                                 then archive it in a second request."
+                            };
                             return finish(
                                 &slot_w,
                                 PatchOut::Refused(
                                     StatusCode::BAD_REQUEST,
                                     json!({
-                                        "error": "archiving a needsyou card requires an outcome",
-                                        "why": format!(
-                                            "{} is in needsyou, which means someone is still owed \
-                                             an answer. Archiving it removes it from the owner's \
-                                             queue and every autonomy loop without answering the \
-                                             ask, which is how it goes quiet instead of getting \
-                                             resolved.",
-                                            row.id
-                                        ),
-                                        "how": "add \
-                                                {\"archive_outcome\": \"<answered|withdrawn|discarded, and why>\"} \
-                                                to archive it while recording why, or first PATCH \
-                                                `status` away from needsyou in its own request (the \
-                                                ask was answered or the card is done), then archive \
-                                                it in a second request.",
+                                        "error": "archiving a non-terminal card requires an outcome",
+                                        "why": why,
+                                        "how": how,
+                                        "status": row.status,
                                         "item": row.id,
                                     }),
                                 ),
@@ -11817,7 +11919,7 @@ mod af701_archive_guard_tests {
             &state,
             &id,
             HeaderMap::new(),
-            json!({"archived": true, "authorized_by": "ethan"}),
+            json!({"archived": true, "authorized_by": "ethan", "archive_outcome": "no longer needed"}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -11830,8 +11932,13 @@ mod af701_archive_guard_tests {
         // survive closing the anonymous hole, or archiving breaks for Ethan.
         let (state, store) = fixture();
         let id = seed(&store, "some-lane", "todo");
-        let (status, _body) =
-            patch_as(&state, &id, local_member_headers(), json!({"archived": true})).await;
+        let (status, _body) = patch_as(
+            &state,
+            &id,
+            local_member_headers(),
+            json!({"archived": true, "archive_outcome": "no longer needed"}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(current(&store, &id).archived, 1);
     }
@@ -11840,8 +11947,13 @@ mod af701_archive_guard_tests {
     async fn a_named_caller_archiving_their_own_card_needs_no_authorization() {
         let (state, store) = fixture();
         let id = seed(&store, "mvs-research", "todo");
-        let (status, _body) =
-            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        let (status, _body) = patch_as(
+            &state,
+            &id,
+            owner_headers("mvs-research"),
+            json!({"archived": true, "archive_outcome": "no longer needed"}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(current(&store, &id).archived, 1);
     }
@@ -11865,7 +11977,7 @@ mod af701_archive_guard_tests {
         let (status, body) =
             patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "archiving a needsyou card requires an outcome");
+        assert_eq!(body["error"], "archiving a non-terminal card requires an outcome");
         let row = current(&store, &id);
         assert_eq!(row.archived, 0, "a refusal must not mutate the card");
         assert_eq!(row.status, "needsyou");
@@ -11910,7 +12022,7 @@ mod af701_archive_guard_tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "archiving a needsyou card requires an outcome");
+        assert_eq!(body["error"], "archiving a non-terminal card requires an outcome");
         let row = current(&store, &id);
         assert_eq!(row.archived, 0);
         assert_eq!(row.status, "needsyou");
@@ -11933,15 +12045,252 @@ mod af701_archive_guard_tests {
     }
 
     #[tokio::test]
-    async fn a_needsyou_card_can_still_be_archived_with_no_outcome_when_the_gate_does_not_apply() {
-        // CONTROL: a card that is NOT needsyou must be unaffected by this gate,
-        // or the gate is not testing needsyou at all.
+    async fn a_terminal_card_can_still_be_archived_with_no_outcome() {
+        // CONTROL: a card that is ALREADY terminal (done/verified/discarded)
+        // must be unaffected by this gate, or the gate blocks the ordinary
+        // "archive what's finished" case it is not meant to touch.
         let (state, store) = fixture();
-        let id = seed(&store, "mvs-research", "backlog");
+        let id = seed(&store, "mvs-research", "done");
         let (status, body) =
             patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(current(&store, &id).archived, 1);
+    }
+
+    #[tokio::test]
+    async fn archiving_a_non_terminal_non_needsyou_card_is_also_refused_without_an_outcome() {
+        // AF-712: the needsyou-only gate let every OTHER non-terminal status
+        // (todo/doing/backlog/blocked/review) accumulate archived+non-terminal
+        // silently — 885 such cards measured fleet-wide. The gate generalizes
+        // to any non-terminal status, not just needsyou.
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "backlog");
+        let (status, body) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "archiving a non-terminal card requires an outcome");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 0, "a refusal must not mutate the card");
+        assert_eq!(row.status, "backlog");
+    }
+
+    #[tokio::test]
+    async fn archiving_a_non_terminal_non_needsyou_card_succeeds_with_archive_outcome() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "doing");
+        let (status, body) = patch_as(
+            &state,
+            &id,
+            owner_headers("mvs-research"),
+            json!({"archived": true, "archive_outcome": "superseded by a later card"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 1);
+        assert_eq!(row.status, "doing", "the outcome does not itself change status");
+    }
+}
+
+#[cfg(test)]
+mod af711_acceptance_criteria_tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    fn fixture() -> (AppState, crate::db::SharedStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(
+            crate::db::Store::open(&dir.path().join("af711-acceptance-criteria.db"))
+                .expect("open store"),
+        );
+        std::mem::forget(dir);
+        let state = AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "af711-acceptance-criteria-test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        (state, store)
+    }
+
+    fn seed(store: &crate::db::SharedStore, acceptance_criteria: Option<&str>) -> String {
+        let slot = Arc::new(Mutex::new(None));
+        let slot_w = slot.clone();
+        let acceptance_criteria = acceptance_criteria.map(str::to_string);
+        store
+            .write(move |conn| {
+                let mut row = bs::create_issue(
+                    conn,
+                    &bs::NewIssue {
+                        title: "AF-711 fixture card".into(),
+                        desc: "fixture".into(),
+                        status: "doing".into(),
+                        session: Some("mvs-research".into()),
+                        item_type: "code".into(),
+                        creator: "test".into(),
+                        owner_type: "agent".into(),
+                        due: None,
+                        due_time: None,
+                        reviewer: None,
+                        shepherd: None,
+                        gate: vec![],
+                        depends_on: vec![],
+                        tags: vec![],
+                        ask_type: None,
+                        ask_question: None,
+                        ask_unblocks: None,
+                        ask_actor: None,
+                        source: Some("test".into()),
+                        requested_by: None,
+                        callback_session: None,
+                        callback_prompt: None,
+                    },
+                    1_700_000_000,
+                )?;
+                row.acceptance_criteria = acceptance_criteria;
+                bs::save_patched(conn, &mut row)?;
+                *slot_w.lock().unwrap() = Some(row.id);
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .expect("seed");
+        let id = slot.lock().unwrap().clone().unwrap();
+        id
+    }
+
+    async fn patch_as(state: &AppState, id: &str, body: Value) -> (StatusCode, Value) {
+        let response =
+            patch_item(State(state.clone()), Path(id.to_string()), HeaderMap::new(), Json(body))
+                .await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("read response");
+        (status, serde_json::from_slice(&bytes).expect("json response"))
+    }
+
+    fn current(store: &crate::db::SharedStore, id: &str) -> bs::IssueRow {
+        bs::get_issue(&store.read().expect("read"), id).expect("query").expect("card")
+    }
+
+    #[tokio::test]
+    async fn an_array_patch_stores_and_reads_back_the_array_instead_of_clearing_it() {
+        let (state, store) = fixture();
+        let id = seed(&store, None);
+        let (status, body) = patch_as(
+            &state,
+            &id,
+            json!({"acceptance_criteria": ["first condition", "second condition"]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["acceptance_criteria"],
+            json!(["first condition", "second condition"]),
+            "the PATCH response must echo the array back, not null: {body}"
+        );
+        let row = current(&store, &id);
+        assert_eq!(
+            row.snapshot()["acceptance_criteria"],
+            json!(["first condition", "second condition"]),
+            "a subsequent read must still show the array, not a silently cleared field"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_string_patch_reads_back_the_identical_string() {
+        let (state, store) = fixture();
+        let id = seed(&store, None);
+        let (status, body) =
+            patch_as(&state, &id, json!({"acceptance_criteria": "a single plain-text condition"}))
+                .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["acceptance_criteria"],
+            json!("a single plain-text condition"),
+            "a plain string must read back as the identical string, not null: {body}"
+        );
+        let row = current(&store, &id);
+        assert_eq!(
+            row.snapshot()["acceptance_criteria"],
+            json!("a single plain-text condition")
+        );
+    }
+
+    /// The real-world shape both incidents actually took: mixpeek-general's
+    /// three lost cards all cleared acceptance_criteria in a PATCH that ALSO
+    /// touched other fields in the same call, not an acceptance_criteria-only
+    /// body.
+    #[tokio::test]
+    async fn a_mixed_field_patch_does_not_lose_acceptance_criteria() {
+        let (state, store) = fixture();
+        let id = seed(&store, None);
+        let (status, body) = patch_as(
+            &state,
+            &id,
+            json!({
+                "acceptance_criteria": ["survives a mixed-field patch"],
+                "next_action": "keep going",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["acceptance_criteria"], json!(["survives a mixed-field patch"]));
+        assert_eq!(body["next_action"], json!("keep going"));
+        let row = current(&store, &id);
+        assert_eq!(
+            row.snapshot()["acceptance_criteria"],
+            json!(["survives a mixed-field patch"])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_shape_is_rejected_and_does_not_clear_an_existing_value() {
+        let (state, store) = fixture();
+        let id = seed(&store, Some(&serde_json::to_string(&["already set"]).unwrap()));
+        let (status, body) = patch_as(&state, &id, json!({"acceptance_criteria": 5})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let row = current(&store, &id);
+        assert_eq!(
+            row.snapshot()["acceptance_criteria"],
+            json!(["already set"]),
+            "a rejected write must never silently clear the existing value: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_array_with_a_non_string_entry_is_rejected_and_does_not_clear_an_existing_value() {
+        let (state, store) = fixture();
+        let id = seed(&store, Some(&serde_json::to_string(&["already set"]).unwrap()));
+        let (status, body) =
+            patch_as(&state, &id, json!({"acceptance_criteria": ["fine", 5]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let row = current(&store, &id);
+        assert_eq!(row.snapshot()["acceptance_criteria"], json!(["already set"]));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_null_still_clears_it() {
+        let (state, store) = fixture();
+        let id = seed(&store, Some(&serde_json::to_string(&["already set"]).unwrap()));
+        let (status, body) = patch_as(&state, &id, json!({"acceptance_criteria": null})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let row = current(&store, &id);
+        assert_eq!(row.acceptance_criteria, None);
+    }
+
+    /// AF-711's second, distinct bug: legacy content stored as a plain
+    /// (non-JSON-encoded) string by the old buggy write path must still be
+    /// VISIBLE on read — not silently substituted with null just because it
+    /// does not parse as JSON.
+    #[tokio::test]
+    async fn legacy_non_json_content_reads_back_as_the_raw_string_not_null() {
+        let (_state, store) = fixture();
+        let id = seed(&store, Some("a plain string stored before this fix, not JSON-encoded"));
+        let row = current(&store, &id);
+        assert_eq!(
+            row.snapshot()["acceptance_criteria"],
+            json!("a plain string stored before this fix, not JSON-encoded"),
+            "legacy non-JSON content must not read back as null"
+        );
     }
 }
 
@@ -12622,9 +12971,7 @@ async fn capsule(
         }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    let ac = row.acceptance_criteria.as_deref()
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .unwrap_or(Value::Null);
+    let ac = bs::parse_json_or_raw_string(row.acceptance_criteria.as_deref());
     let files: Vec<String> = conn
         .prepare("SELECT path FROM issue_files WHERE issue_id = ?1")
         .and_then(|mut stmt| {

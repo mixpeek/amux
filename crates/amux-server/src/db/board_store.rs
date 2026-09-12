@@ -1008,10 +1008,18 @@ pub fn default_gates_for(item_type_raw: &str, target: TaskStatus) -> Vec<String>
             "Ready for another set of eyes",
         ],
         (ItemType::Code, TaskStatus::Done) => &["Implemented and merged", "Tests / lint pass"],
+        // AF-719: criteria 2/3 used to have no truthful path for a code card in
+        // a repo/domain with no deployment concept at all (a local analysis
+        // script, a one-shot data-repo fix) — unlike criterion 1, which already
+        // had the "if not applicable, note why" escape. amux-server's own code
+        // genuinely deploys to a running service, so the bar is unchanged for
+        // it; the escape only matters for a code card where it is honestly
+        // inapplicable, and noting why is not a weaker bar than asserting a
+        // deployment that never happened.
         (ItemType::Code, TaskStatus::Verified) => &[
             "CI/CD green (if e2e infra is unavailable, note why — that is not a failure)",
-            "Deployed to prod",
-            "Confirmed working in prod",
+            "Deployed to prod (if this card has no deployment target, note why)",
+            "Confirmed working in prod (if this card has no deployment target, note why)",
             "Zero regressions",
         ],
         // Decision (AF-323): a card whose only output is an answer from the
@@ -1867,8 +1875,7 @@ impl IssueRow {
             "next_action": self.next_action,
             "last_result": self.last_result,
             "unresolved": self.unresolved,
-            "acceptance_criteria": self.acceptance_criteria.as_deref()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
+            "acceptance_criteria": parse_json_or_raw_string(self.acceptance_criteria.as_deref()),
             "decision_question": self.decision_question,
             "decision_rationale": self.decision_rationale,
             "decision_supersedes": self.decision_supersedes,
@@ -2744,11 +2751,13 @@ pub struct NewIssue {
 /// the noise this is here to prevent.
 ///
 /// KNOWN IMPRECISION, stated rather than hidden: `desc` is the prompt TRUNCATED to
-/// 300 chars, so two genuinely different prompts sharing a 300-char prefix compare
-/// equal here and the second is suppressed. The cmd_history guard above does not
-/// have this edge, because it compares the full text. Accepted because the two
-/// cards would be indistinguishable on the board anyway (both descs are the same
-/// 300 chars), and because the caller logs the SURVIVING card id on every
+/// `CAPTURE_DESC_CHAR_CAP` chars (2000, AF-716 — raised from the original 300,
+/// which cut real reports off mid-sentence with no marker), so two genuinely
+/// different prompts sharing that long a prefix compare equal here and the
+/// second is suppressed. The cmd_history guard above does not have this edge,
+/// because it compares the full text. Accepted because the two cards would be
+/// indistinguishable on the board anyway (both descs are the same truncated
+/// text), and because the caller logs the SURVIVING card id on every
 /// suppression, so a wrongly dropped prompt is a greppable line rather than a
 /// missing card nobody can see. If that line ever shows up for prompts that are not
 /// duplicates, the fix is to store a full-prompt hash on the card, not a longer
@@ -2878,6 +2887,28 @@ pub fn soft_delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// and by migration 0031's backfill, so the two cannot disagree about what
 /// "closed" means.
 pub const TERMINAL_STATUSES: [&str; 3] = ["done", "verified", "discarded"];
+
+/// Reads a column that is supposed to hold a JSON-encoded value (currently
+/// `acceptance_criteria`) without silently turning real content into `null`
+/// when it isn't valid JSON (AF-711).
+///
+/// The prior form of every caller was `.and_then(|s| serde_json::from_str(s)
+/// .ok())`, which reports EXACTLY the same `null` for "column is empty" and
+/// "column holds real text that failed to parse" — the second case is a
+/// caller having stored a plain string (a genuinely reasonable value for a
+/// text field to hold) with no way to know their content is now invisible
+/// everywhere the row is read. A parse failure returns the raw string
+/// instead: still visible, even if not structured the way a `board decompose`-
+/// written array would be.
+pub fn parse_json_or_raw_string(s: Option<&str>) -> serde_json::Value {
+    match s {
+        None => serde_json::Value::Null,
+        Some("") => serde_json::Value::Null,
+        Some(s) => {
+            serde_json::from_str(s).unwrap_or_else(|_| serde_json::Value::String(s.to_string()))
+        }
+    }
+}
 
 pub fn is_terminal_status(s: &str) -> bool {
     TERMINAL_STATUSES.contains(&s)
@@ -5838,8 +5869,8 @@ column=silent type:code=outranked(2)"
             &groups(&["amux"]),
         );
         for want in [
-            "Deployed to prod",
-            "Confirmed working in prod",
+            "Deployed to prod (if this card has no deployment target, note why)",
+            "Confirmed working in prod (if this card has no deployment target, note why)",
             "Zero regressions",
         ] {
             assert!(
@@ -5888,7 +5919,9 @@ column=silent type:code=outranked(2)"
             &groups(&["amux"]),
         );
         assert!(
-            only_marker.iter().any(|g| g == "Confirmed working in prod"),
+            only_marker
+                .iter()
+                .any(|g| g == "Confirmed working in prod (if this card has no deployment target, note why)"),
             "a marker-only gate holds no rule and must fall through, not open the gate: {only_marker:?}"
         );
     }
