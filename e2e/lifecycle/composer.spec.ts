@@ -94,7 +94,10 @@ test('LC-COMPOSER: focused and replacement inputs clear exactly the accepted dra
     eval('_draftSave')(name, replacement.value);
     eval('_composerAcceptLocal')(name, 'replacement accepted');
     const replacementCleared = replacement.value === '';
-    replacement.value = 'newer edit'; eval('_draftSave')(name, 'older accepted');
+    eval('_draftSave')(name, 'older accepted');
+    // Create the newer edit AFTER saving the submitted revision: saving now
+    // updates every view immediately instead of maintaining a separate copy.
+    replacement.value = 'newer edit';
     eval('_composerAcceptLocal')(name, 'older accepted');
     const newerPreserved = replacement.value === 'newer edit' && eval('_draftGet')(name) === 'newer edit';
     replacement.remove(); eval('_draftClear')(name);

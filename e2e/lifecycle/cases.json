@@ -141,11 +141,12 @@
   {
     "id": "LC-15",
     "surface": "Backlog autonomous pickup",
-    "actions": "Create backlog work with a clear next action; leave the observer idle for several driver ticks.",
-    "expected": "Work progresses to todo and doing without observer nudges; history attributes the promotion.",
+    "actions": "Create backlog work with a clear next action; leave the observer idle for several driver ticks. Exercise both Backlog and Todo on each of two real workers, with dependencies in opposite initial-state order and no chat prompt, observer claim, evidence write or status advancement.",
+    "expected": "Work progresses to todo and doing without observer nudges; history attributes the promotion. Every original seeded ID reaches an evidenced terminal state; completing only one worker is INCOMPLETE. Retain timelines for starvation or acknowledgement-generated work.",
     "sources": [
       "docs/e2e-acceptance.md",
-      "crates/amux-server/tests/golden_scenarios.rs"
+      "crates/amux-server/tests/golden_scenarios.rs",
+      "e2e/lifecycle/sonnet-queue.ts"
     ]
   },
   {
@@ -257,12 +258,13 @@
   {
     "id": "LC-27",
     "surface": "Terminal reading and controls",
-    "actions": "Open terminal/transcript; navigate earlier/later messages, source/content filters, Find, copy, path links and focus mode; test long output.",
-    "expected": "Scroll anchors and filter selection survive refresh; no cross-worker output/draft/card mixing; toolbar is reachable.",
+    "actions": "Open terminal/transcript; navigate earlier/later messages, source/content filters, Find, copy, path links and focus mode; test long output. For Gemini and Sonnet, send human and peer messages, produce enough output to require older-history loading, then find each exact message under its origin filter and open its linked task on desktop and phone.",
+    "expected": "Scroll anchors and filter selection survive refresh; no cross-worker output/draft/card mixing; toolbar is reachable. Durable peer history must remain navigable after it leaves the live terminal frame; paint-log fallback cannot count as verified structured provider history.",
     "sources": [
       "e2e/terminal-message-navigation.spec.ts",
       "e2e/terminal-scroll-accuracy.spec.ts",
-      "e2e/peek-default-tab.spec.ts"
+      "e2e/peek-default-tab.spec.ts",
+      "e2e/lifecycle/sonnet-crossgroup.ts"
     ]
   },
   {
@@ -583,8 +585,8 @@
   {
     "id": "LC-60",
     "surface": "Dependent integration and callback",
-    "actions": "Consumer reads author/reviewer tasks, creates its own dependent integration task, waits for approval, tests the artifact, and sends HANDOFF_DONE.",
-    "expected": "Integration finishes after approval; linked task IDs belong to the correct peers; callback wakes requester and all three workers reach evidenced terminal states. A completion callback must not request another acknowledgement or manufacture another review task solely to process its receipt.",
+    "actions": "Consumer reads author/reviewer tasks, creates its own dependent integration task, waits for approval, tests the artifact, and sends HANDOFF_DONE. After HANDOFF_DONE, observe three complete board-driver cycles with no new user input; record cycle boundaries, per-worker open task IDs, messages and model calls.",
+    "expected": "Integration finishes after approval; linked task IDs belong to the correct peers; callback wakes requester and all three workers reach evidenced terminal states. A completion callback must not request another acknowledgement or manufacture another review task solely to process its receipt. Completion receipts do not generate recursively captured acknowledgement tasks; all original deliverables remain terminal and no new model turn exists solely to acknowledge a receipt.",
     "sources": [
       "e2e/lifecycle/coordination.spec.ts",
       "e2e/lifecycle/live-coordination.spec.ts",
@@ -607,8 +609,8 @@
   {
     "id": "LC-62",
     "surface": "Unavailable peer and recovery",
-    "actions": "Stop reviewer before request, resume it later; separately test archived, isolated, error and rate-limited reviewers.",
-    "expected": "Requester shows who/what it awaits, retains its next action, avoids false completion, and resumes when the actual reviewer returns.",
+    "actions": "Stop reviewer before request, resume it later; separately test archived, isolated, error and rate-limited reviewers. Also test host admission denial separately from provider quota exhaustion; retry in a dedicated lab only after the actual blocking condition clears.",
+    "expected": "Requester shows who/what it awaits, retains its next action, avoids false completion, and resumes when the actual reviewer returns. Health may be OK while new worker admission is denied. Unavailable prerequisites remain BLOCKED/INCOMPLETE and never satisfy native delivery or task-completion assertions.",
     "sources": [
       "e2e/lifecycle/coordination.spec.ts",
       "e2e/lifecycle/live-coordination.spec.ts",
@@ -702,8 +704,8 @@
   {
     "id": "LC-COMPOSER-LAYOUT",
     "surface": "Long-draft composer layout",
-    "actions": "Enter a long multiline draft on desktop, mobile and Safari; inspect the Send button and mode menu.",
-    "expected": "Both controls retain 44px touch targets and the group stays compact rather than stretching to the textarea height.",
+    "actions": "Enter short and long multiline drafts; toggle Send/Queue on desktop, 320px mobile, iPhone Safari, landscape and reduced keyboard viewports. Open Attach file and cancel the chooser, then clear the draft.",
+    "expected": "Phone inputs occupy the full composer width with aligned 44px controls below. Actions and attachment menus remain inside the viewport, mode changes and cancelling file selection preserve text, and clearing a long draft reclaims its height.",
     "sources": [
       "e2e/lifecycle/composer-layout.spec.ts"
     ]
@@ -735,6 +737,39 @@
     "sources": [
       "scripts/test-board-show-messages.py",
       "e2e/lifecycle/sonnet-upload.ts"
+    ]
+  },
+  {
+    "id": "LC-BLOCKED-OUTBOX",
+    "surface": "Failed and retryable offline edits",
+    "actions": "Create a real board revision conflict, go offline, inspect its review link, enqueue a second edit, dismiss only the failed change, then reconnect. Exercise all browser projects and a stale failed-row dismissal after another tab resumes the operation.",
+    "expected": "Blocked edits never promise automatic retry. Mixed queues count failed and retryable changes separately. Dismissal preserves resumed/pending work; reconnect applies only the pending edit and leaves the newer peer revision intact.",
+    "sources": [
+      "e2e/lifecycle/blocked-outbox.spec.ts",
+      "tests/dashboard-outage-recovery.mjs"
+    ]
+  },
+  {
+    "id": "LC-HELPER-FAILURE",
+    "surface": "Semantic helper failure and recovery",
+    "actions": "In an isolated subprocess fixture make the configured helper exit nonzero with quota text on stdout, diagnostic stderr, empty output, and JSON-shaped stdout; also exercise timeout and successful JSON. Then restore an available real helper and resend a paraphrase through the actual composer. This is a guided closure case; no new automated implementation is claimed.",
+    "expected": "Unsuccessful classifier processes never count as measured decisions or bad-JSON model answers. Bounded diagnostics identify exit/timeout and provider availability. Requests and original IDs remain attributable; the documented fallback is visible. Recovery produces a measured semantic append/update with all source links. Failed helper calls do not silently claim deduplication.",
+    "sources": [
+      "crates/amux-server/src/api/mdai.rs",
+      "crates/amux-server/src/api/board_intake.rs",
+      "e2e/lifecycle/live-semantic-messages.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-TOKEN-EFFICIENCY",
+    "surface": "Measured tokens per completed outcome",
+    "actions": "Run matched scratch workloads before and after an optimization with the same provider/model, input files, gate criteria and output checks. Record native-worker and helper calls separately, input/output/cache tokens when reported, task/message growth and elapsed time. Include a completed coordination chain with three quiet board-driver cycles. This is guided measurement, not an existing automated benchmark.",
+    "expected": "Compare tokens per independently verified outcome, not per message. Quality, semantic target selection, source links and peer review stay equal. Missing provider counters are UNMEASURED, never zero. Duplicate acknowledgement turns cease; claimed savings have baseline and candidate evidence with model/settings and commit identities.",
+    "sources": [
+      "e2e/lifecycle/sonnet-queue.ts",
+      "e2e/lifecycle/live-coordination.spec.ts",
+      "crates/amux-server/src/api/board_intake.rs",
+      "crates/amux-server/src/api/mdai.rs"
     ]
   }
 ]

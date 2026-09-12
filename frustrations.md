@@ -2062,3 +2062,81 @@ CARD: AMUX-4417
 SYMPTOM: LC-SEMANTIC-INTAKE posted candidate tasks directly to /api/board. The canonical case also promised captured worker messages, but no executable scenario sent those messages through a composer and checked their surviving task links.
 COST: A direct-board semantic pass could be mistaken for proof that ordinary new messages avoid near-duplicate board tasks.
 FIX: Add LC-SEMANTIC-MESSAGES to live discovery: six composer messages must produce three tasks, four linked source messages on one survivor, measured append/update decisions and preserved requirements. Follow source links in desktop/mobile details. Record live prerequisites separately: the first attempt failed worker admission under host memory pressure before sending, so it is not a semantic pass. Preserve the dedicated run's health and trace evidence.
+
+## Phone composer squeezed the draft beside a misaligned Queue button
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The phone composer put the textarea, top-aligned more button and bottom-aligned Queue button on one row. Removing the corrected full-width rule reproduces a 204px input in a 363px row. The expanded test also found the attachment menu 16px above the viewport in landscape.
+COST: Another user screenshot and a failed landscape acceptance run before the clipping was corrected.
+FIX: This commit gives phones a full-width input and a separate aligned 44px toolbar, bounds the long draft and attachment menu, and adds inputW/actionDelta to the existing layout diagnostic. Source-built LC-COMPOSER-LAYOUT, LC-LATENCY and LC-RECEIPT: 9 passed across desktop, mobile and iPhone WebKit; 32 outbox contracts passed. The CSS negative control fails on input width (204.34375px versus at least 362px).
+
+## Automatic quota resumption was labelled needs input
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex
+CARD: AMUX-4420
+SYMPTOM: Ethan's mixpeek-frustrations screenshot showed NEEDS INPUT over Claude's usage limit with automatic resumption at 6:10pm. Preview cancellation text overwrote the provider state; the sweep discarded this banner's reset clock. The wider audit found ready-composer events overwriting quota/error states and missing Starting/Error badges.
+COST: User had to inspect the terminal and report a question that did not exist; independent state projections disagreed.
+FIX: Current provider-footer classification, clock-preserving observation, typed state projection, idle-prompt event semantics, and explicit dashboard badges. Controlled provider/model and browser chaos regressions; diagnostic verdicts preview_quota_over_input, provider_auto_resume_quota, and ready_composer_idle.
+
+## Worker terminal opened in the middle of its history
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex
+CARD: AMUX-4421
+SYMPTOM: Ethan opened mixpeek-general and landed midway through old terminal output instead of at the latest output.
+COST: Each open required finding and scrolling to the worker's current output.
+FIX: Preserve bottom-follow intent through asynchronous history/live rendering and resizing, cancel it on deliberate reading/navigation, and flush buffered output on resume. Desktop/phone race tests and bottom-anchor-restored diagnostics.
+
+## Accepted details message survived as a partial card draft
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex
+CARD: AMUX-4424
+SYMPTOM: Ethan sent a message to amux from worker details, but an earlier partially typed copy remained in the worker card. The 250ms draft mirror lagged; exact-match acceptance left the partial copy alive, and lifecycle DOM harvesting could save it again. Fullscreen edits and separate browser contexts also missed draft synchronization.
+COST: User could mistake already-submitted text for unsent work and submit it twice.
+FIX: Immediate per-worker draft updates across card/details/fullscreen and same-origin tabs/grid; revision-bound acceptance preserves newer edits, lifecycle events never overwrite storage from stale DOM, and failed storage retains text with a visible warning. Server client-debug verdicts composer_locally_accepted and composer_draft_storage_failed. Regression reproduced on pre-fix source; desktop, phone and WebKit coverage alongside durable outbox tests.
+
+## Offline banner promised to retry permanently failed edits
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: A blocked 409 board edit displayed as queued and promised to send on reconnect while offline. The regression reproduced that exact text before the fix.
+COST: The user could wait for an automatic retry that will never occur.
+FIX: This commit separates failed and pending counts in offline mode, preserves review/dismiss actions for failed-only queues, and adds LC-BLOCKED-OUTBOX across desktop/mobile/WebKit. The final focused run passed 9 cases including gate revisions and linked records; screenshots were opened.
+
+## Stale failed-row dismissal deleted an edit resumed in another tab
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: A stale failed-row action removed its operation by ID even after durable storage changed its state to pending. The regression lost the resumed entry before the fix.
+COST: Potential loss of a pending edit when two tabs act on the same outbox.
+FIX: This commit checks blocked state inside the shared storage lock, refreshes the UI and emits outbox_dismiss_ignored when the action is stale. The contract verifies pending work survives both individual and bulk failed-only dismissal. All 34 outbox contracts passed.
+
+
+## More-specific mobile flex rule narrowed the composer again
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-11
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: After integrating the latest toolbar change, LC-COMPOSER-LAYOUT failed on all three projects: the 320px phone input shrank to 155px instead of its available 308px.
+COST: Long drafts become difficult to read beside More and Queue.
+FIX: Remove the conflicting ac-wrap flex override, retain compact chrome and aligned action controls, and preserve the full-width mobile writing row. Existing composer-layout diagnostics record inputW and actionDelta; the browser case checks short/long drafts, Send/Queue, narrow/landscape viewports and attachment-menu reachability.

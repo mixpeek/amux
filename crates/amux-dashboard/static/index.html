@@ -2230,7 +2230,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-memory" onclick="setPeekTab('memory')"><span class="tab-ico">&#x1F4DD;</span><span class="tab-lbl">Memory</span></button>
     <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')"><span class="tab-ico">⎇</span><span class="tab-lbl">Worktree</span></button>
     <button class="peek-tab" id="peek-tab-logs" onclick="setPeekTab('logs')" title="HTTP request log for this worker"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span><span class="peek-tab-count" id="peek-tab-logs-count"></span></button>
-    <button class="tab-customize-btn" id="peek-tab-customize" onclick="event.stopPropagation();togglePeekTabCustomizer()" title="Show, hide or reorder worker tabs" aria-label="Customize worker tabs" aria-expanded="false" style="flex:0 0 auto;">Tabs ▾</button>
+    <button class="tab-customize-btn" id="peek-tab-customize" onclick="event.stopPropagation();togglePeekTabCustomizer()" title="Show, hide or reorder worker tabs" aria-label="Customize worker tabs" aria-expanded="false" style="flex:0 0 auto;">&#x229E;</button>
     <!-- The menu itself is NOT here on purpose — it is a direct child of the
          document body, at the end of this file. `.peek-tabs` is a ~44px
          horizontal scroller (overflow-x:auto; overflow-y:hidden;
@@ -2277,7 +2277,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <!-- Attachment chips -->
         <div class="peek-attach-bar" id="peek-attach-bar"></div>
         <!-- Input row -->
-        <div class="ac-wrap" style="flex:1;min-width:0;position:relative;">
+        <div class="ac-wrap peek-composer-input">
           <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Type a message or drop a file..."
             autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
             enterkeyhint="enter" style="width:100%;"

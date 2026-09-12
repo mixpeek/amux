@@ -19,21 +19,15 @@ use std::path::Path;
 
 /// WorkerState -> the Python status vocabulary the SPA's badges render.
 fn python_status(state_json: &str) -> &'static str {
-    // state_json is the row's JSON WorkerState; match on the tag cheaply.
-    if state_json.contains("\"active\"") {
-        "active"
-    } else if state_json.contains("\"idle\"") {
-        "idle"
-    } else if state_json.contains("\"waiting\"") {
-        "waiting"
-    } else if state_json.contains("\"rate_limited\"") {
-        "rate-limited"
-    } else if state_json.contains("\"error\"") {
-        "error"
-    } else if state_json.contains("\"starting\"") {
-        "starting"
-    } else {
-        "" // stopped renders as blank in the Python list
+    let value: serde_json::Value = serde_json::from_str(state_json).unwrap_or_default();
+    match value.get("state").and_then(serde_json::Value::as_str) {
+        Some("active") => "active",
+        Some("idle") => "idle",
+        Some("waiting") => "waiting",
+        Some("rate_limited") => "rate_limited",
+        Some("error") => "error",
+        Some("starting") => "starting",
+        _ => "", // stopped renders as blank in the legacy wire format
     }
 }
 
@@ -358,33 +352,53 @@ fn run_bounded(
 /// pane content that build_array already has in hand. Does not spawn
 /// any subprocess.
 fn derive_waiting_reason(raw: &str) -> &'static str {
-    if raw.is_empty() {
-        return "";
-    }
-    let clean = strip_ansi(raw);
-    let low = clean.to_lowercase();
-
-    if crate::api::session_verbs::is_rate_limit_menu(raw) {
+    if crate::backend::adapter::claude_auto_resume_banner(raw).is_some()
+        || crate::api::session_verbs::is_rate_limit_menu(raw) {
         return "rate_limit";
     }
-    if low.contains("do you want to proceed") {
+    let clean = strip_ansi(raw);
+    let lines: Vec<_> = clean.lines().collect();
+    let start = lines.iter().rposition(|l| matches!(l.trim(), "❯" | "›"))
+        .unwrap_or_else(|| lines.len().saturating_sub(12));
+    let current = lines[start..].join("\n");
+    // Cancellation is also offered during generation, retry and quota waits.
+    // Only a current selector can ask a human for input. Older quoted pickers
+    // above the empty composer do not describe this turn.
+    if crate::api::session_verbs::detect_claude_status(&current) != "waiting" {
+        return "";
+    }
+    let low = current.to_lowercase();
+    if low.contains("do you want to proceed") || low.contains("approve") {
         return "permission_prompt";
     }
-    if low.contains("approve") && !low.contains("bypass permissions on") {
-        let lines: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
-        for l in lines.iter().rev().take(5) {
-            if l.to_lowercase().contains("approve") && !l.to_lowercase().contains("esc to interrupt") {
-                return "permission_prompt";
+    "user_input"
+}
+
+/// Preview enrichment must not downgrade quota/errors/stopped to human input.
+fn apply_preview_waiting_status(v: &mut serde_json::Value, raw: &str) {
+    let wr = derive_waiting_reason(raw);
+    if wr.is_empty() || v["running"].as_bool() != Some(true) { return; }
+    let previous = v["status"].as_str().unwrap_or("").to_string();
+    if wr == "rate_limit" {
+        v["status"] = json!("rate_limited");
+        v["waiting_reason"] = json!(wr);
+        v["rate_limit_banner"] = json!(true);
+        if let Some(banner) = crate::backend::adapter::claude_auto_resume_banner(raw) {
+            v["credit_limited"] = json!(false);
+            if let Some(reset) = crate::api::session_verbs::parse_rate_limit_reset(&banner) {
+                v["rate_limited_until"] = json!(crate::api::session_verbs::effective_rate_limit_reset(
+                    v["rate_limited_until"].as_i64().unwrap_or(0), reset, chrono::Utc::now().timestamp()));
             }
         }
+        if previous != "rate_limited" {
+            tracing::info!(target: "amux::status", session = %v["name"],
+                previous, verdict = "preview_quota_over_input",
+                "provider quota wait supersedes generic input classification");
+        }
+    } else if !matches!(previous.as_str(), "active" | "rate_limited" | "api_error" | "error" | "starting") {
+        v["waiting_reason"] = json!(wr);
+        v["status"] = json!("waiting");
     }
-    if low.contains("enter to select") || low.contains("esc to cancel") {
-        return "user_input";
-    }
-    if clean.contains("Resume from summary") && clean.contains("Resume full session") {
-        return "user_input";
-    }
-    ""
 }
 
 /// The whole-fleet pane snapshot, shared by every reader inside the TTL.
@@ -2037,6 +2051,10 @@ impl FleetSignals {
             status = "api_error".into();
             decided = "api_error_banner";
         }
+        if self.panes.get(name).and_then(|raw| crate::backend::adapter::claude_auto_resume_banner(raw)).is_some() {
+            status = "rate_limited".into();
+            decided = "provider_auto_resume_quota";
+        }
         ex.insert("decided_by".into(), json!(decided));
         (status, serde_json::Value::Object(ex))
     }
@@ -3414,7 +3432,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         // Only overrides a NON-active status: if the lane is genuinely
         // generating, that is the more urgent truth and the picker reading is
         // stale by definition.
-        if is_running && status != "active" && meta["input_required_since"].as_i64().unwrap_or(0) > 0
+        if is_running && matches!(status.as_str(), "idle" | "waiting") && meta["input_required_since"].as_i64().unwrap_or(0) > 0
         {
             status = "waiting".to_string();
         }
@@ -3427,7 +3445,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         // 13-lane false positive); here it becomes the state the fleet list
         // shows. Ghost-rescue auto-submits the amux-prefixed subset; this
         // surfaces the rest instead of deciding for a human.
-        if is_running && status != "active" && meta["composer_stuck_since"].as_i64().unwrap_or(0) > 0
+        if is_running && matches!(status.as_str(), "idle" | "waiting") && meta["composer_stuck_since"].as_i64().unwrap_or(0) > 0
         {
             status = "waiting".to_string();
         }
@@ -3530,7 +3548,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // stamps meta when it sees the menu and clears it when it answers.
             // Read from meta because THIS LOOP ALREADY LOADS IT — computing it
             // here from a pane capture would cost ~113 tmux calls per request.
-            "credit_limited": meta["rate_limited_since"].as_i64().unwrap_or(0) > 0,
+            "credit_limited": is_running && meta["rate_limited_since"].as_i64().unwrap_or(0) > 0
+                && meta["rate_limited_by"].as_str() != Some("auto-resume"),
             "credit_limit_model": meta["rate_limited_model"].as_str().unwrap_or(""),
             "credit_limited_since": meta["rate_limited_since"].as_i64().unwrap_or(0),
             "rate_limit_banner": meta["rate_limited_since"].as_i64().unwrap_or(0) > 0,
@@ -3574,7 +3593,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // only the side boolean `credit_limited` two lines down. Derives from the
             // same meta stamp the rate_limit_sweep now keeps set for the whole
             // blocked window (menu OR post-menu banner).
-            "status": if meta["rate_limited_since"].as_i64().unwrap_or(0) > 0 {
+            "status": if is_running && meta["rate_limited_since"].as_i64().unwrap_or(0) > 0 {
                 json!("rate_limited")
             } else {
                 json!(status.clone())
@@ -4302,13 +4321,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                     let (preview, lines) = preview_of(raw);
                     v["preview"] = json!(preview);
                     v["preview_lines"] = json!(lines);
-                    let wr = derive_waiting_reason(raw);
-                    if !wr.is_empty() {
-                        v["waiting_reason"] = json!(wr);
-                        if v["status"].as_str() != Some("active") {
-                            v["status"] = json!("waiting");
-                        }
-                    }
+                    apply_preview_waiting_status(v, raw);
                 }
             }
         }
@@ -4896,7 +4909,7 @@ pub(crate) mod tests {
     fn status_vocabulary_matches_python() {
         assert_eq!(python_status(r#"{"state":"active","turn":null}"#), "active");
         assert_eq!(python_status(r#"{"state":"idle","since":"x"}"#), "idle");
-        assert_eq!(python_status(r#"{"state":"rate_limited","reset_at":null}"#), "rate-limited");
+        assert_eq!(python_status(r#"{"state":"rate_limited","reset_at":null}"#), "rate_limited");
         assert_eq!(python_status(r#"{"state":"stopped"}"#), "");
     }
 
@@ -6623,3 +6636,7 @@ Checked, nothing of mine was at risk, no action needed from you.
         );
     }
 }
+
+#[cfg(test)]
+#[path = "status_chaos_tests.rs"]
+mod status_chaos_tests;

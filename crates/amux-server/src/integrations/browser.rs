@@ -1796,6 +1796,19 @@ pub async fn start(
         None => tracing::warn!(session, port, "launch tab not claimed — CDP listed no page tab"),
     }
 
+    // MINIMISE BY DEFAULT (AMUX-4357), against this browser's own port so no
+    // other profile is touched. FIRE AND FORGET: the window already appeared on
+    // spawn, so blocking the start return on it buys nothing and only adds
+    // latency (which raced a unit test's exit-monitor into reaping a seeded
+    // browser). The spawned task logs its own outcome for the sweep.
+    if !headless && start_minimized_by_default() {
+        let mport = port;
+        tokio::spawn(async move {
+            if minimize_launched(mport).await {
+                tracing::info!(port = mport, "browser: window minimised after start (AMUX-4357; AMUX_BROWSER_START_MINIMIZED=0 keeps it on screen)");
+            }
+        });
+    }
     let started_at = chrono::Utc::now().timestamp();
     let info = StartedBrowser {
         profile: profile.to_string(),
@@ -3582,7 +3595,132 @@ pub async fn navigate_and_settle(c: &mut CdpClient, url: &str) -> anyhow::Result
 /// driver screenshot (`~/.amux/browser-screenshots/<backend>-<session>.png`,
 /// response carries `path`). Zero decoded bytes is an ERROR — a 0-byte file
 /// reading as success is the lie ethos rule 7 exists for.
+/// The window state Chrome reports for this target's window ("normal",
+/// "minimized", "maximized", "fullscreen") with the window id, or `None` when
+/// there is no window to ask about (headless) or the call is refused. Callers
+/// read `None` as "not minimised" — the pre-AMUX-4357 behaviour.
+pub async fn window_state(c: &mut CdpClient) -> Option<(u64, String)> {
+    let w = c
+        .call("Browser.getWindowForTarget", json!({}), std::time::Duration::from_secs(5))
+        .await
+        .ok()?;
+    let id = w.get("windowId").and_then(Value::as_u64)?;
+    let b = c
+        .call("Browser.getWindowBounds", json!({ "windowId": id }), std::time::Duration::from_secs(5))
+        .await
+        .ok()?;
+    let state = b.get("bounds")?.get("windowState")?.as_str()?.to_string();
+    Some((id, state))
+}
+
+/// AMUX-4357 (Ethan, 2026-09-10: "when using amux browser, the browser keeps
+/// overriding the screen on my macbook — make it minimized by default").
+/// Chrome activates its window on launch, and a fleet that starts browsers
+/// all day keeps taking the human's screen. Minimising over CDP needs no
+/// Automation permission (an osascript would prompt on every rebuild, the
+/// same re-prompt AMUX-3527 is about).
+///
+/// Measured 2026-09-11 on this box, the shape the screenshot path relies on:
+/// the ACTIVE tab still renders and captures while minimised (20 KB PNG in
+/// 67 ms); a BACKGROUND tab blocks on capture until restored; and BOTH
+/// `Page.bringToFront` and `Target.activateTarget` restore the window, while
+/// `Page.navigate` and a new tab leave it minimised.
+pub async fn minimize_window(c: &mut CdpClient) -> anyhow::Result<u64> {
+    let (id, _) = window_state(c)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Browser.getWindowForTarget reported no window for this target"))?;
+    c.call(
+        "Browser.setWindowBounds",
+        json!({ "windowId": id, "bounds": { "windowState": "minimized" } }),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    Ok(id)
+}
+
+/// Default ON. `AMUX_BROWSER_START_MINIMIZED=0` (or `false`) in server.env
+/// keeps a headed launch on screen, for a box whose owner wants to watch it.
+pub fn start_minimized_by_default() -> bool {
+    match std::env::var("AMUX_BROWSER_START_MINIMIZED") {
+        Ok(v) => !(v.trim() == "0" || v.trim().eq_ignore_ascii_case("false")),
+        Err(_) => true,
+    }
+}
+
+/// Minimise the browser we JUST launched, addressed by its own CDP port. This
+/// deliberately does NOT go through `connect_session`/`resolve_page`, which run
+/// `adopt_if_orphaned` machine-wide and would disturb OTHER profiles' registry
+/// entries (that reaped a peer's staged browser in a unit test — AMUX-4357).
+/// Best-effort: a failure logs and returns false, never fails the start.
+async fn minimize_launched(port: u16) -> bool {
+    let ws = match cdp_list(port).await.ok().and_then(|tabs| {
+        tabs.as_array().and_then(|ts| {
+            ts.iter()
+                .find(|t| t.get("type").and_then(Value::as_str) == Some("page"))
+                .and_then(|t| t.get("webSocketDebuggerUrl").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+    }) {
+        Some(ws) => ws,
+        None => {
+            tracing::warn!(port, "browser: no page target to minimise after launch (AMUX-4357)");
+            return false;
+        }
+    };
+    match CdpClient::connect(&ws).await {
+        Ok(mut cdp) => match minimize_window(&mut cdp).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(port, error = %e, "browser: minimise-after-launch failed (AMUX-4357)");
+                false
+            }
+        },
+        Err(e) => {
+            tracing::warn!(port, error = %e, "browser: could not connect to minimise after launch (AMUX-4357)");
+            false
+        }
+    }
+}
+
+fn write_screenshot(r: &Value, home: &Path, session: &str) -> anyhow::Result<(PathBuf, usize)> {
+    let b64 = r
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Page.captureScreenshot returned no data"))?;
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| anyhow::anyhow!("screenshot base64 decode: {e}"))?;
+    if bytes.is_empty() {
+        anyhow::bail!("Page.captureScreenshot returned zero bytes");
+    }
+    let dir = home.join("browser-screenshots");
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join(format!("native-{}.png", safe_file_component(session)));
+    std::fs::write(&file, &bytes)?;
+    Ok((file, bytes.len()))
+}
+
 pub async fn screenshot_to_file(c: &mut CdpClient, home: &Path, session: &str) -> anyhow::Result<(PathBuf, usize)> {
+    // A MINIMISED WINDOW STAYS MINIMISED (AMUX-4357). bringToFront below would
+    // restore the window the human asked to keep off the screen, so try the
+    // capture as-is first: the active tab renders while minimised. Only a
+    // capture that BLOCKS (a background tab) falls back to the restore path,
+    // and that path re-minimises after the shot, so the window shows for the
+    // round trip and no longer.
+    let minimized = matches!(window_state(c).await, Some((_, ref s)) if s == "minimized");
+    if minimized {
+        match c
+            .call("Page.captureScreenshot", json!({ "format": "png" }), std::time::Duration::from_secs(6))
+            .await
+        {
+            Ok(r) => return write_screenshot(&r, home, session),
+            Err(e) => tracing::info!(
+                "[browser] capture while minimised blocked for session {session:?} ({e}); restoring \
+                 the window for one capture and minimising it again (AMUX-4357)"
+            ),
+        }
+    }
     // ACTIVATE BEFORE CAPTURING (AMUX-3712).
     //
     // `Page.captureScreenshot` waits for the renderer to produce a frame, and a
@@ -3617,23 +3755,14 @@ pub async fn screenshot_to_file(c: &mut CdpClient, home: &Path, session: &str) -
             json!({ "format": "png" }),
             std::time::Duration::from_secs(30),
         )
-        .await?;
-    let b64 = r
-        .get("data")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Page.captureScreenshot returned no data"))?;
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| anyhow::anyhow!("screenshot base64 decode: {e}"))?;
-    if bytes.is_empty() {
-        anyhow::bail!("Page.captureScreenshot returned zero bytes");
+        .await;
+    if minimized {
+        // Whatever the capture did, put the window back where the human left it.
+        if let Err(e) = minimize_window(c).await {
+            tracing::warn!("[browser] could not re-minimise the window after capture for {session:?}: {e} (AMUX-4357)");
+        }
     }
-    let dir = home.join("browser-screenshots");
-    std::fs::create_dir_all(&dir)?;
-    let file = dir.join(format!("native-{}.png", safe_file_component(session)));
-    std::fs::write(&file, &bytes)?;
-    Ok((file, bytes.len()))
+    write_screenshot(&r?, home, session)
 }
 
 /// Session names come from callers; a name is a FILE component here, so

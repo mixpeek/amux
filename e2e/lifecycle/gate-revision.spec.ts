@@ -22,6 +22,7 @@ test('LC-GATE-REVISION: edit criteria on a verified task, inspect stale evidence
     await page.locator('#bd-edit-footer').getByRole('button',{name:'Save',exact:true}).click();await expect(page.locator('#bd-save-status')).toHaveText('Saved');
     await page.reload();await expect(page.locator('.bd-verification-section')).toContainText('Criteria changed');
     await expect(page.locator('.bd-evidence-section')).toContainText('Independent fixture check passed');
+    await page.locator('.bd-verification-section').scrollIntoViewIfNeeded();
     await checkpoint(page,info,'verified-under-older-gate');
     const stale=await request.patch(url,{headers,data:{status:'verified',reverify:true,gate_checked:first}});expect(stale.status()).toBe(409);
     await page.getByRole('button',{name:'Recheck current gate',exact:true}).click();
@@ -30,6 +31,7 @@ test('LC-GATE-REVISION: edit criteria on a verified task, inspect stale evidence
     const applied=page.waitForResponse(r=>r.url().endsWith(url)&&r.request().method()==='PATCH');await page.locator('#_gate-ok').click();expect((await applied).ok()).toBe(true);
     await expect(page.locator('.bd-verification-section')).toContainText('Verified against recorded criteria');
     await expect(page.getByRole('button',{name:'Recheck current gate',exact:true})).toHaveCount(0);
+    await page.locator('.bd-verification-section').scrollIntoViewIfNeeded();
     await checkpoint(page,info,'verified-under-current-gate');
     const detail=await (await request.get(url,{headers})).json();expect(detail.verification.attempts).toBe(2);expect(detail.verification.gate_snapshot).toEqual(second);
   } finally {await request.delete(url,{headers});}

@@ -30,6 +30,27 @@
 //!    `waitpid` only for an aged child owned by this amux-server process;
 //!    zombies owned by another application are reported and left alone.
 //!
+//! 6. **SIP-protected indexing daemons pegged hot** (`fseventsd`, `ecosystemd`,
+//!    `ecosystemanalyti`, `mds*`). `top_memory_consumers` below had already
+//!    caught `fseventsd` holding 8.8GB in one process, and the 2026-09-11
+//!    memory-exhaustion incident (swap 20.7/21.5GB, `fseventsd` 100%+ CPU for
+//!    over 11 days uninterrupted) confirmed it cannot be reaped the way
+//!    categories 1-5 are: `csrutil status` reports SIP enabled and the binary
+//!    itself is flagged `restricted`, so no signal (including from root)
+//!    touches it, and no amount of watching changes that. What DOES help is
+//!    upstream of the daemon: it is busy because Spotlight is indexing
+//!    high-churn directories (`~/Dev`, `~/.amux`, this fleet's scratchpad
+//!    tmp), and this machine's separate process-health tool (`procwarden`)
+//!    had been logging exactly that recommendation into its own
+//!    `~/.procwarden/maintain.log` for a while — "add its churn source to
+//!    maintenance.spotlight_exclude" — with nobody ever filling the config in,
+//!    because a log line nobody is grepping for is not a fix (ethos rule 6).
+//!    Dropping a `.metadata_never_index` sentinel file is the standard
+//!    per-directory Spotlight opt-out: it needs no root, cannot lose data, and
+//!    is fully reversible (delete the file). It only stops the indexer from
+//!    ENTERING new churn from that path — a live backlog already queued still
+//!    has to drain, so this is not instant.
+//!
 //! WHAT THIS WILL NOT DO:
 //! - Kill a process whose state it cannot verify. Silence is not dead.
 //! - Kill processes the raylet is still using (raylet running = ray is live).
@@ -491,6 +512,97 @@ fn mem_reap_swap_pct() -> f64 {
     std::env::var("AMUX_MEM_REAP_SWAP_PCT").ok().and_then(|v| v.parse().ok()).unwrap_or(85.0)
 }
 
+/// SIP-protected indexing daemons worth watching — the same list procwarden's
+/// `maintenance.watch_daemons` already uses. `ps comm` truncates long names,
+/// so these are prefix-matched (`ecosystemanalyti`, not the full
+/// `ecosystemanalyticsd`).
+const INDEXING_DAEMON_NAMES: [&str; 7] = [
+    "fseventsd", "ecosystemd", "ecosystemanalyti", "mds", "mds_stores", "mdworker", "mdworker_shared",
+];
+
+fn indexing_daemon_cpu_above() -> f64 {
+    std::env::var("AMUX_MAC_HEALTH_DAEMON_CPU_ABOVE").ok().and_then(|v| v.parse().ok()).unwrap_or(80.0)
+}
+
+/// `ps comm` truncates long names, so this is a prefix match against
+/// [`INDEXING_DAEMON_NAMES`], not an exact one.
+fn is_indexing_daemon(name: &str) -> bool {
+    INDEXING_DAEMON_NAMES.iter().any(|w| name.starts_with(w))
+}
+
+/// `(name, %cpu)` for every watched indexing daemon currently above the
+/// threshold. Reuses the same `ps -eo` shape as `top_memory_consumers` rather
+/// than inventing a second process-listing convention.
+fn hot_indexing_daemons(above: f64) -> Vec<(String, f64)> {
+    let Ok(out) = std::process::Command::new("ps").args(["-eo", "%cpu=,comm="]).output() else {
+        return Vec::new();
+    };
+    let mut out_rows = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let line = line.trim();
+        let Some((cpu, comm)) = line.split_once(char::is_whitespace) else { continue };
+        let Ok(cpu) = cpu.trim().parse::<f64>() else { continue };
+        let name = comm.trim().rsplit('/').next().unwrap_or(comm.trim());
+        if cpu > above && is_indexing_daemon(name) {
+            out_rows.push((name.to_string(), cpu));
+        }
+    }
+    out_rows
+}
+
+/// Directories whose Spotlight churn feeds the indexing daemons above.
+/// `/private/tmp/claude-<uid>` is computed rather than hardcoded, because the
+/// literal `501` in the incident that prompted this is this host's uid, not a
+/// constant — a different uid would make a hardcoded path silently do nothing.
+fn spotlight_exclude_paths() -> Vec<std::path::PathBuf> {
+    if let Ok(raw) = std::env::var("AMUX_MAC_HEALTH_SPOTLIGHT_EXCLUDE") {
+        return raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| std::path::PathBuf::from(shellexpand_home(s)))
+            .collect();
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
+    let uid = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let mut v = vec![
+        std::path::PathBuf::from(format!("{home}/Dev")),
+        std::path::PathBuf::from(format!("{home}/.amux")),
+    ];
+    if let Some(uid) = uid {
+        v.push(std::path::PathBuf::from(format!("/private/tmp/claude-{uid}")));
+    }
+    v
+}
+
+fn shellexpand_home(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
+        format!("{home}/{rest}")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Drops the sentinel if the directory exists and does not already have one.
+/// `Ok(true)` = newly excluded this call, `Ok(false)` = already excluded or
+/// not a directory (both are "nothing to do", not an error).
+fn ensure_spotlight_excluded(dir: &std::path::Path) -> Result<bool, String> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    let sentinel = dir.join(".metadata_never_index");
+    if sentinel.exists() {
+        return Ok(false);
+    }
+    std::fs::File::create(&sentinel).map(|_| true).map_err(|e| e.to_string())
+}
+
 fn one_pass() {
     let grace = ray_orphan_grace_s();
     let pw_grace = playwright_chrome_grace_s();
@@ -645,6 +757,48 @@ fn one_pass() {
         );
     }
 
+    // --- SIP-protected indexing daemons: exclude their known churn sources ---
+    // Unlike the arm above, this does not wait for swap pressure: excluding a
+    // directory from Spotlight has no downside, so the right time to do it is
+    // as soon as the daemon that would benefit is hot, not after the host is
+    // already at 85%+ swap. It is idempotent (the sentinel either exists or
+    // it does not) and safe to run every tick.
+    let hot_daemons = hot_indexing_daemons(indexing_daemon_cpu_above());
+    let mut spotlight_newly_excluded = Vec::new();
+    if !hot_daemons.is_empty() {
+        for p in spotlight_exclude_paths() {
+            match ensure_spotlight_excluded(&p) {
+                Ok(true) => spotlight_newly_excluded.push(p.display().to_string()),
+                Ok(false) => {}
+                Err(e) => tracing::debug!(
+                    job = JOB, path = %p.display(), error = %e,
+                    "mac-health: spotlight-exclude failed"
+                ),
+            }
+        }
+        let daemons_str = hot_daemons
+            .iter()
+            .map(|(n, c)| format!("{n}={c:.0}%"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !spotlight_newly_excluded.is_empty() {
+            tracing::warn!(
+                job = JOB,
+                daemons = %daemons_str,
+                excluded = %spotlight_newly_excluded.join(", "),
+                "mac-health: SIP-protected indexing daemon(s) hot — dropped .metadata_never_index \
+                 in known churn sources (non-destructive, reversible; can't kill fseventsd — SIP \
+                 blocks it — so this starves the churn instead; an already-queued backlog still \
+                 drains on its own, this is not instant)"
+            );
+        } else {
+            tracing::debug!(
+                job = JOB, daemons = %daemons_str,
+                "mac-health: indexing daemon(s) hot but every known churn source is already excluded"
+            );
+        }
+    }
+
     // --- Claude process count ---
     let claude_count = check_claude_count(max_claude);
     tracing::info!(
@@ -663,6 +817,8 @@ fn one_pass() {
         rustc_reaped,
         zombies_seen,
         zombies_reaped,
+        indexing_daemons_hot = hot_daemons.len(),
+        spotlight_newly_excluded = spotlight_newly_excluded.len(),
         "mac-health tick"
     );
 }
@@ -677,6 +833,52 @@ pub fn spawn() -> super::PeriodicTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The predicate this whole arm hinges on: only the SIP-protected
+    /// indexing daemons it can't reap by any other means should match, not
+    /// every process whose name happens to contain a substring.
+    #[test]
+    fn indexing_daemon_matching_is_prefix_not_substring() {
+        for name in ["fseventsd", "ecosystemd", "ecosystemanalyticsd", "mds", "mds_stores", "mdworker", "mdworker_shared"] {
+            assert!(is_indexing_daemon(name), "{name} must match — it's what this arm exists to find");
+        }
+        for name in ["rustc", "Chrome", "claude", "xecosystemd", "notmds"] {
+            assert!(!is_indexing_daemon(name), "{name} must NOT match — a substring hit would exclude the wrong host state");
+        }
+    }
+
+    #[test]
+    fn ensure_spotlight_excluded_is_idempotent_and_leaves_a_real_sentinel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // First call: the directory is unmarked, so this drops the sentinel.
+        assert_eq!(ensure_spotlight_excluded(dir.path()), Ok(true));
+        assert!(dir.path().join(".metadata_never_index").exists());
+        // Second call on the same directory: already excluded, nothing to do.
+        // A job that re-touches this every 30-minute tick without noticing
+        // would generate a WARN line every tick forever, which is exactly the
+        // kind of noise ethos rule 5 is about.
+        assert_eq!(ensure_spotlight_excluded(dir.path()), Ok(false));
+    }
+
+    #[test]
+    fn ensure_spotlight_excluded_skips_non_directories_without_erroring() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        assert_eq!(ensure_spotlight_excluded(&missing), Ok(false));
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(ensure_spotlight_excluded(&file), Ok(false));
+    }
+
+    #[test]
+    fn shellexpand_home_only_touches_a_leading_tilde_slash() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
+        assert_eq!(shellexpand_home("~/Dev"), format!("{home}/Dev"));
+        assert_eq!(shellexpand_home("/private/tmp/claude-501"), "/private/tmp/claude-501");
+        // A bare `~` with no trailing slash is not the pattern this function
+        // promises to handle — must pass through unchanged, not panic.
+        assert_eq!(shellexpand_home("~"), "~");
+    }
 
     #[test]
     fn etime_parses_correctly() {

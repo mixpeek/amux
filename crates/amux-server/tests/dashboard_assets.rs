@@ -485,11 +485,17 @@ fn only_the_explicitly_claimed_card_is_live_without_a_synthetic_unclaimed_state(
         "const runtimeBoard = _runtimeBoardPresentation(s);",
         "runtimeBoard.cardId",
         "const displayTaskName = s.task_name || runtimeBoard.cardId || '';",
-        "runtimeBoard.syncing ? _runtimeBoardSyncBadge()",
+        "_workerExecutionBadge(s, runtimeBoard)",
         "_activeTaskLink(s.name, displayTaskBoardId, displayTaskName)",
     ] {
         assert!(render.contains(needle), "session card lost live board linkage `{needle}`");
     }
+    // Execution badges are shared with worker details; verify the call above
+    // and its implementation rather than demanding the old inline expression.
+    let badge_start = app.find("function _workerExecutionBadge(s, runtimeBoard)").unwrap();
+    let badge_tail = &app[badge_start..];
+    let badge = &badge_tail[..badge_tail.find("function updatePeekStatus()").unwrap()];
+    assert!(badge.contains("runtimeBoard.syncing") && badge.contains("_runtimeBoardSyncBadge()"));
     assert!(
         !render.contains("_cardDoingItem(s.name)"),
         "the worker card must not rebuild runtime truth from an independently refreshed boardItems snapshot"
@@ -1201,5 +1207,66 @@ fn workspace_invites_and_members_are_assigned_through_scoped_teams() {
     assert!(
         !app.contains("JSON.stringify({email, scope_level, scope_name})"),
         "the invite UI regressed to copying a one-off scope onto the user instead of assigning a team"
+    );
+}
+
+/// Ethan, 2026-09-11 22:42, phone screenshot with the composer circled: the
+/// input on its own row and ⋮ + Send on a second row. The one-line rule
+/// shipped in acbad74e and was deleted nine minutes later by 241b92ac, so the
+/// phone went straight back. Two lanes disagreeing in CSS is settled here,
+/// where the next deletion turns CI red instead of a screenshot.
+#[test]
+fn the_phone_composer_keeps_input_and_actions_on_one_line() {
+    let css = asset("app.css");
+    assert!(
+        css.contains(".peek-cmd-row .ac-wrap { flex: 1 1 0; min-width: 0; }"),
+        "the phone composer input must flex beside ⋮ and Send (one line); \
+         this rule was removed once already (241b92ac) and Ethan asked for it back"
+    );
+    assert!(
+        !css.contains(".peek-composer-input { flex: 1 0 100%; }"),
+        "the full-row input rule is back: it puts ⋮ and Send on their own row, \
+         the layout Ethan circled on 2026-09-11"
+    );
+}
+
+/// The worker tab customizer is the grid glyph, like the one on the workers
+/// list. It shipped as ⊞ in 020df94b and came back as the word "Tabs ▾" in
+/// fe8cd4d4; Ethan asked for the glyph four separate times that day.
+#[test]
+fn the_worker_tab_customizer_is_the_grid_glyph() {
+    let html = asset("index.html");
+    let i = html.find("id=\"peek-tab-customize\"").expect("the peek tab customizer button exists");
+    let btn = &html[i..];
+    let end = btn.find("</button>").expect("the button closes");
+    let inner = &btn[..end];
+    assert!(
+        inner.ends_with("&#x229E;"),
+        "the peek tab customizer must show the ⊞ glyph, not a word: got {:?}",
+        &inner[inner.len().saturating_sub(24)..]
+    );
+    assert!(!inner.contains("Tabs"), "the label \"Tabs\" is back on the peek tab customizer");
+}
+
+/// A slow /send is not an offline /send. With a 10s client abort, every send
+/// the server took longer than 10s to accept fell into the outbox, replayed
+/// into the dedup gate, and after two minutes became a BLOCKED op with a red
+/// banner over a message the worker already had (2026-09-11, two workers).
+#[test]
+fn a_slow_send_waits_for_the_server_instead_of_falling_into_the_outbox() {
+    let js = asset("app.js");
+    let i = js.find("async function doSend(").expect("doSend exists");
+    let j = js[i..].find("async function doKeys(").expect("doKeys follows doSend");
+    let body = &js[i..i + j];
+    assert!(
+        !body.contains("AbortSignal.timeout(10000)"),
+        "doSend aborts at 10s again; on this host /send routinely exceeds that"
+    );
+    assert!(body.contains("AbortSignal.timeout(90000)"), "doSend keeps a 90s ceiling for a hung server");
+    // And the replay drops an 'uncertain' dedup answer instead of blocking on it.
+    assert!(
+        js.contains("d.submission === 'uncertain'") && js.contains("'uncertain_send_dropped'"),
+        "the outbox replay must drop a 409 submission=uncertain send (with its beacon) rather than \
+         keep it blocked forever"
     );
 }

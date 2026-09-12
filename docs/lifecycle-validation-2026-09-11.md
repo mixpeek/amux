@@ -2,6 +2,9 @@
 
 This is a partial live-provider result, not a full consolidated-suite pass.
 
+Current disposition of every known remaining gap, repair entry points and rerun
+commands: [Lifecycle status and closure checklist](lifecycle-open-work.md).
+
 ## Production messaging and connection failures
 
 Seven Safari 0.9.900 studio-plg failures recorded only `failed/unconfirmed`; the underlying exception was absent. Read-only inspection measured 5,193,082 localStorage bytes, dominated by history and reproducible caches. A real WebKit quota test against the pre-fix JavaScript failed local acceptance. The reproduced mechanism is consistent with this storage condition; the historical exception itself cannot be recovered.
@@ -93,3 +96,19 @@ Final source-built browser run: `python3 scripts/lifecycle/run.py browser --grep
 Audit found that `LC-SEMANTIC-INTAKE` exercised only direct `POST /api/board`, despite the canonical case calling for captured worker messages. Added `LC-SEMANTIC-MESSAGES` to the automatically discovered live suite: six real composer messages, real native delivery and model-backed intake, exactly three task IDs, four source messages linked to one surviving task, increasing revisions, retained original/refined requirements, measured create/append/update logs, and clickable source links on desktop and phone task details. No observer board/history writes, explicit task-ID shortcuts, mocked classifier or manual completion are allowed. The direct-board case remains separate.
 
 Attempted `python3 scripts/lifecycle/run.py live --grep LC-SEMANTIC-MESSAGES` against the dedicated lab using production commit ced4b617 / build dfd33c6f8a8e4c81. The required preflight failed before creating a worker or sending any messages: `admission: deny`, memory pressure `warn`, swap used 20758.6875 MB. The test result is one failed prerequisite, not a semantic comparison pass. The health attachment, trace and report are retained under `semantic-messages-live`. The lab server was stopped afterward. The new scenario compiles and is listed by the live Playwright configuration; native/message/model assertions remain unexecuted until worker admission permits the run.
+
+
+## Continued board and offline validation (0.9.911)
+
+The board continuation exercised gate changes after Verified, retained older evidence, rejected stale gate acknowledgements, rechecked the current gate, followed epic/child/message/file/URL/commit links, round-tripped uploaded bytes, and checked peer task visibility with and without groups. The initial selected browser run passed 21 cases, but the overall result remained red because a prior outbox assertion still expected the superseded “Still sending” label.
+
+Two new contracts reproduced real outbox defects: offline blocked edits claimed they would retry, and stale failed-row dismissal deleted work resumed by another tab. The fixes preserve failed/pending distinctions and check state inside the storage lock. A real 409 conflict plus browser offline/reconnect case confirms that dismissing the blocked edit leaves the pending edit intact; reconnect applies only the pending edit and preserves the peer revision. The dismiss button now has an accessible name and a 44px touch target.
+
+`python3 scripts/lifecycle/run.py browser --grep 'LC-BLOCKED-OUTBOX|LC-GATE-REVISION|LC-LINKED-RECORD'` passed 9 cases against source-built assets on desktop Chromium, mobile Chromium, and iPhone WebKit. `node --test tests/dashboard-outage-recovery.mjs` passed 34 contracts. The preceding broader run passed its other 27 cases; its three new-test failures came from locating a glyph-only button by its title as though that were its accessible name. The corrected selector uses the new accessible name. These retained failures are not recorded as passes.
+
+Visual review opened the mixed offline queue, linked evidence panel, stale-verification warning, and file-preview images. Gate/evidence screenshots now scroll those sections into view rather than only capturing the task header. Native semantic intake and new-worker completion remain incomplete: this continuation observed production health with admission=deny, pressure=warn and 22272 MB of swap. No live worker was started and no real user message was replayed.
+
+
+After integration with the latest main, the browser suite caught a composer regression: a more-specific `ac-wrap` flex rule narrowed the 320px phone writing field to 155px. Removing that override preserves compact toolbar spacing and restores the full-width writing row. The final source-built selection (`LC-BLOCKED-OUTBOX|LC-GATE-REVISION|LC-LINKED-RECORD|LC-RECEIPT|LC-LATENCY|LC-COMPOSER-LAYOUT`) passed 18 cases, zero skipped/flaky, with matching served asset hashes; all 34 outbox contracts also passed. Narrow-phone and keyboard-height Queue screenshots were opened and reviewed. Workspace/all-target Clippy passed in this continuation; no full Rust-suite claim is made.
+
+The additional `large mobile file survives interrupted upload` case passed in iPhone WebKit using the pinned binary from the preceding source build. It recovered 268,435,579 bytes across 52 stored chunks after interruption and reload; downloaded SHA-256 matched the generated source. The large-file runner records external-binary provenance rather than claiming a fresh source build; its binary hash matches the preceding source-built artifact. Its final screenshot was opened. The subsequent composer-only CSS correction does not change the tested upload implementation. Native semantic comparison and real-worker completion remain blocked by worker admission, and are not included in these browser passes.

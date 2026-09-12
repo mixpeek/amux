@@ -1280,6 +1280,10 @@ fn at_shell_prompt(clean_output: &str) -> bool {
 /// discussed, and this decides whether amux presses a key.
 pub(crate) fn is_rate_limit_menu(raw: &str) -> bool {
     let clean = strip_ansi(raw).to_lowercase();
+    let lines: Vec<_> = clean.lines().collect();
+    let start = lines.iter().rposition(|line| matches!(line.trim(), "❯" | "›"))
+        .unwrap_or_else(|| lines.len().saturating_sub(12));
+    let clean = lines[start..].join("\n");
     clean.contains("what do you want to do?")
         && clean.contains("stop and wait for limit to reset")
         && clean.contains("switch to usage credits")
@@ -1313,6 +1317,32 @@ pub(crate) fn is_rate_limited_credit_banner(footer: &str) -> bool {
         // was answered wrong. Matched through the interpunct separator (a
         // sentence no lane emits as prose), footer-scoped like the others.
         || clean.contains("usage limit reached \u{00b7} continuing automatically at")
+}
+
+/// One observation shared by the sweep and its chaos tests. Native automatic
+/// resumption is a clocked subscription limit, never a purchased-credit cap.
+pub(crate) struct ClaudeLimitObservation {
+    pub menu: bool,
+    pub kind: &'static str,
+    pub reset_at: i64,
+}
+
+pub(crate) fn observe_claude_limit(
+    pane: &str,
+    recorded_reset: i64,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<ClaudeLimitObservation> {
+    let menu = is_rate_limit_menu(pane);
+    let auto_resume = crate::backend::adapter::claude_auto_resume_banner(pane);
+    let lines: Vec<_> = pane.lines().collect();
+    let footer = lines[lines.len().saturating_sub(8)..].join("\n");
+    if !menu && auto_resume.is_none() && !is_rate_limited_credit_banner(&footer) { return None; }
+    let kind = if menu { "menu" } else if auto_resume.is_some() { "auto-resume" } else { "credit-banner" };
+    let reset_at = if menu || auto_resume.is_some() {
+        let parsed = parse_rate_limit_reset_at(auto_resume.as_deref().unwrap_or(&footer), now).unwrap_or(0);
+        effective_rate_limit_reset(recorded_reset, parsed, now.timestamp())
+    } else { 0 };
+    Some(ClaudeLimitObservation { menu, kind, reset_at })
 }
 
 /// WHEN the limit in [`is_rate_limited_credit_banner`]'s banner lifts, as an
@@ -1591,6 +1621,11 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         return String::new();
     }
     let n = lines.len();
+    let current_start = lines.iter().rposition(|line| {
+        matches!(line.trim(), "❯" | "›") || line.contains("Type your message")
+    }).unwrap_or(0);
+    let current_lines = &lines[current_start..];
+    let current = current_lines.join("\n");
     // Codex keeps an apparently empty prompt shell on screen while a command
     // continues in its background terminal. Its provider-owned active row is
     // already parsed structurally by the adapter (including adjacency to the
@@ -1646,7 +1681,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         }
     }
     if status_bar.is_empty() {
-        if clean.contains("Resume from summary") && clean.contains("Resume full session") {
+        if current.contains("Resume from summary") && current.contains("Resume full session") {
             return "waiting".into();
         }
         for l in &lines[n.saturating_sub(5)..] {
@@ -1663,7 +1698,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     }
     // 2. Bottom-up scan of the last 12 lines.
     let completed_re = cached_re!(r" for \d+\s*[hms]\b");
-    for l in lines[n.saturating_sub(12)..].iter().rev() {
+    for l in current_lines[current_lines.len().saturating_sub(12)..].iter().rev() {
         let s = l.trim();
         let sl = s.to_lowercase();
         if let Some(c) = s.chars().next() {
@@ -1683,15 +1718,15 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         }
         // Waiting: selector cursor / numbered options with a footer hint.
         if (sl.contains("do you want") || sl.contains("would you like"))
-            && (clean.contains("\u{276f} 1.") || clean.contains("1. Yes"))
+            && (current.contains("\u{276f} 1.") || current.contains("1. Yes"))
         {
             return "waiting".into();
         }
-        if sl.contains("esc to cancel") && (clean.contains("\u{276f} 1.") || sl.contains("enter to select")) {
+        if sl.contains("esc to cancel") && (current.contains("\u{276f} 1.") || sl.contains("enter to select")) {
             return "waiting".into();
         }
     }
-    if clean.contains("\u{276f} 1.") || (clean.contains("\u{2502} \u{276f} 1.") ) {
+    if current.contains("\u{276f} 1.") || (current.contains("\u{2502} \u{276f} 1.") ) {
         return "waiting".into();
     }
     // CODEX spells its selector cursor `›` (U+203A), not `❯` (U+276F) — found
@@ -1700,8 +1735,8 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // fixed for Claude Code. Requires the footer hint alongside the cursor so
     // prose that merely QUOTES a numbered list cannot read as a picker (the
     // AMUX-2642 self-block class).
-    let lower = clean.to_lowercase();
-    if clean.contains("\u{203a} 1.")
+    let lower = current.to_lowercase();
+    if current.contains("\u{203a} 1.")
         && (lower.contains("press enter to continue") || lower.contains("enter to select"))
     {
         return "waiting".into();
@@ -1710,7 +1745,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // third provider, third selector spelling, found on the same day as the
     // codex one. The border char on the cursor's own line is the chrome
     // anchor prose cannot fake (same trick as the `│ ❯ 1.` claude form).
-    if clean.contains("\u{2502} \u{25cf} 1.") {
+    if current.contains("\u{2502} \u{25cf} 1.") {
         return "waiting".into();
     }
     let raw_lines: Vec<&str> = raw_output.lines().filter(|l| !strip_ansi(l).trim().is_empty()).collect();
@@ -11563,7 +11598,7 @@ fn rate_limit_still_blocks(since: i64, reset_at: i64, now: i64) -> bool {
 /// screen. Re-parsing "4:10pm" at 4:11pm rolls it to tomorrow; that used to
 /// postpone every queued message by a full day. Before arrival, a refreshed
 /// provider clock wins, while a transient parse miss keeps the known clock.
-fn effective_rate_limit_reset(recorded: i64, parsed: i64, now: i64) -> i64 {
+pub(crate) fn effective_rate_limit_reset(recorded: i64, parsed: i64, now: i64) -> i64 {
     if recorded > 0 && (recorded <= now || parsed <= 0) {
         recorded
     } else {
@@ -13987,29 +14022,9 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             }
         }
 
-        // ONLY the interactive rate-limit MENU is a reliable state signal. A
-        // banner-word scrape ("your usage limit", "/usage-credits") cannot tell
-        // Claude's OWN banner from a lane merely DISCUSSING or CODING a rate limit
-        // in its work, and it false-flagged working lanes including `amux` itself
-        // (Ethan, 2026-08-16). The menu is a selector amux renders and answers, so
-        // it cannot be conversation. Persisting the status past the menu needs a
-        // reliable signal amux does not have by scraping (a reset time, or a Claude
-        // Code hook reporting rate-limit state, the D2 exit) — not a fuzzy banner.
-        // LIMITED = the interactive menu OR Claude's on-credits BANNER in the
-        // FOOTER (the status region above the input box). The menu is transient
-        // (amux answers it); the credit banner is the persistent state Ethan sees
-        // as "workers with a rate limit" — a lane past the menu, still working ON
-        // CREDITS. Footer-scoped + full-sentence so a lane CODING the banner (amux
-        // itself) is not flagged; the earlier whole-pane scrape was the false
-        // positive. pane = tmux_capture(name, 30) ends at the current footer, so
-        // its last 8 lines ARE the footer.
-        let menu = is_rate_limit_menu(&pane);
-        let footer = {
-            let ls: Vec<&str> = pane.lines().collect();
-            ls[ls.len().saturating_sub(8)..].join("\n")
-        };
-        let limited = menu || is_rate_limited_credit_banner(&footer);
-        if !limited {
+        let observation = observe_claude_limit(&pane,
+            meta_i64(&load_meta(name), "rate_limited_until"), chrono::Local::now());
+        let Some(observation) = observation else {
             // Neither the menu nor the credit banner is on screen: clear the stamp.
             // Presence-based, and both signals are footer/menu-scoped, so scrollback
             // ABOUT limits never flags and a lane clears as soon as its banner goes.
@@ -14028,22 +14043,11 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 );
             }
             continue;
-        }
-        found += 1;
-        // WHEN it lifts, from the banner the check above already matched
-        // (AMUX-3815). Re-read every tick, not only on first detection: Claude
-        // rewrites the line when the window moves, and a reset time that cannot
-        // be refreshed is worse than none once it goes stale. `None` stays 0 —
-        // a credit cap has no reset clock, and callers must be able to tell
-        // "no reset time" from "resets at the epoch".
-        let observed_now = now_i64();
-        let parsed_reset = parse_rate_limit_reset(&footer).unwrap_or(0);
-        let recorded_reset = meta_i64(&load_meta(name), "rate_limited_until");
-        let reset = if menu {
-            effective_rate_limit_reset(recorded_reset, parsed_reset, observed_now)
-        } else {
-            0
         };
+        found += 1;
+        let observed_now = now_i64();
+        let menu = observation.menu;
+        let reset = observation.reset_at;
         if meta_i64(&load_meta(name), "rate_limited_until") != reset {
             update_meta(name, &[("rate_limited_until", json!(reset))]);
         }
@@ -14062,7 +14066,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         // common cap case. Written on EVERY tick, not only on first detection,
         // because a lane can move from a cap to a session limit without the
         // stamp clearing in between.
-        let kind = if menu { "menu" } else { "credit-banner" };
+        let kind = observation.kind;
         if meta_str(&load_meta(name), "rate_limited_by") != kind {
             update_meta(name, &[("rate_limited_by", json!(kind))]);
         }
@@ -14078,7 +14082,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 state,
                 name,
                 "session.rate_limited",
-                Some(json!({"detected_by": if menu { "menu" } else { "credit-banner" }})),
+                Some(json!({"detected_by": kind, "reset_at": reset})),
                 Some(format!("rl:{name}:{}", now_i64() / 3600)),
                 "rate-limit",
             )
