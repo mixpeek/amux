@@ -995,6 +995,23 @@ impl LiveFleet {
 /// fold count because a real investigation card can carry fold RESIDUE from the
 /// folding era; a true journal has folds and no structure.
 pub fn pickup_junk_reason(title: &str, desc: &str, log: &str) -> String {
+    pickup_junk_reason_scoped(title, desc, log, "", "")
+}
+
+/// `pickup_junk_reason` plus the review-state veto (AF-721), which needs the
+/// card's `status`/`reviewer` that the title/desc/log-only signature does not
+/// carry. Kept as a separate function rather than widening every caller's
+/// signature at once: two call sites (the decompose-candidate scan and the
+/// bare title/desc/log doctest-style unit tests) genuinely have no reviewer
+/// to pass and default it to "" — no reviewer, no status — same as before
+/// this fix for those.
+pub fn pickup_junk_reason_scoped(
+    title: &str,
+    desc: &str,
+    log: &str,
+    status: &str,
+    reviewer: &str,
+) -> String {
     use std::sync::OnceLock;
     static ARTIFACT: OnceLock<regex::Regex> = OnceLock::new();
     static CAPS_HEAD: OnceLock<regex::Regex> = OnceLock::new();
@@ -1051,7 +1068,21 @@ pub fn pickup_junk_reason(title: &str, desc: &str, log: &str) -> String {
         )
         .expect("artifact regex")
     });
-    if artifact.is_match(title) {
+    // REVIEW-STATE VETO (AF-721). This branch used to return immediately on a
+    // title-prefix match with no downstream check at all — unlike the capture
+    // brand above it, which carries its own STRUCTURE VETO. A legitimate area
+    // tag from this fleet's own "[area] subject" title convention ("[canary]
+    // monitoring...", "[test-hygiene] ...") collides with the same word list,
+    // and the false-positive destructive verdict reached TG-3603, a card in
+    // active multi-lane review (status=review, reviewer=backend, 15,837-char
+    // desc, 1,737-char evidence, 5,897-entry log) — none of which this branch
+    // ever looked at before offering discard first. Any one of these signals
+    // means a human or peer already treats the card as real work:
+    let has_review_signal = desc.trim().chars().count() > 200
+        || log.trim().chars().count() > 200
+        || !reviewer.trim().is_empty()
+        || !matches!(status, "backlog" | "todo" | "");
+    if artifact.is_match(title) && !has_review_signal {
         return "looks like a test artifact or armed tripwire".into();
     }
     // STRUCTURE VETO. 2+ ALLCAPS section heads, or an explicit structure marker.
@@ -3451,7 +3482,7 @@ pub fn select_pickup_with(
             skipped.push(format!("{id} has no next_action (continuation gate)"));
             continue;
         }
-        let junk = pickup_junk_reason(&row.title, &row.desc, row.log.as_deref().unwrap_or(""));
+        let junk = pickup_junk_reason_scoped(&row.title, &row.desc, row.log.as_deref().unwrap_or(""), &row.status, row.reviewer.as_deref().unwrap_or(""));
         if !junk.is_empty() {
             shells.push((id.clone(), row.title.chars().take(70).collect()));
             skipped.push(format!("{id} — {junk}"));
@@ -4808,7 +4839,7 @@ pub fn select_advance_with(
     // A decomposed epic preserves its source prompt as context. Its children
     // carry execution; a review-stage epic is real review work, not a shell.
     let why = if row.item_type == "epic" { String::new() }
-        else { pickup_junk_reason(&row.title, &row.desc, row.log.as_deref().unwrap_or("")) };
+        else { pickup_junk_reason_scoped(&row.title, &row.desc, row.log.as_deref().unwrap_or(""), &row.status, row.reviewer.as_deref().unwrap_or("")) };
     if !why.is_empty() {
         // TELL THE LANE, do not just log it (py:13513, board-exp-1). Refusing to
         // nudge "advance it" at a capture shell is right — nothing about a chat
@@ -11974,6 +12005,47 @@ mod tests {
         // Shells.
         assert!(pickup_junk_reason("x", "**Prompt:** /compact", "").contains("slash command"));
         assert!(pickup_junk_reason("x", "**Prompt:** go fix the thing", "").contains("captured chat prompt"));
+    }
+
+    /// AF-721: TG-3603 was a real card in active multi-lane review whose title
+    /// happened to start with the legitimate area tag "[canary]" — the artifact
+    /// regex branded it a test artifact with no check of the card's actual
+    /// state, unlike the capture-marker branch just above it (which carries its
+    /// own STRUCTURE VETO). Any one of desc length, log activity, a named
+    /// reviewer, or a non-backlog/todo status must veto the verdict.
+    #[test]
+    fn a_review_state_signal_vetoes_the_artifact_verdict() {
+        // CONTROL: with none of the four signals, the title still brands —
+        // otherwise this test would not be testing the veto at all.
+        assert!(
+            !pickup_junk_reason_scoped("[canary] monitoring stub", "", "", "backlog", "").is_empty(),
+            "a genuinely bare canary-prefixed title with no review signal must still brand"
+        );
+        let long_desc = "x".repeat(201);
+        assert!(
+            pickup_junk_reason_scoped("[canary] monitoring rollout", &long_desc, "", "backlog", "").is_empty(),
+            "a substantive desc must veto the artifact verdict"
+        );
+        let long_log = "y".repeat(201);
+        assert!(
+            pickup_junk_reason_scoped("[canary] monitoring rollout", "", &long_log, "backlog", "").is_empty(),
+            "real log activity must veto the artifact verdict"
+        );
+        assert!(
+            pickup_junk_reason_scoped("[canary] monitoring rollout", "", "", "backlog", "backend").is_empty(),
+            "a named reviewer must veto the artifact verdict"
+        );
+        assert!(
+            pickup_junk_reason_scoped("[canary] monitoring rollout", "", "", "review", "").is_empty(),
+            "a non-backlog/todo status must veto the artifact verdict"
+        );
+        // `pickup_junk_reason` (the 3-arg form every OTHER call site still
+        // uses) has no status/reviewer to pass and must keep its old, stricter
+        // behavior — this is what the two-fix-rule wrapper split preserves.
+        assert!(
+            !pickup_junk_reason("[canary] monitoring rollout", "", "").is_empty(),
+            "the unscoped wrapper has no review signal available and must still brand"
+        );
     }
 
     /// AMUX-3187: `capture: session prompt` is a durable LOG marker, so a card
