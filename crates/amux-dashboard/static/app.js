@@ -4878,7 +4878,6 @@ function render() {
         ${s.running ? `
         <div class="chips" id="card-chips-${s.name}"></div>
         <div class="peek-attach-bar card-attach-bar${(_cardFiles[s.name]||[]).length ? ' has-files' : ''}" id="card-attach-${s.name}">${_renderCardFileChips(s.name)}</div>
-        <button type="button" class="btn card-file-picker" aria-label="Attach file" onclick="event.stopPropagation();pickCardFiles('${s.name}')">📎 Attach file</button>
         <div class="send-row" style="position:relative;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop('${s.name}',event)" title="Drag files here to attach">
           <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
           <textarea class="send-input" id="input-${s.name}" rows="1"
@@ -10277,7 +10276,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.919';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.920';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

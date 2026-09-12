@@ -1341,3 +1341,18 @@ fn reconnect_shows_the_sync_checklist() {
         "the checklist must mark each item done with a checkmark as it syncs"
     );
 }
+
+/// The worker-LIST card composer has no "Attach file" button (Ethan,
+/// 2026-09-12: "remove the attach file button we don't need that from worker
+/// list page"). Attaching on a card still works by drag-and-drop and paste; the
+/// standalone 📎 button was the redundant surface. The peek composer keeps its
+/// own attach affordance — this guard is scoped to the card picker class.
+#[test]
+fn the_worker_list_card_has_no_attach_file_button() {
+    let js = asset("app.js");
+    assert!(
+        !js.contains("card-file-picker"),
+        "the card composer's standalone Attach-file button is back; Ethan removed it \
+         (drag-and-drop + paste still attach)"
+    );
+}
