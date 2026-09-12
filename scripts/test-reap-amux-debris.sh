@@ -6,18 +6,15 @@
 # the age floor, never a live session's scratchpad, and nothing at all without
 # --apply. Each cell below fails if its guard is removed — the point of the test
 # is that it can go red, not that it is green today (ethos rule 7).
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REAPER="$HERE/reap-amux-debris.sh"
 FIX=$(mktemp -d)                     # never a fixed name: /tmp is shared by every lane
 trap 'rm -rf -- "$FIX"' EXIT
 fails=0
-# THE AF-561 HOLE, CLOSED AT THE SOURCE. This harness accumulates failures
-# rather than using `set -e` (a failing cell must not abort the ones after it),
-# so it sits outside test-harness-guard.sh's population, which selects on the
-# literal word PASS. That ratchet's real concern is a harness reporting success
-# after calling a helper that does not exist — so assert the helper exists,
-# which is the concern itself rather than the proxy for it.
+# Setup and helper failures abort before a success verdict. Assertion failures
+# still accumulate because check() handles them explicitly rather than returning
+# a failing shell status. Keep the missing-helper diagnostic as well.
 [ -x "$REAPER" ] || { echo "FAIL: $REAPER is missing or not executable — no cell below ran"; exit 1; }
 check() { # check <label> <expected> <actual>
   if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expected '$2', got '$3'"; fails=$((fails+1)); fi
@@ -81,5 +78,5 @@ case "$out" in *"left alone as dirty"*) echo "  ok   report names the dirty skip
   *) echo "  FAIL report never mentions the dirty skip: $out"; fails=$((fails+1)) ;; esac
 
 echo
-if [ "$fails" -eq 0 ]; then echo "reap-amux-debris: all checks passed"; exit 0; fi
+if [ "$fails" -eq 0 ]; then echo "PASS: reap-amux-debris — all checks passed"; exit 0; fi
 echo "reap-amux-debris: $fails check(s) FAILED"; exit 1

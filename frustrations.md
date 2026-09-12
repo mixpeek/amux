@@ -2553,3 +2553,14 @@ CARD: AF-745
 SYMPTOM: Upstream f834583e mounted /api/brex but omitted NATIVE_FAMILIES and its three ROUTE_TABLE paths; the clean proxy_composition test named the unclaimed route family.
 COST: Another full-suite failure after the standalone Clippy gate passed.
 FIX: Register the mounted native family and all three paths so the diagnostic endpoints, composition guard and route census describe the actual router. The failing test is the standing regression signal.
+
+## CI kept failing because the debris test opted out of the harness guard
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AMUX-4460
+SYMPTOM: checks failed repeatedly through upstream f834583e: test-reap-amux-debris.sh lacked set -e. Its comment claimed exclusion from the guard, but the actual classifier still included it. A helper existence check did not make setup/helper execution failures abort.
+COST: Multiple main-branch CI failures and another deployment gate correction.
+FIX: Enable errexit for setup/helper failures while check() continues to accumulate assertion failures. Compare all eight fixture checks before and after; test-harness-guard is the standing log signal. Prior CI evidence: run 34721443418.
