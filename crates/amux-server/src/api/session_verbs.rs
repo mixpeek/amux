@@ -2491,17 +2491,47 @@ pub(crate) fn conversation_owner(
 ///
 /// Tail-bounded and TTL-cached: /api/sessions is polled hard and there are ~47
 /// lanes, so an uncached full read would be a file scan per lane per poll.
-pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    type Cache = HashMap<String, (f64, Option<String>, Option<u64>)>;
-    static EV: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let ttl = std::env::var("AMUX_TRANSCRIPT_EVIDENCE_TTL_S")
+type TranscriptEvidenceCache = std::collections::HashMap<String, (f64, Option<String>, Option<u64>)>;
+
+fn transcript_evidence_cache() -> &'static std::sync::Mutex<TranscriptEvidenceCache> {
+    static EV: std::sync::OnceLock<std::sync::Mutex<TranscriptEvidenceCache>> = std::sync::OnceLock::new();
+    EV.get_or_init(Default::default)
+}
+
+fn transcript_evidence_ttl() -> f64 {
+    std::env::var("AMUX_TRANSCRIPT_EVIDENCE_TTL_S")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(15.0);
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(15.0)
+}
+
+fn prune_transcript_evidence(cache: &mut TranscriptEvidenceCache, now: f64, ttl: f64) -> usize {
+    let before = cache.len();
+    cache.retain(|_, (at, _, _)| now - *at <= ttl.max(300.0));
+    let removed = before - cache.len();
+    if removed > 0 {
+        cache.shrink_to_fit();
+    }
+    removed
+}
+
+/// Also called by hourly maintenance, so inactive/deleted lanes do not need
+/// another request to release their cached values and map allocation.
+pub(crate) fn sweep_transcript_evidence() -> usize {
+    transcript_evidence_cache().lock().map(|mut cache| {
+        let removed = prune_transcript_evidence(&mut cache, now_f64(), transcript_evidence_ttl());
+        if removed > 0 {
+            tracing::info!(removed, remaining = cache.len(), "transcript evidence cache expired");
+        }
+        removed
+    }).unwrap_or(0)
+}
+
+pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
+    let ttl = transcript_evidence_ttl();
     let now = now_f64();
-    let cache = EV.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = transcript_evidence_cache();
     if let Ok(g) = cache.lock() {
         if let Some((at, m, t)) = g.get(name) {
             if now - at < ttl {
@@ -2554,6 +2584,7 @@ pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
         }
     }
     if let Ok(mut g) = cache.lock() {
+        prune_transcript_evidence(&mut g, now, ttl);
         g.insert(name.to_string(), (now, model.clone(), tokens));
     }
     (model, tokens)
@@ -29946,4 +29977,27 @@ mod commit_shape_tests {
         assert!(gi < wi, "layers compose least-specific first: {after}");
     }
 
+}
+
+#[cfg(test)]
+mod transcript_cache_retention_tests {
+    use super::*;
+
+    #[test]
+    fn inactive_worker_entries_expire_without_evicting_valid_long_ttl_entries() {
+        let mut cache = TranscriptEvidenceCache::new();
+        for i in 0..2048 {
+            cache.insert(format!("deleted-{i}"), (1.0, Some("model".into()), Some(42)));
+        }
+        cache.insert("active".into(), (999.0, Some("sonnet".into()), Some(123)));
+        cache.insert("long-ttl".into(), (600.0, None, None));
+        let capacity = cache.capacity();
+        assert_eq!(prune_transcript_evidence(&mut cache, 1000.0, 500.0), 2048);
+        assert_eq!(cache.len(), 2);
+        assert!(cache.capacity() < capacity);
+        assert_eq!(prune_transcript_evidence(&mut cache, 1000.0, 15.0), 1);
+        assert_eq!(cache["active"].2, Some(123));
+        assert_eq!(prune_transcript_evidence(&mut cache, 1400.0, 15.0), 1);
+        assert!(cache.is_empty());
+    }
 }

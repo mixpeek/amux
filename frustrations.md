@@ -2294,3 +2294,19 @@ The hourly stale-target sweep bypassed the shared Cargo guard with remove_dir_al
 The final entry-point audit also found unbuilt-commits.sh --build invoking bare Cargo for each historical revision. It now resolves the current safe wrapper before entering an old worktree, so historical replay receives the same budgets and diagnostics.
 
 Make targets and the installer also invoked bare Cargo. They now use the same wrapper, with the installer's explicit target/jobs preserved. make run delegates to the committed signed atomic builder instead of overwriting the running binary from a checkout-local target. make dev bounds compilation and then runs the requested development server normally.
+
+
+## Hourly cleanup omitted diagnostic folders and could mistake a failed reference query for no references
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: none — continuation of the user's isolated housekeeping request
+SYMPTOM: Worker-created log folders had no retention (one measured 3.6 GiB); expired transcript cache entries accumulated by worker name. Storage diagnostics counted 29 deleted rotated logs while the system-job summary said zero files and zero bytes.
+COST: Unbounded diagnostic output and misleading cleanup outcomes; an unavailable reference query also permitted deletion of aged uploads.
+FIX: Hourly guarded diagnostic retention, descendant recency/open-file/reference checks, bounded probes, fail-closed upload references covering messages and artifacts, and transcript cache expiry. storage diagnostics expose measured/deferred outcomes and actual deletion totals; diagnostic directory retention deferred, upload retention deferred and transcript evidence cache expired announce the affected paths. Consolidated lifecycle fixtures test deletion and preservation, including a real storage tick with an unavailable reference table.
+
+The old upload reference regex also truncated valid filenames containing spaces or Unicode. Match decoded references against actual filenames; the regression fixture keeps two such linked files and deletes an unrelated aged upload.
+
+The live-data probe also found ordinary text mentioning “logs” would consume the reference snapshot budget (over 18 MiB in board text before filtering). Filter on normalized path separators in SQL, so plain prose cannot prevent cleanup. A large-prose control accompanies the missing/oversized-reference tests.

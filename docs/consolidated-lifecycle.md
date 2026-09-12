@@ -810,6 +810,14 @@ Pass requires: Bounded parallelism, sampled RSS/time/disk limits, visible budget
 
 Supporting coverage: `scripts/test-cargo-budget.py`, `scripts/test-cargo-target-guard.py`, `scripts/test-build-disk-clear.sh`, `crates/amux-server/src/cargo_target_guard.rs`.
 
+### LC-AUTOMATIC-HOUSEKEEPING — Recurring memory and disk retention
+
+Exercise the hourly sweep with aged uploads, a failed reference query, old diagnostic folders, recent nested writes, open files and working directories, repositories, symlinks, saved messages, queued attachments and task artifact links. Expire deleted-worker transcript cache entries. Inspect deployed storage and browser job schedules.
+
+Pass requires: Old unreferenced output is removed; linked, active and recent files survive. Missing, oversized, truncated or timed-out probes defer cleanup with visible reasons. Cache expiry respects longer TTLs. Report actual bytes deleted separately from log rotation.
+
+Supporting coverage: `crates/amux-server/src/runtime_jobs/log_retention.rs`, `crates/amux-server/src/runtime_jobs/storage.rs`, `crates/amux-server/src/api/session_verbs.rs`, `docs/automatic-housekeeping.md`.
+
 ## End-state and cleanup record
 
 For every created worker, card, dependency, schedule, browser profile, group,

@@ -510,31 +510,26 @@ pub fn rotate_server_log(logs_dir: &Path) -> Option<u64> {
 /// is the honest "this was never a unit of work", so holding its attachment
 /// forever would make the protection a leak that never frees anything. That
 /// asymmetry is what the control cell pins.
-pub fn card_referenced_uploads(conn: &Connection) -> std::collections::HashSet<String> {
+pub fn card_referenced_uploads(conn: &Connection, uploads: &Path) -> anyhow::Result<std::collections::HashSet<String>> {
+    let texts = super::log_retention::reference_texts(conn, "/uploads/")?;
     let mut out = std::collections::HashSet::new();
-    // Filter in SQL so a 13k-card board does not get fully deserialised every
-    // sweep tick; the regex then only runs over rows that mention the directory.
-    let sql = "SELECT COALESCE(title,'') || ' ' || COALESCE(desc,'') || ' ' \
-               || COALESCE(evidence,'') || ' ' || COALESCE(log,'') AS t \
-               FROM issues \
-               WHERE COALESCE(archived,0) = 0 AND COALESCE(status,'') != 'discarded' \
-                 AND (COALESCE(title,'') LIKE '%/uploads/%' \
-                   OR COALESCE(desc,'') LIKE '%/uploads/%' \
-                   OR COALESCE(evidence,'') LIKE '%/uploads/%' \
-                   OR COALESCE(log,'') LIKE '%/uploads/%')";
-    let Ok(mut st) = conn.prepare(sql) else { return out };
-    let re = match regex::Regex::new(r"/uploads/([A-Za-z0-9._-]+)") {
-        Ok(r) => r,
-        Err(_) => return out,
+    let md = match std::fs::symlink_metadata(uploads) {
+        Ok(md) => md,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(error) => return Err(error.into()),
     };
-    if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
-        for text in rows.flatten() {
-            for c in re.captures_iter(&text) {
-                out.insert(c[1].to_string());
-            }
+    anyhow::ensure!(md.is_dir() && !md.file_type().is_symlink(), "upload retention root must be a real directory");
+    // Match actual names rather than parsing prose: upload names may contain
+    // spaces and Unicode, and a URL may percent-escape them. A prefix match is
+    // deliberately conservative (extra retention is safer than lost evidence).
+    for entry in std::fs::read_dir(uploads)? {
+        let name = entry?.file_name().into_string().map_err(|_| anyhow::anyhow!("upload filename is not UTF-8"))?;
+        let needle = format!("/uploads/{name}");
+        if texts.iter().any(|text| text.contains(&needle)) {
+            out.insert(name);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Reap files in `dir` older than `max_age_secs`, EXCEPT any whose filename is
@@ -614,57 +609,14 @@ pub fn prune_dir_by_age(dir: &Path, max_age_secs: u64, label: &str) -> (usize, u
 /// (dir name under home, retain-days env var, default days)
 pub const AGE_PRUNED_SUBDIRS: &[(&str, &str, u64)] = &[
     // 29 GB on 2026-09-09, all from one day of customer evidence captures.
-    // Each subdirectory is a self-contained evidence package (logs, screenshots,
-    // DB snapshots). 7 days is generous: evidence is consumed within hours and
-    // the board card carries the conclusion, not the raw capture.
+    // Age is only eligibility. Linked evidence and actively used captures are
+    // protected by the reference/activity/descendant checks before deletion.
     ("evidence", "AMUX_EVIDENCE_RETAIN_DAYS", 7),
     // 233 MB on 2026-09-09 across 5 audit workspaces. Each is a self-contained
     // acceptance test workspace (handoff proofs, scroll accuracy, etc.). 30 days
     // keeps them around for review but prevents indefinite accumulation.
     ("audits", "AMUX_AUDITS_RETAIN_DAYS", 30),
 ];
-
-/// Delete subdirectories of `dir` whose mtime is older than `max_age_secs`.
-/// Returns (dirs removed, bytes freed). Skips files at the top level (those
-/// belong to `prune_dir_by_age`). Each qualifying subdirectory is removed
-/// recursively.
-pub fn prune_subdirs_by_age(dir: &Path, max_age_secs: u64, label: &str) -> (usize, u64) {
-    if max_age_secs == 0 {
-        return (0, 0);
-    }
-    let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(dir) else { return (0, 0) };
-    let (mut n, mut bytes) = (0usize, 0u64);
-    for e in rd.flatten() {
-        let Ok(md) = e.metadata() else { continue };
-        if !md.is_dir() {
-            continue;
-        }
-        let age = md
-            .modified()
-            .ok()
-            .and_then(|t| now.duration_since(t).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if age <= max_age_secs {
-            continue;
-        }
-        let size = dir_size_fast(&e.path());
-        if std::fs::remove_dir_all(e.path()).is_ok() {
-            n += 1;
-            bytes += size;
-        }
-    }
-    if n > 0 {
-        tracing::info!(
-            dir = %dir.display(), removed = n, freed_bytes = bytes,
-            max_age_days = max_age_secs / 86_400,
-            knob = label,
-            "storage sweep pruned subdirectories"
-        );
-    }
-    (n, bytes)
-}
 
 /// Quick recursive size estimate. Best-effort: unreadable entries are skipped.
 fn dir_size_fast(root: &Path) -> u64 {
@@ -1014,6 +966,10 @@ pub struct StorageReport {
     /// beside `files_removed` so "deleted nothing" and "deleted nothing because
     /// everything was still referenced" are different readings (ethos rule 4).
     pub kept_card_referenced: usize,
+    pub upload_refs_error: Option<String>,
+    pub memory_entries_removed: usize,
+    pub run_logs: super::log_retention::Report,
+    pub diagnostic_dirs: Vec<(String, super::log_retention::Report)>,
     pub dirs_removed: usize,
     pub dir_bytes_freed: u64,
     pub vacuumed: bool,
@@ -1100,24 +1056,24 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     // incident holding areas nothing had ever removed. Running them on a timer is
     // the whole fix.
     //
-    // `uploads` additionally consults the BOARD: a card is durable and this
-    // directory is reaped by age, so without this the reaper deletes the very
-    // screenshot a card is about (AMUX-3937 — 109 of 113 references were already
-    // dead when this was found). The other dirs are not referenced by cards and
-    // pass an empty keep-set, which is also the positive control: if the keep-set
-    // silently came back empty for `uploads` too, `kept_card_referenced` would
-    // read 0 and say so rather than looking like a clean sweep.
-    let keep = state
-        .store
-        .read()
-        .ok()
-        .map(|conn| card_referenced_uploads(&conn))
-        .unwrap_or_default();
+    // Upload references must be complete before deletion. Other flat cache
+    // directories retain their existing age policy.
+    let store = state.store.clone();
+    let uploads = home.join("uploads");
+    let keep = tokio::task::spawn_blocking(move || store.read().and_then(|conn| card_referenced_uploads(&conn, &uploads)))
+        .await.unwrap_or_else(|error| Err(error.into()));
+    if let Err(error) = &keep {
+        rep.upload_refs_error = Some(error.to_string());
+        tracing::warn!(%error, "upload retention deferred: references unavailable");
+    }
     let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
     let (mut files, mut bytes, mut kept) = (0usize, 0u64, 0usize);
     for (name, env_key, default_days) in AGE_PRUNED_DIRS {
         let days = env_u64(env_key, *default_days);
-        let keeping = if *name == "uploads" { &keep } else { &empty };
+        let keeping = if *name == "uploads" {
+            let Ok(keep) = &keep else { continue };
+            keep
+        } else { &empty };
         let (n, b, k) =
             prune_dir_by_age_keeping(&home.join(name), days * 86_400, env_key, keeping);
         files += n;
@@ -1128,18 +1084,19 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     rep.bytes_freed = bytes;
     rep.kept_card_referenced = kept;
 
-    // Rotated session logs and stale diagnostic files in logs/.
-    let (rn, rb) = prune_rotated_logs(&home.join("logs"));
-    rep.files_removed += rn;
-    rep.bytes_freed += rb;
+    let log_refs = super::log_retention::references(state, "/logs/").await;
+    rep.run_logs = super::log_retention::sweep(home, "logs", env_u64("AMUX_RUN_LOG_RETAIN_DAYS", 30), log_refs).await;
+    rep.memory_entries_removed = crate::api::session_verbs::sweep_transcript_evidence();
 
     // Directory-level pruning (evidence captures, etc.).
     let (mut dirs, mut dir_bytes) = (0usize, 0u64);
     for (name, env_key, default_days) in AGE_PRUNED_SUBDIRS {
         let days = env_u64(env_key, *default_days);
-        let (dn, db) = prune_subdirs_by_age(&home.join(name), days * 86_400, env_key);
-        dirs += dn;
-        dir_bytes += db;
+        let refs = super::log_retention::references(state, &format!("/{name}/")).await;
+        let report = super::log_retention::sweep(home, name, days, refs).await;
+        dirs += report.removed;
+        dir_bytes += report.bytes_freed;
+        rep.diagnostic_dirs.push((name.to_string(), report));
     }
 
     // Stale one-off build target directories.
@@ -1192,7 +1149,9 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
                 || r.kept_card_referenced > 0
                 || r.dirs_removed > 0
                 || r.vacuumed
-                || r.rotated_logs_removed > 0;
+                || r.rotated_logs_removed > 0
+                || r.memory_entries_removed > 0
+                || r.run_logs.removed > 0;
             if any_work {
                 tracing::info!(
                     rotated_bytes = r.rotated_bytes,
@@ -1206,6 +1165,9 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
                     vacuumed = r.vacuumed,
                     rotated_logs_removed = r.rotated_logs_removed,
                     rotated_logs_freed = r.rotated_logs_freed,
+                    memory_entries_removed = r.memory_entries_removed,
+                    run_log_dirs_removed = r.run_logs.removed,
+                    run_log_bytes_freed = r.run_logs.bytes_freed,
                     "storage sweep tick"
                 );
             }
@@ -1232,6 +1194,7 @@ pub async fn debug_storage() -> axum::Json<Value> {
         "server_log_max_mb": server_log_max_bytes() / 1024 / 1024,
         "session_log_max_mb": env_u64("AMUX_SESSION_LOG_MAX_MB", 20),
         "rotated_log_retain_days": env_u64("AMUX_ROTATED_LOG_RETAIN_DAYS", 3),
+        "run_log_retain_days": env_u64("AMUX_RUN_LOG_RETAIN_DAYS", 30),
         "sweep_secs": env_u64("AMUX_STORAGE_SWEEP_SECS", STORAGE_TICK_SECS),
         "dir_pruning": AGE_PRUNED_SUBDIRS.iter().map(|(name, env, default)| json!({
             "dir": name, "env": env, "retain_days": env_u64(env, *default),
@@ -1242,6 +1205,10 @@ pub async fn debug_storage() -> axum::Json<Value> {
             "session_logs_rolled_bytes": r.session_logs_rolled_bytes,
             "files_removed": r.files_removed, "bytes_freed": r.bytes_freed,
             "kept_card_referenced": r.kept_card_referenced,
+            "upload_references": {"measured": r.upload_refs_error.is_none(), "why_unmeasured": r.upload_refs_error},
+            "memory_entries_removed": r.memory_entries_removed,
+            "run_logs": r.run_logs,
+            "diagnostic_dirs": r.diagnostic_dirs,
             "dirs_removed": r.dirs_removed, "dir_bytes_freed": r.dir_bytes_freed,
             "vacuumed": r.vacuumed,
             "rotated_logs_removed": r.rotated_logs_removed,
@@ -1322,7 +1289,7 @@ mod tests {
         aged_file(dir.path(), "referenced.png", 10 * 86_400);
         aged_file(dir.path(), "orphan.png", 10 * 86_400);
         let conn = board(&[("AMUX-1", "see /Users/ethan/.amux/uploads/referenced.png", 0)]);
-        let keep = card_referenced_uploads(&conn);
+        let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
         assert!(keep.contains("referenced.png"), "keep-set must find the reference: {keep:?}");
 
         let (removed, _, kept) =
@@ -1338,12 +1305,14 @@ mod tests {
     /// is a worse bug than the one it fixes and would never show up as a failure.
     #[test]
     fn a_discarded_or_archived_card_does_not_pin_its_upload() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["discarded.png", "archived.png", "live.png"] { aged_file(dir.path(), name, 0); }
         let conn = board(&[
             ("DISC-1", "/Users/ethan/.amux/uploads/discarded.png", 0),
             ("AMUX-2", "/Users/ethan/.amux/uploads/archived.png", 1),
             ("AMUX-3", "/Users/ethan/.amux/uploads/live.png", 0),
         ]);
-        let keep = card_referenced_uploads(&conn);
+        let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
         assert!(keep.contains("live.png"), "positive control: a live card still pins");
         assert!(!keep.contains("discarded.png"), "a discarded card must not pin its upload");
         assert!(!keep.contains("archived.png"), "an archived card must not pin its upload");
@@ -1355,18 +1324,69 @@ mod tests {
     /// most cards unprotected while the cells above still passed.
     #[test]
     fn the_reference_is_found_in_every_form_a_card_carries_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["at-form.png", "url-form.png", "md-form.png"] { aged_file(dir.path(), name, 0); }
         let conn = board(&[
             ("A", "make it automatic @/Users/ethan/.amux/uploads/at-form.png", 0),
             ("B", "screenshot: /api/uploads/url-form.png", 0),
             ("C", "![shot](/api/uploads/md-form.png) and text after", 0),
         ]);
-        let keep = card_referenced_uploads(&conn);
+        let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
         for want in ["at-form.png", "url-form.png", "md-form.png"] {
             assert!(keep.contains(want), "{want} not found in {keep:?}");
         }
         // Trailing punctuation must not become part of the filename, or the
         // keep-set silently misses and the file is reaped anyway.
         assert!(!keep.iter().any(|k| k.ends_with(')') || k.ends_with(',')));
+    }
+
+    #[test]
+    fn upload_retention_references_include_artifacts_saved_messages_and_pending_steering() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["artifact.png", "saved.png", "pending.png"] { aged_file(dir.path(), name, 0); }
+        let conn = board(&[]);
+        conn.execute_batch("INSERT INTO _amux_task_artifacts(id,task_id,kind,ref_value,created_at,updated_at) VALUES('a','t','file','/uploads/artifact.png',0,0);
+            INSERT INTO saved_messages(label,text,created) VALUES('saved','/uploads/saved.png',0);
+            INSERT INTO steering_queue(session,text,queued_at) VALUES('worker','/uploads/pending.png',0);").unwrap();
+        let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
+        for file in ["artifact.png", "saved.png", "pending.png"] { assert!(keep.contains(file), "{file}"); }
+        conn.execute_batch("DROP TABLE saved_messages").unwrap();
+        assert!(card_referenced_uploads(&conn, dir.path()).is_err(), "partial reference data is not a safe keep-set");
+    }
+
+    #[test]
+    fn upload_retention_protects_spaces_unicode_and_percent_encoded_file_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["naïve café.txt", "report final.pdf", "unused final.pdf"] { aged_file(dir.path(), name, 40 * 86_400); }
+        let conn = board(&[
+            ("A", "Review file:///tmp/uploads/na%C3%AFve%20caf%C3%A9.txt and then reply", 0),
+            ("B", "See /uploads/report final.pdf for evidence", 0),
+        ]);
+        let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
+        let (removed, _, kept) = prune_dir_by_age_keeping(dir.path(), 7 * 86_400, "TEST", &keep);
+        assert_eq!((removed, kept), (1, 2));
+        assert!(dir.path().join("naïve café.txt").exists());
+        assert!(dir.path().join("report final.pdf").exists());
+        assert!(!dir.path().join("unused final.pdf").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_retention_defers_deletion_when_reference_probe_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        store.write_async(|conn| {
+            conn.execute_batch("DROP TABLE saved_messages")?;
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        }).await.unwrap();
+        let state = AppState { store, started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let uploads = home.path().join("uploads");
+        std::fs::create_dir(&uploads).unwrap();
+        aged_file(&uploads, "saved.png", 40 * 86_400);
+        let report = storage_tick(&state, home.path()).await;
+        assert!(uploads.join("saved.png").exists(), "probe failure must never mean no references");
+        assert!(report.upload_refs_error.as_deref().unwrap().contains("saved_messages"));
+        assert_eq!(report.files_removed, 0);
     }
 
     #[test]

@@ -71,9 +71,11 @@ profiles, and 3.0 GiB consistent snapshots. Cargo's downloaded registry was abou
 the start of the audit. The live server's RSS was about 744 MiB. Existing swap
 usage alone does not attribute current memory pressure to Cargo.
 
-**Known remaining scope:** worker-created run folders under `logs/` are not
-covered by flat session-log rotation. One such evidence folder accounted for
-3.6 GiB. Persistent browser profiles, consistent snapshots, task-linked output,
+**Diagnostic run folders:** hourly guarded retention is documented in
+[automatic housekeeping](automatic-housekeeping.md). One such folder accounted
+for 3.6 GiB; recent or referenced output remains protected.
+
+**Known remaining scope:** persistent browser profiles, consistent snapshots, task-linked output,
 and arbitrary files written by workers also have no universal byte quota.
 They may contain user work and are not silently deleted by this change. Use
 the existing disk/reclaim inventory to review them. A caller bypassing

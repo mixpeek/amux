@@ -330,7 +330,7 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::STORAGE,
         name: "Storage retention",
-        purpose: "Prunes seven append-only tables and three cache directories on a timer, and rotates the server log.",
+        purpose: "Bounds append-only history, caches, diagnostic run logs and build artifacts; preserves referenced uploads and expires transcript cache entries.",
         env: &[EnvControl {
             var: "AMUX_STORAGE_SWEEP_SECS",
             effect: "sweep seconds; 0 stops the sweep",
@@ -1163,10 +1163,13 @@ pub fn outcome_for(id: &str) -> Option<String> {
         }),
         ids::STORAGE => super::storage::last_report().map(|r| {
             format!(
-                "{} table(s) swept, {} file(s) removed, {} freed",
+                "{} table(s) swept, {} file(s) and {} directory(s) removed, {} freed, {} cache entries expired{}",
                 r.tables.len(),
-                r.files_removed,
-                human_bytes(r.bytes_freed + r.rotated_bytes)
+                r.files_removed + r.rotated_logs_removed,
+                r.dirs_removed + r.run_logs.removed,
+                human_bytes(r.bytes_freed + r.rotated_logs_freed + r.dir_bytes_freed + r.run_logs.bytes_freed),
+                r.memory_entries_removed,
+                if r.upload_refs_error.is_some() || !r.run_logs.measured || r.diagnostic_dirs.iter().any(|(_, d)| !d.measured) { "; some cleanup deferred (see storage diagnostics)" } else { "" }
             )
         }),
         ids::SCAN => crate::orchestrator::scan::last_scan_state().map(|s| {
