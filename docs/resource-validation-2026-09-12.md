@@ -14,6 +14,8 @@ lifecycle is green. Policy and remaining storage ownership gaps are described in
 | `bash scripts/test-build-activation-authority.sh` | 39 passed |
 | `bash scripts/test-build-activation-launcher.sh` | 8 passed |
 | `bash scripts/test-test-receipt.sh` | 26 passed |
+| `bash scripts/test-unbuilt-commits.sh` | 9 passed |
+| `make -n run dev check test`; `bash -n install.sh scripts/unbuilt-commits.sh` | Passed; build entry points resolve to guarded commands (installation itself was not rerun) |
 | Lifecycle runner contract tests | 9 passed; catalog has 86 unique cases with existing source references |
 | `scripts/safe-cargo.sh check --workspace` | Passed; 84.89 seconds, 2.21 GiB peak process-group RSS |
 | `scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings` | Passed; 41.43 seconds, 4.56 GiB peak RSS |
@@ -54,4 +56,20 @@ passing run:
   were not deleted. Remaining unbounded saved-data areas are explicitly listed
   in the policy document.
 
-Deployment identity is appended after the signed installation is observed.
+## Deployed implementation
+
+The signed release from `0b812450b95536369668c6c00d4e045994709db4` was installed
+and observed through `/api/health`: commit `0b812450b955`, build
+`6ca4e9114df95dab`, status/store `ok`. The server adopted it with the same PID.
+The release completed in 233.29 seconds at 4.17 GiB sampled peak RSS, within the
+new budget. No debug-cache purge occurred for this deployment.
+
+While compiling, health responded in 17 ms and `GET /api/sessions` returned all
+135 workers with HTTP 200 in 3.510 seconds. This is one successful observation,
+not a long-duration availability test or a claim that worker-list latency is
+fixed. The post-adoption storage sweep was measured (eight table policies),
+retained five referenced uploads, and removed 29 aged rotated log files under
+the existing retention policy.
+
+The final Makefile adjustment preserves `BIN_DIR` when handing installation to
+the atomic builder. It and this report do not change the compiled Rust source.

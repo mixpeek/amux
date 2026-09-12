@@ -16,7 +16,7 @@ install-cli:
 # Rebuild release + reinstall binary; launchd restarts the server automatically
 # (the server watches its own binary mtime and exits for launchd to relaunch).
 run:
-	./scripts/rust-auto-build.sh
+	AMUX_RS_INSTALL="$(BIN_DIR)/amux-server-rs" ./scripts/rust-auto-build.sh
 	@echo "Build/deployment result: ~/.amux/logs/rust-auto-build.log"
 	@sleep 3
 	@curl -sk https://localhost:$(PORT)/health | python3 -m json.tool 2>/dev/null \
