@@ -757,8 +757,8 @@ pub trait Fleet: Send + Sync {
     }
     /// Hand text to the lane. Durable queue + the existing delivery loop.
     async fn deliver(&self, lane: &str, text: &str);
-    /// Work delivery reports a queue refusal so its just-made board claim can
-    /// be compensated; legacy nudge delivery remains fire-and-forget.
+    /// Work and reminder delivery report queue refusal so claims can be
+    /// compensated and failed reminders consume no cooldown or retry budget.
     async fn deliver_work(&self, lane: &str, text: &str) -> Result<(), String> {
         self.deliver(lane, text).await;
         Ok(())
@@ -785,11 +785,10 @@ pub trait Fleet: Send + Sync {
     /// correct trigger plus a correctly-applied remedy into what looked like a
     /// broken re-nag.
     ///
-    /// DEFAULTED to plain `deliver` so a Fleet that does not care — every test
-    /// fake — is unaffected, and so adding this could not silently change the
-    /// behaviour of any existing caller.
-    async fn deliver_about(&self, lane: &str, text: &str, _card: &str, _rev: i64) {
-        self.deliver(lane, text).await;
+    /// Default to acknowledged work delivery. A failed enqueue must not be
+    /// recorded as a delivered reminder by either a live fleet or a test fake.
+    async fn deliver_about(&self, lane: &str, text: &str, _card: &str, _rev: i64) -> Result<(), String> {
+        self.deliver_work(lane, text).await
     }
 }
 
@@ -914,12 +913,13 @@ impl Fleet for LiveFleet {
         };
         Ok(disposition)
     }
-    async fn deliver_about(&self, lane: &str, text: &str, card: &str, rev: i64) {
-        let _ = crate::api::session_verbs::steer_enqueue_precond(
+    async fn deliver_about(&self, lane: &str, text: &str, card: &str, rev: i64) -> Result<(), String> {
+        crate::api::session_verbs::steer_enqueue_precond(
             &self.state.store, lane, text, GUARD, "", Some((card, rev)),
         )
-        .await;
+        .await.map_err(str::to_string)?;
         self.record_prompt(lane, text).await;
+        Ok(())
     }
 
 }
@@ -3608,6 +3608,29 @@ fn needs_human_sql() -> &'static str {
      AND lower(t.tag) LIKE 'needs:you%')"
 }
 
+/// Hold an unchanged verification batch, but immediately offer the next batch
+/// after the worker resolves the previous one. A lane-wide 24h timer used to
+/// throttle a successful worker to eight cards per day regardless of progress.
+fn verify_batch_pending(conn: &Connection, session: &str, now: f64) -> bool {
+    let previous: Option<String> = conn.query_row(
+        "SELECT data FROM session_events WHERE session=?1 AND type='verify.nudge' AND ts>?2 ORDER BY ts DESC,id DESC LIMIT 1",
+        rusqlite::params![session, now - VERIFY_NUDGE_COOLDOWN_S], |r| r.get(0),
+    ).optional().ok().flatten();
+    let Some(previous) = previous else { return false };
+    let data: Value = serde_json::from_str(&previous).unwrap_or(Value::Null);
+    let Some(cards) = data.get("cards").and_then(Value::as_array).filter(|ids| !ids.is_empty()) else {
+        return true; // Legacy event has no identity; retain its bounded cooldown.
+    };
+    cards.iter().any(|id| {
+        let Some(id) = id.as_str() else { return true };
+        conn.query_row(&format!(
+            "SELECT EXISTS(SELECT 1 FROM issues WHERE id=?1 AND session=?2 AND status='done' \
+             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {})",
+            unverifiable_types_sql(), needs_human_sql()),
+            rusqlite::params![id, session], |r| r.get::<_, bool>(0)).unwrap_or(true)
+    })
+}
+
 /// Cards in `done` that this session could verify. Returns (id, title, type)
 /// tuples, capped at 8 for prompt brevity.
 fn done_verify_candidates(conn: &Connection, session: &str) -> Vec<(String, String, String)> {
@@ -5942,6 +5965,14 @@ fn publish_lane(trace: LaneTrace) {
     }
 }
 
+fn nudge_delivery_failed(lane: &str, target: &str, card: &str, error: &str) -> LaneTrace {
+    tracing::warn!(session = lane, target_worker = target, card, error,
+        verdict = "board_nudge_enqueue_failed",
+        "board_drive: reminder was not queued; no cooldown or nudge budget consumed; retry next tick");
+    LaneTrace::skip(lane, "nudge-delivery-failed", format!("enqueue to {target} failed: {error}; retry next tick"))
+        .with_card(card)
+}
+
 async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTrace {
     let lane_lock = lane_drive_lock(state, lane);
     let _lane_guard = lane_lock.lock().await;
@@ -6281,9 +6312,12 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 c.query_row("SELECT rev FROM issues WHERE id=?1", rusqlite::params![&card], |r| r.get(0))
                     .ok()
             });
-        match rev {
+        let delivery = match rev {
             Some(r) => fleet.deliver_about(&target, &text, &card, r).await,
-            None => fleet.deliver(&target, &text).await,
+            None => fleet.deliver_work(&target, &text).await,
+        };
+        if let Err(error) = delivery {
+            return nudge_delivery_failed(lane, &target, &card, &error).with_counts(eligible, open);
         }
         // THE COOLDOWN IS PER LANE, AND A REVIEW ROUTE INVOLVES TWO OF THEM.
         // `advance.nudged` is recorded under the REVIEWER (python:13817 — it
@@ -6344,10 +6378,24 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     };
 
     if let Some((card, cause)) = current_claim {
-        return LaneTrace::skip(lane, "active-claim-current",
-            format!("{card} remains the exact runtime card ({cause}); canonical advancement: {} — {}",
-                advance_reason.0, advance_reason.1))
-            .with_card(&card).with_counts(eligible, open);
+        // An exact runtime identity prevents a second claim, but cannot veto
+        // the canonical recovery of that same abandoned WIP slot forever.
+        // Also preserve the existing capture-shell WIP exemption: a reminder
+        // already sent about a raw prompt is not an executable task claim.
+        let capture_exempt = state.store.read().ok()
+            .and_then(|conn| bs::get_issue(&conn, &card).ok().flatten())
+            .is_some_and(|row| row.creator == "amux" && row.desc.starts_with("**Prompt:**"));
+        let recovery = matches!(&pickup, Some(Pickup::ReclaimStale { card: stale, .. }) if stale == &card)
+            || (capture_exempt
+                && matches!(&pickup, Some(Pickup::Claim { .. } | Pickup::DrainBacklog { .. })));
+        if !recovery || fleet.active_child_work(lane) {
+            return LaneTrace::skip(lane, "active-claim-current",
+                format!("{card} remains the exact runtime card ({cause}); canonical advancement: {} — {}",
+                    advance_reason.0, advance_reason.1))
+                .with_card(&card).with_counts(eligible, open);
+        }
+        tracing::warn!(session = lane, card, verdict = "stalled_claim_yields_to_canonical_pickup",
+            "board_drive: idle runtime claim no longer vetoes guarded stale recovery or capture-shell WIP exemption");
     }
 
     match pickup.expect("pickup computed whenever advance declined") {
@@ -6477,10 +6525,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             }
         }
         Pickup::ReclaimStale { card, held_h, blocking } => {
-            // AMUX-4042. `expected_from: doing` makes this a CAS: if the lane
-            // touched the card between select and write, the advance does not
-            // apply and we say so rather than silently taking it anyway.
+            // Revalidate the complete selector on the serialized writer. A
+            // status-only CAS cannot detect a new note, dependency or human hold.
             let card_c = card.clone();
+            let lane_c = lane.to_string();
             let line = format!(
                 "auto-reclaimed: untouched {held_h:.1}h while the lane sat idle at a turn \
                  boundary, holding the WIP slot against {blocking} claimable card(s)"
@@ -6488,6 +6536,11 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             let result = state
                 .store
                 .write_async(move |conn| {
+                    if !matches!(select_pickup(conn, &lane_c, now_f64()),
+                        Pickup::ReclaimStale { card: selected, .. } if selected == card_c)
+                    {
+                        return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                    }
                     let opts = crate::db::advance::AdvanceOpts {
                         expected_from: Some("doing".into()),
                         skip_continuation: true,
@@ -6572,6 +6625,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 )
                 .with_counts(eligible, open);
             }
+            if let Err(error) = fleet.deliver_work(lane, &text).await {
+                return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+            }
             crate::api::session_verbs::emit_event(
                 state,
                 lane,
@@ -6581,7 +6637,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 "board-drive",
             )
             .await;
-            fleet.deliver(lane, &text).await;
             LaneTrace::acted(lane, "decompose-asked", ids.first().map(String::as_str).unwrap_or(""), "queue is all capture shells")
                 .with_counts(eligible, open)
         }
@@ -6604,20 +6659,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 if total == 0 {
                     break 'verify None;
                 }
-                let recent: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM session_events WHERE session=?1 \
-                         AND type='verify.nudge' AND ts > ?2 LIMIT 1",
-                        rusqlite::params![lane, now - VERIFY_NUDGE_COOLDOWN_S],
-                        |_| Ok(true),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(false);
+                let recent = verify_batch_pending(&conn, lane, now);
                 if recent {
                     break 'verify Some(format!(
-                        "has {total} done card(s) but verify-nudge sent within 24h"
+                        "has {total} done card(s); previous verification batch still pending (24h retry)"
                     ));
                 }
                 let cards = done_verify_candidates(&conn, lane);
@@ -6626,6 +6671,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 }
                 drop(conn);
                 let text = verify_nudge_text(&cards, total);
+                if let Err(error) = fleet.deliver_work(lane, &text).await {
+                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                }
                 crate::api::session_verbs::emit_event(
                     state,
                     lane,
@@ -6635,7 +6683,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     "board-drive",
                 )
                 .await;
-                fleet.deliver(lane, &text).await;
+                tracing::info!(session = lane, total, batch_size = cards.len(),
+                    verdict = "verify_batch_queued",
+                    "board_drive: verification batch accepted; next batch becomes eligible when these cards are resolved");
                 return LaneTrace::acted(
                     lane,
                     "verify-nudge",
@@ -6873,6 +6923,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 } else {
                     backlog_triage_text(&cards, stale_count, total_backlog)
                 };
+                if let Err(error) = fleet.deliver_work(lane, &text).await {
+                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                }
                 crate::api::session_verbs::emit_event(
                     state,
                     lane,
@@ -6887,7 +6940,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     "board-drive",
                 )
                 .await;
-                fleet.deliver(lane, &text).await;
                 return LaneTrace::acted(
                     lane,
                     if idle_drain { "backlog-drain" } else { "backlog-triage" },
@@ -6991,6 +7043,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 }
                 drop(conn);
                 let text = continue_nudge_text(bc, dc, &blocked, &done, &human_blocked);
+                if let Err(error) = fleet.deliver_work(lane, &text).await {
+                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                }
                 crate::api::session_verbs::emit_event(
                     state,
                     lane,
@@ -7003,7 +7058,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     "board-drive",
                 )
                 .await;
-                fleet.deliver(lane, &text).await;
                 return LaneTrace::acted(
                     lane,
                     "continue-nudge",
@@ -8851,6 +8905,108 @@ mod tests {
             )?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_stale_claim_does_not_disable_recovery_and_next_todo_pickup() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "ABANDONED", "doing", "agent", "code");
+        drive_card(&store, "NEXT", "todo", "agent", "code");
+        drive_claim(&store, "ABANDONED");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET updated=?1 WHERE id='ABANDONED'", [now_f64() as i64 - 48 * 3600])?;
+            // Exhaust the normal reminder path just as in the live incident.
+            for _ in 0..advance_card_budget() {
+                conn.execute("INSERT INTO session_events(ts,session,type,data) VALUES(?1,'lane','advance.nudged',?2)",
+                    rusqlite::params![now_f64() - 3600.0, json!({"issue":"ABANDONED","status":"doing"}).to_string()])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let fleet = BoundaryFleet::default();
+        let recovery = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(recovery.outcome, "reclaim-stale", "{recovery:?}");
+        assert_eq!(drive_status(&store, "ABANDONED"), "todo");
+        assert_eq!(drive_events(&store, "pickup.reclaimed_stale"), 1);
+        let pickup = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(pickup.card.as_deref(), Some("NEXT"), "{pickup:?}");
+        assert_eq!(drive_status(&store, "NEXT"), "doing");
+        assert_eq!(drive_status(&store, "ABANDONED"), "todo", "reclaimed card yields instead of churning");
+        assert_eq!(fleet.delivered.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn already_nudged_capture_claim_does_not_block_real_todo() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "SHELL", "doing", "agent", "code");
+        drive_card(&store, "REAL", "todo", "agent", "code");
+        drive_claim(&store, "SHELL");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET creator='amux',source='capture',desc='**Prompt:** continue please' WHERE id='SHELL'", [])?;
+            conn.execute("INSERT INTO session_events(ts,session,type,data,idem) VALUES(?1,'lane','advance.nudged',?2,'decompose:SHELL')",
+                rusqlite::params![now_f64() - 3600.0, json!({"issue":"SHELL","status":"doing"}).to_string()])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let fleet = BoundaryFleet::default();
+        let pickup = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(pickup.card.as_deref(), Some("REAL"), "{pickup:?}");
+        assert_eq!(drive_status(&store, "REAL"), "doing");
+        assert_eq!(drive_status(&store, "SHELL"), "doing", "never silently discard the user's captured request");
+        assert_eq!(fleet.delivered.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn refused_verification_nudge_retries_without_consuming_cooldown() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "VERIFY-1", "done", "agent", "code");
+        let fleet = BoundaryFleet::default();
+        *fleet.delivery_error.lock().unwrap() = Some("queue unavailable".into());
+        let refused = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(refused.reason, "nudge-delivery-failed", "{refused:?}");
+        assert_eq!(drive_events(&store, "verify.nudge"), 0);
+        assert!(fleet.delivered.lock().unwrap().is_empty());
+        *fleet.delivery_error.lock().unwrap() = None;
+        let accepted = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(accepted.outcome, "verify-nudge", "{accepted:?}");
+        assert_eq!(drive_events(&store, "verify.nudge"), 1);
+        drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(fleet.delivered.lock().unwrap().len(), 1, "unchanged batch stays quiet");
+    }
+
+    #[tokio::test]
+    async fn completed_verification_batch_drains_next_batch_without_daily_delay() {
+        let (_dir, state, store) = drive_state();
+        for n in 0..10 { drive_card(&store, &format!("VERIFY-{n}"), "done", "agent", "code"); }
+        let fleet = BoundaryFleet::default();
+        let first = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(first.outcome, "verify-nudge", "{first:?}");
+        // Observe exactly which cards the driver offered, then simulate the
+        // worker completing those cards. Do not age or delete the cooldown.
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET status='verified' WHERE id IN \
+                (SELECT value FROM json_each((SELECT data FROM session_events \
+                 WHERE type='verify.nudge' ORDER BY id DESC LIMIT 1),'$.cards'))", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(done_card_count(&store.read().unwrap(), "lane"), 2);
+        let next = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(next.outcome, "verify-nudge", "{next:?}");
+        assert_eq!(drive_events(&store, "verify.nudge"), 2);
+        assert_eq!(fleet.delivered.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn refused_advance_nudge_preserves_retry_budget() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "ADVANCE-1", "doing", "agent", "code");
+        let fleet = BoundaryFleet::default();
+        *fleet.delivery_error.lock().unwrap() = Some("queue unavailable".into());
+        let refused = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(refused.reason, "nudge-delivery-failed", "{refused:?}");
+        assert_eq!(drive_events(&store, "advance.nudged"), 0);
+        *fleet.delivery_error.lock().unwrap() = None;
+        let accepted = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(accepted.outcome, "advance-nudged", "{accepted:?}");
+        assert_eq!(drive_events(&store, "advance.nudged"), 1);
     }
 
     #[tokio::test]

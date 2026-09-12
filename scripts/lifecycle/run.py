@@ -139,6 +139,8 @@ def main():
         run('runner-contracts', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/lifecycle', '-p', 'test_*.py'])
         run('syntax', ['bash', 'scripts/safe-cargo.sh', 'check', '--workspace'])
         run('contracts', ['bash', 'scripts/test-contended.sh', '--workspace', '--no-fail-fast'], live=True)
+        run('steering-submission-replay', ['bash', 'scripts/test-contended.sh', '-p', 'amux-server', '--lib',
+             'real_tmux_submission_replay_keeps_generating_input_unconfirmed', '--', '--ignored', '--nocapture'])
     if args.mode in ('browser', 'full'):
         run('outbox-contracts', ['node', '--test', 'tests/dashboard-outage-recovery.mjs'])
         assets = {'/' + name: hashlib.sha256((ROOT / 'crates/amux-dashboard/static' / name).read_bytes()).hexdigest()

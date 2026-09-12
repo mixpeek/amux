@@ -2272,3 +2272,11 @@ CARD: AMUX-4417
 SYMPTOM: GitHub check 103564599963 passed workspace tests and clippy, then failed the CLI launch smoke: deleting the local AMUX_API declaration still launched successfully because the CLI now also initializes it globally.
 COST: The negative control no longer established an unset variable and kept the overall check red.
 FIX: In the isolated mutant only, replace that declaration with an explicit unset so both local and inherited initialization are absent at the real inject. The unmodified CLI must still launch; the mutant must fail with the real unbound-variable error. The smoke output names the forced-unset precondition and its pass/failure verdict.
+
+### 2026-09-12 — Busy composer falsely acknowledged; board recovery vetoed by current claims
+
+User: workers still fail to drain backlog/todo/done and queued steering is not picked up. Live debug measured an empty server steering queue, but this is not provider completion evidence. The submission loop explicitly returned Confirmed for StillThereGenerating, bypassing its own bare-Enter retry. Require composer release or fresh provider transcript/native enqueue evidence instead; log generating_composer_unsubmitted.
+
+Live board-drive showed mixpeek-cicd holding two Doing cards untouched 11–14 hours with 18 eligible todos. The current-generation exact-claim guard returned before the canonical stale-reclaim selector could execute. Permit that guarded recovery and the existing capture-shell WIP exemption; revalidate the reclaim on the serialized writer. Log stalled_claim_yields_to_canonical_pickup.
+
+Board reminders also discarded enqueue errors and stamped cooldowns anyway. All reminder paths now check queue acceptance before recording budgets; failures log board_nudge_enqueue_failed and retry next tick. Verification was globally throttled for 24 hours after each eight-card batch; finishing a batch now re-arms the next one, without repeating an unchanged batch. Log verify_batch_queued. Dedicated driver tests and a real tmux capture replay cover these boundaries; fresh model-worker admission remains a separate live prerequisite.

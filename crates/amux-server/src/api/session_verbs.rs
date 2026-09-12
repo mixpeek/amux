@@ -6249,23 +6249,21 @@ fn verb_resp(ok: bool, msg: String) -> Response {
     jresp(code, body)
 }
 
-/// Durable submission evidence (py:25373 `_jsonl_user_msg_since`): true if
-/// `text` already landed in the session's conversation JSONL as a user message
-/// stamped AFTER `since`.
-///
-/// The pane can lie mid-repaint (resize rewrap; the ~1s gap before the spinner
-/// paints after a submit); the JSONL append happens AT submission and cannot.
-/// The `since` gate uses the message's OWN timestamp, not file mtime, so an
-/// older identical text — a second "continue" minutes later — cannot count as
-/// this send.
-pub(crate) fn jsonl_user_msg_since(name: &str, text: &str, since: f64) -> bool {
-    let needle = text.trim();
-    if needle.is_empty() {
-        return false;
-    }
-    let Some(p) = session_jsonl_path(name) else { return false };
-    // 256KiB tail, same budget as python's f.seek(size - 262144).
-    jsonl_records_have(&iter_jsonl_tail(&p, 262_144), needle, since)
+/// Submission may be accepted into Claude's native queue before a user turn
+/// exists. Require the provider's exact enqueue content and timestamp, never
+/// infer acceptance from a busy badge or from old identical text.
+fn jsonl_submission_since(name: &str, text: &str, since: f64) -> bool {
+    let Some(path) = session_jsonl_path(name) else { return false };
+    submission_records_have(&iter_jsonl_tail(&path, 262_144), text, since)
+}
+
+fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
+    jsonl_records_have(records, text, since) || (!text.trim().is_empty() && records.iter().any(|record| {
+        record["type"].as_str() == Some("queue-operation")
+            && record["operation"].as_str() == Some("enqueue")
+            && record["content"].as_str().is_some_and(|content| content.trim() == text.trim())
+            && record["timestamp"].as_str().and_then(parse_iso8601).is_some_and(|ts| ts >= since)
+    }))
 }
 
 /// The evidence scan itself, over already-parsed records — pure so it can be
@@ -6309,8 +6307,8 @@ pub(crate) enum FrameRead {
     NoUi,
     /// The composer is drawn and does not hold our text.
     Cleared,
-    /// Our text is still sitting in the composer, and the lane is generating —
-    /// that is queued input, which submits at the turn boundary.
+    /// Our text is still sitting in the composer while the lane is generating.
+    /// Generation does not prove that Enter accepted it into the native queue.
     StillThereGenerating,
     /// Our text is still sitting in the composer with the lane idle. Nothing is
     /// going to submit it.
@@ -6367,9 +6365,8 @@ pub(crate) fn final_frame_confirms(frame: FrameRead) -> bool {
     match frame {
         // The composer is drawn and no longer holds our text: it went in.
         FrameRead::Cleared => true,
-        // Still in the box while the lane generates. That is queued input and
-        // the turn boundary submits it, so Confirmed is right.
-        FrameRead::StillThereGenerating => true,
+        // A running turn cannot acknowledge text still in its input box.
+        FrameRead::StillThereGenerating => false,
         // We cannot read our own message back, so the frame proves nothing in
         // either direction. Defer to the durable record.
         FrameRead::NoUi => false,
@@ -6642,10 +6639,11 @@ async fn verify_submitted(
                 cleared_once = true;
                 continue;
             }
-            // Text still in the box while Claude is generating: it is queued
-            // input that submits at the turn end — don't touch it (Escape would
-            // interrupt).
-            FrameRead::StillThereGenerating => return (Submission::Confirmed, retried),
+            // The native queue clears the composer after accepting Enter.
+            // While our text remains, require transcript evidence or let the
+            // caller retry bare Enter. Never Escape into a running turn, even
+            // when generation began after the send's initial idle snapshot.
+            FrameRead::StillThereGenerating => {}
             FrameRead::StillThereIdle => {}
             // TREATED AS "still there", because it IS (AMUX-3880). The composer
             // is painted and holding something unsubmitted; the text is merely
@@ -6674,10 +6672,15 @@ async fn verify_submitted(
         // Durable evidence beats the pane: the conversation JSONL gets the user
         // message appended at submission. If it is there stamped after this send
         // began, it submitted and the pane read is a repaint lie.
-        if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
+        if sent_at > 0.0 && jsonl_submission_since(name, text, sent_at) {
             return (Submission::Confirmed, retried);
         }
-        if !retry_keys {
+        let active_now = detect_claude_status(&raw) == "active";
+        if !retry_keys || active_now {
+            if active_now {
+                tracing::warn!(session = %name, verdict = "generating_composer_unsubmitted",
+                    "send: repeated captures still hold this message in the running worker's composer without a submission receipt");
+            }
             return (Submission::Stuck, retried);
         }
         // Idle with our text genuinely stuck → press Escape (closes a picker
@@ -6717,7 +6720,7 @@ async fn verify_submitted(
     // A re-send now happens only when the message is genuinely absent from the
     // durable record, which is precisely when re-sending is the right move; the
     // old path traded that for a silent drop.
-    if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
+    if sent_at > 0.0 && jsonl_submission_since(name, text, sent_at) {
         (Submission::Confirmed, retried)
     } else {
         (Submission::Stuck, retried)
@@ -27051,8 +27054,8 @@ mod submission_gate_tests {
              \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 2 agents\n"
         )
     }
-    /// Same text still in the box, but the lane is generating: this IS queued
-    /// input and must be left alone.
+    /// Same unsubmitted input while the worker is generating. A native queue
+    /// receipt, not the spinner, is required to establish acceptance.
     fn frame_stuck_active(text: &str) -> String {
         format!(
             "\u{2731} Galloping\u{2026} (12s \u{b7} \u{2193} 84 tokens)\n\
@@ -27119,6 +27122,50 @@ mod submission_gate_tests {
         // no deliverer stamps a verdict (AMUX-3541).
         assert_eq!(submit_verdict_of("queued (steering) — will deliver at the next boundary"), None);
         assert_eq!(submit_verdict_of(""), None);
+    }
+
+    #[test]
+    fn native_queue_acceptance_requires_exact_new_provider_receipt() {
+        let receipt = json!({"type":"queue-operation","operation":"enqueue",
+            "timestamp":"1970-01-01T00:02:00Z","content":GHOST});
+        assert!(submission_records_have(std::slice::from_ref(&receipt), GHOST, 119.0));
+        assert!(!submission_records_have(std::slice::from_ref(&receipt), GHOST, 121.0), "an earlier identical send is not this send");
+        assert!(!submission_records_have(std::slice::from_ref(&receipt), "9 queued commands", 119.0), "a substring is not an enqueue identity");
+        let mut dequeue = receipt.clone(); dequeue["operation"] = json!("dequeue");
+        assert!(!submission_records_have(&[dequeue], GHOST, 119.0));
+        let mut quoted = receipt; quoted["type"] = json!("assistant");
+        assert!(!submission_records_have(&[quoted], GHOST, 119.0));
+    }
+
+    #[tokio::test]
+    #[ignore = "real tmux capture replay; no model or production worker; run explicitly"]
+    async fn real_tmux_submission_replay_keeps_generating_input_unconfirmed() {
+        struct Pane(String);
+        impl Drop for Pane {
+            fn drop(&mut self) {
+                let stq = session_target(&self.0);
+                let _ = std::process::Command::new("tmux").args(["kill-session", "-t", &stq]).output();
+            }
+        }
+        for (frame, expected) in [(frame_stuck_active(GHOST), Submission::Stuck), (frame_cleared(), Submission::Confirmed)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("frame.txt");
+            std::fs::write(&path, frame).unwrap();
+            let lane = format!("submission-replay-{}-{}", std::process::id(), (now_f64() * 1_000_000.0) as u64);
+            let pane = Pane(tmux_name(&lane));
+            let output = std::process::Command::new("tmux").args([
+                "new-session", "-d", "-s", &pane.0, "-x", "200", "-y", "24",
+                "python3", "-c", "import pathlib,sys,time;print(pathlib.Path(sys.argv[1]).read_text(),flush=True);time.sleep(20)",
+                path.to_str().unwrap(),
+            ]).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            // Walk the actual asynchronous capture/verification loop, with no
+            // key retries or transcript claims. The busy fixture must fail
+            // verification; the drawn empty composer is the positive control.
+            let (observed, retried) = verify_submitted(&lane, GHOST, None, 0.0, false).await;
+            assert_eq!(observed, expected);
+            assert!(!retried);
+        }
     }
 
     #[test]
@@ -27231,9 +27278,9 @@ mod submission_gate_tests {
             final_frame_confirms(read_frame(&frame_cleared(), &t)),
             "a drawn, empty composer IS a submitted send and must stay confirmed"
         );
-        assert!(
+        assert!(!
             final_frame_confirms(read_frame(&frame_stuck_active(GHOST), &t)),
-            "text queued while the lane generates submits at the turn boundary"
+            "generation cannot acknowledge text that remains in the input box"
         );
 
         // EXHAUSTIVE over the enum. The original defect was a negative match
@@ -27241,7 +27288,7 @@ mod submission_gate_tests {
         // variant is a decision somebody made, not that today's four are right.
         for (frame, confirms) in [
             (FrameRead::Cleared, true),
-            (FrameRead::StillThereGenerating, true),
+            (FrameRead::StillThereGenerating, false),
             (FrameRead::NoUi, false),
             (FrameRead::StillThereIdle, false),
         ] {

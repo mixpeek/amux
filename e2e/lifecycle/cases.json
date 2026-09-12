@@ -826,5 +826,43 @@
       "crates/amux-server/src/db/board_store.rs",
       "crates/amux-server/migrations/0001_baseline.sql"
     ]
+  },
+  {
+    "id": "LC-STEER-NATIVE-ACK",
+    "surface": "Busy worker submission acknowledgement",
+    "actions": "Replay a running terminal that still holds the exact sent message, then a cleared composer; test fresh exact native enqueue receipts, old identical receipts and quoted receipts. Run the live provider pickup case after admission passes.",
+    "expected": "Generating alone never confirms submission; the existing bare Enter recovery remains reachable, Escape cannot interrupt a running turn, and only real acceptance removes pending intent.",
+    "sources": [
+      "crates/amux-server/src/api/session_verbs.rs",
+      "e2e/lifecycle/live-steering-pickup.spec.ts"
+    ]
+  },
+  {
+    "id": "LC-BOARD-ENQUEUE-RETRY",
+    "surface": "Board reminder enqueue failure",
+    "actions": "Refuse queue insertion for advancement and verification reminders; retry the same driver after storage recovers. Cover backlog and decomposition through the shared acknowledged delivery path.",
+    "expected": "Failed insertion produces nudge-delivery-failed, consumes no reminder budget or cooldown, and recovery queues one reminder.",
+    "sources": [
+      "crates/amux-server/src/runtime_jobs/board_drive.rs"
+    ]
+  },
+  {
+    "id": "LC-VERIFY-BATCH-DRAIN",
+    "surface": "Successive verification batches",
+    "actions": "Seed ten done code tasks; observe the first offered batch, resolve those exact eight tasks, then run the driver again without aging history. Also leave a batch unchanged.",
+    "expected": "The remaining two tasks are offered immediately after the first batch resolves; unchanged unresolved work does not generate repeated prompts. Normal evidence and verification gates still apply.",
+    "sources": [
+      "crates/amux-server/src/runtime_jobs/board_drive.rs",
+      "e2e/lifecycle/sonnet-queue.ts"
+    ]
+  },
+  {
+    "id": "LC-STALE-CLAIM-DRAIN",
+    "surface": "Abandoned runtime claim and waiting To Do",
+    "actions": "Seed an exact current claim with an untouched Doing card, exhausted advance budget, and eligible To Do work. Drive recovery and the following pickup; repeat controls with live child work and a fresh claim.",
+    "expected": "The exact-claim guard cannot veto canonical stale recovery forever. The original card stays recoverable in To Do with a logged reclaim; another eligible card is claimed. Fresh or actively delegated work is protected.",
+    "sources": [
+      "crates/amux-server/src/runtime_jobs/board_drive.rs"
+    ]
   }
 ]

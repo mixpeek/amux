@@ -60,6 +60,7 @@ python3 scripts/lifecycle/run.py browser \
   --grep 'LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-COMPOSER-LAYOUT'
 AMUX_LIFECYCLE_PROVIDER=claude python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
 AMUX_LIFECYCLE_PROVIDER=gemini python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
+bash scripts/test-contended.sh -p amux-server --lib real_tmux_submission_replay_keeps_generating_input_unconfirmed -- --ignored --nocapture
 ```
 
 The TTL setting is scoped to temporary test servers; it disables their idle and

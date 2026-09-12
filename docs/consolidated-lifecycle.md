@@ -51,6 +51,7 @@ AMUX_LIFECYCLE_BROWSER_TTL_S=20 python3 scripts/lifecycle/run.py browser   --pro
 python3 scripts/lifecycle/run.py browser   --grep 'LC-SYNC-PROGRESS|LC-COMPOSER-FILES|LC-COMPOSER-LAYOUT'
 AMUX_LIFECYCLE_PROVIDER=claude python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
 AMUX_LIFECYCLE_PROVIDER=gemini python3 scripts/lifecycle/run.py live --grep LC-STEERING-AUTO
+bash scripts/test-contended.sh -p amux-server --lib real_tmux_submission_replay_keeps_generating_input_unconfirmed -- --ignored --nocapture
 ```
 
 The TTL setting is scoped to temporary test servers; it disables their idle and
@@ -768,6 +769,38 @@ Use a migrated scratch store with old and recent autofix alerts, a human task, a
 Pass requires: Cleanup uses the real issues.created/issues.updated schema, does not fail with missing timestamp columns, and cannot discard active or claimed work merely because a TTL elapsed. Only independently resolved or explicitly obsolete alerts reach a truthful terminal outcome; updates guard against concurrent claims. This case is NOT_RUN: the live expiry query currently fails, and simply enabling its unconditional age-based discard is not an acceptable repair.
 
 Supporting coverage: `crates/amux-server/src/runtime_jobs/autofix.rs`, `crates/amux-server/src/db/board_store.rs`, `crates/amux-server/migrations/0001_baseline.sql`.
+
+### LC-STEER-NATIVE-ACK — Busy worker submission acknowledgement
+
+Replay a running terminal that still holds the exact sent message, then a cleared composer; test fresh exact native enqueue receipts, old identical receipts and quoted receipts. Run the live provider pickup case after admission passes.
+
+Pass requires: Generating alone never confirms submission; the existing bare Enter recovery remains reachable, Escape cannot interrupt a running turn, and only real acceptance removes pending intent.
+
+Supporting coverage: `crates/amux-server/src/api/session_verbs.rs`, `e2e/lifecycle/live-steering-pickup.spec.ts`.
+
+### LC-BOARD-ENQUEUE-RETRY — Board reminder enqueue failure
+
+Refuse queue insertion for advancement and verification reminders; retry the same driver after storage recovers. Cover backlog and decomposition through the shared acknowledged delivery path.
+
+Pass requires: Failed insertion produces nudge-delivery-failed, consumes no reminder budget or cooldown, and recovery queues one reminder.
+
+Supporting coverage: `crates/amux-server/src/runtime_jobs/board_drive.rs`.
+
+### LC-VERIFY-BATCH-DRAIN — Successive verification batches
+
+Seed ten done code tasks; observe the first offered batch, resolve those exact eight tasks, then run the driver again without aging history. Also leave a batch unchanged.
+
+Pass requires: The remaining two tasks are offered immediately after the first batch resolves; unchanged unresolved work does not generate repeated prompts. Normal evidence and verification gates still apply.
+
+Supporting coverage: `crates/amux-server/src/runtime_jobs/board_drive.rs`, `e2e/lifecycle/sonnet-queue.ts`.
+
+### LC-STALE-CLAIM-DRAIN — Abandoned runtime claim and waiting To Do
+
+Seed an exact current claim with an untouched Doing card, exhausted advance budget, and eligible To Do work. Drive recovery and the following pickup; repeat controls with live child work and a fresh claim.
+
+Pass requires: The exact-claim guard cannot veto canonical stale recovery forever. The original card stays recoverable in To Do with a logged reclaim; another eligible card is claimed. Fresh or actively delegated work is protected.
+
+Supporting coverage: `crates/amux-server/src/runtime_jobs/board_drive.rs`.
 
 ## End-state and cleanup record
 
