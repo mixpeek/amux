@@ -1861,6 +1861,33 @@ of the five, it is not a block on a person:
   amux board needsyou $id --actor Ethan --ask decision --question \"...?\" --unblocks \"...\""
 }
 
+# A response can be unreadable AFTER a write landed. Stop before any dependent
+# status transition, and retain the uncertainty in the existing diagnostic spool.
+_board_require_ack() {
+  AMUX_ACK_LOG="$CC_HOME/cli-transport.jsonl" python3 -c '
+import json, os, sys, time
+try:
+    value = json.load(sys.stdin)
+    if not isinstance(value, dict): raise ValueError("non-object acknowledgement")
+except Exception:
+    item, field, pending_status = sys.argv[1:4]
+    event = {"ts": int(time.time()), "cli": "bash", "curl_exit": 0,
+             "verdict": "board_ack_unknown", "measured": True, "n_considered": 1,
+             "item": item, "field": field, "applied": None,
+             "session": os.environ.get("AMUX_SESSION", "")}
+    try:
+        with open(os.environ["AMUX_ACK_LOG"], "a") as out:
+            out.write(json.dumps(event) + "\n")
+    except OSError:
+        sys.stderr.write("warning: acknowledgement diagnostic could not be persisted\n")
+    sys.stderr.write("error: %s %s acknowledgement is unreadable; write outcome is unknown.\n" % (item, field))
+    if pending_status:
+        sys.stderr.write("The %s status transition was not attempted.\n" % pending_status)
+    sys.stderr.write("Read amux board show %s before retrying; earlier writes may have landed. [board_ack_unknown]\n" % item)
+    sys.exit(1)
+' "$1" "$2" "${3:-}"
+}
+
 _board_transition() {
   local id="$1" status="$2"; shift 2
   local ack="" newtype="" override="" rev="" outcome="" trigger="" force_reason=""
@@ -1997,6 +2024,7 @@ The card is unchanged."
     fi
     # Do NOT discard this response: a dropped reviewer that looks saved is the
     # whole defect (AC-323's shape, now on a fourth field).
+    printf '%s' "$_rvresp" | _board_require_ack "$id" "reviewer" "$status" || return $?
     printf '%s' "$_rvresp" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -2027,6 +2055,7 @@ if ign:
 NOTHING was applied — not the evidence, and not the '$status' transition.
 The card is unchanged."
     fi
+    printf '%s' "$_evresp" | _board_require_ack "$id" "evidence" "$status" || return $?
     printf '%s' "$_evresp" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -2096,6 +2125,7 @@ NOTHING was applied — not the outcome, and not the '$status' transition.
 The card is unchanged. Re-run when the server is back; if it just restarted to
 adopt a build, that is expected and a retry normally succeeds."
     fi
+    printf '%s' "$_oresp" | _board_require_ack "$id" "outcome" "$status" || return $?
     printf '%s' "$_oresp" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -2315,11 +2345,14 @@ EOF
 # 5 rev mismatch · 1 other refusal or malformed response. Refusals print the
 # server body to STDERR so pipelines keep clean stdout.
 _board_outcome() {
+  local _board_response
+  _board_response="$(cat)"
+  printf '%s' "$_board_response" | _board_require_ack "${1:-?}" "board write" || return $?
   # Optional args: the id and status the CALLER attempted. Not decoration —
   # the WIP-limit 409 body carries no `attempted_status`, so a hint derived
   # only from the response could never fire on the refusal that needs it most
   # (caught by running it, not by reading it). The caller always knows.
-  python3 -c '
+  printf '%s' "$_board_response" | python3 -c '
 import sys, json
 _argv = sys.argv[1:]
 raw = sys.stdin.read()

@@ -111,3 +111,6 @@ fi
 echo
 echo "test-board-transport-failure: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
+
+# AF-657: HTTP success with a corrupted acknowledgement is a distinct failure.
+python3 scripts/test-board-ack-unknown.py

@@ -2421,3 +2421,14 @@ CARD: AF-729
 SYMPTOM: An isolated archive command exited 6 and warned archive_outcome was ignored, while readback showed archived=1 and the exact reason in the attributed log. The protocol consumed the key but omitted it from PATCH_CONTROL, contradicting its own successful write.
 COST: The owner repeated a reason that was already saved because the acknowledgement claimed it was lost.
 FIX: Register archive_outcome as a protocol key carrying log content. Refused transitions report it among discarded fields; invalid or non-applying outcome requests are explicitly refused instead of silently accepted. Structured patch_fields_ignored and archive_outcome_refused warnings name the affected card and measured population without logging supplied content. The acknowledgement regression failed first; isolated CLI reproduction and focused archive tests record the before/after evidence.
+
+## Unreadable board acknowledgements falsely said writes were not recorded
+AREA: cli
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-657
+SYMPTOM: A loopback HTTP fixture returned non-JSON after accepting evidence/outcome writes. The CLI printed NOT recorded, continued to the status PATCH, and printed raw HTML for its unreadable response. Exit 1 prevented a success claim but did not tell the caller which writes were unknown; a mixed success could still invite repeating an already-applied append.
+COST: The caller must rediscover whether prose and status landed independently before safely retrying.
+FIX: Shared acknowledgement validation rejects malformed or non-object JSON, stops before a dependent status transition, and explicitly says the write outcome is unknown. It retains a measured board_ack_unknown event in the existing durable CLI diagnostic spool, delivered on the next invocation. Five real-CLI tests deliberately apply writes before corrupting replies, cover each stage plus success/refusal controls, and verify spool delivery; four failed before the fix and all five pass after. Existing transport checks also pass (11/11).
