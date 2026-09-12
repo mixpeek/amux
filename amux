@@ -490,6 +490,27 @@ is_running() {
   [[ "$migrate_rc" -eq 124 ]] && return 124
   tmux_has_session_exact "=$(tmux_name "$1")"
 }
+_amux_tmpfile() {
+  # A temp file a SANDBOXED AGENT can actually create.
+  #
+  # Muse Code sandboxes filesystem writes to the workspace and offers no per-directory
+  # grant — no `--add-dir`, only `--disable-sandbox` or a named permission profile — so
+  # $TMPDIR is denied and a bare `mktemp` fails with "Operation not permitted". A muse
+  # worker hit exactly this on `amux board ls`, whose header capture is PURE DIAGNOSTICS,
+  # and the whole board read died on it: the agent could not close its own card and had to
+  # ask a human to do it. Codex is unaffected only because its sandbox grants $TMPDIR.
+  #
+  # Try the normal temp directories, then fall back to the working directory — the one
+  # place a workspace-sandboxed agent can always write. Callers must tolerate failure
+  # rather than die: a diagnostic file is never worth losing the command.
+  local d f
+  for d in "${TMPDIR:-/tmp}" /tmp .; do
+    [ -d "$d" ] || continue
+    f=$(mktemp "${d%/}/.amux.XXXXXX" 2>/dev/null) && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
 
 # ─── Shell-safe flag quoting ─────────────────────────────────────────────────
 #
@@ -504,8 +525,8 @@ _run_py_safe() {
   shift
   local result err err_file
   local rc=0
-  err_file=$(mktemp) || {
-    echo "amux: error: mktemp failed (cannot create temp file for python3 stderr)" >&2
+  err_file=$(_amux_tmpfile) || {
+    echo "amux: error: no writable temp directory (tried $TMPDIR, /tmp, .)" >&2
     return 1
   }
   # `|| rc=$?` is critical: under set -e (which the source-guard makes
@@ -779,7 +800,12 @@ cmd_start() {
   # This is D6 (two launch constructions) leaking through the door the server
   # does not own. Delegating means the provider->binary map has one home.
   local _provider="${CC_PROVIDER:-claude}"
-  if [[ "$_provider" == "codex" || "$_provider" == "ollama" || "$_provider" == "gemini" ]]; then
+  # muse belongs in this list for the reason the comment above gives: the server owns the
+  # provider->binary map. Left out, `amux start` on a muse worker fell through to the claude
+  # builder below and launched `claude --model sonnet --continue` -- the WRONG AGENT, silently,
+  # because the fallback is a default rather than a failure. The server-side arm was correct the
+  # whole time; only this door was. Observed live before the fix (muse-hooks-probe).
+  if [[ "$_provider" == "codex" || "$_provider" == "ollama" || "$_provider" == "gemini" || "$_provider" == "muse" ]]; then
     if $dry_run; then
       echo "${BOLD}$name${RESET} ($_provider — started via server API: POST /api/sessions/$name/start; the server owns the provider→binary map and the provider-specific setup)"
       return
@@ -1235,7 +1261,7 @@ _flush_unstamped_ledger() {
   local f; f=$(_unstamped_ledger)
   [[ -s "$f" ]] || return 0
   local api="${AMUX_API:-https://localhost:8824}"
-  local tmp; tmp=$(mktemp) || return 0
+  local tmp; tmp=$(_amux_tmpfile) || return 0
   local sent=0 kept=0 line
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
@@ -1729,7 +1755,22 @@ cmd_start_all() {
   local files=("$CC_SESSIONS"/*.env)
   shopt -u nullglob
   local f name
-  for f in "${files[@]}"; do
+  # `${files[@]+"${files[@]}"}`, never a bare `"${files[@]}"`. macOS ships bash
+  # 3.2, where expanding an EMPTY array under `set -u` is ITSELF the "unbound
+  # variable" fatal (bash fixed this in 4.4; a `#!/usr/bin/env bash` script on
+  # macOS cannot assume it). With nullglob on and no *.env registered, `files`
+  # is empty, so the bare form killed cmd_start_all before its first iteration:
+  # `line 1794: files[@]: unbound variable`, rc=1, nothing else printed.
+  #
+  # The only caller is the launchd boot agent, so the failure surfaced as a
+  # fleet that had simply never started, with the reason buried in
+  # fleet-boot.log. A machine with zero registered workers is exactly a FRESH
+  # INSTALL — so this fired hardest where there was least context to debug it.
+  #
+  # Falling through to the summary with an empty list is correct, not a special
+  # case: "0 started · 0 archived" is the count beside the zero the block
+  # comment above exists to demand.
+  for f in ${files[@]+"${files[@]}"}; do
     [[ -f "$f" ]] || continue
     name=$(basename "$f" .env)
     # Archived workers are retired on purpose. Read the flag from the env file
@@ -3736,7 +3777,9 @@ for tag in item.get('tags',[]):
       # nobody reads response headers from a pipe, which is ethos rule 4's
       # second layer: a tag in a store the reader never opens. So read them
       # here and print one line, in the place the reader is already looking.
-      local _hdr; _hdr=$(mktemp)
+      # Tolerates failure: under a workspace-only sandbox there may be nowhere to write,
+      # and a diagnostic header is not worth losing the board read (see _amux_tmpfile).
+      local _hdr; _hdr=$(_amux_tmpfile) || _hdr=""
       # MARK THE ARCHIVED ROWS (AF-461). `archived` is a boolean FLAG, not a
       # status, so a card can be archived AND `backlog` at once — and then it is
       # listed as ordinary work while every closing verb refuses it with
@@ -3754,7 +3797,12 @@ for tag in item.get('tags',[]):
       # which could never fire for exactly the flag-vs-status reason above: a
       # dead branch that made the renderer look like it handled this. Keyed off
       # the flag now, where it can actually fire.
-      local _lsout; _lsout=$(_curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq")
+      local _lsout
+      if [ -n "$_hdr" ]; then
+        _lsout=$(_curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq")
+      else
+        _lsout=$(_curl -sk "$AMUX_API/api/board?$_lsq")
+      fi
       printf '%s' "$_lsout" | python3 -c "
 import sys,json
 items=json.load(sys.stdin)
@@ -3835,7 +3883,7 @@ print(', '.join(d) if isinstance(d,list) and d else '')
         echo "    amux board ls --mine        # this session, uncapped"
         echo "    curl -sk \"\$AMUX_API/api/board?session=\$AMUX_SESSION&done_limit=0\"${RESET}"
       fi
-      rm -f "$_hdr"
+      [ -n "$_hdr" ] && rm -f "$_hdr"
       ;;
     help|*)
       # An UNKNOWN verb must not exit 0. `amux board note X "..."` printed this

@@ -1,4 +1,4 @@
-//! Minimal adapters for gemini, codex, and ollama (RR-0043).
+//! Minimal adapters for gemini, codex, ollama, and muse (RR-0043).
 //!
 //! "Minimal" is a statement about USAGE, not a placeholder: none of the three
 //! exposes a usage/quota API amux can read on this host today
@@ -261,6 +261,75 @@ impl ProviderAdapter for OllamaAdapter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Muse Code
+// ---------------------------------------------------------------------------
+
+/// Meta's Muse Code CLI (`muse`, measured against 1.0.3-R2198.1 on macOS).
+///
+/// HOOKS ARE TRUE HERE, and that is the row that matters. Every other non-Claude
+/// adapter reports `hooks: false` because its CLI has no hook surface at all —
+/// docs/provider-parity.md row 11 records that as a GAP (upstream) for Gemini,
+/// with terminal scraping as the sanctioned fallback per D1. Muse ships the
+/// SAME contract Claude Code does: the nine events (UserPromptSubmit,
+/// PreToolUse, PostToolUse, SessionStart, SessionEnd, Stop, SubagentStop,
+/// Notification, PreCompact), the `hookSpecificOutput.hookEventName` envelope,
+/// and a `$HOME/.config/muse/settings.json` to declare them in. Verified by
+/// inspecting the shipped binary, not from documentation.
+///
+/// So a muse lane can self-report through the D1 path instead of being scraped,
+/// which is the difference between board attribution that is TOLD what happened
+/// and board attribution that infers it from pixels. Wiring those hooks is a
+/// separate change; this flag is what tells the rest of amux it is possible.
+///
+/// No usage/quota API on this host, so `usage()` stays Unknown (Invariant 20).
+pub struct MuseAdapter;
+
+#[async_trait]
+impl ProviderAdapter for MuseAdapter {
+    fn id(&self) -> ProviderId {
+        ProviderId::new("muse")
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            hot_model_switch: false,
+            reports_usage: false,
+            // `muse exec --json` emits machine-readable JSONL events.
+            structured_events: true,
+            // See the doc comment: Claude-Code-parity hook contract, verified.
+            hooks: true,
+        }
+    }
+
+    async fn usage(&self) -> ProviderUsage {
+        ProviderUsage::unknown(self.id())
+    }
+
+    async fn models(&self) -> Vec<String> {
+        // From the live provider catalog written by the CLI itself
+        // (~/.local/share/muse/model-catalog/*.json): 1.3-contributor carries
+        // is_default/is_current, so it leads. Ordered newest-first, not
+        // alphabetically — the picker shows this order.
+        vec![
+            "muse-spark-1.3-contributor".into(),
+            "muse-spark-1.3".into(),
+            "muse-spark-1.2".into(),
+        ]
+    }
+
+    fn build_command(&self, prompt_mode: PromptMode) -> Vec<String> {
+        match prompt_mode {
+            PromptMode::Interactive => vec!["muse".into()],
+            // `exec` is the headless verb; `--json` is what makes it structured.
+            // Both are required — bare `muse --json` is not a thing.
+            PromptMode::HeadlessStructured => {
+                vec!["muse".into(), "exec".into(), "--json".into()]
+            }
+        }
+    }
+}
+
 /// Parse `ollama list` output: a header line, then one model per line with
 /// the name as the first whitespace-separated column, e.g.
 /// `llama3:latest    365c0bd3c000    4.7 GB    2 weeks ago`.
@@ -284,6 +353,7 @@ mod tests {
             &GeminiAdapter as &dyn ProviderAdapter,
             &CodexAdapter,
             &OllamaAdapter::default(),
+            &MuseAdapter,
         ] {
             let usage = adapter.usage().await;
             assert_eq!(usage.provider, adapter.id());
@@ -309,6 +379,31 @@ mod tests {
         assert!(ollama.hooks);
         assert!(!ollama.reports_usage);
         assert!(!ollama.hot_model_switch);
+        // Muse is the ONLY non-Claude adapter claiming hooks. If this assert is
+        // ever "fixed" by flipping it to false, docs/provider-parity.md row 11
+        // silently regresses from MET to a scrape fallback for muse lanes.
+        let muse = MuseAdapter.capabilities();
+        assert!(muse.hooks, "muse ships the Claude-parity hook contract");
+        assert!(muse.structured_events);
+        assert!(!muse.reports_usage);
+        assert!(!muse.hot_model_switch);
+    }
+
+    #[test]
+    fn muse_builds_muse_command() {
+        assert_eq!(MuseAdapter.build_command(PromptMode::Interactive), vec!["muse"]);
+        // `exec` AND `--json`: bare `muse --json` is not a valid invocation.
+        assert_eq!(
+            MuseAdapter.build_command(PromptMode::HeadlessStructured),
+            vec!["muse", "exec", "--json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn muse_models_lead_with_the_catalog_default() {
+        let m = MuseAdapter.models().await;
+        assert_eq!(m.first().map(String::as_str), Some("muse-spark-1.3-contributor"));
+        assert!(m.iter().any(|x| x == "muse-spark-1.2"));
     }
 
     #[test]

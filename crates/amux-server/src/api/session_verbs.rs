@@ -1123,8 +1123,16 @@ fn is_prompt_line(s: &str) -> bool {
     s.chars().next().map(|c| PROMPT_GLYPHS.contains(&c)).unwrap_or(false)
 }
 
-/// py:8229 _claude_ui_visible (claude + codex + gemini markers).
-fn claude_ui_visible(clean_output: &str) -> bool {
+/// py:8229 _claude_ui_visible (claude + codex + gemini + muse markers).
+/// Is an AGENT's composer up in this pane — for ANY provider, not just Claude.
+///
+/// The name said claude and the body already answered for codex too, which is how muse got
+/// missed: nothing about `claude_ui_visible` invites you to add a provider to it. Muse then
+/// never read as ready, and `send_after_ready` polled for its whole 60s timeout and DROPPED
+/// the start/wake prompt — measured on worker-muse, twice in one minute, logged as "Claude UI
+/// never became ready" on a lane that runs no Claude. Renamed so the next provider added to
+/// amux is a grep away from this function instead of a silent timeout.
+fn agent_ui_visible(clean_output: &str) -> bool {
     let lines: Vec<&str> = clean_output.lines().filter(|l| !l.trim().is_empty()).collect();
     let shell_prompt = cached_re!(r"^.*[$%]\s");
     let n = lines.len();
@@ -1155,6 +1163,13 @@ fn claude_ui_visible(clean_output: &str) -> bool {
             && (ls.contains("full-auto") || ls.contains("suggest") || ls.contains("workspace")
                 || ls.contains("approval") || ls.contains("-a never"))
         {
+            return true;
+        }
+        // Muse Code. Its composer frame prints the voice-input hint and its footer is
+        // "<model> · <effort> · <cwd>"; both are present the moment the TUI is up and no
+        // shell prints either. The model prefix is the second marker rather than the only
+        // one because a model rename would silently take the check with it.
+        if ls.contains("voice input") || ls.contains("muse-spark") {
             return true;
         }
     }
@@ -1213,7 +1228,7 @@ fn at_resume_picker(clean_output: &str) -> bool {
 
 /// py:8307 _at_shell_prompt.
 fn at_shell_prompt(clean_output: &str) -> bool {
-    if claude_ui_visible(clean_output) {
+    if agent_ui_visible(clean_output) {
         return false;
     }
     let lines: Vec<&str> = clean_output.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -3417,7 +3432,8 @@ fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
 // contract).
 // ---------------------------------------------------------------------------
 
-pub const SESSION_PROVIDERS: [&str; 5] = ["claude", "codex", "gemini", "iterm2", "ollama"];
+pub const SESSION_PROVIDERS: [&str; 6] =
+    ["claude", "codex", "gemini", "iterm2", "ollama", "muse"];
 const PROVIDER_YOLO_FLAGS: [&str; 3] = [
     "--dangerously-skip-permissions",
     "--dangerously-bypass-approvals-and-sandbox",
@@ -3769,6 +3785,8 @@ fn default_model_for_provider(provider: &str) -> String {
         // was a fact about one machine compiled into a public server. See
         // `static_providers::ollama_default_model` (DESKT-6).
         "ollama" => crate::provider::static_providers::ollama_default_model(),
+        // The catalog default (is_default/is_current) as of 1.0.3.
+        "muse" => "muse-spark-1.3-contributor".into(),
         _ => get_default_model(),
     }
 }
@@ -3790,10 +3808,305 @@ pub fn launch_base_binary(provider: &str) -> &'static str {
     match provider {
         // ollama runs codex under the hood (`--oss --local-provider ollama`).
         "codex" | "ollama" => "codex",
+        "muse" => "muse",
         "gemini" => "gemini",
         // claude, iterm2, and anything unknown launch via build_claude_cmd,
         // whose default binary is `claude` (overridable by AMUX_CLAUDE_CMD).
         _ => "claude",
+    }
+}
+
+/// Muse Code (`muse`) is the one provider whose session id amux CANNOT mint.
+///
+/// grok takes `--session-id <uuid>` on a new conversation, so the id is chosen
+/// before the process exists and resume is trivial. Muse has no such flag:
+/// `muse resume` accepts `--last` or an existing `<session-uuid>` and nothing
+/// else, so a new run's id is knowable only AFTER it starts. `muse_pick_session`
+/// is how amux learns it.
+///
+/// `--last` is the obvious shortcut and is WRONG here: it resolves to the most
+/// recent session IN THE WORKSPACE, and amux lanes routinely share a CC_DIR, so
+/// two workers on one repo would resume into each other's conversation. Storing
+/// the real uuid is the only spelling that cannot cross lanes.
+pub(crate) fn muse_launch_command(
+    existing_session_id: &str,
+    flags: &str,
+    extra_flags: &str,
+    default_model: &str,
+) -> String {
+    let mut opts = String::new();
+    if !flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(flags));
+    }
+    if !extra_flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(extra_flags));
+    }
+    if !opts.contains("--model") && !opts.contains("-m ") && !default_model.is_empty() {
+        opts += &format!(" --model {}", shell_quote_flags(default_model));
+    }
+    // --trust-workspace, because A LANE HAS NOBODY TO ANSWER A PROMPT.
+    //
+    // On a workspace it has not seen before, muse stops on an interactive gate before the
+    // model runs — "Trusting allows project-local skills, rules, hooks, and plugin config
+    // to load ... 1 Trust and continue / 2 Quit". In a lane that prompt is answered by no
+    // one: the pane sits on it, and `amux send` then delivers the task to the CHOOSER, not
+    // to an agent. Observed as a muse worker that reported "not submitted — text is sitting
+    // in the input box" while the pane had actually fallen back to a shell and run the
+    // briefing as a command (`zsh: command not found: Reply`).
+    //
+    // Every lane amux starts is on a checkout amux created for it, so the trust decision is
+    // already made by the act of dispatching the work; the prompt is asking a human who is
+    // not there. Skills, rules and hooks load only under trust, so without this a muse lane
+    // also cannot self-report — this is the other half of docs/provider-parity.md row 11.
+    if !opts.contains("--trust-workspace") {
+        opts += " --trust-workspace";
+    }
+    // MUSE_EXPERIMENTAL_PLUGINS=on because muse delivers hooks as a PLUGIN capability and
+    // plugin loading is gated behind this flag in 1.0.3. Without it a session composes
+    // `hooks=0` and self-reports nothing.
+    //
+    // NECESSARY BUT NOT YET SUFFICIENT, and the honest state is worth writing down rather
+    // than discovering twice. Measured against 1.0.3-R2198.1 with a user-scope plugin
+    // installed and its four hook capabilities approved:
+    //   - `muse exec` (headless) FIRES them: SessionStart, UserPromptSubmit and Stop each ran
+    //     and each reached amux (three HTTP 200s in the matching second).
+    //   - the interactive TUI — which is what a lane actually runs — fires NOTHING, with
+    //     plugins enabled AND the workspace trusted (`--trust-workspace`).
+    // So this flag is the half amux controls, and TUI hook delivery is the half it does not.
+    // Until that lands, a muse lane still falls back to scraping and docs/provider-parity.md
+    // row 11 stays PARTIAL, not MET. Drop the flag when plugins leave experimental.
+    let env = "MUSE_EXPERIMENTAL_PLUGINS=on ";
+    if !existing_session_id.is_empty() {
+        format!("{env}muse resume {}{opts}", sh_quote(existing_session_id))
+    } else {
+        format!("{env}muse{opts}")
+    }
+}
+
+/// Root under which muse writes one directory per session,
+/// `<data>/muse/sessions/YYYY/MM/DD/<uuid>/` (verified against 1.0.3-R2198.1).
+pub(crate) fn muse_sessions_root() -> PathBuf {
+    match std::env::var("XDG_DATA_HOME") {
+        Ok(x) if !x.trim().is_empty() => PathBuf::from(x).join("muse").join("sessions"),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".local")
+            .join("share")
+            .join("muse")
+            .join("sessions"),
+    }
+}
+
+/// Every session id on disk, mapped to its directory. Directory names only —
+/// this never opens a log, so it is cheap enough to run on every start.
+pub(crate) fn muse_scan_sessions(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<String, PathBuf> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(years) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for y in years.flatten() {
+        let Ok(months) = std::fs::read_dir(y.path()) else {
+            continue;
+        };
+        for m in months.flatten() {
+            let Ok(days) = std::fs::read_dir(m.path()) else {
+                continue;
+            };
+            for d in days.flatten() {
+                let Ok(sessions) = std::fs::read_dir(d.path()) else {
+                    continue;
+                };
+                for sd in sessions.flatten() {
+                    let id = sd.file_name().to_string_lossy().into_owned();
+                    if id.starts_with('.') || !sd.path().is_dir() {
+                        continue;
+                    }
+                    out.insert(id, sd.path());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The workspace a muse session recorded, from a BOUNDED prefix of its
+/// `session.jsonl`. Bounded because that file reaches megabytes within a single
+/// turn while `workspace_root` is written in the opening records; reading it
+/// whole to find a value in the first page would make start cost scale with
+/// transcript length. Both the plain and the backslash-escaped spelling are
+/// accepted — the file carries records nested as escaped JSON strings.
+pub(crate) fn muse_session_workspace(dir: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(dir.join("session.jsonl")).ok()?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+    for (key, end) in [
+        ("\"workspace_root\":\"", '"'),
+        ("\\\"workspace_root\\\":\\\"", '\\'),
+    ] {
+        if let Some(i) = head.find(key) {
+            let rest = &head[i + key.len()..];
+            if let Some(j) = rest.find(end) {
+                return Some(rest[..j].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Which of the sessions that appeared during launch belongs to this lane.
+///
+/// `new` is (session id, the workspace that session recorded, if any);
+/// `work_dir` is the worker's CC_DIR.
+///
+/// IDENTITY COMES FROM THE DIFF, NOT FROM THE WORKSPACE. The first version of
+/// this matched `workspace_root` against CC_DIR and rejected everything, which a
+/// live launch caught and the unit tests could not: muse writes `workspace_root`
+/// LAZILY — a freshly started session logs `"workspace_roots":[]` and only
+/// records a root once it engages the workspace. At the instant amux finishes
+/// launching, the field this keyed on does not exist yet. Verified against
+/// 1.0.3-R2198.1, with and without `--workspace`.
+///
+/// So the before/after snapshot IS the identification: a session directory that
+/// did not exist before this start and does now was created by this start. The
+/// workspace only breaks TIES, and it can, because by the time two lanes race
+/// the loser is usually an older session that has already recorded its root.
+///
+/// AMBIGUITY IS STILL REPORTED, NEVER GUESSED. When several sessions appear and
+/// none can be attributed, picking the newest would be a coin flip that reads as
+/// certainty, and a wrong id resumes a lane into another lane's conversation —
+/// the exact failure `--last` was rejected for. `Err` means the caller stores
+/// nothing and the next start opens a fresh conversation: recoverable, logged,
+/// and never silently wrong.
+pub(crate) fn muse_pick_session(
+    new: &[(String, Option<String>)],
+    work_dir: &str,
+) -> Result<String, String> {
+    if new.len() == 1 {
+        return Ok(new[0].0.clone());
+    }
+    if new.is_empty() {
+        return Err("no new muse session directory appeared during launch".into());
+    }
+    // Tie-break on the recorded workspace. Trailing slashes are trimmed on BOTH
+    // sides: CC_DIR carries one (`/Users/x/projects/obrist/`) and muse records
+    // none, so a naive `==` compares unequal strings for the same directory.
+    let want = work_dir.trim_end_matches('/');
+    let hits: Vec<&String> = new
+        .iter()
+        .filter(|(_, ws)| ws.as_deref().map(|w| w.trim_end_matches('/')) == Some(want))
+        .map(|(id, _)| id)
+        .collect();
+    match hits.len() {
+        1 => Ok(hits[0].clone()),
+        0 => Err(format!(
+            "{} new muse sessions appeared and none has recorded workspace_root={want} yet; \
+             refusing to guess which is this lane",
+            new.len()
+        )),
+        n => Err(format!(
+            "{n} new muse sessions claim workspace_root={want}; refusing to guess which is this lane"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod muse_launch_tests {
+    use super::{launch_base_binary, muse_launch_command, muse_pick_session, SESSION_PROVIDERS};
+
+    #[test]
+    fn muse_is_a_session_provider_and_launches_muse() {
+        assert!(SESSION_PROVIDERS.contains(&"muse"));
+        assert_eq!(launch_base_binary("muse"), "muse");
+        assert_ne!(launch_base_binary("muse"), "claude");
+    }
+
+    #[test]
+    fn muse_first_start_is_bare_with_no_session_id_flag() {
+        let cmd = muse_launch_command("", "", "", "muse-spark-1.3-contributor");
+        assert_eq!(cmd,
+            "MUSE_EXPERIMENTAL_PLUGINS=on muse --model muse-spark-1.3-contributor --trust-workspace");
+        assert!(!cmd.contains("--session-id"), "muse has no such flag: {cmd}");
+        assert!(!cmd.contains("resume"), "a first start has nothing to resume");
+    }
+
+    #[test]
+    fn muse_resume_uses_the_stored_uuid_never_last() {
+        let cmd = muse_launch_command(
+            "01a081b8-006e-7182-98af-dd0820be4f61",
+            "--model muse-spark-1.2",
+            "",
+            "muse-spark-1.3-contributor",
+        );
+        assert_eq!(
+            cmd,
+            "MUSE_EXPERIMENTAL_PLUGINS=on muse resume 01a081b8-006e-7182-98af-dd0820be4f61 \
+             --model muse-spark-1.2 --trust-workspace".replace("\\\n             ", " ").as_str()
+        );
+        assert!(!cmd.contains("--last"), "--last crosses lanes in a shared CC_DIR");
+    }
+
+    #[test]
+    fn pick_session_takes_the_one_new_session_even_with_no_workspace_recorded() {
+        // THE CASE A LIVE LAUNCH ACTUALLY PRODUCES: muse has not written
+        // workspace_root yet (it logs `"workspace_roots":[]` at startup). An
+        // earlier version keyed on that field and rejected every real start.
+        let new = vec![("id-1".to_string(), None)];
+        assert_eq!(muse_pick_session(&new, "/repo/obrist/").unwrap(), "id-1");
+    }
+
+    #[test]
+    fn pick_session_trims_the_trailing_slash_cc_dir_carries() {
+        let new = vec![
+            ("id-1".to_string(), Some("/repo/obrist".to_string())),
+            ("id-2".to_string(), Some("/repo/other".to_string())),
+        ];
+        assert_eq!(muse_pick_session(&new, "/repo/obrist/").unwrap(), "id-1");
+    }
+
+    #[test]
+    fn pick_session_ignores_sessions_from_other_workspaces() {
+        let new = vec![
+            ("id-1".to_string(), Some("/repo/other".to_string())),
+            ("id-2".to_string(), Some("/repo/obrist".to_string())),
+        ];
+        assert_eq!(muse_pick_session(&new, "/repo/obrist").unwrap(), "id-2");
+    }
+
+    #[test]
+    fn pick_session_refuses_when_several_appear_and_none_is_attributable() {
+        let new = vec![("id-1".to_string(), None), ("id-2".to_string(), None)];
+        let err = muse_pick_session(&new, "/repo/obrist").unwrap_err();
+        assert!(err.contains("refusing to guess"), "{err}");
+    }
+
+    #[test]
+    fn pick_session_refuses_to_guess_between_two_in_one_workspace() {
+        let new = vec![
+            ("id-1".to_string(), Some("/repo/obrist".to_string())),
+            ("id-2".to_string(), Some("/repo/obrist".to_string())),
+        ];
+        let err = muse_pick_session(&new, "/repo/obrist").unwrap_err();
+        assert!(err.contains("refusing to guess"), "{err}");
+    }
+
+    #[test]
+    fn muse_intent_scan_finds_an_accepted_prompt_and_ignores_other_records() {
+        use super::muse_intent_in_tail;
+        // Shape taken from a real muse session.jsonl.
+        let accepted = r#"{"payload_type":"runtime.session.user_intent.accepted","payload":{"semantic_kind":{"kind":"chat"},"refill_blocks":[{"kind":"text","text":"Reply with only the word ok"}]}}"#;
+        assert!(muse_intent_in_tail(accepted, "Reply with only the word ok"));
+        // The same text in a NON-acceptance record is not proof it was submitted.
+        let other = r#"{"payload_type":"runtime.session.task","payload":{"text":"Reply with only the word ok"}}"#;
+        assert!(!muse_intent_in_tail(other, "Reply with only the word ok"));
+        assert!(!muse_intent_in_tail(accepted, "some other message"));
+    }
+
+    #[test]
+    fn pick_session_reports_when_nothing_matched() {
+        assert!(muse_pick_session(&[], "/repo/obrist").is_err());
     }
 }
 
@@ -3804,6 +4117,7 @@ fn provider_label(provider: &str) -> &str {
         "gemini" => "Gemini",
         "iterm2" => "iTerm2",
         "ollama" => "Ollama",
+        "muse" => "Muse Code",
         other => {
             if other.is_empty() {
                 "Claude Code"
@@ -6227,6 +6541,62 @@ fn verb_resp(ok: bool, msg: String) -> Response {
 /// The `since` gate uses the message's OWN timestamp, not file mtime, so an
 /// older identical text — a second "continue" minutes later — cannot count as
 /// this send.
+/// Muse's durable proof that a message was submitted — the analogue of
+/// `jsonl_user_msg_since` for Claude.
+///
+/// Muse writes `runtime.session.user_intent.accepted` into its session transcript at the
+/// moment it accepts a prompt, with the text in `refill_blocks`. That record is the same
+/// class of evidence as Claude's JSONL user message: written by the AGENT on acceptance,
+/// not inferred from the pane.
+///
+/// Without it a muse send that worked was reported "not submitted — text is sitting in the
+/// input box", because every read `verify_submitted` had was Claude-shaped. Measured live:
+/// the pane showed the prompt answered while the API returned ok:false, which makes callers
+/// re-send a message the agent is already working on.
+pub(crate) fn muse_user_intent_since(name: &str, text: &str, since: f64) -> bool {
+    let needle = text.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    let id = meta_str(&load_meta(name), "muse_session_id");
+    if id.is_empty() {
+        return false;
+    }
+    let Some(dir) = muse_scan_sessions(&muse_sessions_root()).get(&id).cloned() else {
+        return false;
+    };
+    let path = dir.join("session.jsonl");
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return false;
+    };
+    // The transcript must have been written since the send. Muse nests records as escaped
+    // JSON strings, so the timestamp beside a given intent is awkward to attribute; the file
+    // mtime is a coarser but honest bound, and the needle is text we sent seconds ago.
+    let fresh = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() >= since - 1.0)
+        .unwrap_or(false);
+    if !fresh {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return false;
+    };
+    let start = bytes.len().saturating_sub(262_144);
+    let tail = String::from_utf8_lossy(&bytes[start..]);
+    muse_intent_in_tail(&tail, needle)
+}
+
+/// Pure scan, so it is testable against a planted transcript rather than a file mock.
+pub(crate) fn muse_intent_in_tail(tail: &str, needle: &str) -> bool {
+    tail.match_indices("user_intent.accepted").any(|(i, _)| {
+        let end = tail.len().min(i + 8192);
+        tail[i..end].contains(needle)
+    })
+}
+
 pub(crate) fn jsonl_user_msg_since(name: &str, text: &str, since: f64) -> bool {
     let needle = text.trim();
     if needle.is_empty() {
@@ -6643,7 +7013,8 @@ async fn verify_submitted(
         // Durable evidence beats the pane: the conversation JSONL gets the user
         // message appended at submission. If it is there stamped after this send
         // began, it submitted and the pane read is a repaint lie.
-        if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
+        if sent_at > 0.0 && (jsonl_user_msg_since(name, text, sent_at)
+            || muse_user_intent_since(name, text, sent_at)) {
             return (Submission::Confirmed, retried);
         }
         if !retry_keys {
@@ -6686,7 +7057,8 @@ async fn verify_submitted(
     // A re-send now happens only when the message is genuinely absent from the
     // durable record, which is precisely when re-sending is the right move; the
     // old path traded that for a silent drop.
-    if sent_at > 0.0 && jsonl_user_msg_since(name, text, sent_at) {
+    if sent_at > 0.0 && (jsonl_user_msg_since(name, text, sent_at)
+            || muse_user_intent_since(name, text, sent_at)) {
         (Submission::Confirmed, retried)
     } else {
         (Submission::Stuck, retried)
@@ -6792,7 +7164,7 @@ async fn send_after_ready(
         let out = tmux_capture(&name, 15).await;
         if !out.is_empty() {
             let clean = strip_ansi(&out);
-            if claude_ui_visible(&clean) && !at_resume_picker(&clean) {
+            if agent_ui_visible(&clean) && !at_resume_picker(&clean) {
                 sleep_ms(1200).await;
                 let _ = send_text_boxed(&state, &name, &text, false, origin).await;
                 return;
@@ -6811,7 +7183,12 @@ async fn send_after_ready(
         session = %name,
         timeout_s,
         chars = text.chars().count(),
-        "send_after_ready: Claude UI never became ready before timeout; start/wake prompt DROPPED undelivered"
+        // Name the PROVIDER, not "Claude". This line said "Claude UI" on a muse lane, which
+        // reads as a launch bug — the Producer reported it as amux having started Claude for
+        // a provider=muse lane. It had not; the readiness predicate simply knew no muse
+        // markers. A message that misnames what it watched sends the next reader after the
+        // wrong defect.
+        "send_after_ready: agent UI never became ready before timeout; start/wake prompt DROPPED undelivered"
     );
     emit_event(
         &state,
@@ -7241,15 +7618,15 @@ async fn send_text_inner(
     // shell prompt OR the provider composer. Sending then types the user's
     // prompt into the startup script. Wait on positive UI evidence, not the
     // process existence or the model name echoed by the launch command.
-    if boot_in_flight && !claude_ui_visible(&strip_ansi(&out_st)) {
+    if boot_in_flight && !agent_ui_visible(&strip_ansi(&out_st)) {
         tracing::info!(session = %name, verdict = "send_waiting_for_boot_ui",
             "new worker has not drawn its provider UI — holding message before typing");
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while std::time::Instant::now() < deadline && !claude_ui_visible(&strip_ansi(&out_st)) {
+        while std::time::Instant::now() < deadline && !agent_ui_visible(&strip_ansi(&out_st)) {
             sleep_ms(250).await;
             out_st = tmux_capture(name, 15).await;
         }
-        if !claude_ui_visible(&strip_ansi(&out_st)) {
+        if !agent_ui_visible(&strip_ansi(&out_st)) {
             tracing::warn!(session = %name, verdict = "send_boot_ui_not_ready",
                 "provider UI did not appear — message was not typed into the launch shell");
             return (false, "worker is still starting — message not sent; retry when its terminal is ready".into());
@@ -7713,7 +8090,23 @@ async fn send_text_inner(
     } else if !send_literal(name, &text).await {
         return (false, "send-keys failed".into());
     }
-    sleep_ms(20).await;
+    // HOW LONG THE COMPOSER NEEDS BEFORE Enter MEANS "SUBMIT".
+    //
+    // 20ms is what Claude Code needs and it is far too short for muse: measured on a live
+    // muse lane, paste+20ms+Enter leaves the text resting in the composer every time, while
+    // paste+300ms+Enter submits it. The failure is invisible from here — the keys are
+    // delivered, so send-keys succeeds — and surfaces only as amux's own verdict "not
+    // submitted, text is sitting in the input box", which is exactly what a muse worker
+    // reported on every send.
+    //
+    // Per provider rather than one global raise: 20ms is a real latency budget for Claude,
+    // paid on every send by every lane, and there is no reason to make the common case
+    // slower for a provider-specific composer.
+    let settle_ms = match provider_of(&parse_env(name)).as_str() {
+        "muse" => 350,
+        _ => 20,
+    };
+    sleep_ms(settle_ms).await;
     // Only reachable if picker-shaped text was TYPED, which `use_paste` now
     // prevents. Kept as a belt-and-braces closer rather than deleted: if a
     // future change routes picker text back through send-keys, the Escape that
@@ -8448,6 +8841,19 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             let session = gemini_session_flag(&mut meta, skip_conv_id);
             format!("{base_bin}{opts} {session}")
         }
+        "muse" => {
+            // Muse Code. A NEW run launches bare — there is no `--session-id` to
+            // mint (see muse_launch_command) — and the id is learned from disk
+            // once the process is up, below. A stored id resumes exactly that
+            // conversation. Do NOT fall through to build_claude_cmd; that would
+            // launch `claude`.
+            muse_launch_command(
+                &meta_str(&meta, "muse_session_id"),
+                &flags,
+                extra_flags,
+                &default_model_for_provider("muse"),
+            )
+        }
         "ollama" => {
             // Ollama workers run through `codex --oss --local-provider ollama`
             // so they get a full coding agent (file editing, hooks, structured
@@ -8528,7 +8934,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     // cd, source the global agent credentials.
     let mut has_oauth = false;
     let mut shell_rc = String::new();
-    if provider != "codex" && provider != "gemini" && provider != "ollama" {
+    if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "muse" {
         shell_rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
         if let Ok(t) = std::fs::read_to_string(PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json")) {
             if let Ok(v) = serde_json::from_str::<Value>(&t) {
@@ -8596,7 +9002,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             sh_quote(&f.to_string_lossy())
         ));
     }
-    if provider != "codex" && provider != "gemini" && provider != "ollama" && has_oauth {
+    if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "muse" && has_oauth {
         shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
     }
     // Settings writes provider keys to server.env at runtime. Reading that file
@@ -8822,7 +9228,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
         type_line(name, &shell_rc).await;
         poll_shell_prompt(name, 3000).await;
     }
-    if has_oauth && provider != "codex" && provider != "gemini" {
+    if has_oauth && provider != "codex" && provider != "gemini" && provider != "muse" {
         type_line(name, "unset ANTHROPIC_API_KEY").await;
         poll_shell_prompt(name, 3000).await;
     }
@@ -8832,6 +9238,16 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
     let cmd = format!("cd {} && {cmd}", sh_quote(&work_dir));
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
+    // Snapshot muse's session directory BEFORE the process exists, so the set
+    // that appears during launch is exactly the set this start created. Scanning
+    // only afterwards could not tell a session this lane just opened from one a
+    // different lane opened a second earlier.
+    let muse_before = if provider == "muse" && meta_str(&meta, "muse_session_id").is_empty() {
+        muse_scan_sessions(&muse_sessions_root())
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    // Launch the provider command.
     let _ = send_literal(name, &cmd).await;
     sleep_ms(150).await;
     send_key(name, "Enter").await;
@@ -8842,7 +9258,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
         let out = tmux_capture(name, 10).await;
         if !out.is_empty() {
             let clean = strip_ansi(&out);
-            if claude_ui_visible(&clean) {
+            if agent_ui_visible(&clean) {
                 launched = true;
                 break;
             }
@@ -8851,6 +9267,33 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             }
             if i >= 6 && at_resume_picker(&clean) {
                 break;
+            }
+        }
+    }
+    // Learn the muse session id (see muse_pick_session). Only on a FIRST start:
+    // once stored, the id is the resume key and must never be overwritten by a
+    // later scan.
+    if provider == "muse" && meta_str(&meta, "muse_session_id").is_empty() {
+        let after = muse_scan_sessions(&muse_sessions_root());
+        let new: Vec<(String, Option<String>)> = after
+            .iter()
+            .filter(|(id, _)| !muse_before.contains_key(id.as_str()))
+            .map(|(id, dir)| (id.clone(), muse_session_workspace(dir)))
+            .collect();
+        match muse_pick_session(&new, &work_dir) {
+            Ok(id) => {
+                tracing::info!(session = %name, muse_session_id = %id, "muse session id learned");
+                meta.insert("muse_session_id".into(), json!(id));
+                save_meta(name, &meta);
+            }
+            Err(why) => {
+                // Not fatal, and deliberately loud: the lane works, it just will
+                // not RESUME. Silence here would look identical to a stored id
+                // until the next start quietly opened a second conversation.
+                tracing::warn!(
+                    session = %name, why = %why,
+                    "muse session id not stored; the next start will open a FRESH conversation"
+                );
             }
         }
     }
@@ -8888,7 +9331,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             for _ in 0..10 {
                 sleep_ms(500).await;
                 let o = strip_ansi(&tmux_capture(name, 10).await);
-                if claude_ui_visible(&o) {
+                if agent_ui_visible(&o) {
                     launched = true;
                     break;
                 }
@@ -8923,7 +9366,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             for _ in 0..10 {
                 sleep_ms(500).await;
                 let out2 = tmux_capture(name, 10).await;
-                if !out2.is_empty() && claude_ui_visible(&strip_ansi(&out2)) {
+                if !out2.is_empty() && agent_ui_visible(&strip_ansi(&out2)) {
                     launched = true;
                     break;
                 }
@@ -8970,7 +9413,7 @@ async fn start_session(state: &AppState, name: &str, extra_flags: &str, skip_con
             for _ in 0..20 {
                 sleep_ms(500).await;
                 let o2 = strip_ansi(&tmux_capture(name, 10).await);
-                if claude_ui_visible(&o2) {
+                if agent_ui_visible(&o2) {
                     relaunched = true;
                     break;
                 }
@@ -19447,7 +19890,7 @@ async fn config_patch_with_liveness(state: &AppState, name: &str, body: &Value, 
         if !SESSION_PROVIDERS.contains(&provider_val.as_str()) {
             return jresp(
                 StatusCode::BAD_REQUEST,
-                json!({"error": "provider must be 'claude', 'codex', or 'gemini'"}),
+                json!({"error": "provider must be 'claude', 'codex', 'gemini', 'iterm2', 'ollama', or 'muse'"}),
             );
         }
         let old_provider = provider_of(&cfg);
@@ -23790,6 +24233,41 @@ mod tests {
         (status, v)
     }
 
+    /// EVERY PROVIDER'S COMPOSER MUST READ AS READY, not just Claude's.
+    ///
+    /// `send_after_ready` waits for this predicate and DROPS the start/wake prompt when it
+    /// never fires. Muse had no markers here, so a muse lane timed out and lost its prompt —
+    /// observed twice on a live muse worker — while the log said "Claude UI never became
+    /// ready" on a lane running no Claude, which is what made it look like a launch bug.
+    #[test]
+    fn every_provider_s_composer_reads_as_ready() {
+        // Real captures, ANSI already stripped.
+        let muse = "── Voice input (\u{2325} + v to start) ──────────────\n\
+                    \u{27e9}\n\
+                    ──────────────────────────────────────────────\n\
+                    muse-spark-1.3-contributor \u{b7} high \u{b7} ~/w";
+        assert!(agent_ui_visible(muse), "muse composer not recognised:\n{muse}");
+        // The two muse markers must work INDEPENDENTLY, or the pair is decoration: with both
+        // in one sample the suite stays green after either is deleted. The footer alone
+        // covers a muse build that drops the voice hint; the composer frame alone covers the
+        // model being renamed, which is the likelier of the two.
+        let footer_only = "  muse-spark-1.3-contributor \u{b7} high \u{b7} ~/w";
+        assert!(agent_ui_visible(footer_only), "footer marker does not stand alone");
+        let frame_only = "── Voice input (\u{2325} + v to start) ──\n\u{27e9}\n  future-model \u{b7} high \u{b7} ~/w";
+        assert!(agent_ui_visible(frame_only), "composer frame does not stand alone");
+
+        let codex = "\u{203a} Ask Codex to do anything\n\
+                     gpt-5.6-sol default \u{b7} ~/w";
+        assert!(agent_ui_visible(codex), "codex composer not recognised");
+
+        let claude = "\u{23f5}\u{23f5} auto mode on (shift+tab to cycle) \u{b7} \u{2190} for agents";
+        assert!(agent_ui_visible(claude), "claude composer not recognised");
+
+        // A bare shell is still NOT ready — otherwise the prompt is typed into a shell.
+        assert!(!agent_ui_visible("slopmachine@host worker-muse % "),
+                "a shell prompt was read as an agent composer");
+    }
+
     #[test]
     fn env_file_roundtrip_preserves_order_and_quotes() {
         let dir = tempfile::tempdir().unwrap();
@@ -23925,7 +24403,7 @@ mod tests {
     #[test]
     fn detectors_read_real_frames() {
         let claude_idle = "some output\n\u{276f} \n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
-        assert!(claude_ui_visible(claude_idle));
+        assert!(agent_ui_visible(claude_idle));
         assert!(!at_shell_prompt(claude_idle));
         // AMUX-3055: the DEFAULT footer (no --dangerously-skip-permissions) is
         // "manual mode on · ? for shortcuts", NOT the bypass footer. This frame
@@ -23933,15 +24411,15 @@ mod tests {
         // the old detector, so send_after_ready dropped its start prompt. The
         // assertion fails against that old detector, which is the point.
         let claude_manual = "some output\n\u{276f} Try \"fix typecheck errors\"\n────\n⏸ manual mode on · ? for shortcuts · ← 2 agents";
-        assert!(claude_ui_visible(claude_manual), "manual-mode idle UI must read as visible");
+        assert!(agent_ui_visible(claude_manual), "manual-mode idle UI must read as visible");
         assert!(!at_shell_prompt(claude_manual));
         let shell = "Last login: Sat\nmixpeek$ ";
-        assert!(!claude_ui_visible(shell));
+        assert!(!agent_ui_visible(shell));
         assert!(at_shell_prompt(shell));
         let launching = "source /tmp/lab/amux.env 2>/dev/null; set +a; unset ANTHROPIC_API_KEY;\nclaude --model sonnet --session-id test-id";
-        assert!(!claude_ui_visible(launching), "the model in a launch command is not a ready provider");
+        assert!(!agent_ui_visible(launching), "the model in a launch command is not a ready provider");
         let sonnet = "Claude Code v2.1.267\nSonnet 5 with xhigh effort · Claude Max\n❯ \n⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents";
-        assert!(claude_ui_visible(sonnet), "the actual Sonnet footer releases a held startup send");
+        assert!(agent_ui_visible(sonnet), "the actual Sonnet footer releases a held startup send");
         // Spinner = active; prompt-glyph lines never count as chrome.
         let active = "\u{273b} Crunching\u{2026} (12s)\n\u{276f} typed text";
         assert_eq!(detect_claude_status(active), "active");
@@ -27439,9 +27917,9 @@ mod composer_state_tests {
             include_str!("../../tests/fixtures/boundary/gemini-0.58-idle.txt"),
             include_str!("../../tests/fixtures/boundary/gemini-0.59-yolo-idle.txt"),
         ] {
-            assert!(claude_ui_visible(frame));
-            assert!(!claude_ui_visible("cd /tmp && gemini --model auto --yolo --skip-trust"));
-            assert!(!claude_ui_visible("Gemini CLI v0.59.0\n│ ● 1. Yes\n│   2. Yes, and remember the directories as trusted"));
+            assert!(agent_ui_visible(frame));
+            assert!(!agent_ui_visible("cd /tmp && gemini --model auto --yolo --skip-trust"));
+            assert!(!agent_ui_visible("Gemini CLI v0.59.0\n│ ● 1. Yes\n│   2. Yes, and remember the directories as trusted"));
             assert_eq!(detect_claude_status(frame), "idle");
             assert!(pane_is_at_boundary(frame));
             assert!(matches!(composer_state(frame), ComposerState::Placeholder(_)));
