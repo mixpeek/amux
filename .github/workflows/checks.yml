@@ -212,6 +212,10 @@ jobs:
       # for AF-346, whose whole incident was a correct guard that did not run.
       # A ratchet against a recorded baseline, so the 32 stay their owners'
       # decision and number 33 cannot arrive quietly.
+      - name: Corrupt board acknowledgements retain unknown outcomes
+        run: python3 scripts/test-board-ack-unknown.py
+      - name: Cargo worktrees reuse builds without stale commit identity
+        run: python3 scripts/test-cargo-worktree-provenance.py
       - name: no harness is written and then never invoked (AF-346)
         run: |
           set -uo pipefail

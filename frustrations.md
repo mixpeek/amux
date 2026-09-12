@@ -2564,3 +2564,14 @@ CARD: AMUX-4460
 SYMPTOM: checks failed repeatedly through upstream f834583e: test-reap-amux-debris.sh lacked set -e. Its comment claimed exclusion from the guard, but the actual classifier still included it. A helper existence check did not make setup/helper execution failures abort.
 COST: Multiple main-branch CI failures and another deployment gate correction.
 FIX: Enable errexit for setup/helper failures while check() continues to accumulate assertion failures. Compare all eight fixture checks before and after; test-harness-guard is the standing log signal. Prior CI evidence: run 34721443418.
+
+## New native and portable regression harnesses had no CI disposition
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AMUX-4460
+SYMPTOM: After fixing the earlier checks failure, pushed 638b7203 reached the next guard and reported five newly unwired harnesses: board acknowledgement, Cargo provenance, two native Simulator scripts, and Tailscale owner bootstrap.
+COST: One additional failed main CI run (34723123687) despite the individual regression probes passing locally.
+FIX: Invoke portable acknowledgement and Cargo provenance tests in checks.yml; record explicit local device/daemon prerequisites and commands for the three native acceptance harnesses. The existing harness-wired guard continues to report the full population and any new omission.
