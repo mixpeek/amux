@@ -1316,3 +1316,25 @@ fn a_session_update_refreshes_the_open_details_view() {
          while the peek stays stale until a manual refresh"
     );
 }
+
+/// A send/steer blocked as "acceptance uncertain" can never succeed on retry
+/// and a blocked op is never re-attempted, so it sat as a permanent red banner
+/// (Ethan, 2026-09-12: a 17h-old "1 failed" to amux-research). It must be swept
+/// automatically — on boot and before each sync — not left for manual dismiss.
+/// A blocked BOARD write is a real edit and must survive (message paths only).
+#[test]
+fn unrecoverable_uncertain_sends_are_swept_not_left_as_a_red_banner() {
+    let js = asset("app.js");
+    assert!(js.contains("function _pruneUnrecoverableOutbox"),
+        "the unrecoverable-outbox sweep must exist");
+    assert!(js.contains("_OUTBOX_UNRECOVERABLE") && js.contains("acceptance is uncertain"),
+        "the sweep must match the server's uncertain-acceptance refusal");
+    // Called from the sync loop AND at boot, so a stale blocked op cannot greet a fresh session.
+    assert!(js.matches("_pruneUnrecoverableOutbox()").count() >= 2,
+        "the sweep must run both at startup and before each sync attempt");
+    // Message paths only — the regex/guard must scope to send|steer, never board.
+    let i = js.find("function _pruneUnrecoverableOutbox").unwrap();
+    let body = &js[i..(i + 900).min(js.len())];
+    assert!(body.contains("/(send|steer)$/"),
+        "the sweep must be scoped to send/steer; a blocked board write still needs review");
+}

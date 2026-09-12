@@ -2411,6 +2411,9 @@ function runSyncBanner(quiet = false) {
   return _syncFlight;
 }
 async function _runSyncBanner(quiet = false) {
+  // Before attempting delivery, drop sends already blocked as unrecoverable
+  // (uncertain acceptance): retry cannot help and they only keep the banner red.
+  try { await _pruneUnrecoverableOutbox(); } catch (e) {}
   const banner = document.getElementById('sync-banner');
   const itemsEl = document.getElementById('sync-items');
   const titleEl = document.getElementById('sync-title-text');
@@ -2606,6 +2609,36 @@ async function _clearBlockedOps() {
   });
   if (!offlineQueue.length && !drafts.length) _writeError = '';
   updateConnectionStatus();
+}
+// A send/steer blocked because acceptance is UNCERTAIN can never be resolved by
+// retry — "uncertain" means the message most likely already reached the worker,
+// which is why the server refused to call it failed. A blocked op is never
+// re-attempted, so the replay path's uncertain-drop (which fires on a fresh
+// attempt) can't reach one that was blocked before that fix; it just sits as a
+// permanent red banner (Ethan, 2026-09-12: a 17h-old "1 failed" to
+// amux-research). Sweep those on load and before each sync. Message send/steer
+// ONLY — a blocked board write is a real edit the user must still review.
+const _OUTBOX_UNRECOVERABLE = /acceptance is uncertain|delivery unconfirmed/i;
+async function _pruneUnrecoverableOutbox() {
+  let dropped = 0, who = '';
+  await _mutateQueue(current => {
+    for (let i = current.length - 1; i >= 0; i--) {
+      const q = current[i];
+      if (q.state === 'blocked' && q.error && _OUTBOX_UNRECOVERABLE.test(q.error)
+          && /\/(send|steer)$/.test((q.url || '').split('?')[0])) {
+        if (!who) who = decodeURIComponent((q.url.match(/\/api\/sessions\/([^/]+)\//) || [])[1] || '');
+        current.splice(i, 1); dropped++;
+      }
+    }
+  });
+  if (dropped) {
+    try { _outboxDiagnostic('unrecoverable_send_swept', { count: dropped, session: who }); } catch (_) {}
+    showToast(dropped + ' undeliverable message' + (dropped > 1 ? 's' : '') + (who ? ' to ' + who : '')
+      + ' cleared — check the worker terminal if unsure');
+    if (!offlineQueue.length && !drafts.length) _writeError = '';
+    updateConnectionStatus();
+  }
+  return dropped;
 }
 
 // Queue modal
@@ -10301,7 +10334,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.915';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.916';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -32863,6 +32896,9 @@ if (window._peekEmbed) {
   fetchBoard();
   connectSSE();
   fetchSchedules().then(() => render());
+  // Clear any send/steer left blocked-as-unrecoverable by a previous session,
+  // so a stale "N failed" banner does not greet this boot (AMUX-4357 class).
+  try { _pruneUnrecoverableOutbox(); } catch (e) {}
 }
 _notifUpdateBadge();
 loadBranding();
