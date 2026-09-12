@@ -761,6 +761,14 @@ Pass requires: Automatic pickup produces real file-derived output and finishes t
 
 Supporting coverage: `e2e/lifecycle/live-steering-pickup.spec.ts`, `e2e/lifecycle/sonnet-queue.ts`, `e2e/lifecycle/live-coordination.spec.ts`.
 
+### LC-AUTOFIX-CLEANUP — Truthful automatic cleanup of operational backlog
+
+Use a migrated scratch store with old and recent autofix alerts, a human task, a claimed task, and a fault that still reproduces. Exercise refresh and expiry, including a claim made between candidate selection and update. Read the resulting task state and logs.
+
+Pass requires: Cleanup uses the real issues.created/issues.updated schema, does not fail with missing timestamp columns, and cannot discard active or claimed work merely because a TTL elapsed. Only independently resolved or explicitly obsolete alerts reach a truthful terminal outcome; updates guard against concurrent claims. This case is NOT_RUN: the live expiry query currently fails, and simply enabling its unconditional age-based discard is not an acceptable repair.
+
+Supporting coverage: `crates/amux-server/src/runtime_jobs/autofix.rs`, `crates/amux-server/src/db/board_store.rs`, `crates/amux-server/migrations/0001_baseline.sql`.
+
 ## End-state and cleanup record
 
 For every created worker, card, dependency, schedule, browser profile, group,

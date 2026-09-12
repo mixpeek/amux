@@ -4,7 +4,7 @@
   "overall_status": "INCOMPLETE",
   "candidate_version": "0.9.919",
   "source_base": "bc5e2385a82ee19658c940142bd4e6a89eb3d302",
-  "guided_cases": 80,
+  "guided_cases": 81,
   "native_live_discovery": {
     "tests": 11,
     "files": 7
@@ -938,6 +938,101 @@
           "seconds": 43.2
         }
       ]
+    },
+    {
+      "archive_key": "integration-final-919",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": null,
+        "grep": "LC-SYNC-PROGRESS|LC-BLOCKED-OUTBOX"
+      },
+      "binary": {
+        "sha256": "a62773e720f3c7a74650f2e0205753ed0806b7630b691f36ed85b8f2f4ba5a16",
+        "source_verified": true,
+        "built_from_checkout": true
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "build",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "bash",
+            "scripts/safe-cargo.sh",
+            "build",
+            "-p",
+            "amux-server"
+          ],
+          "seconds": 117.1
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 9, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--grep",
+            "LC-SYNC-PROGRESS|LC-BLOCKED-OUTBOX"
+          ],
+          "seconds": 45.8
+        }
+      ]
+    },
+    {
+      "archive_key": "browser-process-exit-919",
+      "status": "AUTOMATED_SCOPE_PASSED",
+      "selection": {
+        "project": "desktop",
+        "grep": "LC-BROWSER-BACKGROUND"
+      },
+      "binary": {
+        "sha256": "a62773e720f3c7a74650f2e0205753ed0806b7630b691f36ed85b8f2f4ba5a16",
+        "source_verified": false,
+        "built_from_checkout": false
+      },
+      "stages": [
+        {
+          "name": "outbox-contracts",
+          "status": "PASS",
+          "note": "",
+          "command": [
+            "node",
+            "--test",
+            "tests/dashboard-outage-recovery.mjs"
+          ],
+          "seconds": 0.4
+        },
+        {
+          "name": "browser",
+          "status": "PASS",
+          "note": "{\"passed\": 1, \"failed\": 0, \"skipped\": 0, \"flaky\": 0}",
+          "command": [
+            "node",
+            "node_modules/@playwright/test/cli.js",
+            "test",
+            "--config=e2e/lifecycle/playwright.config.ts",
+            "--project",
+            "desktop",
+            "--grep",
+            "LC-BROWSER-BACKGROUND"
+          ],
+          "seconds": 44.9
+        }
+      ]
     }
   ],
   "broad_server": {
@@ -980,7 +1075,70 @@
     "restored_candidate": true
   },
   "native_limit": "Both provider attempts failed admission before worker creation. Automatic native pickup, busy-boundary arrival, final backlog cleanup and quiet-cycle execution remain unverified.",
-  "deployment": null,
+  "deployment": {
+    "measured_at": "2026-09-12T14:05:08.972600+00:00",
+    "commit": "7a2218d90e920e9c849d2d1560ed5969b9693f69",
+    "build": "81128895cb210bfb",
+    "pid": 8407,
+    "status": "ok",
+    "store": "ok",
+    "admission": "deny",
+    "mem": {
+      "pressure_level": 2,
+      "pressure": "warn",
+      "swap_used_mb": 34274.625,
+      "swap_total_mb": 34816.0
+    },
+    "assets": {
+      "/app.js": "77ceecadd99d33f14f2074768dcb95f5429b604c75f790b51483c1304401c120",
+      "/app.css": "d3e3f780f1b315f69b0f9baf04c5840fa16515606a1e2ee037aaa20586e81e53",
+      "/sw.js": "8128310f35e500adc736c54776203728ed14c4a77bcb7b5eb61965e9a7cdba59"
+    },
+    "runtime_jobs": [
+      {
+        "id": "steer-deliver",
+        "status": "ok",
+        "disabled_reason": null,
+        "ticks": 3,
+        "last_tick_age_s": 5.167513847351074
+      },
+      {
+        "id": "board-drive",
+        "status": "starting",
+        "disabled_reason": null,
+        "ticks": 0,
+        "last_tick_age_s": null
+      },
+      {
+        "id": "browser-idle-reaper",
+        "status": "ok",
+        "disabled_reason": null,
+        "ticks": 1,
+        "last_tick_age_s": 30.672868967056274
+      }
+    ],
+    "sessions": {
+      "status": 200,
+      "rows": 135,
+      "elapsed_ms": 5914
+    },
+    "same_build_after": true,
+    "version": "0.9.919",
+    "followup": {
+      "health_503_at": "2026-09-12T14:06:43Z",
+      "probe_deadline_ms": 250,
+      "probe_phase": 1,
+      "eventual_success_ms": 702,
+      "same_pid": 8407,
+      "next_health_status": 200,
+      "next_sessions_status": 200,
+      "next_sessions_ms": 3204,
+      "board_drive_status": "ok",
+      "board_drive_ticks": 2,
+      "steering_ticks": 20,
+      "browser_reaper_ticks": 2
+    }
+  },
   "large_file": {
     "size": 268435579,
     "sha256": "e9c0dc533938bb86970cafa1e42dc9e0eba1a439a498be99cf78ba7c1f67cd7e",
@@ -998,7 +1156,8 @@
     "idle_ttl_s": 0,
     "activity_ttl_s": 0,
     "profile_survived": true,
-    "note": "Earlier overly strict predicate failed when the user changed unrelated foreground apps. Final predicate checks the owned Chrome PID and actual headless process argument."
+    "note": "Earlier overly strict predicate failed when the user changed unrelated foreground apps. Final predicate checks the owned Chrome PID and actual headless process argument.",
+    "process_exit_observed": true
   },
   "clippy": {
     "archive_key": "clippy-final-918.log",
@@ -1022,5 +1181,51 @@
     "/app.js": "2bddabd8ec0f246c5f3b3c04a3a915f783d6658eebba761b778bbdbafc402adc",
     "/app.css": "d3e3f780f1b315f69b0f9baf04c5840fa16515606a1e2ee037aaa20586e81e53",
     "/sw.js": "bfe3660dde919627fad97c4e183a063ccbb51d8bd1d87d7f9028d694d17fb848"
+  },
+  "candidate_assets": {
+    "/app.js": "77ceecadd99d33f14f2074768dcb95f5429b604c75f790b51483c1304401c120",
+    "/app.css": "d3e3f780f1b315f69b0f9baf04c5840fa16515606a1e2ee037aaa20586e81e53",
+    "/sw.js": "8128310f35e500adc736c54776203728ed14c4a77bcb7b5eb61965e9a7cdba59"
+  },
+  "final_outbox_contracts": {
+    "archive_key": "outbox-final-919.log",
+    "passed": 37,
+    "failed": 0,
+    "fixture_note": "The new quiet-batch check initially supplied an invalid empty board acknowledgement; corrected it to return the actual task ID before the successful run."
+  },
+  "final_commit_hooks": {
+    "archive_key": "commit-final-919.log",
+    "security": "PASS",
+    "all_target_clippy": "PASS",
+    "js_syntax": "PASS"
+  },
+  "implementation_commit": "7a2218d90e920e9c849d2d1560ed5969b9693f69",
+  "push": {
+    "status": "SUCCESS",
+    "archive_key": "push-final-919.log",
+    "remote_note": "GitHub App push succeeded while required checks were expected. Check, e2e and checks were subsequently observed in progress; no CI success claimed yet."
+  },
+  "remaining_cleanup_error": {
+    "signature": "autofix tick: expire sweep failed; no such column: updated_at",
+    "observed_at": "2026-09-12T14:08:43Z",
+    "case": "LC-AUTOFIX-CLEANUP",
+    "status": "NOT_RUN",
+    "columns_in_queries": [
+      "updated_at",
+      "created_at"
+    ],
+    "actual_issues_columns": [
+      "updated",
+      "created"
+    ],
+    "note": "Blind age-based discard and ID-only update must be repaired before activating this currently failing path."
+  },
+  "ci_observed": {
+    "implementation_commit": "7a2218d90e920e9c849d2d1560ed5969b9693f69",
+    "checks": "success",
+    "check": "in_progress",
+    "e2e": "in_progress",
+    "cloud_deployment": "skipped",
+    "note": "Local deployment verified separately. No complete GitHub rust/e2e verdict yet."
   }
 }

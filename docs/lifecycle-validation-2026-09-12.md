@@ -197,3 +197,46 @@ and its reconnect guard, with our animation cancellation and failure retention
 inside that visibility branch. A new executable outbox contract checks a quiet
 single operation versus a quiet two-operation batch. The dashboard/cache version
 is 0.9.919. This final integration follows the 36-case 0.9.918 browser run.
+
+`integration-final-919` passed **9/9 browser cases** across all three projects
+and **37/37 outbox contracts** after the final integration. The new quiet-batch
+contract initially used an invalid empty board acknowledgement; returning the
+actual task ID repaired that fixture. Commit hooks passed security, all-target
+clippy and JavaScript syntax. The implementation was pushed to main as
+`7a2218d90e920e9c849d2d1560ed5969b9693f69`. GitHub accepted the App's push while
+required checks were still expected; CI was then observed running, not yet green.
+
+## Deployment and remaining live findings
+
+At 14:05 UTC, live health reported implementation `7a2218d9`, build
+`81128895cb210bfb`, status/store `ok`, and the same PID 8407. Served app.js,
+app.css and sw.js matched the 0.9.919 source hashes exactly, with the same build
+before and after the probe. Steering and browser cleanup were ticking; a later
+read also found board-drive status `ok` with two completed ticks. This verifies
+enabled loops, not native task completion. Worker admission remained denied
+under kernel warning with about 34 GB swap.
+
+The worker-list GET returned 200 for 135 rows in 5,914ms, and a later read took
+3,204ms. At 14:06:43 UTC, health returned a transient 503: its 250ms deadline
+expired in phase 1 (the serialized writer/read-pool probe), then the underlying
+probe succeeded at 702ms. Subsequent health returned 200 in 18ms; PID and build
+remained unchanged. These are remaining latency/readiness findings, not proof
+of a server crash or proof that all mobile disconnects are resolved.
+
+Logs also repeatedly show autofix expiry failing on nonexistent issues timestamp
+columns. The schema uses `created/updated`; refresh and expiry SQL use
+`created_at/updated_at`. Simply replacing the names would activate unconditional
+age-based discard and an ID-only update that can race a claim. That requires a
+truthful cleanup policy and atomic revalidation, not a blind timestamp patch.
+LW-11 and new LC-AUTOFIX-CLEANUP document the exact repair and counterexamples;
+the catalog now contains 81 cases. The new case is explicitly NOT_RUN.
+
+`browser-process-exit-919` passed the strengthened real-Chrome test: after TTL
+the actual owned PID no longer existed, and the saved profile remained intact.
+This test-only addition and the deployment receipt follow the implementation
+commit; production runtime bytes are unchanged.
+
+The required GitHub `checks` job subsequently passed. The separate `check` and
+`e2e` jobs were still running at the final observation; a complete CI pass is not
+claimed. The cloud deployment workflow skipped; the deployment receipt above is
+for the local Amux server.
