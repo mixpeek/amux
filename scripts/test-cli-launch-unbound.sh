@@ -20,8 +20,10 @@
 # this recipe BY HAND; this makes it a CI test.
 #
 # DISCRIMINATION (ethos rule 7). The self-check builds a deliberately-broken copy of
-# the CLI with cmd_start's `local AMUX_API=...` declaration deleted (the exact
-# AMUX-3145 specimen) and asserts the smoke FAILS on it with "unbound variable". The
+# the CLI with cmd_start's `local AMUX_API=...` declaration replaced by an unset.
+# The CLI now initializes AMUX_API globally too, so deleting only the local line
+# no longer creates the original unset-variable precondition. The mutant must
+# remove that inherited value and FAIL at the real inject with "unbound variable". The
 # unmodified CLI must PASS. A smoke that cannot fail on the broken copy is theatre, so
 # the copy is verified to actually differ before it is trusted as a negative control.
 #
@@ -35,11 +37,11 @@ PASS=0; FAIL=0
 ok()  { echo "  ok   $1"; PASS=$((PASS+1)); }
 bad() { echo "  FAIL $1"; [ -n "${2:-}" ] && echo "       $2"; FAIL=$((FAIL+1)); }
 
-# The one line whose removal reproduces AMUX-3145. Scope the mutation to cmd_start:
+# The declaration site where the mutant restores AMUX-3145's unset state. Scope the mutation to cmd_start:
 # other commands legitimately resolve AMUX_API through cmd_url too, and adding one of
 # those must not make this negative control impossible to construct. Deleting the
-# declaration only inside cmd_start leaves the use at amux:650 out of scope without
-# touching another function's independent declaration.
+# declaration only inside cmd_start and unsetting its inherited value leaves the
+# real inject unbound without touching another function's declaration.
 SPECIMEN='local AMUX_API="${AMUX_API:-$(cmd_url)}"'
 
 count_cmd_start_specimen() {
@@ -104,12 +106,13 @@ else
 fi
 
 # ── 2. self-check / negative control: the AMUX-3145 specimen must be caught ────
-# Build the broken copy by deleting cmd_start's AMUX_API declaration. Do not use a
+# Build the broken copy by replacing the declaration with an explicit unset,
+# including any inherited global initialization. Do not use a
 # file-wide grep deletion: cmd_open_browser now carries the same legitimate spelling.
 BROKEN="$WORK/amux-broken"
 awk -v needle="$SPECIMEN" '
   /^cmd_start\(\)[[:space:]]*\{/ { in_cmd_start=1 }
-  in_cmd_start && index($0, needle) { next }
+  in_cmd_start && index($0, needle) { print "  unset AMUX_API # AF-78 negative control: inherited initialization removed"; next }
   { print }
   in_cmd_start && /^}/ { in_cmd_start=0 }
 ' "$AMUX_BIN" > "$BROKEN"
@@ -119,7 +122,7 @@ awk -v needle="$SPECIMEN" '
 n_orig=$(count_cmd_start_specimen "$AMUX_BIN")
 n_brk=$(count_cmd_start_specimen "$BROKEN")
 if [ "$n_orig" -eq 1 ] && [ "$n_brk" -eq 0 ]; then
-  ok "broken fixture built: cmd_start AMUX_API declaration removed (was $n_orig, now $n_brk)"
+  ok "broken fixture built: cmd_start AMUX_API forced unset (declarations: $n_orig -> $n_brk)"
 else
   bad "could not build the broken fixture; has the specimen line drifted?" \
       "expected exactly 1 cmd_start occurrence in $AMUX_BIN and 0 in the copy; got $n_orig and $n_brk"

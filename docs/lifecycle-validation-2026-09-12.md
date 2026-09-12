@@ -240,3 +240,15 @@ The required GitHub `checks` job subsequently passed. The separate `check` and
 `e2e` jobs were still running at the final observation; a complete CI pass is not
 claimed. The cloud deployment workflow skipped; the deployment receipt above is
 for the local Amux server.
+
+## CI follow-up
+
+GitHub job `103564599963` completed workspace check, clippy, shellcheck and all
+workspace tests: 2,852 passed, 0 failed, 32 ignored across 68 reported
+targets. The overall job then failed its CLI launch negative control: deleting
+the local AMUX_API declaration left the newer global initialization intact.
+The isolated mutant now explicitly unsets that value at the declaration site.
+`bash scripts/test-cli-launch-unbound.sh` passes **3/3**, including the actual
+unbound-variable failure from the mutant. No runtime CLI code changed. This
+local correction does not retroactively turn the original GitHub job green;
+its separate E2E job was still running.

@@ -1223,9 +1223,23 @@
   "ci_observed": {
     "implementation_commit": "7a2218d90e920e9c849d2d1560ed5969b9693f69",
     "checks": "success",
-    "check": "in_progress",
+    "check": "failure",
     "e2e": "in_progress",
     "cloud_deployment": "skipped",
-    "note": "Local deployment verified separately. No complete GitHub rust/e2e verdict yet."
+    "note": "Local deployment verified separately. No complete GitHub rust/e2e verdict yet.",
+    "reason": "Workspace check, clippy, tests and shellcheck passed; outdated CLI launch negative control failed because inherited global AMUX_API survived the declaration deletion.",
+    "workspace_test_totals": {
+      "targets": 68,
+      "passed": 2852,
+      "failed": 0,
+      "ignored": 32
+    },
+    "archive_key": "github-check-7a2218d9.log",
+    "smoke_repair": {
+      "archive_key": "cli-launch-smoke-final.log",
+      "passed": 3,
+      "failed": 0,
+      "runtime_cli_changed": false
+    }
   }
 }

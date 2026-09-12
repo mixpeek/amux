@@ -2261,3 +2261,14 @@ CARD: AMUX-4417
 SYMPTOM: Visual review of the passing iPhone sync-progress screenshot showed the reconnect toast covering the failed operation's explanation in the bottom checklist.
 COST: The requested per-operation evidence was temporarily obscured exactly when it changed.
 FIX: Use the visible checklist as reconnect feedback when saved work exists, cancel the lingering queue toast animation and clear its visible state when it opens, and remove its redundant completion toast. Reconnect without queued work still has its usual toast. Existing sync-step status and outbox diagnostics identify acknowledgements and failures.
+
+## CLI launch negative control stopped reproducing its claimed fault
+AREA: testing
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: GitHub check 103564599963 passed workspace tests and clippy, then failed the CLI launch smoke: deleting the local AMUX_API declaration still launched successfully because the CLI now also initializes it globally.
+COST: The negative control no longer established an unset variable and kept the overall check red.
+FIX: In the isolated mutant only, replace that declaration with an explicit unset so both local and inherited initialization are absent at the real inject. The unmodified CLI must still launch; the mutant must fail with the real unbound-variable error. The smoke output names the forced-unset precondition and its pass/failure verdict.
