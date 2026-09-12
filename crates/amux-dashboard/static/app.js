@@ -7755,8 +7755,19 @@ async function sendFromInput(name) {
       return;
     }
     cmdHistoryAdd(text || msg, { session: name, type: queued ? 'steering' : 'direct' });
-    const sent = new Set(_files);
-    for (const f of _files) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    // Remove the SENT attachments durably, not just from the on-screen array.
+    // _cancelUpload deletes the IndexedDB upload row; a plain array filter left
+    // it behind, so _attachmentRestore re-hydrated every sent file on the next
+    // reload/reconnect and the card chips piled up with green ticks despite
+    // having been delivered (Ethan, 2026-09-12: "these files keep accumulating
+    // here despite im pretty sure they're being sent"). This is the same clear
+    // sendPeekCmd already does; the card path had drifted from it.
+    const sent = new Set();
+    for (const f of _files) {
+      if (!_cancelUpload(f)) continue;
+      sent.add(f);
+      if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+    }
     _cardFiles[name] = (_cardFiles[name] || []).filter(f => !sent.has(f));
     renderCardFiles(name);
     if (result === 'sent') showToast('Delivered to ' + name);
@@ -10270,7 +10281,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.913';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.914';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

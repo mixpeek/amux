@@ -1270,3 +1270,22 @@ fn a_slow_send_waits_for_the_server_instead_of_falling_into_the_outbox() {
          keep it blocked forever"
     );
 }
+
+/// A card-composer send must remove its sent attachments DURABLY (via
+/// _cancelUpload, which deletes the IndexedDB upload row), not just filter the
+/// in-memory array. A plain filter left the durable row behind and
+/// _attachmentRestore re-hydrated every sent file on the next reload, so card
+/// attachment chips piled up with green ticks despite having been delivered
+/// (Ethan, 2026-09-12). sendPeekCmd already did this; the card path had drifted.
+#[test]
+fn a_card_send_clears_its_attachments_durably() {
+    let js = asset("app.js");
+    let i = js.find("async function sendFromInput(").expect("sendFromInput exists");
+    let j = js[i..].find("\n}\n").map(|k| i + k).unwrap_or(js.len());
+    let body = &js[i..j.min(i + 4000)];
+    assert!(
+        body.contains("_cancelUpload(f)"),
+        "sendFromInput must call _cancelUpload on each sent attachment so the durable \
+         IndexedDB row is removed; a bare array filter leaks it and the chip returns on reload"
+    );
+}
