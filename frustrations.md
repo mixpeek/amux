@@ -2465,3 +2465,14 @@ CARD: AF-741
 SYMPTOM: Native iOS 26.5 Safari emitted touchstart/touchend/mouseover/mousemove on a column card but no click; the first tap revealed the previously transparent Pin button. Only the second tap opened the card. List rows opened on the first tap, so viewport-only checks missed the failure.
 COST: Mobile board audit required three native reproductions to separate an incorrectly located test swipe from the real two-tap card defect. Users must tap a card twice to view it.
 FIX: Limit card hover reveals to hover-capable pointers and keep touch Pin controls visible. A passive stationary-touch observer emits measured board_tap_unopened when a card tap never becomes a click, excluding scrolling and child controls. scripts/test-ios-board.mjs uses real isolated board records and native Simulator inputs; all six journeys pass after the fix. Candidate only; deployment pending.
+
+## The bottom-follow threshold traps small upward log gestures
+AREA: browser
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-742
+SYMPTOM: User reported being unable to scroll up after reaching log bottom. Native iOS 26.5 Safari reproduced it: -25pt gesture left gap=0/following=true, whereas -350pt escaped. The scroll event and live-frame renderer independently treated being within 40px of the bottom as permission to resume following, undoing the first small upward movement.
+COST: Earlier logs became unreachable with small gestures, and a correction to only the scroll handler still snapped the reader back when a live frame arrived; the new three-engine regression caught that second path.
+FIX: Track scroll direction, resume only on downward movement to the actual end, and make live refresh honor the explicit follow state. Emit measured bottom-follow-paused / reader_scrolling with input kind and bottom gap. New five-pixel regression fails before and passes after, including live-frame position retention and deliberate return to bottom. Native small/large gestures both pass with changed live frames, and the full terminal browser matrix passes 72 tests. Candidate only; production deployment pending.

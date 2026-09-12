@@ -10401,7 +10401,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.925';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.926';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12105,6 +12105,7 @@ let peekSelecting = false;
 let _peekScrollLocked = false;
 let _peekBufferedOutput = false;
 let _peekFollowBottom = false;
+let _peekLastScrollTop = 0;
 let _peekBottomResize = null, _peekBottomMutation = null, _peekBottomFrame = 0;
 
 function _peekKeepBottom() {
@@ -12140,7 +12141,18 @@ function _peekStopBottomWatch() {
   if (_peekBottomMutation) _peekBottomMutation.disconnect();
   cancelAnimationFrame(_peekBottomFrame); _peekBottomFrame = 0;
 }
-function _peekStopFollowing() { _peekFollowBottom = false; }
+function _peekStopFollowing(e) {
+  if (_peekFollowBottom) {
+    const body = document.getElementById('peek-body');
+    _peekLastScrollTop = body.scrollTop;
+    _peekPollBeacon('bottom-follow-paused', peekSession, {
+      verdict: 'reader_scrolling', input: e?.type || 'navigation',
+      gap_px: Math.round(body.scrollHeight - body.scrollTop - body.clientHeight),
+      measured: true, n_considered: 1,
+    });
+  }
+  _peekFollowBottom = false;
+}
 
 
 function _isScrolledToBottom(el, threshold) {
@@ -12587,7 +12599,9 @@ async function refreshPeek(liveOnly, bypassTrim) {
       _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
       histChanged = true;
     }
-    const atBottom = _isScrolledToBottom(body);
+    // A poll cannot infer renewed consent to follow from proximity. The
+    // reader may have moved only a few pixels up since the previous frame.
+    const atBottom = _peekFollowBottom && _isScrolledToBottom(body);
     if (atBottom && !body.querySelector('.peek-msg-current, .peek-highlight.current')) {
       _peekScrollLocked = false;
       _peekBufferedOutput = false;
@@ -22823,12 +22837,17 @@ _peekScrollBody.addEventListener('pointerdown', e => {
   if (e.clientX >= bounds.right - 18) _peekStopFollowing();
 });
 document.getElementById('peek-body').addEventListener('scroll', function() {
+  const movedDown = this.scrollTop > _peekLastScrollTop + 0.5;
+  _peekLastScrollTop = this.scrollTop;
   // A layout-generated scroll is not a request to read history. User gestures
   // and explicit navigation relinquish following before their scroll occurs.
   if (_peekFollowBottom) { _peekKeepBottom(); return; }
   // Programmatic message/search jumps can land at the finite scroll boundary.
   // That scroll event is still navigation, not a request to resume live output.
-  if (_isScrolledToBottom(this) && !this.querySelector('.peek-msg-current, .peek-highlight.current')) {
+  // The first few pixels of an upward gesture are still near the bottom.
+  // Re-arming there traps slow swipes in the follow/restore loop. Resume only
+  // when the reader moves down to the actual end (allow subpixel rounding).
+  if (movedDown && _isScrolledToBottom(this, 2) && !this.querySelector('.peek-msg-current, .peek-highlight.current')) {
     _peekScrollLocked = false;
     _peekFollowBottom = true;
     _peekBufferedOutput = false;

@@ -1880,6 +1880,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekStopFollowing": {
+      "kind": "command._peekStopFollowing",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekToggleSchedule": {
       "kind": "command._peekToggleSchedule",
       "feedback_required": true,

@@ -317,3 +317,26 @@ test('the HTTP frame retains the worker column cap after renderer reconciliation
   expect(size.history).toBeLessThan(size.body);
   expect(size.overflow).toBeLessThanOrEqual(1);
 });
+
+test('a small upward scroll at the log bottom relinquishes following through live updates', async ({ page }) => {
+  const fixture = await boot(page, { transcript: Array.from({length: 160}, (_, i) => `Saved line ${i}`).join('\n') });
+  const body = page.locator('#peek-body');
+  await expect.poll(() => body.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  // Model the first five pixels of a slow reader gesture. The native Simulator
+  // probe separately dispatches actual touch swipes; this isolates the 40px seam.
+  await body.dispatchEvent('wheel', { deltaY: -5 });
+  await body.evaluate(el => { el.scrollTop -= 5; });
+  await expect.poll(() => page.evaluate(() => eval('_peekFollowBottom'))).toBe(false);
+  const top = await body.evaluate(el => el.scrollTop);
+  fixture.setLive('New live output while reading the preceding line\n');
+  await page.evaluate(() => (window as any).refreshPeek(true));
+  await expect.poll(() => body.evaluate(el => el.scrollTop)).toBeCloseTo(top, 0);
+  await expect.poll(() => page.evaluate(() => eval('_peekScrollLocked'))).toBe(true);
+  // Reaching the actual bottom again must still resume live following.
+  await body.dispatchEvent('wheel', { deltaY: 100 });
+  await body.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(() => page.evaluate(() => eval('_peekFollowBottom'))).toBe(true);
+  fixture.setLive('Following resumed after the reader returned to the end\n');
+  await page.evaluate(() => (window as any).refreshPeek(true));
+  await expect.poll(() => body.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+});
