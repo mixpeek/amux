@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test('message loaders preserve recorded delivery and failed submission on every surface', async ({ page }) => {
   const rows = [
