@@ -163,7 +163,19 @@ die() { echo "${RED}error:${RESET} $*" >&2; exit 1; }
 # connect, which is why adding more of it was never the fix.
 _curl() {
   local rc=0
-  command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-5}" "$@" || rc=$?
+  # AF-723: 5s was tuned against AEAB-46's dropped-SYN hang (a genuinely dead
+  # peer), not against a heavily-loaded LOCAL box. Measured 2026-09-12 on a
+  # box at load 19-24 / amux-server-rs at ~239% CPU: `amux send`'s first
+  # attempt reported "the server was unreachable" (empty curl response —
+  # this connect-timeout firing) while /health answered in 8-9ms moments
+  # apart, and the very next retry (2s later, same request) succeeded and
+  # was dedup'd by the server as already-accepted — so the FIRST attempt had
+  # actually connected and been processed; only the CLIENT's own report of
+  # it was wrong. 10s keeps failing fast on a truly dead peer (still well
+  # short of the multi-minute hang AEAB-46 exists to prevent) while giving
+  # real headroom for connection setup delayed by local CPU/scheduling
+  # contention rather than a genuinely unreachable server.
+  command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" "$@" || rc=$?
   if [[ "$rc" -ne 0 ]]; then _transport_breadcrumb "$rc" "$@"; fi
   return "$rc"
 }
