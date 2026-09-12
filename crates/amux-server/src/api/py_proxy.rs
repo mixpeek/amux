@@ -65,6 +65,7 @@ pub const PROXIED_FAMILIES: &[ProxiedFamily] = &[];
 /// list against the routes mod.rs actually mounts (a view must share the
 /// predicate of the mechanism it describes — ethos rule 1).
 pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
+    ("/api/brex", "tokenized card issuance, webhook budget checks and credential health; disabled until configured (api/brex.rs)"),
     ("/api/_clear_sw", "service-worker cache reset landing page"),
     ("/health", "health + build discriminator"),
     // The /api-prefixed alias for the same handler. Lanes guess this path

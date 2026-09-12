@@ -2332,6 +2332,12 @@ function _resumePendingUploads() {
 }
 
 function setOnline(val) {
+  // A response started before the offline event can finish after it. It is
+  // evidence about that request, not permission to clear the current outage.
+  if (val && navigator.onLine === false) {
+    amuxTrack('connectivity_stale_success', {verdict:'offline_preserved', measured:true, n_considered:1});
+    return;
+  }
   const was = online;
   online = val;
   if (val) consecutiveFailures = 0;
@@ -10401,7 +10407,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.927';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.928';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

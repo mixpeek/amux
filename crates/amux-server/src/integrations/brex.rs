@@ -48,12 +48,6 @@ pub enum Verdict {
     Freeze { dimension: &'static str, limit_cents: i64, would_be_cents: i64 },
 }
 
-impl Verdict {
-    pub fn is_freeze(&self) -> bool {
-        matches!(self, Verdict::Freeze { .. })
-    }
-}
-
 /// Pure four-dimension budget decision. A refund (negative `amount_cents`) can
 /// never trip a cap, and a dimension with no limit is never evaluated. The
 /// per-transaction check uses the charge alone; the period checks use the
@@ -228,9 +222,6 @@ impl BrexClient {
         self.post(&format!("/v2/cards/{card_id}/lock"), serde_json::json!({"reason": reason})).await
     }
 
-    pub async fn unfreeze_card(&self, card_id: &str) -> anyhow::Result<serde_json::Value> {
-        self.post(&format!("/v2/cards/{card_id}/unlock"), serde_json::json!({})).await
-    }
 }
 
 #[cfg(test)]

@@ -2509,3 +2509,47 @@ CARD: AMUX-4417
 SYMPTOM: Consecutive helper/intake checks rebuilt amux-server for about 75 seconds each despite identical crate bytes. The tiny real Cargo regression confirmed that an unchanged detached-worktree build reported fresh=false because build.rs watched nonexistent .git/HEAD and .git/refs/heads/main paths.
 COST: Repeated full server compilation during verification, with avoidable CPU and memory pressure on a host already denying new workers.
 FIX: Resolve Git metadata using git rev-parse --git-path; watch the current HEAD and branch, including packed-ref transitions. The lifecycle resource case now runs a tiny real Cargo fixture proving cached repeats and correct identities after commit/branch changes. Restoring the broken HEAD watch makes the fixture fail.
+
+## A browser schema test reached the live browser with an upload fixture
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-745
+SYMPTOM: The clean deployment suite's valid-files control called the action API and assumed any 400 was a schema failure. With Chrome running it reached the real page and returned no element matches #f; a matching input could have received the fixture.
+COST: Deployment held while reproducing and separating schema validation from browser I/O.
+FIX: The handler and positive control share a browser-independent validator; malformed API controls still prove validation ordering. Rejections emit browser_files_schema_rejected with measured/count fields. Negative evidence: scratch/ios-simulator-review/deploy-browser-schema-probe.log.
+
+## A late request success cleared the phone's offline state
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-745
+SYMPTOM: The browser lifecycle regression intermittently displayed 1 sending while the browser network was explicitly offline. setOnline(true) from a previously started read could overwrite the newer offline event.
+COST: Two additional browser matrix failures delayed deployment and exposed misleading queue feedback.
+FIX: setOnline refuses a positive transition while navigator.onLine is false and emits connectivity_stale_success / offline_preserved. The lifecycle test deliberately injects the late success and checks offline feedback plus subsequent reconnection.
+
+## New Brex scaffolding failed the full-suite dead-public-API gate
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-745
+SYMPTOM: Upstream f834583e introduced is_freeze and unfreeze_card without any caller. Workspace Clippy passed; no_new_unreferenced_pub_fn_in_amux_server named both as failures on the clean deployment snapshot.
+COST: Deployment held for a full-suite failure invisible to the language lint gate.
+FIX: Removed the two unconnected methods; the existing dead_pub_api gate remains the log signal for recurrence. No wired Brex behavior changes.
+
+## The mounted Brex API was absent from the route boundary registry
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-745
+SYMPTOM: Upstream f834583e mounted /api/brex but omitted NATIVE_FAMILIES and its three ROUTE_TABLE paths; the clean proxy_composition test named the unclaimed route family.
+COST: Another full-suite failure after the standalone Clippy gate passed.
+FIX: Register the mounted native family and all three paths so the diagnostic endpoints, composition guard and route census describe the actual router. The failing test is the standing regression signal.
