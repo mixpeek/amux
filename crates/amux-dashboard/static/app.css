@@ -3831,10 +3831,10 @@
     transition: opacity 0.15s; border-radius: 4px;
     color: var(--dim); display: flex; align-items: center; justify-content: center;
   }
-  .board-card:hover .board-pin-btn { opacity: 0.7; }
+  @media (hover: hover) { .board-card:hover .board-pin-btn { opacity: 0.7; } }
   .board-pin-btn:hover { opacity: 1 !important; background: rgba(139,148,158,0.12); }
   .board-pin-btn.active { opacity: 0.8 !important; color: var(--accent); }
-  .board-card:hover .board-pin-btn.active { opacity: 1 !important; }
+  @media (hover: hover) { .board-card:hover .board-pin-btn.active { opacity: 1 !important; } }
   .board-drag-handle {
     position: absolute; top: 6px; right: 6px;
     width: 24px; height: 24px;
@@ -3844,10 +3844,12 @@
     border-radius: 4px;
     touch-action: none;
   }
-  .board-card:hover .board-drag-handle { opacity: 0.7; cursor: grab; }
+  @media (hover: hover) { .board-card:hover .board-drag-handle { opacity: 0.7; cursor: grab; } }
   .board-drag-handle:hover { opacity: 1 !important; cursor: grab; color: var(--fg); background: rgba(139,148,158,0.12); }
   .board-drag-handle:active { cursor: grabbing; }
-  @media (hover: none) { .board-drag-handle { opacity: 0.5; width: 32px; height: 32px; cursor: grab; } }
+  /* Safari consumes the first tap when hover reveals a hidden child. Touch
+     controls must already be visible so that tap opens the card. */
+  @media (hover: none) { .board-pin-btn { opacity: 0.7; } .board-drag-handle { opacity: 0.5; width: 32px; height: 32px; cursor: grab; } }
   /* ── Board mobile responsive ── */
   .board-new-btn { font-size: 0.8rem; padding: 5px 12px; white-space: nowrap; flex-shrink: 0; }
   .board-new-icon { display: none; }

@@ -2454,3 +2454,14 @@ CARD: AF-729
 SYMPTOM: Broad integration validation after AF-740 caught patch_archived_round_trip_with_cross_lane_guard failing at board_api.rs:703: archived="true" plus archive_outcome returned 400. AF-729's new reason validator recognized only JSON true/1, while the existing archive mutation also accepted normalized strings 1/true/yes/on.
 COST: One real compatibility regression escaped the earlier focused archive tests and prevented a clean integration gate; the existing cross-lane archive regression caught it.
 FIX: Share one patch_archived_value coercion between validation and mutation, preserve authorization and exact attributed reasons, and cover accepted/rejected flag forms. The existing archive_outcome_refused WARN continues to identify rejected fields without a silent write. Corrected code is on the isolated integration branch; production adoption is still pending.
+
+## Safari consumes the first tap on a board column card
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-741
+SYMPTOM: Native iOS 26.5 Safari emitted touchstart/touchend/mouseover/mousemove on a column card but no click; the first tap revealed the previously transparent Pin button. Only the second tap opened the card. List rows opened on the first tap, so viewport-only checks missed the failure.
+COST: Mobile board audit required three native reproductions to separate an incorrectly located test swipe from the real two-tap card defect. Users must tap a card twice to view it.
+FIX: Limit card hover reveals to hover-capable pointers and keep touch Pin controls visible. A passive stationary-touch observer emits measured board_tap_unopened when a card tap never becomes a click, excluding scrolling and child controls. scripts/test-ios-board.mjs uses real isolated board records and native Simulator inputs; all six journeys pass after the fix. Candidate only; deployment pending.

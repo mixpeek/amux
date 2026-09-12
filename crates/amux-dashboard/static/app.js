@@ -10401,7 +10401,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.924';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.925';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -29807,6 +29807,35 @@ function _bdAudit(kind, detail) {
     }).catch(() => {});
   } catch (e) {}
 }
+
+// Detect the Safari failure where a stationary touch reveals hover controls
+// but never becomes a click. Swipes, child controls, and successful clicks do
+// not report failures; this observes input without synthesizing another action.
+(function() {
+  let touch = null;
+  document.addEventListener('touchstart', e => {
+    const card = e.target.closest('.board-card[data-id]');
+    touch = card && e.touches.length === 1 && !e.target.closest('button,a,input,.board-drag-handle')
+      ? { id: card.dataset.id, x: e.touches[0].clientX, y: e.touches[0].clientY, clicked: false } : null;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (touch && (Math.abs(e.touches[0].clientX - touch.x) > 10 || Math.abs(e.touches[0].clientY - touch.y) > 10)) touch = null;
+  }, { passive: true });
+  document.addEventListener('touchcancel', () => { touch = null; }, { passive: true });
+  document.addEventListener('click', e => {
+    if (touch && e.target.closest('.board-card')?.dataset.id === touch.id) touch.clicked = true;
+  }, true);
+  document.addEventListener('touchend', () => {
+    const ended = touch;
+    if (!ended) return;
+    setTimeout(() => {
+      if (!ended.clicked && boardDetailId !== ended.id && document.visibilityState === 'visible') {
+        _bdAudit('board-tap', { verdict: 'board_tap_unopened', id: ended.id, measured: true, n_considered: 1 });
+      }
+      if (touch === ended) touch = null;
+    }, 750);
+  }, { passive: true });
+})();
 
 const _bdArtifactAuditSeen = new Set();
 function _bdArtifactHref(target) {
