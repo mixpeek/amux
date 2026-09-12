@@ -9050,6 +9050,17 @@ pub async fn patch_item(
                     // by mixpeek-orchestrator at 98 such cards, most weeks old,
                     // several with no attributable actor at all.
                     //
+                    // AF-712 generalizes this from needsyou alone to every
+                    // non-terminal status: measured fleet-wide at 885
+                    // archived+non-terminal rows (todo/doing/backlog/blocked/
+                    // needsyou), UP from AF-555's 785-of-2133 baseline two weeks
+                    // earlier — new instances kept forming because only needsyou
+                    // was ever gated. `survives_archive()` (amux-core::board)
+                    // still names needsyou as the one status that is DESIGNED to
+                    // stay non-terminal while archived (the ask is still owed);
+                    // every other non-terminal status has no such design intent,
+                    // it is just a card nobody closed before hiding it.
+                    //
                     // NOT gated on "the same request also changes status": tried
                     // that first, and `next.archived` is set (a few lines below)
                     // before the status-transition code runs later in this same
@@ -9060,35 +9071,57 @@ pub async fn patch_item(
                     // gate did. That escape never worked; documenting it as a
                     // valid path would have been the ethos-rule-3 lie this fix
                     // exists to remove. The real two-step path (change status
-                    // away from needsyou in one request, archive in the next)
+                    // to a terminal one in one request, archive in the next)
                     // still works and needs no help from this gate.
-                    if row.status == "needsyou" {
+                    if !bs::is_terminal_status(&row.status) {
                         let outcome = map
                             .get("archive_outcome")
                             .and_then(Value::as_str)
                             .map(str::trim)
                             .unwrap_or("");
                         if outcome.is_empty() {
+                            let why = if row.status == "needsyou" {
+                                format!(
+                                    "{} is in needsyou, which means someone is still owed \
+                                     an answer. Archiving it removes it from the owner's \
+                                     queue and every autonomy loop without answering the \
+                                     ask, which is how it goes quiet instead of getting \
+                                     resolved.",
+                                    row.id
+                                )
+                            } else {
+                                format!(
+                                    "{} is still {}, not a terminal status (done/verified/\
+                                     discarded). Archiving it removes it from every board \
+                                     view and autonomy loop while the work is still open, \
+                                     which is how an archived-but-unfinished card accumulates \
+                                     silently instead of ever getting resolved (AF-712).",
+                                    row.id, row.status
+                                )
+                            };
+                            let how = if row.status == "needsyou" {
+                                "add \
+                                 {\"archive_outcome\": \"<answered|withdrawn|discarded, and why>\"} \
+                                 to archive it while recording why, or first PATCH \
+                                 `status` away from needsyou in its own request (the \
+                                 ask was answered or the card is done), then archive \
+                                 it in a second request."
+                            } else {
+                                "add \
+                                 {\"archive_outcome\": \"<why this is being hidden while still open>\"} \
+                                 to archive it while recording why, or first PATCH \
+                                 `status` to done/verified/discarded in its own request, \
+                                 then archive it in a second request."
+                            };
                             return finish(
                                 &slot_w,
                                 PatchOut::Refused(
                                     StatusCode::BAD_REQUEST,
                                     json!({
-                                        "error": "archiving a needsyou card requires an outcome",
-                                        "why": format!(
-                                            "{} is in needsyou, which means someone is still owed \
-                                             an answer. Archiving it removes it from the owner's \
-                                             queue and every autonomy loop without answering the \
-                                             ask, which is how it goes quiet instead of getting \
-                                             resolved.",
-                                            row.id
-                                        ),
-                                        "how": "add \
-                                                {\"archive_outcome\": \"<answered|withdrawn|discarded, and why>\"} \
-                                                to archive it while recording why, or first PATCH \
-                                                `status` away from needsyou in its own request (the \
-                                                ask was answered or the card is done), then archive \
-                                                it in a second request.",
+                                        "error": "archiving a non-terminal card requires an outcome",
+                                        "why": why,
+                                        "how": how,
+                                        "status": row.status,
                                         "item": row.id,
                                     }),
                                 ),
@@ -11817,7 +11850,7 @@ mod af701_archive_guard_tests {
             &state,
             &id,
             HeaderMap::new(),
-            json!({"archived": true, "authorized_by": "ethan"}),
+            json!({"archived": true, "authorized_by": "ethan", "archive_outcome": "no longer needed"}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -11830,8 +11863,13 @@ mod af701_archive_guard_tests {
         // survive closing the anonymous hole, or archiving breaks for Ethan.
         let (state, store) = fixture();
         let id = seed(&store, "some-lane", "todo");
-        let (status, _body) =
-            patch_as(&state, &id, local_member_headers(), json!({"archived": true})).await;
+        let (status, _body) = patch_as(
+            &state,
+            &id,
+            local_member_headers(),
+            json!({"archived": true, "archive_outcome": "no longer needed"}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(current(&store, &id).archived, 1);
     }
@@ -11840,8 +11878,13 @@ mod af701_archive_guard_tests {
     async fn a_named_caller_archiving_their_own_card_needs_no_authorization() {
         let (state, store) = fixture();
         let id = seed(&store, "mvs-research", "todo");
-        let (status, _body) =
-            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        let (status, _body) = patch_as(
+            &state,
+            &id,
+            owner_headers("mvs-research"),
+            json!({"archived": true, "archive_outcome": "no longer needed"}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(current(&store, &id).archived, 1);
     }
@@ -11865,7 +11908,7 @@ mod af701_archive_guard_tests {
         let (status, body) =
             patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "archiving a needsyou card requires an outcome");
+        assert_eq!(body["error"], "archiving a non-terminal card requires an outcome");
         let row = current(&store, &id);
         assert_eq!(row.archived, 0, "a refusal must not mutate the card");
         assert_eq!(row.status, "needsyou");
@@ -11910,7 +11953,7 @@ mod af701_archive_guard_tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], "archiving a needsyou card requires an outcome");
+        assert_eq!(body["error"], "archiving a non-terminal card requires an outcome");
         let row = current(&store, &id);
         assert_eq!(row.archived, 0);
         assert_eq!(row.status, "needsyou");
@@ -11933,15 +11976,50 @@ mod af701_archive_guard_tests {
     }
 
     #[tokio::test]
-    async fn a_needsyou_card_can_still_be_archived_with_no_outcome_when_the_gate_does_not_apply() {
-        // CONTROL: a card that is NOT needsyou must be unaffected by this gate,
-        // or the gate is not testing needsyou at all.
+    async fn a_terminal_card_can_still_be_archived_with_no_outcome() {
+        // CONTROL: a card that is ALREADY terminal (done/verified/discarded)
+        // must be unaffected by this gate, or the gate blocks the ordinary
+        // "archive what's finished" case it is not meant to touch.
         let (state, store) = fixture();
-        let id = seed(&store, "mvs-research", "backlog");
+        let id = seed(&store, "mvs-research", "done");
         let (status, body) =
             patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(current(&store, &id).archived, 1);
+    }
+
+    #[tokio::test]
+    async fn archiving_a_non_terminal_non_needsyou_card_is_also_refused_without_an_outcome() {
+        // AF-712: the needsyou-only gate let every OTHER non-terminal status
+        // (todo/doing/backlog/blocked/review) accumulate archived+non-terminal
+        // silently — 885 such cards measured fleet-wide. The gate generalizes
+        // to any non-terminal status, not just needsyou.
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "backlog");
+        let (status, body) =
+            patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived": true})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "archiving a non-terminal card requires an outcome");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 0, "a refusal must not mutate the card");
+        assert_eq!(row.status, "backlog");
+    }
+
+    #[tokio::test]
+    async fn archiving_a_non_terminal_non_needsyou_card_succeeds_with_archive_outcome() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "doing");
+        let (status, body) = patch_as(
+            &state,
+            &id,
+            owner_headers("mvs-research"),
+            json!({"archived": true, "archive_outcome": "superseded by a later card"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let row = current(&store, &id);
+        assert_eq!(row.archived, 1);
+        assert_eq!(row.status, "doing", "the outcome does not itself change status");
     }
 }
 
