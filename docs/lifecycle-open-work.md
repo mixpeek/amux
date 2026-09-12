@@ -151,3 +151,11 @@ guided rows remained NOT_RUN with empty evidence. Live `--list` discovery found
 10 tests in six files for each of the Claude and Gemini configurations. Catalog
 IDs are unique, source/document links resolve, and `git diff --check` passed.
 These are catalog/discovery checks, not new live-provider or runtime test passes.
+
+## Isolated-worker follow-up
+
+[Isolated lifecycle validation](lifecycle-isolated-validation-2026-09-12.md) adds
+owner queue/retry and UI-toggle coverage plus a native queued-file scenario. It
+records the peer Queue bypass fix and the still-open disagreement between board
+lane selection and isolated wake/steering refusals. Native isolated task drain,
+restart and offline continuations remain unverified.

@@ -15248,6 +15248,9 @@ pub(crate) async fn steer_mutate(
         };
     }
     if *method == Method::POST {
+        if let Some(refusal) = isolated_peer_refusal(state, name, headers).await {
+            return refusal;
+        }
         let mut text = body_str(body, "text");
         if text.is_empty() {
             return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'text'"}));
@@ -16029,7 +16032,31 @@ pub(crate) async fn send_verb(
     send_post(state, name, headers, body).await
 }
 
+/// Isolation is a reachability boundary for both direct and queued peer
+/// messages. Check before recording history/dedupe/queue state, independently
+/// of the configurable group policy. Authenticated dashboard members remain
+/// human owners; the scope guard has already checked their resource access.
+async fn isolated_peer_refusal(state: &AppState, name: &str, headers: &HeaderMap) -> Option<Response> {
+    let origin = hdr_worker(headers);
+    if super::org::local_member_actor(headers).is_some()
+        || origin.is_empty() || origin == name || !session_is_isolated(name)
+    {
+        return None;
+    }
+    let reason = format!("send refused: '{name}' is an isolated (raw-agent) worker; only its owner can send to it");
+    tracing::warn!(origin = %origin, target = %name, verdict = "isolated_target", "{reason}");
+    emit_event(state, name, "send.isolated_refused",
+        Some(json!({"origin": origin, "target": name})), None, "isolation").await;
+    Some(jresp(StatusCode::FORBIDDEN, json!({
+        "ok": false, "error": reason, "blocked": "isolated", "code": "isolated_target",
+        "what_to_do": "An isolated worker is reachable only by its owner from the dashboard; no approval can authorize peer delivery.",
+    })))
+}
+
 async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
+    if let Some(refusal) = isolated_peer_refusal(state, name, headers).await {
+        return refusal;
+    }
     // GROUP SCOPING, before anything is delivered or recorded. The origin is the
     // SERVER-VERIFIED stamp (AMUX-1768), never a body-supplied claim, so a lane
     // cannot talk its way across a group boundary.
@@ -16050,35 +16077,6 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         .unwrap_or(true)
     {
         if let Err(reason) = cross_group_send_ok(&send_origin, name) {
-            // Isolation is a permanent reachability boundary, not a permission
-            // prompt. The generic refusal path below used to mint a one-shot
-            // cross-group grant even though approving it could never make an
-            // isolated raw-agent lane a valid peer target. Worse, a previously
-            // approved allowance was consumed before the refusal and bypassed
-            // the isolation check entirely. Return the exact refusal without a
-            // grant: only the owner/dashboard path (empty origin) is allowed.
-            if session_is_isolated(name) {
-                tracing::warn!(origin = %send_origin, target = %name, "{reason}");
-                emit_event(
-                    state,
-                    name,
-                    "send.isolated_refused",
-                    Some(json!({"origin": send_origin, "target": name})),
-                    None,
-                    "isolation",
-                )
-                .await;
-                return jresp(
-                    StatusCode::FORBIDDEN,
-                    json!({
-                        "ok": false,
-                        "error": reason,
-                        "blocked": "isolated",
-                        "code": "isolated_target",
-                        "what_to_do": "An isolated worker is reachable only by its owner from the dashboard; no approval can authorize peer delivery.",
-                    }),
-                );
-            }
             // AN OWNER-APPROVED, SINGLE-USE ALLOWANCE RELEASES EXACTLY ONE SEND
             // (AMUX-3997). Checked before the refusal so an approval the owner
             // already gave is honoured on the worker's own retry.
@@ -21367,6 +21365,43 @@ mod tests {
         assert_eq!(body["blocked"], json!("isolated"));
         assert_eq!(body["code"], json!("isolated_target"));
         assert!(body.get("grant_id").is_none(), "an impossible send must not ask for approval: {body}");
+    }
+
+    #[tokio::test]
+    async fn isolated_peer_queue_refuses_before_history_or_dedupe_but_owner_retry_survives() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("raw.env"), "CC_TAGS=alpha\nCC_ISOLATED=1\n").unwrap();
+        for (caller, group) in [("same", "alpha"), ("outside", "beta")] {
+            std::fs::write(sessions.join(format!("{caller}.env")), format!("CC_TAGS={group}\nCC_SEND_ALLOW=*\n")).unwrap();
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amux-worker", caller.parse().unwrap());
+            let response = steer_mutate(&st, "raw", &Method::POST, &headers,
+                &json!({"text":"owner task", "msg_id":"same-identity", "record_history":true})).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "peer queue bypass from {caller}");
+            let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+            assert_eq!(body["code"], "isolated_target");
+            assert!(body.get("grant_id").is_none());
+        }
+        for table in ["steering_queue", "cmd_history"] {
+            let count: i64 = st.store.read().unwrap().query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE session='raw'"), [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 0, "refused peers must leave no {table} rows");
+        }
+        // The refusal must not reserve the owner's operation ID. Queue twice
+        // with that same ID to prove both acceptance and retry deduplication.
+        for _ in 0..2 {
+            let response = steer_mutate(&st, "raw", &Method::POST, &HeaderMap::new(),
+                &json!({"text":"owner task", "msg_id":"same-identity", "record_history":true})).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        for table in ["steering_queue", "cmd_history"] {
+            let count: i64 = st.store.read().unwrap().query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE session='raw'"), [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 1, "owner retries must preserve exactly one {table} row");
+        }
     }
 
     use axum::body::Body;

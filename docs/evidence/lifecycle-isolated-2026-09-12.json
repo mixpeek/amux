@@ -1,0 +1,58 @@
+{
+  "archive_key": "isolated-lifecycle-20260912",
+  "browser": {
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "projects": [
+      "desktop",
+      "mobile",
+      "ios-safari"
+    ],
+    "source_built_run": "after",
+    "final_test_visual_run": "visual",
+    "binary_sha256": "2338f443b7e7ad6fd4fb9484b29d0bffe08b5fa8262d772cf68d46edda5a1e57",
+    "same_binary_verified": true,
+    "assets_match_projects": 3,
+    "screenshots_inspected": true
+  },
+  "rust_isolated": {
+    "passed": 13,
+    "failed": 0
+  },
+  "workspace_check": "PASS",
+  "all_target_clippy": "PASS",
+  "runner_contracts": {
+    "passed": 9
+  },
+  "native": {
+    "observed_at": 1789236045.585664,
+    "status": "ok",
+    "build": "efc463adf9fb07fe",
+    "commit": "6a28486962e9",
+    "commit_full": "6a28486962e9ddeb397fcae1d9cd5669823dd819",
+    "admission": "deny",
+    "native_execution": "NOT_RUN"
+  },
+  "source_sha256": {
+    "crates/amux-server/src/api/session_verbs.rs": "1d58846123973bca1f9e83792c48edc9fa55331ce399e4e2e67535c704b59032",
+    "e2e/isolated-worker.spec.ts": "1dd8f5e7b41a7be7cdc7f758e3a3c6befd66f6ec6aff64e33a31f5f132df1f2f",
+    "e2e/lifecycle/live-isolated.spec.ts": "6dbe5d23efd2dd67001d5ecfeffb4d5f866a75869bf8f4f80b0f51911561b84c"
+  },
+  "server_full": {
+    "passed": 2642,
+    "failed": 7,
+    "ignored": 33,
+    "targets": 60,
+    "exit_code": 101,
+    "failed_tests": [
+      "api::health::admission_tests::the_live_host_is_not_currently_denying",
+      "api::workers::tests::cwd_change_with_live_session_replaces_it_atomically",
+      "api::workers::tests::model_change_on_claude_is_next_turn_not_session_restart",
+      "api::workers::tests::peek_reads_the_live_terminal_and_names_every_non_answer",
+      "api::workers::tests::start_stop_delete_lifecycle",
+      "api::workers::tests::turn_events_flow_to_worker_state_and_journal",
+      "write_then_replay_round_trip"
+    ]
+  }
+}

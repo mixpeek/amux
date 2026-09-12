@@ -2322,3 +2322,14 @@ CARD: none — live deployment verification for the user's housekeeping request
 SYMPTOM: The first deployed sweep reported unmeasured run/evidence/audit directory cleanup with ENOENT. The service PATH omitted /usr/sbin, although lsof was available from an interactive shell.
 COST: Directory cleanup deferred; 14 old log files were removed and five linked uploads were protected, but no diagnostic folders were examined.
 FIX: Resolve macOS's /usr/sbin/lsof explicitly and include the executable in spawn-failure diagnostics. A native test restricts PATH to /usr/bin:/bin and checks that the probe observes a real held file; reverting to bare lsof must fail that test.
+
+## Isolated worker peer boundary could be bypassed through Queue
+AREA: workers
+SEVERITY: breaks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: none — user requested isolated-worker consolidated lifecycle coverage
+SYMPTOM: The expanded LC-ISOLATED-BOUNDARY browser case received HTTP 200 from a same-group peer's POST /steer, although the identical peer's POST /send correctly returned 403 for the isolated target.
+COST: Peer messages could enter a raw worker through the steering queue, violating the same isolation boundary enforced on Send.
+FIX: Share an early isolated-peer refusal across direct and queued sends before dedupe/history/queue mutation. Preserve owner and authenticated member access; an explicit peer allowance cannot bypass isolation. Each refusal emits send.isolated_refused and a WARN with verdict=isolated_target. Rust controls verify no rejected message/history rows and exactly one owner queue/history row across retries; lifecycle browsers cover same/outside groups, UI toggles, reloads and cached discovery.

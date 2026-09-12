@@ -44,6 +44,18 @@ export AMUX_LIFECYCLE_LAB_ACK=dedicated-test-instance
 python3 scripts/lifecycle/run.py live
 ```
 
+Isolated workers are first-class cases: `LC-08` runs in all three browser
+projects; `LC-ISOLATED-NATIVE` runs the real queued-file/raw-provider scenario.
+Queue persistence alone is not evidence that the provider consumed the message.
+The remaining board/restart/offline continuation is guided and must be recorded
+separately; see [isolated lifecycle validation](lifecycle-isolated-validation-2026-09-12.md).
+
+```bash
+python3 scripts/lifecycle/run.py browser --grep LC-ISOLATED
+AMUX_LIFECYCLE_PROVIDER=claude python3 scripts/lifecycle/run.py live --grep LC-ISOLATED-NATIVE
+AMUX_LIFECYCLE_PROVIDER=gemini python3 scripts/lifecycle/run.py live --grep LC-ISOLATED-NATIVE
+```
+
 For background browser expiry, run the real scratch-Chrome case explicitly:
 
 ```bash
@@ -180,11 +192,11 @@ Supporting coverage: `e2e/worker-configurations.spec.ts`.
 
 ### LC-08 — Isolated worker boundary
 
-Create an isolated test worker and compare discovery, incoming peer messaging, harness and automation with a normal worker.
+Create an isolated worker with same-group and outside-group peers. Warm owner and peer rosters, toggle isolation through Configurations, reload, and check discovery after each change. Try direct and queued peer sends with explicit allowances. Queue an owner message, reload/toggle, then retry the same operation identity.
 
-Pass requires: Isolation effects are visible and enforced; it cannot auto-pick up normal board work.
+Pass requires: Owner access and the durable queue survive isolation changes; cached peer rosters hide isolated workers immediately. Same-group and cross-group peers cannot bypass isolation through Send or Queue, and refusals create no grants, tasks, history or queued messages. A stopped worker remains pending, never falsely delivered. The ordinary peer stays visible.
 
-Supporting coverage: `e2e/isolated-worker.spec.ts`.
+Supporting coverage: `e2e/isolated-worker.spec.ts`, `crates/amux-server/src/api/session_verbs.rs`.
 
 ### LC-09 — Worker lists and working indicators
 
@@ -817,6 +829,14 @@ Exercise the hourly sweep with aged uploads, a failed reference query, old diagn
 Pass requires: Old unreferenced output is removed; linked, active and recent files survive. Missing, oversized, truncated or timed-out probes defer cleanup with visible reasons. Cache expiry respects longer TTLs. Report actual bytes deleted separately from log rotation.
 
 Supporting coverage: `crates/amux-server/src/runtime_jobs/log_retention.rs`, `crates/amux-server/src/runtime_jobs/storage.rs`, `crates/amux-server/src/api/session_verbs.rs`, `docs/automatic-housekeeping.md`.
+
+### LC-ISOLATED-NATIVE — Isolated owner delivery and board lifecycle
+
+Run LC-ISOLATED-NATIVE for Claude Sonnet and Gemini: create a raw worker through the UI, queue an owner file assignment, and observe automatic native pickup, real output and absent harness environment. Guided continuation: send a follow-up while busy, disconnect/reconnect, inspect source-message board capture, output/evidence links, and owner-controlled completion. Seed backlog/todo and inspect board-drive diagnostics and delivery refusals. Toggle isolation off and restart, then exercise normal automatic backlog-to-Verified and peer review.
+
+Pass requires: Raw spawn has no injected amux harness/hooks/MCP. Owner messages and files remain usable and are counted delivered only with native submission evidence; owner work can still be linked on the board. Peer delivery stays refused. Automatic task drain must never be certified from selection or a mocked fleet: wake, enqueue, pickup and evidenced terminal state must all agree. Current isolated board selection versus wake/delivery policy conflict is an open failure, not a passing exemption. Normal mode after restart must restore ordinary lifecycle behavior without duplicate messages or lost evidence.
+
+Supporting coverage: `e2e/lifecycle/live-isolated.spec.ts`, `e2e/isolated-worker.spec.ts`, `e2e/lifecycle/live-steering-pickup.spec.ts`, `e2e/lifecycle/live-complex-verified.spec.ts`, `crates/amux-server/src/runtime_jobs/board_drive.rs`, `crates/amux-server/src/api/session_verbs.rs`.
 
 ## End-state and cleanup record
 

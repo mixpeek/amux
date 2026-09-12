@@ -51,6 +51,18 @@ export AMUX_LIFECYCLE_LAB_ACK=dedicated-test-instance
 python3 scripts/lifecycle/run.py live
 ```
 
+Isolated workers are first-class cases: `LC-08` runs in all three browser
+projects; `LC-ISOLATED-NATIVE` runs the real queued-file/raw-provider scenario.
+Queue persistence alone is not evidence that the provider consumed the message.
+The remaining board/restart/offline continuation is guided and must be recorded
+separately; see [isolated lifecycle validation](lifecycle-isolated-validation-2026-09-12.md).
+
+```bash
+python3 scripts/lifecycle/run.py browser --grep LC-ISOLATED
+AMUX_LIFECYCLE_PROVIDER=claude python3 scripts/lifecycle/run.py live --grep LC-ISOLATED-NATIVE
+AMUX_LIFECYCLE_PROVIDER=gemini python3 scripts/lifecycle/run.py live --grep LC-ISOLATED-NATIVE
+```
+
 For background browser expiry, run the real scratch-Chrome case explicitly:
 
 ```bash
