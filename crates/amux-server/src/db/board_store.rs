@@ -2744,11 +2744,13 @@ pub struct NewIssue {
 /// the noise this is here to prevent.
 ///
 /// KNOWN IMPRECISION, stated rather than hidden: `desc` is the prompt TRUNCATED to
-/// 300 chars, so two genuinely different prompts sharing a 300-char prefix compare
-/// equal here and the second is suppressed. The cmd_history guard above does not
-/// have this edge, because it compares the full text. Accepted because the two
-/// cards would be indistinguishable on the board anyway (both descs are the same
-/// 300 chars), and because the caller logs the SURVIVING card id on every
+/// `CAPTURE_DESC_CHAR_CAP` chars (2000, AF-716 — raised from the original 300,
+/// which cut real reports off mid-sentence with no marker), so two genuinely
+/// different prompts sharing that long a prefix compare equal here and the
+/// second is suppressed. The cmd_history guard above does not have this edge,
+/// because it compares the full text. Accepted because the two cards would be
+/// indistinguishable on the board anyway (both descs are the same truncated
+/// text), and because the caller logs the SURVIVING card id on every
 /// suppression, so a wrongly dropped prompt is a greppable line rather than a
 /// missing card nobody can see. If that line ever shows up for prompts that are not
 /// duplicates, the fix is to store a full-prompt hash on the card, not a longer

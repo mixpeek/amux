@@ -4230,6 +4230,29 @@ pub(crate) fn redact_prompt_secrets(s: &str) -> String {
     out
 }
 
+/// Cap on how much of a captured prompt goes into a card's `desc`. Raised from
+/// the original 300 (AF-716: 8 captured cards were found silently cut off
+/// mid-sentence at exactly 312 chars — "**Prompt:** " is 12 chars — with no
+/// marker and no way to tell a short message from a truncated one).
+const CAPTURE_DESC_CHAR_CAP: usize = 2000;
+
+/// Builds the `**Prompt:** ...` desc every capture card carries. Shared by the
+/// mint path and its dedup-lookup path (below) so a truncated desc still finds
+/// its own open survivor — the two used to hardcode the same `.take(300)`
+/// separately, which is exactly the shape that lets one change and not the
+/// other (AF-716).
+pub(crate) fn format_captured_desc(body: &str) -> String {
+    let total_chars = body.chars().count();
+    let desc_body: String = body.chars().take(CAPTURE_DESC_CHAR_CAP).collect();
+    if total_chars > CAPTURE_DESC_CHAR_CAP {
+        format!(
+            "**Prompt:** {desc_body}... [truncated, {CAPTURE_DESC_CHAR_CAP} of {total_chars} chars]"
+        )
+    } else {
+        format!("**Prompt:** {desc_body}")
+    }
+}
+
 fn mint_capture_card(
     conn: &rusqlite::Connection,
     session_name: &str,
@@ -4300,8 +4323,7 @@ fn mint_capture_card(
         .and_then(|v| v.parse().ok())
         .unwrap_or(45);
     let cutoff = (now_ms / 1000) - window_s;
-    let desc_body: String = body.chars().take(300).collect();
-    let captured_desc = format!("**Prompt:** {desc_body}");
+    let captured_desc = format_captured_desc(body);
     let recent_capture: i64 = conn.query_row(
         "SELECT COUNT(*) FROM cmd_history WHERE session=?1 AND type='user' \
          AND text=?2 AND card_id IS NOT NULL AND ts>?3",
@@ -4531,8 +4553,7 @@ fn associate_capture_card(
     if amux_core::board::title_from_prompt(&redacted).is_some()
         && !amux_core::board::is_informational_query(&redacted)
     {
-        let desc_body: String = redacted.chars().take(300).collect();
-        let captured_desc = format!("**Prompt:** {desc_body}");
+        let captured_desc = format_captured_desc(&redacted);
         if let Some(id) =
             crate::db::board_store::open_capture_with_desc(conn, session_name, &captured_desc)?
         {
@@ -20316,6 +20337,33 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// AF-716: a captured prompt under the cap gets no marker; over the cap it
+    /// gets an explicit "[truncated, N of M chars]" tag naming both numbers,
+    /// rather than stopping silently mid-sentence.
+    #[test]
+    fn a_captured_prompt_under_the_cap_is_not_marked_truncated() {
+        let short = "a short prompt";
+        assert_eq!(
+            super::format_captured_desc(short),
+            format!("**Prompt:** {short}")
+        );
+    }
+
+    #[test]
+    fn a_captured_prompt_over_the_cap_names_the_omitted_length() {
+        let long = "x".repeat(super::CAPTURE_DESC_CHAR_CAP + 500);
+        let desc = super::format_captured_desc(&long);
+        assert!(
+            desc.contains(&format!(
+                "[truncated, {} of {} chars]",
+                super::CAPTURE_DESC_CHAR_CAP,
+                long.chars().count()
+            )),
+            "desc did not name the truncation: {desc}"
+        );
+        assert!(!desc.ends_with('x'), "desc should end with the marker, not raw body: {desc}");
     }
 
     /// AF-578. CONTENT AFTER THE ROSTER, which is the shape this merge will meet
