@@ -13,11 +13,6 @@
 //   this fails SOFT to "unknown": presence/absence of .git drives the
 //   difference, never a build flag (single-codebase rule).
 fn main() {
-    // HEAD moves on every commit; refs/heads/main on every branch update.
-    // A missing path makes cargo re-run the script each build, which is the
-    // right degradation for the no-.git case (cheap, and keeps it "unknown").
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/refs/heads/main");
     let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("server manifest directory")).join("../..");
     println!("cargo:rerun-if-changed={}", root.join("crates").display());
     println!("cargo:rerun-if-changed={}", root.join("Cargo.toml").display());
@@ -29,6 +24,31 @@ fn main() {
         let o = std::process::Command::new("git").arg("-C").arg(&root).args(args).output().ok()?;
         o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
+    // Linked worktrees store .git as a FILE. Resolve metadata through Git;
+    // watching root/.git/HEAD there tells Cargo to rebuild forever because that
+    // path cannot exist. Only the current branch can change this build's SHA.
+    if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
+        println!("cargo:rerun-if-changed={}", root.join(head).display());
+        if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
+            if let Some(path) = git(&["rev-parse", "--git-path", &reference]) {
+                let mut path = root.join(path);
+                // A packed ref has no loose file yet. Watch its existing parent
+                // so a later loose update invalidates the cached commit identity.
+                while !path.exists() && path.pop() {}
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+            if let Some(packed) = git(&["rev-parse", "--git-path", "packed-refs"]) {
+                let packed = root.join(packed);
+                // When absent, packing deletes the watched loose ref; that
+                // already reruns this script and installs the packed-ref watch.
+                if packed.exists() {
+                    println!("cargo:rerun-if-changed={}", packed.display());
+                }
+            }
+        }
+    } else {
+        println!("cargo:warning=build_git_metadata_unavailable measured=false n_considered=0 identity=unknown");
+    }
     let mut sha = git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_default();
     if sha.is_empty() {
         sha = "unknown".into();

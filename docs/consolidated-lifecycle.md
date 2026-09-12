@@ -728,7 +728,7 @@ Supporting coverage: `e2e/lifecycle/blocked-outbox.spec.ts`, `tests/dashboard-ou
 
 ### LC-HELPER-FAILURE — Semantic helper failure and recovery
 
-In an isolated subprocess fixture make the configured helper exit nonzero with quota text on stdout, diagnostic stderr, empty output, and JSON-shaped stdout; also exercise timeout and successful JSON. Then restore an available real helper and resend a paraphrase through the actual composer. This is a guided closure case; no new automated implementation is claimed.
+In an isolated subprocess fixture make the configured helper exit nonzero with quota text on stdout, diagnostic stderr, empty output, and JSON-shaped stdout; also exercise timeout and successful JSON. Then restore an available real helper and resend a paraphrase through the actual composer. The subprocess matrix is automated in mdai::tests::helper_failure; real model recovery remains a separate live prerequisite.
 
 Pass requires: Unsuccessful classifier processes never count as measured decisions or bad-JSON model answers. Bounded diagnostics identify exit/timeout and provider availability. Requests and original IDs remain attributable; the documented fallback is visible. Recovery produces a measured semantic append/update with all source links. Failed helper calls do not silently claim deduplication.
 
@@ -816,11 +816,11 @@ Supporting coverage: `crates/amux-server/src/runtime_jobs/board_drive.rs`.
 
 ### LC-CARGO-RESOURCE-BOUNDS — Build and retention resource limits
 
-Run normal, failing, memory-heavy, hung, and disk-growing Cargo fixtures; verify owned children stop, peer processes survive, active target leases prevent cleanup, and unchanged failed builds back off.
+Run normal, failing, memory-heavy, hung, and disk-growing Cargo fixtures; verify owned children stop, peer processes survive, active target leases prevent cleanup, and unchanged failed builds back off. Build a real tiny crate repeatedly from detached and packed-branch worktrees, then change only the commit identity.
 
-Pass requires: Bounded parallelism, sampled RSS/time/disk limits, visible budget receipts, no active-artifact deletion, changed source retries immediately, and ordinary Cargo exit codes survive.
+Pass requires: Bounded parallelism, sampled RSS/time/disk limits, visible budget receipts, no active-artifact deletion, changed source retries immediately, and ordinary Cargo exit codes survive. Unchanged builds stay fresh; HEAD or branch advances update the embedded commit. Git watch paths must work when .git is a file.
 
-Supporting coverage: `scripts/test-cargo-budget.py`, `scripts/test-cargo-target-guard.py`, `scripts/test-build-disk-clear.sh`, `crates/amux-server/src/cargo_target_guard.rs`.
+Supporting coverage: `scripts/test-cargo-budget.py`, `scripts/test-cargo-target-guard.py`, `scripts/test-build-disk-clear.sh`, `crates/amux-server/src/cargo_target_guard.rs`, `scripts/test-cargo-worktree-provenance.py`, `crates/amux-server/build.rs`.
 
 ### LC-AUTOMATIC-HOUSEKEEPING — Recurring memory and disk retention
 

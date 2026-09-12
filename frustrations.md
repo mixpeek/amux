@@ -2487,3 +2487,25 @@ CARD: AF-743
 SYMPTOM: MSG-58894 circles a mobile textarea whose working-state placeholder wraps to three lines and clips below its border. The user explicitly requires input/More/Send on one row; repeating the Working status and drop-file hint consumes the remaining writing width. Reproduced in the native Simulator log audit and a 375px active/idle browser regression.
 COST: The empty field looks broken and obscures where to type; the user reported another screenshot despite the one-row layout already being implemented.
 FIX: Use Message… with an accessible recipient label, preserving the one-row layout, drafts and send behavior. Existing keyboard-down/up geometry beacons now measure placeholder width against the actual text area and emit composer_placeholder_clipped or composer_readable. New test fails in all three engines before and passes after; native keyboard-open controls, More/mode taps and exact draft retention pass. Owner has authorized deployment; live verification follows clean integration gates.
+
+## Helper quota errors were accepted as classifier answers
+AREA: board
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: The subprocess regression returned Ok("session limit reached") after the helper exited 7. The same path accepted JSON-shaped stdout from a failed process, so failed model work could be parsed as a measured intake decision.
+COST: Semantic intake failure/recovery could not be certified; quota diagnostics were misreported as invalid classifier JSON and unavailable comparison preserved extra records.
+FIX: Honor process exit status before accepting stdout, retain at most 400 diagnostic characters, log distinct helper_exit_failed/helper_timeout/helper_empty_output verdicts, and reap killed children. The real-child regression matrix and before/final results are recorded in docs/lifecycle-helper-validation-2026-09-12.md. This does not claim that provider quota or native admission has recovered.
+
+## Cargo rebuilds unchanged detached worktrees
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: Consecutive helper/intake checks rebuilt amux-server for about 75 seconds each despite identical crate bytes. The tiny real Cargo regression confirmed that an unchanged detached-worktree build reported fresh=false because build.rs watched nonexistent .git/HEAD and .git/refs/heads/main paths.
+COST: Repeated full server compilation during verification, with avoidable CPU and memory pressure on a host already denying new workers.
+FIX: Resolve Git metadata using git rev-parse --git-path; watch the current HEAD and branch, including packed-ref transitions. The lifecycle resource case now runs a tiny real Cargo fixture proving cached repeats and correct identities after commit/branch changes. Restoring the broken HEAD watch makes the fixture fail.

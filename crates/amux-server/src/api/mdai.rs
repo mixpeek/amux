@@ -817,44 +817,78 @@ fn complete_cli(model: &str, prompt: &str, read_only: bool) -> Result<String, St
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        run_cli_command(cmd, &cli, prompt, std::time::Duration::from_secs(MODEL_TIMEOUT_S))
+}
+
+fn run_cli_command(mut cmd: std::process::Command, cli: &str, prompt: &str, budget: std::time::Duration) -> Result<String, String> {
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("could not run {cli}: {e}"))?;
+            .map_err(|e| {
+                tracing::warn!(target: "amux::model_helper", helper = cli, error = %e,
+                    verdict = "helper_spawn_failed", measured = false, n_considered = 0,
+                    "model helper did not start");
+                format!("could not run {cli}: {e}")
+            })?;
         // Write the prompt to stdin, then close it so the CLI knows input is done.
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             // Write in a separate scope so stdin is dropped (closed) promptly.
             let _ = stdin.write_all(prompt.as_bytes());
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(MODEL_TIMEOUT_S);
+        let deadline = std::time::Instant::now() + budget;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
-                        return Err(model_timeout_msg(&cli));
+                        let _ = child.wait();
+                        tracing::warn!(target: "amux::model_helper", helper = cli,
+                            verdict = "helper_timeout", measured = true, n_considered = 1,
+                            budget_ms = budget.as_millis() as u64,
+                            "model helper exceeded its deadline and was reaped");
+                        return Err(model_timeout_msg(cli));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                Err(e) => return Err(format!("{cli} failed: {e}")),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!(target: "amux::model_helper", helper = cli, error = %e,
+                        verdict = "helper_wait_failed", measured = true, n_considered = 1,
+                        "model helper status could not be read");
+                    return Err(format!("{cli} failed: {e}"));
+                }
             }
         }
         let out = child
             .wait_with_output()
             .map_err(|e| format!("{cli} failed: {e}"))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !out.status.success() {
+            // A quota error or partial JSON on stdout is not a model decision.
+            // Preserve a useful bounded diagnostic, without logging prompt/output.
+            let diagnostic = if !stderr.trim().is_empty() { stderr.trim() } else { &stdout };
+            let diagnostic: String = diagnostic.chars().take(400).collect();
+            let status = out.status.code().map(|code| format!("status {code}"))
+                .unwrap_or_else(|| out.status.to_string());
+            tracing::warn!(target: "amux::model_helper", helper = cli,
+                verdict = "helper_exit_failed", measured = true, n_considered = 1,
+                exit_code = ?out.status.code(), stdout_bytes = out.stdout.len(), stderr_bytes = out.stderr.len(),
+                "model helper failed; output is not an answer");
+            return Err(format!("{cli} exited with {status}: {}",
+                if diagnostic.is_empty() { "without output" } else { &diagnostic }));
+        }
         if !stdout.is_empty() {
-            // Non-empty stdout wins even on a non-zero exit: the CLI sometimes
-            // prints its answer then exits non-zero.
             return Ok(stdout);
         }
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if err.is_empty() {
-            format!("{cli} exited without output")
-        } else {
-            err.chars().take(400).collect()
-        })
+        tracing::warn!(target: "amux::model_helper", helper = cli,
+            verdict = "helper_empty_output", measured = true, n_considered = 1,
+            stderr_bytes = out.stderr.len(), "model helper succeeded without an answer");
+        let diagnostic: String = stderr.trim().chars().take(400).collect();
+        Err(if diagnostic.is_empty() { format!("{cli} exited without output") }
+            else { format!("{cli} exited without output: {diagnostic}") })
 
 }
 
@@ -2066,6 +2100,75 @@ mod tests {
             classify_model_err(produced),
             MdaiError::ModelTimeout(_)
         ));
+    }
+
+    // Real child processes exercise exit status, both streams and the timeout;
+    // no provider, global environment change, or successful-response stub is used.
+    #[cfg(unix)]
+    fn helper_fixture(script: &str, budget: std::time::Duration) -> Result<String, String> {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", script]).stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        run_cli_command(cmd, "fixture-helper", "classify this request", budget)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_failure_exit_status_outranks_stdout_including_valid_json() {
+        for (script, diagnostic) in [
+            ("printf 'session limit reached'; exit 7", "session limit reached"),
+            ("printf 'quota unavailable' >&2; exit 7", "quota unavailable"),
+            ("exit 7", "without output"),
+            ("printf '{\"action\":\"create\"}'; exit 7", "action"),
+        ] {
+            let error = helper_fixture(script, std::time::Duration::from_secs(2)).expect_err(script);
+            assert!(error.contains("exited with status 7"), "{error}");
+            assert!(error.contains(diagnostic), "{error}");
+            assert!(!error.contains("invalid classifier"), "{error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_failure_diagnostic_is_bounded_and_success_still_returns_json() {
+        let error = helper_fixture("i=0; while [ $i -lt 1000 ]; do printf x; i=$((i+1)); done; exit 9", std::time::Duration::from_secs(2)).unwrap_err();
+        assert!(error.chars().count() < 500, "diagnostic grew without bound");
+        assert_eq!(helper_fixture("printf '{\"action\":\"create\"}'; printf warning >&2", std::time::Duration::from_secs(2)).unwrap(), "{\"action\":\"create\"}");
+        assert!(helper_fixture("exit 0", std::time::Duration::from_secs(2)).unwrap_err().contains("without output"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_failure_timeout_remains_distinct_from_exit_failure() {
+        let start = std::time::Instant::now();
+        let error = helper_fixture("exec sleep 5", std::time::Duration::from_millis(100)).unwrap_err();
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(matches!(classify_model_err(error), MdaiError::ModelTimeout(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_failure_timeout_reaps_the_actual_child() {
+        let pid_file = tempfile::NamedTempFile::new().unwrap();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "printf '%s' $$ > \"$1\"; exec sleep 5", "helper-timeout"])
+            .arg(pid_file.path()).stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        run_cli_command(cmd, "fixture-helper", "", std::time::Duration::from_millis(200)).unwrap_err();
+        let pid: i32 = std::fs::read_to_string(pid_file.path()).unwrap().parse().unwrap();
+        let mut status = 0;
+        // SAFETY: status is writable; WNOHANG only inspects this fixture's child.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1, "timed-out child was left unreaped");
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_failure_missing_executable_is_not_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = run_cli_command(std::process::Command::new(dir.path().join("missing")),
+            "fixture-helper", "", std::time::Duration::from_secs(1)).unwrap_err();
+        assert!(error.starts_with("could not run fixture-helper:"), "{error}");
     }
 
     use super::*;

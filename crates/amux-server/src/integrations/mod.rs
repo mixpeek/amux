@@ -16,6 +16,7 @@
 //! [`health_snapshot`]; the integrator adds it to `api/health.rs`. Nothing
 //! here touches the health handler.
 
+pub mod brex;
 pub mod browser;
 pub mod calendar;
 pub mod email;

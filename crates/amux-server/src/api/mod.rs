@@ -43,6 +43,7 @@ pub mod history;
 pub mod reports;
 pub mod terminal;
 pub mod invariants_api;
+pub mod brex;
 pub mod interactions;
 pub mod journal;
 pub mod layout_presets;
@@ -161,6 +162,7 @@ pub fn router(state: AppState) -> Router {
         )
         .nest("/api/policy", policy::routes())
         .nest("/api/prefs", prefs::routes())
+        .nest("/api/brex", brex::routes())
         .nest("/api/criteria", criteria::routes())
         .nest("/api/metrics", metrics::routes())
         .nest("/api/reclaim", reclaim::routes())
