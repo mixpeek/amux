@@ -2410,3 +2410,14 @@ CARD: AF-732
 SYMPTOM: Native board-create typing was correct, but clicking Save appended J to the note and sent no board POST. DOM elementFromPoint saw the page button behind UIKit's keyboard; the native screen received that coordinate as a keyboard key.
 COST: Board persistence failed after the 20-view walkthrough, despite a successful tap response and the simpler native input probe passing.
 FIX: Candidate checks native keyboard visibility, dismisses through the native Safari input toolbar Done control, confirms it is gone, and checks visualViewport before dispatch. A failed dismissal refuses the tap. keyboard_blocks_page_tap emits measured=true/n_considered=1 before recovery. The new regression first failed on e48bc2a8 and then passed; native board-create/reload is now in the baseline harness, with exact persisted-note verification. Native correction: 12 passed, 0 failed on unchanged API build 5c158f091d1eba15; exact title/note survived creation, detail and reload. Focused Rust tests: 7 passed; workspace/all-target Clippy: exit 0.
+
+## Archive reason persisted but CLI reported it ignored
+AREA: board
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-729
+SYMPTOM: An isolated archive command exited 6 and warned archive_outcome was ignored, while readback showed archived=1 and the exact reason in the attributed log. The protocol consumed the key but omitted it from PATCH_CONTROL, contradicting its own successful write.
+COST: The owner repeated a reason that was already saved because the acknowledgement claimed it was lost.
+FIX: Register archive_outcome as a protocol key carrying log content. Refused transitions report it among discarded fields; invalid or non-applying outcome requests are explicitly refused instead of silently accepted. Structured patch_fields_ignored and archive_outcome_refused warnings name the affected card and measured population without logging supplied content. The acknowledgement regression failed first; isolated CLI reproduction and focused archive tests record the before/after evidence.

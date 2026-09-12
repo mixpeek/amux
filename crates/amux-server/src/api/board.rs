@@ -7321,7 +7321,7 @@ fn discarded_by_refusal(map: &serde_json::Map<String, Value>) -> Vec<String> {
                 // writes a log line from it) and a caller who is told nothing
                 // changed cannot tell a registered fold from an ignored field,
                 // which is the failure this whole thread is about.
-                || matches!(k.as_str(), "desc_append" | "callback" | "folded_into")
+                || matches!(k.as_str(), "desc_append" | "callback" | "folded_into" | "archive_outcome")
         })
         .cloned()
         .collect();
@@ -7569,7 +7569,9 @@ mod af413_discarded_tests {
     }
 }
 
-const PATCH_CONTROL: [&str; 12] = [
+const PATCH_CONTROL: [&str; 13] = [
+    // Persisted in the attributed archive log, not a standalone column.
+    "archive_outcome",
     // The lane ASSERTS that this card was folded into another. It is not read
     // from prose: the caller names the target and the SERVER writes the
     // canonical `capture folded into <ID>` line that `folded_into()` parses.
@@ -8346,6 +8348,22 @@ pub async fn patch_item(
                 })
                 .cloned()
                 .collect();
+            if !ignored.is_empty() {
+                tracing::warn!(target: "amux::board", verdict="patch_fields_ignored", item=%id_w,
+                    fields=?ignored, measured=true, n_considered=ignored.len(), "board PATCH contains ignored fields");
+            }
+            if let Some(outcome) = map.get("archive_outcome") {
+                let archiving = map.get("archived").is_some_and(|v| *v == true || *v == 1);
+                let reason = outcome.as_str().filter(|s| !s.trim().is_empty());
+                if !archiving || reason.is_none() {
+                    return finish(&slot_w, PatchOut::Refused(StatusCode::BAD_REQUEST,
+                        json!({"error":"archive_outcome requires archived=true and a nonempty string", "item":row.id})), no_write());
+                }
+                if row.archived == 1 {
+                    return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT,
+                        json!({"error":"card is already archived; unarchive before recording another archive_outcome", "item":row.id})), no_write());
+                }
+            }
             // Filled by the source_ref arm below when a trigger is rerouted to
             // the card body. Empty on every other write.
             let mut diverted: Vec<Value> = Vec::new();
@@ -11294,6 +11312,10 @@ pub async fn patch_item(
             // that does not compute this at all, and a caller cannot tell those
             // apart if it is omitted when empty (ethos rule 4).
             let dropped = discarded_on_refusal;
+            if dropped.iter().any(|key| key == "archive_outcome") {
+                tracing::warn!(target: "amux::board", verdict="archive_outcome_refused", item=%id,
+                    measured=true, n_considered=1, "archive outcome was not applied; the entire PATCH was refused");
+            }
             if !dropped.is_empty() {
                 body["discarded_note"] = json!(format!(
                     "the transition was refused, so the WHOLE body was discarded — \
@@ -12006,6 +12028,32 @@ mod af701_archive_guard_tests {
     }
 
     #[tokio::test]
+    async fn archive_outcome_without_an_archive_is_explicitly_refused() {
+        let (state, store) = fixture();
+        for input in [json!({"archive_outcome":"must not vanish"}), json!({"archived":true,"archive_outcome":17})] {
+            let id = seed(&store, "mvs-research", "done");
+            let (status, body) = patch_as(&state, &id, owner_headers("mvs-research"), input).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(body["discarded"].as_array().unwrap().contains(&json!("archive_outcome")), "{body}");
+            assert_eq!(current(&store, &id).archived, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_outcome_on_an_already_archived_card_is_not_silently_lost() {
+        let (state, store) = fixture();
+        let id = seed(&store, "mvs-research", "done");
+        let input = json!({"archived":true,"archive_outcome":"original reason"});
+        let (status, body) = patch_as(&state, &id, owner_headers("mvs-research"), input.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = patch_as(&state, &id, owner_headers("mvs-research"), json!({"archived":true,"archive_outcome":"different reason"})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let row = current(&store, &id);
+        assert!(row.log.as_deref().unwrap().contains("archive_outcome: original reason"));
+        assert!(!row.log.as_deref().unwrap().contains("different reason"));
+    }
+
+    #[tokio::test]
     async fn a_combined_archive_and_status_change_in_one_request_is_still_refused_without_an_outcome() {
         // Tried making this combination the escape hatch first; it cannot work
         // (see the comment on the gate in patch_item), so this pins that a
@@ -12086,9 +12134,11 @@ mod af701_archive_guard_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["ignored_fields"].as_array().is_none_or(|fields| !fields.contains(&json!("archive_outcome"))), "persisted outcome must not be reported ignored: {body}");
         let row = current(&store, &id);
         assert_eq!(row.archived, 1);
         assert_eq!(row.status, "doing", "the outcome does not itself change status");
+        assert!(row.log.as_deref().unwrap_or_default().contains("mvs-research: archive_outcome: superseded by a later card"), "exact attributed outcome must survive readback: {:?}", row.log);
     }
 }
 
