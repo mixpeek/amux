@@ -2443,3 +2443,14 @@ CARD: AF-740
 SYMPTOM: Mobile screenshot MSG-58672 showed the Codex Working/input footer and empty space. The structured transcript endpoint resolved 92 events, but Terminal discarded history for non-Claude alternate screens and depended on raw tmux paint otherwise. Load earlier output also bypassed the structured Codex reader. An isolated pre-fix API probe returned history absent/0 characters for a pinned, existing rollout.
 COST: User reported missing logs and could not inspect earlier work from Terminal; diagnosis required tracing two provider-specific paths despite the saved conversation already being readable elsewhere.
 FIX: AF-740 routes Codex/Ollama full peek and paginated earlier history through the existing provider projection, preserves independent tool results across byte cursors, keeps live polls separate, and emits measured peek_history_loaded/peek_history_unavailable signals. Native audit also found array-shaped input_text tool results were silently ignored by the shared Codex projection; those now decode alongside strings/objects, exclude image payloads, and are counted as tool_output_arrays in page logs. The terminal contract tests now initiate real wheel/touch intent before positioning earlier text: direct scrollTop assignments had left follow-bottom enabled and produced six false user-scroll failures across three engines, while native touch scrolling passed. Candidate is tested in scratch/frustrations-integration; production deployment remains pending.
+
+## Archive reason validation rejected a flag the archive operation accepted
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-729
+SYMPTOM: Broad integration validation after AF-740 caught patch_archived_round_trip_with_cross_lane_guard failing at board_api.rs:703: archived="true" plus archive_outcome returned 400. AF-729's new reason validator recognized only JSON true/1, while the existing archive mutation also accepted normalized strings 1/true/yes/on.
+COST: One real compatibility regression escaped the earlier focused archive tests and prevented a clean integration gate; the existing cross-lane archive regression caught it.
+FIX: Share one patch_archived_value coercion between validation and mutation, preserve authorization and exact attributed reasons, and cover accepted/rejected flag forms. The existing archive_outcome_refused WARN continues to identify rejected fields without a silent write. Corrected code is on the isolated integration branch; production adoption is still pending.

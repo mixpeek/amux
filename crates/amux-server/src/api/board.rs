@@ -7569,6 +7569,17 @@ mod af413_discarded_tests {
     }
 }
 
+// Archive validation and mutation must interpret the same flag. The API has
+// always accepted string spellings as well as JSON booleans/numbers; checking
+// only true/1 in the outcome guard rejected requests the mutation accepted.
+fn patch_archived_value(value: &Value) -> i64 {
+    let raw = match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    i64::from(matches!(raw.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
 const PATCH_CONTROL: [&str; 13] = [
     // Persisted in the attributed archive log, not a standalone column.
     "archive_outcome",
@@ -8353,7 +8364,7 @@ pub async fn patch_item(
                     fields=?ignored, measured=true, n_considered=ignored.len(), "board PATCH contains ignored fields");
             }
             if let Some(outcome) = map.get("archive_outcome") {
-                let archiving = map.get("archived").is_some_and(|v| *v == true || *v == 1);
+                let archiving = map.get("archived").is_some_and(|v| patch_archived_value(v) == 1);
                 let reason = outcome.as_str().filter(|s| !s.trim().is_empty());
                 if !archiving || reason.is_none() {
                     return finish(&slot_w, PatchOut::Refused(StatusCode::BAD_REQUEST,
@@ -9076,15 +9087,7 @@ pub async fn patch_item(
             // every view and autonomy loop, a termination in effect.
             // UN-archiving is never gated, or the un-do is unreachable.
             if let Some(v) = map.get("archived") {
-                let raw = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Bool(b) => if *b { "true".into() } else { "false".into() },
-                    other => other.to_string(),
-                };
-                let arc_v: i64 = i64::from(matches!(
-                    raw.trim().to_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                ));
+                let arc_v = patch_archived_value(v);
                 if arc_v == 1 {
                     let owner = row.session.clone().unwrap_or_default().trim().to_string();
                     let authorized = map
@@ -12025,6 +12028,28 @@ mod af701_archive_guard_tests {
             "{:?}",
             row.log
         );
+    }
+
+    #[tokio::test]
+    async fn archive_outcome_validation_uses_the_archive_flags_existing_coercion() {
+        let (state, store) = fixture();
+        for flag in [json!(true), json!(1), json!("1"), json!("true"), json!("TRUE"), json!(" yes "), json!("ON")] {
+            let id = seed(&store, "mvs-research", "done");
+            let (status, body) = patch_as(&state, &id, owner_headers("mvs-research"),
+                json!({"archived":flag, "archive_outcome":"Exact compatibility reason"})).await;
+            assert_eq!(status, StatusCode::OK, "flag={flag}: {body}");
+            let row = current(&store, &id);
+            assert_eq!(row.archived, 1);
+            assert!(row.log.as_deref().unwrap_or_default().contains("archive_outcome: Exact compatibility reason"));
+        }
+        for flag in [json!(false), json!(0), json!("false"), json!("off"), json!(null), json!({}), json!([]), json!(2)] {
+            let id = seed(&store, "mvs-research", "done");
+            let (status, body) = patch_as(&state, &id, owner_headers("mvs-research"),
+                json!({"archived":flag, "archive_outcome":"Must not be applied"})).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "flag={flag}: {body}");
+            assert_eq!(current(&store, &id).archived, 0);
+            assert!(body["discarded"].as_array().unwrap().contains(&json!("archive_outcome")));
+        }
     }
 
     #[tokio::test]
