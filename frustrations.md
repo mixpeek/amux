@@ -2586,3 +2586,69 @@ CARD: AF-745
 SYMPTOM: Native Safari keyboard/menu acceptance passed on small fixtures, but the real working-worker log hit a 70-second dismissal/restoration failure. The last context error masked the original dismissal failure. The toolbar lookup used XPath, whose driver path serializes the complete accessibility tree.
 COST: Live deployment verification stopped; roughly 15 minutes reproducing against real data and distinguishing a retained-keyboard test setup error from the driver failure.
 FIX: Use a native class-chain query scoped to Safari's toolbar Done control, keep ambiguity/visibility checks, preserve the original failure when context restoration also fails, and emit webdriver_transport_failed with operation, deadline, timeout and measured/count fields. Native live board taps now complete through the replacement query. The real Safari keyboard/menu rerun against production page data passed (1 passed, 0 failed), preserved the unsent draft, and its screenshots were inspected. The four-case refusal/dismissal/context-restoration regression passed; final deployment evidence is tracked on AF-745.
+
+## Mobile dialogs put Close outside the screen
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-749
+SYMPTOM: User screenshot showed the limited-workers dialog clipped above the mobile viewport. Native Safari measured its box at top -131.5 and bottom 885.5 in 754 visible pixels; a swipe did not recover Close.
+COST: The owner could not dismiss or use the long dialog; native audit reproduced inaccessible actions.
+FIX: AF-749, dashboard 0.9.929. Bound shared dialog bodies, pin their actions and size overlays to the keyboard-visible viewport. modal-layout-clipped reports measured population and clipped controls. Deployment and exact-commit evidence are recorded on the card.
+
+## Connection, journal and team dialogs are unreadable in light mode
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-749
+SYMPTOM: Native screenshots showed transparent connection/journal panels and dark text on hardcoded dark team/invite panels. Undefined --card-bg/--surface/--bg2 tokens did not follow the active theme.
+COST: Geometry-only tests passed while four dialog families were visually unreadable; the screenshot audit required another correction cycle.
+FIX: AF-749, dashboard 0.9.929. Use existing --card/--text tokens; modal-layout-clipped now includes transparent and low-contrast surface findings, with positive-control coverage. Deployment and exact-commit evidence are recorded on the card.
+
+## Video Close disappears with playback controls
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-749
+SYMPTOM: The native video audit could no longer tap Close after the playback toolbar auto-hid. The button was inside that toolbar and only 23 by 20 CSS pixels.
+COST: Native dismissal failed until the overlay was abandoned by navigation.
+FIX: AF-749, dashboard 0.9.929. Move Close into a persistent heading, enforce 44px targets and log a missing persistent video dismiss control through modal-layout-clipped. Deployment and exact-commit evidence are recorded on the card.
+
+## Proxy configuration opens invisible and unclickable
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-749
+SYMPTOM: Proxy form open/edit set display:flex without adding the active class required by the modal opacity/pointer-events contract.
+COST: Opening proxy configuration did not expose an interactive form; browser hit-testing reproduced the missing activation.
+FIX: AF-749, dashboard 0.9.929. Apply/remove the active class in the existing open/edit/close functions; modal-layout-clipped identifies an inactive displayed proxy form. Deployment and exact-commit evidence are recorded on the card.
+
+## Calendar subscription can hang before exposing Close
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-749
+SYMPTOM: The subscription dialog awaited an unbounded tunnel-status fetch before rendering its only Close button. A held response left Loading on screen indefinitely.
+COST: The mobile audit encountered a loading dialog without a dismiss action.
+FIX: AF-749, dashboard 0.9.929. Render Close immediately and bound response plus body consumption to five seconds; tunnel-status-unavailable identifies timeout versus request failure. Deployment and exact-commit evidence are recorded on the card.
+
+## Unsaved scope edits invoke a native confirmation blocked in PWA
+AREA: browser
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-749
+SYMPTOM: Closing an edited scope/memory form called native confirm rather than the shared confirmation UI. Native Safari surfaced an alert outside the app and interrupted subsequent modal interactions.
+COST: The scope dismissal path interrupted the native audit and required dismissing a browser alert before continuing.
+FIX: AF-749, dashboard 0.9.929. Use showConfirm; cancellation preserves edits and explicit discard closes both dialogs. scope-discard-choice records the boolean choice without draft text. Deployment and exact-commit evidence are recorded on the card.

@@ -1641,7 +1641,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- Video player overlay -->
 <div id="video-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;flex-direction:column;align-items:center;justify-content:center;" onclick="if(event.target===this)_closeVideo()">
   <div id="vp-container" style="position:relative;width:90vw;max-width:1200px;">
-    <div id="vp-title" style="color:#fff;font-size:0.85rem;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+    <div class="vp-heading"><div id="vp-title"></div><button onclick="_closeVideo()" aria-label="Close video" title="Close video">&#x2715;</button></div>
     <div style="position:relative;background:#000;border-radius:8px;overflow:hidden;">
       <video id="video-player" playsinline webkit-playsinline x-webkit-airplay="allow" airplay="allow" preload="metadata" style="width:100%;max-height:75vh;display:block;"></video>
       <!-- Loading/error overlay -->
@@ -1666,7 +1666,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <input id="vp-volume" type="range" min="0" max="1" step="0.05" value="1" oninput="_vpSetVolume(this.value)" style="width:70px;accent-color:var(--accent);cursor:pointer;">
           </div>
           <button onclick="_vpFullscreen()" style="background:none;border:none;color:#fff;font-size:0.9rem;cursor:pointer;padding:0;" title="Fullscreen">&#x26F6;</button>
-          <button onclick="_closeVideo()" style="background:none;border:none;color:rgba(255,255,255,0.6);font-size:1rem;cursor:pointer;padding:0;" title="Close">&#x2716;</button>
+
         </div>
       </div>
     </div>
@@ -1950,8 +1950,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
      routes it to the right workers → review → send. -->
 <div id="orch-overlay" class="edit-overlay" onclick="if(event.target===this)_orchClose()">
   <div class="edit-box orch-box">
-    <h3 style="display:flex;align-items:center;gap:8px;">&#x1F399;&#xFE0F; Orchestrate the fleet
-      <span style="font-size:0.68rem;font-weight:400;color:var(--dim);">speak or paste, then approve before it sends</span></h3>
+    <div class="orch-heading">
+      <h3>Orchestrate the fleet</h3>
+      <button class="btn" onclick="_orchClose()" aria-label="Close orchestrator">&#x2715;</button>
+    </div>
+    <p class="orch-subtitle">Speak or paste, then review before sending.</p>
 
     <!-- Step 1: record -->
     <div id="orch-step-record" class="orch-step">

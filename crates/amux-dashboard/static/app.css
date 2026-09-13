@@ -753,7 +753,7 @@
   .map-modal-box .map-modal-actions,
   .queue-box .queue-actions,
   .amux-modal .amux-modal-foot {
-    position: sticky; bottom: 0; z-index: 3; flex-shrink: 0;
+    position: sticky; bottom: calc(-1 * var(--modal-pad)); z-index: 3; flex-shrink: 0;
     background: var(--card);
     border-top: 1px solid var(--border);
     /* 20px top margin, not 12px: the NEGATIVE bottom margin below pulls the
@@ -2945,11 +2945,25 @@
   .modal-backdrop {
     display: none; position: fixed; inset: 0; z-index: 600;
     background: rgba(0,0,0,0.6); align-items: center; justify-content: center;
+    padding: 16px 12px;
   }
   .modal-backdrop.open { display: flex; }
   .modal-box {
     background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-    padding: 24px 20px 16px; max-width: min(480px, 94vw); width: 100%; text-align: center;
+    padding: 20px; max-width: min(480px, calc(100vw - 24px)); width: 100%; text-align: center;
+    max-height: calc(var(--dialog-viewport-height, 100dvh) - 32px);
+    display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  }
+  .modal-box > .modal-msg, #bulk-actions-body {
+    min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch; overflow-wrap: anywhere;
+  }
+  .modal-box > .modal-btns, #bulk-actions-overlay .modal-box > :first-child { flex-shrink: 0; }
+  .modal-box input, .modal-box textarea, .modal-box select { min-width: 0; max-width: 100%; }
+  @media (max-width: 600px) {
+    .modal-box button { min-width: 44px; min-height: 44px; }
+    #dictm-pair { flex-wrap: wrap; }
+    #dictm-pair input { flex: 1 1 100px; width: 0; }
   }
   .modal-msg { font-size: 0.95rem; color: var(--text); margin-bottom: 20px; line-height: 1.5; }
   .modal-btns { display: flex; gap: 10px; justify-content: center; }
@@ -6029,7 +6043,7 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 @media (max-width: 600px) { .conn-gmail-btn { min-height: 44px; } .conn-gmail-btn { margin-left: 0; flex: 1 1 auto; } }
 /* Scope picker: searchable dropdown over real workers/groups (AMUX-3350) */
 .conn-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10050; display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }
-.conn-picker { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; width: min(92vw, 420px); max-height: 70vh; display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.5); overflow: hidden; }
+.conn-picker { background: var(--card); border: 1px solid var(--border); border-radius: 12px; width: min(92vw, 420px); max-height: 70vh; display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.5); overflow: hidden; }
 .conn-picker-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
 .conn-picker-x { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 1rem; }
 .conn-picker-search { margin: 10px 14px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 0.9rem; outline: none; }
@@ -6396,3 +6410,62 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 }
 
 .card-file-picker { min-width:44px; min-height:44px; margin-bottom:4px; }
+
+/* AF-749: modal space is the visible viewport, including the software keyboard. */
+.amux-dialog-viewport {
+  top: var(--dialog-viewport-top, 0px) !important;
+  height: var(--dialog-viewport-height, 100dvh) !important;
+  bottom: auto !important;
+}
+.amux-dialog-viewport > :is(.edit-box,.board-edit-box,.queue-box,.map-modal-box,.amux-modal,.modal) {
+  max-height: calc(var(--dialog-viewport-height, 100dvh) - 40px) !important;
+}
+.orch-heading { display:flex; align-items:center; gap:12px; justify-content:space-between; }
+.orch-heading h3 { margin:0; }
+.orch-heading button { flex-shrink:0; min-width:44px; min-height:44px; }
+.orch-subtitle { color:var(--dim); font-size:0.8rem; margin:8px 0 16px; }
+
+.amux-dialog-viewport:is(#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,#conn-hist-modal) > div {
+  max-height: calc(var(--dialog-viewport-height, 100dvh) - 40px) !important;
+}
+@media (max-width:600px) {
+  .amux-dialog-viewport button { min-height:44px; min-width:44px; }
+}
+
+.chip-picker-header { display:flex; align-items:center; gap:8px; }
+.chip-picker-header input { min-width:0; flex:1; }
+.amux-dialog-viewport > :is(.chip-picker,.tts-dialog,.focus-card,.conn-picker,.mdai-picker) {
+  max-height: calc(var(--dialog-viewport-height, 100dvh) - 40px) !important;
+}
+@media (max-width:600px) {
+  .overlay-header button, .file-overlay-header button { min-height:44px; min-width:44px; }
+}
+
+@media (max-width:600px) {
+  #scope-edit-backdrop button { min-height:44px !important; }
+  .chip-picker { max-width:calc(100vw - 24px); }
+}
+#apikey-setup-modal > div {
+  max-height:calc(var(--dialog-viewport-height, 100dvh) - 40px); overflow-y:auto; overscroll-behavior:contain;
+}
+
+.amux-dialog-backdrop > div, .amux-workspace-dialog > div {
+  max-height:calc(var(--dialog-viewport-height, 100dvh) - 40px) !important;
+}
+.amux-dialog-viewport.overlay {
+  top:max(var(--dialog-viewport-top, 0px),env(safe-area-inset-top, 0px)) !important;
+  height:calc(var(--dialog-viewport-height, 100dvh) - env(safe-area-inset-top, 0px)) !important;
+}
+
+#upgrade-modal > div { max-height:calc(var(--dialog-viewport-height, 100dvh) - 40px) !important; }
+@media (max-width:600px) { #video-overlay button { min-width:44px; min-height:44px; } }
+
+.vp-heading { display:flex; align-items:center; gap:12px; margin-bottom:8px; color:#fff; }
+#vp-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.85rem; }
+.vp-heading button { flex-shrink:0; min-width:44px; min-height:44px; background:#20242a; border:1px solid #59616d; border-radius:8px; color:#fff; cursor:pointer; }
+@media (max-width:600px) {
+  #vp-controls > div:last-child { flex-wrap:wrap; gap:4px !important; }
+  #vp-volume { max-width:48px; }
+  #teleprompter-overlay button { min-width:44px; min-height:44px; }
+}
+.conn-picker-overlay { align-items:center; padding:20px 12px; }

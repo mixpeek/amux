@@ -479,7 +479,7 @@ function _showUpgradeModal(d) {
   wrap.id = 'upgrade-modal';
   wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,5,10,0.88);display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));';
   wrap.innerHTML =
-    '<div style="background:#14142a;border:1px solid #3a3a5c;border-radius:14px;max-width:440px;width:100%;padding:26px 22px;text-align:center;max-height:90dvh;overflow-y:auto;">' +
+    '<div style="background:#14142a;color:#e6edf3;border:1px solid #3a3a5c;border-radius:14px;max-width:440px;width:100%;padding:26px 22px;text-align:center;max-height:90dvh;overflow-y:auto;">' +
       '<div style="font-size:1.15rem;font-weight:700;margin-bottom:6px;">' +
         (isBudget ? 'Your trial budget is used up' : 'Your trial has ended') + '</div>' +
       (isBudget && spent ? '<div style="color:#f0b429;font-size:1.05rem;font-weight:600;margin-bottom:10px;">$' + spent + ' of $' + budget + ' used</div>' : '') +
@@ -1224,7 +1224,7 @@ function showConnHistory() {
   modal.onclick = e => { if (e.target === modal) modal.remove(); };
   modal.innerHTML = '<div onclick="event.stopPropagation()" style="background:var(--bg);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;max-height:80dvh;overflow:auto;padding:1.2rem;box-shadow:0 8px 32px rgba(0,0,0,0.4);">'
     + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
-    + '<span id="conn-modal-status" style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
+    + '<span id="conn-modal-status" style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span><button class="btn" id="conn-modal-close" aria-label="Close connection history" onclick="this.closest(\'#conn-hist-modal\').remove()">&#x2715;</button></div>'
     + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Connection interruptions on this device (this browser)</div>'
     + _pingWidgetHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div><div id="conn-modal-write-notice">' + _localWriteNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
@@ -1705,6 +1705,90 @@ function showToast(msg) {
     else el.classList.remove('visible');
   }, 3000);
 }
+
+// AF-749: measure open dialogs against the keyboard-visible viewport. Keep
+// diagnostics free of dialog text (worker messages and credentials live here).
+const _dialogSelector = '.amux-dialog-backdrop,.amux-workspace-dialog,#cmd-history-modal,#filters-modal,#saved-messages-modal,#skill-edit-modal,#file-overlay,#mdai-overlay,#channel-drawer,#board-detail-overlay,#apikey-setup-modal,#upgrade-modal,#video-overlay,.modal-backdrop,.edit-overlay,.queue-overlay,.board-edit-overlay,.map-modal,.modal-overlay,#conn-hist-modal,#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,[data-ical-modal],.chip-picker-overlay,.tts-overlay,.focus-overlay,.conn-picker-overlay,.mdai-picker-overlay';
+function _modalLayoutCheck() {
+  const viewport = window.visualViewport;
+  const top = viewport?.offsetTop || 0, height = viewport?.height || innerHeight;
+  let n = 0;
+  const clipped = [];
+  document.querySelectorAll(_dialogSelector).forEach(root => {
+    const style = getComputedStyle(root);
+    if (root.id === 'proxy-form-overlay' && root.style.display === 'flex' && !root.classList.contains('active')) {
+      n++; clipped.push('proxy-form-overlay:inactive'); return;
+    }
+    if (style.display === 'none' || style.opacity === '0' || style.pointerEvents === 'none') return;
+    const box = root.firstElementChild;
+    if (!box || getComputedStyle(box).opacity === '0') return;
+    const r = box.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    n++;
+    const surface = box.matches('.conn-picker') || root.matches('#team-scope-modal,#jrnl-config-overlay,.amux-workspace-dialog,#upgrade-modal') ? getComputedStyle(box) : null;
+    if (surface) {
+      const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
+      const bg = rgb(surface.backgroundColor), fg = rgb(surface.color);
+      const lum = color => color.slice(0,3).reduce((sum, v, i) => {
+        v /= 255; return sum + [0.2126,0.7152,0.0722][i] * (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+      }, 0);
+      if (bg.length === 4 && bg[3] < 1) clipped.push((root.id || root.classList[0]) + ':transparent');
+      else if (bg.length >= 3 && fg.length >= 3) {
+        const a = lum(bg), b = lum(fg);
+        if ((Math.max(a,b) + 0.05) / (Math.min(a,b) + 0.05) < 4.5) clipped.push((root.id || root.classList[0]) + ':low-contrast');
+      }
+    }
+    const dismiss = root.id === 'orch-overlay' ? 'button[onclick="_orchClose()"]'
+      : root.id === 'video-overlay' ? '.vp-heading button[onclick="_closeVideo()"]'
+      : root.id === 'conn-hist-modal' ? '#conn-modal-close'
+      : root.classList.contains('chip-picker-overlay') ? 'button[onclick="closeChipPicker()"]' : null;
+    if (dismiss && !root.querySelector(dismiss)) clipped.push((root.id || root.classList[0]) + ':no-dismiss');
+    const foot = box.querySelector(':scope > .edit-actions,:scope > .board-edit-actions,:scope > .queue-actions,:scope > .map-modal-actions,:scope > .amux-modal-foot');
+    if (foot && box.scrollHeight > box.clientHeight + 8 && getComputedStyle(foot).position === 'sticky') {
+      const f = foot.getBoundingClientRect();
+      if (f.height && r.bottom - f.bottom > 3) clipped.push((root.id || root.classList[0]) + ':footer-gap');
+    }
+    // Safari pans the fixed containing block with the keyboard; offsetTop
+    // is not in the same coordinate space as its rendered child rectangles.
+    const visibleTop = root.classList.contains('amux-dialog-viewport') ? root.getBoundingClientRect().top : top;
+    if (r.top < visibleTop - 2 || r.bottom > visibleTop + height + 2 || r.left < -2 || r.right > innerWidth + 2)
+      clipped.push(root.id || root.classList[0]);
+  });
+  return { measured: true, n_considered: n, clipped, viewport_height: height };
+}
+(function observeDialogs() {
+  let timer, previous = '';
+  const refresh = () => {
+    const vv = window.visualViewport;
+    // Pinch zoom is a reading action, not a keyboard layout change.
+    if (!vv || vv.scale <= 1.02) {
+      document.documentElement.style.setProperty('--dialog-viewport-height', (vv?.height || innerHeight) + 'px');
+      document.documentElement.style.setProperty('--dialog-viewport-top', (vv?.offsetTop || 0) + 'px');
+    }
+    document.querySelectorAll(_dialogSelector).forEach(root => { if (!root.classList.contains('amux-dialog-viewport')) root.classList.add('amux-dialog-viewport'); });
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const result = _modalLayoutCheck(), signature = result.clipped.join(',');
+      if (signature && signature !== previous) {
+        console.warn('[amux] dialog visibility defect', result);
+        fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({kind:'modal-layout-clipped',...result,ver:APP_VER})}).catch(() => {});
+      }
+      previous = signature;
+    }, 350);
+  };
+  new MutationObserver(records => {
+    if (records.some(r => r.type === 'childList' ? r.target === document.body :
+      r.target.matches?.(_dialogSelector) && !r.target.classList.contains('amux-dialog-viewport'))) refresh();
+    else if (records.some(r => r.type === 'attributes' && r.target.matches?.(_dialogSelector))) {
+      clearTimeout(timer); timer = setTimeout(refresh, 50);
+    }
+  }).observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:['class','style']});
+  window.visualViewport?.addEventListener('resize', refresh);
+  window.visualViewport?.addEventListener('scroll', refresh);
+  window.addEventListener('resize', refresh);
+  refresh();
+})();
 
 // Modal: replaces confirm() / alert() — both blocked in PWA standalone mode
 let _modalResolve = null;
@@ -8190,8 +8274,13 @@ function _grpGoto(g, where) {
 // same call the server made in _scope_write, which accepts exactly these shapes.
 let _scopeEditCtx = null, _scopeEditDirty = false;
 
-function _scopeEditClose() {
-  if (_scopeEditDirty && !confirm('Discard unsaved configuration changes?')) return;
+async function _scopeEditClose() {
+  if (_scopeEditDirty) {
+    const discard = await showConfirm('Discard unsaved configuration changes?', 'Discard', true);
+    fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'scope-discard-choice',measured:true,n_considered:1,discarded:discard,ver:APP_VER})}).catch(() => {});
+    if (!discard) return;
+  }
   document.getElementById('scope-edit-backdrop').classList.remove('open');
   _scopeEditCtx = null; _scopeEditDirty = false;
 }
@@ -10407,7 +10496,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.928';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.929';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -14244,6 +14333,7 @@ async function _submitSuggestion(name, isPeek, fallbackKeys) {
 function _showSteerPrompt(text) {
   return new Promise(resolve => {
     const bg = document.createElement('div');
+    bg.className = 'amux-dialog-backdrop';
     bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:400;display:flex;align-items:center;justify-content:center;';
     const box = document.createElement('div');
     box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.4);max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;';
@@ -15203,7 +15293,7 @@ function openChipPicker() {
   const existingIds = new Set(existing.map(c => c.id));
   let html = '<div class="chip-picker-overlay" onclick="if(event.target===this)closeChipPicker()">'
     + '<div class="chip-picker">'
-    + '<div class="chip-picker-header"><input id="chip-picker-search" placeholder="Search commands..." oninput="filterChipPicker()"></div>'
+    + '<div class="chip-picker-header"><input id="chip-picker-search" placeholder="Search commands..." oninput="filterChipPicker()"><button class="btn" onclick="closeChipPicker()" aria-label="Close command picker">&#x2715;</button></div>'
     + '<div class="chip-picker-body" id="chip-picker-body">'
     + '<div class="chip-picker-section">Custom</div>'
     + '<div class="chip-picker-item" data-search="create custom new" onclick="openCustomChipForm()" style="color:var(--accent);font-weight:600;">'
@@ -30756,6 +30846,7 @@ async function _gateConfirm(item, targetStatusId) {
   return new Promise(resolve => {
     const label = ((typeof boardStatuses !== 'undefined' ? boardStatuses : []).find(x => x.id === targetStatusId) || {}).label || targetStatusId;
     const bg = document.createElement('div');
+    bg.className = 'amux-dialog-backdrop';
     bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const rows = gate.map((g,i) => '<label style="display:flex;gap:9px;align-items:flex-start;padding:7px 4px;cursor:pointer;font-size:0.9rem;color:var(--text);"><input type="checkbox" class="_gate-chk" data-i="'+i+'" style="width:auto;margin-top:2px;accent-color:var(--accent);"><span>'+esc(g)+'</span></label>').join('');
@@ -30808,6 +30899,7 @@ function editStatusGate(statusId) {
   const cur = (s && Array.isArray(s.gate)) ? s.gate : [];
   const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const bg = document.createElement('div');
+  bg.className = 'amux-dialog-backdrop';
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:460px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);';
@@ -30849,6 +30941,7 @@ function editSessionGate(worker, statusId) {
   const cur = hasOverride ? sessionGates[worker][statusId] : _statusGateDefault(statusId);
   const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const bg = document.createElement('div');
+  bg.className = 'amux-dialog-backdrop';
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:460px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);';
@@ -31323,8 +31416,19 @@ async function deleteEvent(id) {
 }
 
 async function _tunnelStatus() {
-  try { const r = await fetch(API + '/api/tunnel/status'); return await r.json(); }
-  catch(e) { return { error: String(e) }; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const r = await fetch(API + '/api/tunnel/status', {signal:controller.signal});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } catch(e) {
+    const reason = controller.signal.aborted ? 'timeout' : 'request_failed';
+    console.warn('[amux] tunnel status unavailable', reason);
+    fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'tunnel-status-unavailable',measured:true,n_considered:1,reason,ver:APP_VER})}).catch(() => {});
+    return {error:'Tunnel status unavailable — try again.', why_unmeasured:reason};
+  } finally { clearTimeout(timer); }
 }
 
 // Tunnel panel in the Settings dropdown (the discoverable home for the proxy).
@@ -31387,6 +31491,7 @@ function _proxyOpenForm() {
   document.getElementById('proxy-form-scheme').value = 'http';
   document.getElementById('proxy-form-title').textContent = 'New proxy';
   document.getElementById('proxy-form-overlay').style.display = 'flex';
+  document.getElementById('proxy-form-overlay').classList.add('active');
   setTimeout(() => document.getElementById('proxy-form-name').focus(), 50);
 }
 function _proxyEdit(id, name, port, scheme) {
@@ -31396,8 +31501,9 @@ function _proxyEdit(id, name, port, scheme) {
   document.getElementById('proxy-form-scheme').value = scheme || 'http';
   document.getElementById('proxy-form-title').textContent = 'Edit proxy';
   document.getElementById('proxy-form-overlay').style.display = 'flex';
+  document.getElementById('proxy-form-overlay').classList.add('active');
 }
-function _proxyCloseForm() { document.getElementById('proxy-form-overlay').style.display = 'none'; }
+function _proxyCloseForm() { const overlay = document.getElementById('proxy-form-overlay'); overlay.classList.remove('active'); overlay.style.display = 'none'; }
 async function _proxySaveForm(btn) {
   const id = document.getElementById('proxy-form-id').value;
   const name = document.getElementById('proxy-form-name').value.trim();
@@ -31510,7 +31616,9 @@ async function _renderIcalBody(box) {
 
   // ── Public tunnel (amux cloud) ──
   html += '<div style="border:1px solid var(--border);border-radius:8px;padding:0.7rem 0.8rem;margin-bottom:0.9rem;background:var(--card,rgba(255,255,255,0.02));">';
-  if (tun && tun.running && tun.url) {
+  if (tun?.error) {
+    html += '<p role="status" style="color:var(--dim);font-size:0.82rem;">Tunnel status is unavailable. Download the calendar below, or close and try again.</p>';
+  } else if (tun && tun.running && tun.url) {
     html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:0.45rem;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><strong style="font-size:0.85rem;">Public tunnel active</strong><span style="color:var(--dim);font-size:0.72rem;margin-left:auto;">' + (tun.requests || 0) + ' reqs</span></div>';
     html += '<code style="display:block;background:var(--bg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.73rem;word-break:break-all;margin-bottom:0.5rem;">' + esc_url(tunUrl) + '</code>';
     html += '<div style="display:flex;gap:0.4rem;">';
@@ -31552,7 +31660,8 @@ function showIcalInfo() {
   box.setAttribute('data-ical-box', '1');
   box.className = 'amux-modal';
   box.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.4rem;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);--modal-pad:1.4rem;';
-  box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0;">Loading…</p>';
+  box.innerHTML = '<p role="status" style="color:var(--dim);font-size:0.85rem;margin:0;">Loading…</p>'
+    + '<div class="amux-modal-foot"><button class="btn" onclick="this.closest(\'[data-ical-modal]\').remove()">Close</button></div>';
   modal.setAttribute('data-ical-modal', '1');
   modal.appendChild(box);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
@@ -34990,8 +35099,9 @@ async function openTeamInvite() {
 
 function _workspaceAccessModal(html) {
   const modal = document.createElement('div');
+  modal.className = 'amux-workspace-dialog';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:12px;';
-  modal.innerHTML = `<div style="background:var(--bg2,#1a1a1a);border:1px solid var(--border,#333);border-radius:12px;padding:24px;max-width:500px;width:100%;box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;">${html}</div>`;
+  modal.innerHTML = `<div style="background:var(--card);border:1px solid var(--border,#333);border-radius:12px;padding:24px;max-width:500px;width:100%;box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;">${html}</div>`;
   document.body.appendChild(modal);
   modal.addEventListener('click', event => { if (event.target === modal) modal.remove(); });
   modal.querySelector('[data-modal-cancel]')?.addEventListener('click', () => modal.remove());
@@ -35042,7 +35152,7 @@ function _teamScopeDialog(title, email, level, name, submitLabel, hideEmail) {
   const modal = document.createElement('div');
   modal.id = 'team-scope-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;';
-  modal.innerHTML = `<div style="background:var(--bg2,#1a1a1a);border:1px solid var(--border,#333);border-radius:12px;padding:28px;max-width:480px;width:90%;box-sizing:border-box;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">
+  modal.innerHTML = `<div style="background:var(--card);border:1px solid var(--border,#333);border-radius:12px;padding:28px;max-width:480px;width:90%;box-sizing:border-box;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">
     <h3 style="margin:0 0 8px;font-size:1rem;">${esc(title)}</h3>
     ${hideEmail ? '' : email ? `<p style="color:var(--dim);font-size:0.82rem;margin:0 0 14px;">${esc(email)}</p>` : `<label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Email (optional)</label><input id="team-invite-email" type="email" placeholder="person@example.com" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:13px;">`}
     <label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Access level</label>
@@ -41166,17 +41276,17 @@ function _jrnlShowConfig() {
   const overlay = document.createElement('div');
   overlay.id = 'jrnl-config-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
-  overlay.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90vw;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">' +
+  overlay.innerHTML = '<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90vw;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">' +
     '<h3 style="margin:0 0 16px;font-size:0.95rem;">Journal Prompts</h3>' +
     '<p style="font-size:0.75rem;color:var(--dim);margin:0 0 12px;">Configure up to 3 optional prompts shown when creating entries.</p>' +
     '<label style="font-size:0.72rem;color:var(--dim);">Prompt 1</label>' +
-    '<input type="text" id="jrnl-cfg-p1" value="' + esc(_jrnlConfig.prompt1 || '') + '" placeholder="e.g. What are you grateful for?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:0.8rem;font-family:inherit;">' +
+    '<input type="text" id="jrnl-cfg-p1" value="' + esc(_jrnlConfig.prompt1 || '') + '" placeholder="e.g. What are you grateful for?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;font-family:inherit;">' +
     '<label style="font-size:0.72rem;color:var(--dim);">Prompt 2</label>' +
-    '<input type="text" id="jrnl-cfg-p2" value="' + esc(_jrnlConfig.prompt2 || '') + '" placeholder="e.g. How are you feeling?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:0.8rem;font-family:inherit;">' +
+    '<input type="text" id="jrnl-cfg-p2" value="' + esc(_jrnlConfig.prompt2 || '') + '" placeholder="e.g. How are you feeling?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;font-family:inherit;">' +
     '<label style="font-size:0.72rem;color:var(--dim);">Prompt 3</label>' +
-    '<input type="text" id="jrnl-cfg-p3" value="' + esc(_jrnlConfig.prompt3 || '') + '" placeholder="e.g. What did you learn today?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:0.8rem;font-family:inherit;">' +
+    '<input type="text" id="jrnl-cfg-p3" value="' + esc(_jrnlConfig.prompt3 || '') + '" placeholder="e.g. What did you learn today?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;font-family:inherit;">' +
     '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">' +
-    '<button onclick="document.getElementById(\'jrnl-config-overlay\').remove()" style="padding:6px 14px;background:none;border:1px solid var(--border);border-radius:6px;color:var(--fg);cursor:pointer;font-family:inherit;">Cancel</button>' +
+    '<button onclick="document.getElementById(\'jrnl-config-overlay\').remove()" style="padding:6px 14px;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-family:inherit;">Cancel</button>' +
     '<button onclick="_jrnlSaveConfig()" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-family:inherit;">Save</button>' +
     '</div></div>';
   document.body.appendChild(overlay);
