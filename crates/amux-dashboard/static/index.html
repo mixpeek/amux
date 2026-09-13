@@ -191,7 +191,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <h1 role="button" tabindex="0" aria-label="About amux" title="About amux" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAbout()}" id="brand-header" style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="openAbout()"><span id="brand-icon-header"></span><span id="brand-name-header">amux</span></h1>
     <span role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showConnHistory()}" id="conn-status" class="conn-status online" title="Connection status — click for disconnection history" onclick="showConnHistory()"></span>
     <div style="position:relative;">
-      <button id="notif-btn" onclick="toggleNotifPanel()" title="Notifications" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.7;line-height:1;position:relative;" aria-label="Notifications">&#x1F514;<span id="notif-badge" class="notif-badge" style="display:none;">0</span></button>
+      <button id="notif-btn" onclick="toggleNotifPanel()" title="Notifications" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.7;line-height:1;position:relative;" aria-label="Notifications"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span id="notif-badge" class="notif-badge" style="display:none;">0</span></button>
       <div id="notif-panel" class="notif-panel">
         <div class="notif-panel-header">
           <span>Notifications</span>
@@ -220,7 +220,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="active-dropdown" id="active-dropdown"></div>
     </div>
     <div class="header-add-wrap">
-      <button class="header-add-btn" id="add-btn" onclick="event.stopPropagation();toggleAddMenu()">+</button>
+      <button class="header-add-btn" id="add-btn" onclick="event.stopPropagation();toggleAddMenu()" aria-label="Create or connect" title="Create or connect">+</button>
       <div class="header-add-menu" id="add-menu">
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openCreate()"><span class="mi">&#x2795;</span> New worker</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
@@ -231,7 +231,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </div>
     </div>
     <div class="settings-wrap">
-      <button class="settings-btn" id="settings-btn" onclick="event.stopPropagation();toggleSettings()">&#x2699;</button>
+      <button class="settings-btn" id="settings-btn" onclick="event.stopPropagation();toggleSettings()" aria-label="Settings" title="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3z"/><circle cx="12" cy="12" r="3"/></svg></button>
       <div class="settings-menu" id="settings-menu">
         <div class="settings-tabs" id="settings-tabs">
           <button class="settings-tab-btn active" data-stab="account" onclick="event.stopPropagation();_settingsTab('account')">Account</button>

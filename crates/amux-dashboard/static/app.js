@@ -6551,17 +6551,16 @@ function _scrollToFirstRateLimited() {
 
 // AF-731: document overflow alone misses a button clipped by its flex parent.
 // Measure the actual visible control bounds, including clipping ancestors.
+const _headerControlIds = ['brand-header','conn-status','notif-btn','rate-limit-pill','active-btn','add-btn','settings-btn','interaction-feedback'];
 function _headerLayoutCheck() {
-  if (innerWidth > 480) return [];
-  const buttons = ['brand-header','conn-status','notif-btn','rate-limit-pill','active-btn','add-btn','settings-btn','interaction-feedback'];
-  const clipped = buttons.filter(id => {
+  const clipped = _headerControlIds.filter(id => {
     const el = id==='interaction-feedback' ? document.querySelector('#interaction-feedback > summary') : document.getElementById(id);
     if (!el || !el.getClientRects().length) return false;
     const r = el.getBoundingClientRect();
     if (r.left < -1 || r.right > innerWidth + 1) return true;
     if (id === 'rate-limit-pill') {
       const label = document.getElementById('rate-limit-pill-count')?.getBoundingClientRect();
-      if (label && (label.left < r.left - 1 || label.right > r.right + 1)) return true;
+      if (label?.width && (label.left < r.left - 1 || label.right > r.right + 1)) return true;
     }
     for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
       if (!['hidden','clip','auto','scroll'].includes(getComputedStyle(p).overflowX)) continue;
@@ -6570,6 +6569,11 @@ function _headerLayoutCheck() {
     }
     return false;
   });
+  const badge = document.getElementById('notif-badge'), bell = document.getElementById('notif-btn');
+  if (badge?.getClientRects().length && bell) {
+    const b = badge.getBoundingClientRect(), r = bell.getBoundingClientRect();
+    if (b.left < r.left - 1 || b.right > r.right + 1 || b.top < r.top - 1 || b.bottom > r.bottom + 1) clipped.push('notif-badge');
+  }
   return clipped;
 }
 (function observeMobileHeader() {
@@ -6585,14 +6589,16 @@ function _headerLayoutCheck() {
       const clipped = _headerLayoutCheck();
       const signature = clipped.join(',');
       if (signature && signature !== previous) {
-        console.warn('[amux] mobile header controls clipped', clipped);
+        console.warn('[amux] header controls clipped', clipped);
         fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({kind:'mobile-header-clipped',measured:true,n_considered:8,clipped,viewport:innerWidth,ver:APP_VER})}).catch(() => {});
+          body:JSON.stringify({kind:'mobile-header-clipped',measured:true,n_considered:_headerControlIds.filter(id=>document.getElementById(id)?.getClientRects().length).length,clipped,viewport:innerWidth,surface:innerWidth<=600?'mobile':'desktop',ver:APP_VER})}).catch(() => {});
       }
       previous = signature;
     });
   });
   observer.observe(header);
+  const badge = document.getElementById('notif-badge');
+  if (badge) observer.observe(badge);
   header.querySelectorAll(':scope > div, :scope > div > *').forEach(el => observer.observe(el));
 })();
 
@@ -10496,7 +10502,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.929';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.930';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

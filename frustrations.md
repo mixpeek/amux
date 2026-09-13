@@ -2652,6 +2652,7 @@ CARD: AF-749
 SYMPTOM: Closing an edited scope/memory form called native confirm rather than the shared confirmation UI. Native Safari surfaced an alert outside the app and interrupted subsequent modal interactions.
 COST: The scope dismissal path interrupted the native audit and required dismissing a browser alert before continuing.
 FIX: AF-749, dashboard 0.9.929. Use showConfirm; cancellation preserves edits and explicit discard closes both dialogs. scope-discard-choice records the boolean choice without draft text. Deployment and exact-commit evidence are recorded on the card.
+
 ## Memory pressure ranking hides the largest compressed consumers
 AREA: instruments
 SEVERITY: blocks
@@ -2662,3 +2663,14 @@ CARD: AMUX-4417
 SYMPTOM: mac-health ranks only RSS. Procwarden's Python process reports about 70 MiB resident while macOS counts 24 GiB including compressed memory; Activity Monitor holds 12 GiB and fseventsd 54 GiB. Native lifecycle admission remains denied.
 COST: Repeated lifecycle preflights cannot start, while the cleanup log names the wrong largest consumers.
 FIX: Use bounded macOS MEM/CMPRS measurements with process IDs, explicit metric and failed-probe visibility; keep foreign application recovery under user control.
+
+## Header notification badge intrudes into the adjacent status control
+AREA: browser
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: amux-frustrations
+CARD: AF-750
+SYMPTOM: Owner desktop/mobile screenshots showed an overflowing notification badge beside an oversized red status panel and mixed emoji controls. The header diagnostic ignored desktop widths entirely.
+COST: The owner requested repeated desktop/mobile visual corrections; fitting the overall header width had not ensured clean individual control boundaries.
+FIX: AF-750 / AF-751, dashboard 0.9.930: contain the badge, use consistent line icons and lighter status controls, align desktop actions, preserve 44px mobile targets and fit the four primary mobile navigation labels. The existing mobile-header-clipped beacon now measures both desktop and mobile, includes the actual visible control count and detects escaping badges. A deliberate desktop badge overflow requires the real diagnostic request in the regression test.
