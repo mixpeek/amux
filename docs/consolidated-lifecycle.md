@@ -1137,3 +1137,16 @@ height recovery. Screenshot checkpoints include short drafts, long drafts and
 open menus. These are simulated browser viewports, not a physical iPhone keyboard
 test. The terminal's existing layout diagnostic now includes `inputW` and
 `actionDelta`, so a reported misalignment can be measured from the affected client.
+
+### LC-MEMORY-ATTRIBUTION — compressed memory and safe recovery
+
+Run `scripts/test-contended.sh -p amux-server --lib runtime_jobs::memory_consumers`.
+On macOS the native test must measure the host through the same bounded, absolute-path
+`top` probe used by the pressure sweep. Replay large compressed consumers and malformed
+output; require process IDs, names with spaces, explicit units and a measured verdict.
+A failed probe must never render as a quiet host. These diagnostics select no kill targets.
+Before releasing test resources, confirm the dedicated socket, exact run identity,
+workspace and lack of attached clients; preserve terminal output. Other applications
+require the user's decision. Repeat `/health` after recovery and only run native
+provider journeys when admission permits them. Historical swap is not proof that
+cleanup recovered capacity, and a diagnostic test is not proof of worker completion.

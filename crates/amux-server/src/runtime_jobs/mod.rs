@@ -61,6 +61,7 @@ pub(crate) mod executor;
 pub mod ghost_rescue;
 pub mod heartbeat;
 pub mod mac_health;
+mod memory_consumers;
 pub mod pane_size;
 /// The live registry of the jobs below — see [`registry`] for why it is
 /// derived from the spawn sites rather than declared alongside them.

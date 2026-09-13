@@ -916,5 +916,15 @@
       "e2e/lifecycle/offline-fixtures.ts",
       "tests/dashboard-outage-recovery.mjs"
     ]
+  },
+  {
+    "id": "LC-MEMORY-ATTRIBUTION",
+    "surface": "Compressed-memory pressure diagnostics",
+    "actions": "Run the native memory snapshot under the scheduled-job environment and replay a host specimen with large compressed consumers, a spaced process name, malformed/truncated output, and failed measurement. Inspect the live pressure log before selecting any cleanup target.",
+    "expected": "On macOS, rank by top MEM with CMPRS alongside it, preserving process IDs. Do not mistake tiny resident size for a small footprint. Emit measured, n_considered, metric and failure reason. Linux explicitly labels RSS-only measurements. Diagnostics never authorize killing foreign applications; preserve run-owned terminal evidence before releasing disposable workers.",
+    "sources": [
+      "crates/amux-server/src/runtime_jobs/memory_consumers.rs",
+      "crates/amux-server/src/runtime_jobs/mac_health.rs"
+    ]
   }
 ]

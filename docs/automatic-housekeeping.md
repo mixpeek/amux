@@ -53,3 +53,15 @@ test substitute: fixtures create old, recent, linked and active files in private
 temporary directories and assert both deletion and preservation.
 
 Recorded results: [housekeeping validation](automatic-housekeeping-validation-2026-09-12.md).
+
+## Pressure attribution
+
+The mac-health pressure warning records a bounded top-five process snapshot.
+On macOS its metric is `macos_top_mem_includes_compressed`, using `top`'s MEM
+and CMPRS columns, including architecture markers and command names with spaces.
+RSS alone can hide tens of GiB behind a tiny resident process. Linux explicitly
+reports `rss_only`; it must not imply compressed memory was measured.
+`measured`, `n_considered` (returned process rows), and `why_unmeasured` accompany
+the ranking. The probe uses an absolute executable path, C locale and a five-second
+deadline, and reaps its child on timeout. These records diagnose pressure; they
+do not expand the cleanup job's authority to terminate other applications.

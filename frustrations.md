@@ -2652,3 +2652,13 @@ CARD: AF-749
 SYMPTOM: Closing an edited scope/memory form called native confirm rather than the shared confirmation UI. Native Safari surfaced an alert outside the app and interrupted subsequent modal interactions.
 COST: The scope dismissal path interrupted the native audit and required dismissing a browser alert before continuing.
 FIX: AF-749, dashboard 0.9.929. Use showConfirm; cancellation preserves edits and explicit discard closes both dialogs. scope-discard-choice records the boolean choice without draft text. Deployment and exact-commit evidence are recorded on the card.
+## Memory pressure ranking hides the largest compressed consumers
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-12
+SESSION: codex-server-sync
+CARD: AMUX-4417
+SYMPTOM: mac-health ranks only RSS. Procwarden's Python process reports about 70 MiB resident while macOS counts 24 GiB including compressed memory; Activity Monitor holds 12 GiB and fseventsd 54 GiB. Native lifecycle admission remains denied.
+COST: Repeated lifecycle preflights cannot start, while the cleanup log names the wrong largest consumers.
+FIX: Use bounded macOS MEM/CMPRS measurements with process IDs, explicit metric and failed-probe visibility; keep foreign application recovery under user control.

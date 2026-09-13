@@ -1,0 +1,61 @@
+{
+  "status": "INCOMPLETE",
+  "host_recovery": "pending approval for foreign monitor restart; admission still deny",
+  "owned_cleanup": [
+    {
+      "session": "amux-lc-gemini-1789145956044-author",
+      "socket": "/private/tmp/amux-gemini-lifecycle/tmux-501/default",
+      "age_seconds": 104960,
+      "terminal_preserved": true,
+      "stop_exit": 0
+    },
+    {
+      "session": "amux-lc-gemini-1789145956044-reviewer",
+      "socket": "/private/tmp/amux-gemini-lifecycle/tmux-501/default",
+      "age_seconds": 111070,
+      "terminal_preserved": true,
+      "stop_exit": 0
+    },
+    {
+      "session": "amux-lifecycle-1789145559196",
+      "socket": "/private/tmp/amux-gemini-lifecycle/tmux-501/default",
+      "age_seconds": 111373,
+      "terminal_preserved": true,
+      "stop_exit": 0
+    }
+  ],
+  "rumps_reproducer": {
+    "cycles": 100,
+    "visible_menu_items": 0,
+    "registry_before": 0,
+    "registry_after_clear_and_gc": 100
+  },
+  "memory_metric": "macos_top_mem_includes_compressed",
+  "negative_control": {
+    "replacement": "pid,vsize,cmprs,command",
+    "landed": true,
+    "expected_failed_test": "native_memory_snapshot_is_measured_and_names_its_metric",
+    "exit_code": 101,
+    "reverted": true
+  },
+  "discarded_negative_control": {
+    "replacement": "pid,rsize,cmprs,command",
+    "reason": "rsize aliases to MEM on installed top; no behavioral change"
+  },
+  "runtime_unit_tests": {
+    "passed": 594,
+    "failed": 0,
+    "ignored": 1,
+    "filtered_out": 1772,
+    "ignored_reason": "manual GitHub CI detector probe"
+  },
+  "runner_tests": {
+    "passed": 9
+  },
+  "source_base": "4da21196277af581e436d258a9fb9167b19c0bad",
+  "archive_key": "memory-recovery-20260912",
+  "gates": {
+    "workspace_check": 0,
+    "workspace_all_targets_clippy": 0
+  }
+}

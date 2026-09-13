@@ -31,7 +31,7 @@
 //!    zombies owned by another application are reported and left alone.
 //!
 //! 6. **SIP-protected indexing daemons pegged hot** (`fseventsd`, `ecosystemd`,
-//!    `ecosystemanalyti`, `mds*`). `top_memory_consumers` below had already
+//!    `ecosystemanalyti`, `mds*`). the earlier resident-memory ranking had already
 //!    caught `fseventsd` holding 8.8GB in one process, and the 2026-09-11
 //!    memory-exhaustion incident (swap 20.7/21.5GB, `fseventsd` 100%+ CPU for
 //!    over 11 days uninterrupted) confirmed it cannot be reaped the way
@@ -478,36 +478,6 @@ fn test_pane_grace_s() -> u64 {
     std::env::var("AMUX_TEST_PANE_GRACE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(1800)
 }
 
-/// The top memory consumers, aggregated by command, as one log line.
-///
-/// Printed only under pressure, because that is when somebody needs to know
-/// WHERE the memory went — and a ranking is the thing a swap percentage cannot
-/// tell you. Measured on this host it was the discriminator: claude 14.8 GB
-/// over 55 processes, and fseventsd holding 8.8 GB in ONE process, which is a
-/// system daemon no scheduler should be killing.
-fn top_memory_consumers(n: usize) -> String {
-    let Ok(out) = std::process::Command::new("ps").args(["-eo", "rss=,comm="]).output() else {
-        return String::from("(unavailable)");
-    };
-    let mut by_cmd: std::collections::HashMap<String, (u64, usize)> = std::collections::HashMap::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let line = line.trim();
-        let Some((rss, comm)) = line.split_once(char::is_whitespace) else { continue };
-        let Ok(rss) = rss.trim().parse::<u64>() else { continue };
-        let name = comm.trim().rsplit('/').next().unwrap_or(comm.trim()).to_string();
-        let e = by_cmd.entry(name).or_insert((0, 0));
-        e.0 += rss;
-        e.1 += 1;
-    }
-    let mut rows: Vec<_> = by_cmd.into_iter().collect();
-    rows.sort_by_key(|(_, (rss, _))| std::cmp::Reverse(*rss));
-    rows.iter()
-        .take(n)
-        .map(|(cmd, (rss, procs))| format!("{cmd}={:.1}GB/{procs}p", *rss as f64 / 1_048_576.0))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn mem_reap_swap_pct() -> f64 {
     std::env::var("AMUX_MEM_REAP_SWAP_PCT").ok().and_then(|v| v.parse().ok()).unwrap_or(85.0)
 }
@@ -531,8 +501,7 @@ fn is_indexing_daemon(name: &str) -> bool {
 }
 
 /// `(name, %cpu)` for every watched indexing daemon currently above the
-/// threshold. Reuses the same `ps -eo` shape as `top_memory_consumers` rather
-/// than inventing a second process-listing convention.
+/// threshold. CPU discovery is separate from the compressed-memory snapshot.
 fn hot_indexing_daemons(above: f64) -> Vec<(String, f64)> {
     let Ok(out) = std::process::Command::new("ps").args(["-eo", "%cpu=,comm="]).output() else {
         return Vec::new();
@@ -745,12 +714,17 @@ fn one_pass() {
                 tracing::info!(job = JOB, pane = %name, "mac-health: reaped a stale test pane under memory pressure");
             }
         }
+        let memory = super::memory_consumers::snapshot();
         tracing::warn!(
             job = JOB,
+            measured = memory.measured,
+            n_considered = memory.n_considered,
+            memory_metric = memory.metric,
+            why_unmeasured = ?memory.why_unmeasured,
             swap_pct = swap_pct.unwrap_or(-1.0) as i64,
             threshold_pct = mem_reap_swap_pct() as i64,
             panes_reaped,
-            top_consumers = %top_memory_consumers(5),
+            top_consumers = ?memory.consumers,
             knob = "AMUX_MEM_REAP_SWAP_PCT",
             "mac-health: host is under memory pressure — reaped amux's own stale test panes. \
              Anything named above that is not amux's is a human's call, not this job's."
@@ -935,8 +909,7 @@ mod tests {
             let p = swap_used_pct().expect("swap must be measurable on macOS — check SYSCTL_PATHS");
             assert!((0.0..=100.0).contains(&p), "swap pct out of range: {p}");
         }
-        let top = top_memory_consumers(3);
-        assert!(!top.is_empty(), "the consumer ranking must never render as an empty string");
+        // The memory snapshot has its own native and malformed-output controls.
     }
 
     #[test]
