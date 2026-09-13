@@ -17236,7 +17236,7 @@ let _peekMsgServerRows = [];  // raw server rows accumulated across pages, curre
 let _peekMsgOffset = 0;       // server offset = count of raw server rows fetched so far
 let _peekMsgDone = false;     // no older server page remains
 let _peekMsgLoading = false;  // true while the session-scoped fetch is in flight
-const _PEEK_MSG_PAGE = 200;   // page size, matching the global _MSGS_PAGE
+const _PEEK_MSG_PAGE = 60;    // first-paint page size; 'Load older' pages the rest (AMUX-4476: 200 rows was 40-120s under fleet load)
 
 // Local entries that the server has not echoed yet (no id) must survive the
 // swap to server-scoped rows, or a message you just sent vanishes until the
@@ -38209,7 +38209,7 @@ function _msgsRenderGroupChip() {
     : '';
 }
 let _msgsOffset = 0;
-const _MSGS_PAGE = 200;
+const _MSGS_PAGE = 60;   // AMUX-4476: smaller first page for a fast click-to-display; page older on demand
 let _msgsDone = false;
 
 async function _messagesLoad(reset, presetSession) {

@@ -1440,6 +1440,12 @@
     border-bottom: 1px solid var(--border);
   }
   .header-row h1 { margin-bottom: 0; }
+  /* AMUX-4475: the interaction-feedback "Actions/Confirmed" hub (injected into
+     .header-row by state/feedback.mjs) orphaned itself at the far-right edge and
+     left the toolbar cramped in the corner with dead space between. Removed from
+     the header; action outcomes still surface via toasts. Hiding rather than not
+     injecting keeps feedback.mjs's element lookups non-null. */
+  #interaction-feedback { display: none !important; }
   .btn-create {
     font-size: 0.85rem; padding: 8px 14px; border-radius: 8px;
     border: 1px solid var(--accent); background: var(--accent); color: #fff;
@@ -3182,6 +3188,14 @@
   }
   .tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-bar button:active { opacity: 0.7; }
+  /* AMUX-4475 "weird blue highlighting": .tab-bar is overflow-x:auto, and per
+     the CSS overflow spec that forces overflow-y to auto too, so a focused tab's
+     focus ring has its top and bottom CLIPPED by the scroll box — what survives
+     is two stray blue vertical bars flanking the tab. Inset the ring so it draws
+     as a clean box inside the button and is never clipped; keep it keyboard-only
+     via :focus-visible so a mouse click leaves no ring at all. */
+  .tab-bar button:focus { outline: none; }
+  .tab-bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; border-radius: 4px; }
   .tab-customize-wrap {
     position: relative; flex-shrink: 0; display: flex; align-items: center;
     padding: 0 10px; border-left: 1px solid var(--border);

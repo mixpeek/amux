@@ -1377,3 +1377,70 @@ fn the_mobile_settings_menu_escapes_the_sticky_header() {
         "the mobile settings-menu override must use position:fixed to leave the header stacking context"
     );
 }
+
+/// AMUX-4475: the interaction-feedback "Actions/Confirmed" hub (state/feedback.mjs
+/// appends it to .header-row) orphaned itself at the header's right edge and left
+/// the toolbar crammed in the corner. Ethan, 2026-09-12: "get rid of this and make
+/// the toolbar use the real estate we have." It is hidden in CSS (feedback still
+/// surfaces via toasts); pin that so a refactor cannot silently restore the clutter.
+#[test]
+fn the_interaction_feedback_hub_is_hidden_from_the_header() {
+    let css = asset("app.css");
+    let rule = regex::Regex::new(r"#interaction-feedback\s*\{[^}]*display:\s*none")
+        .unwrap();
+    assert!(
+        rule.is_match(&css),
+        "the interaction-feedback hub must be hidden (#interaction-feedback{{display:none}}) \
+         so it stops orphaning the header toolbar (AMUX-4475)"
+    );
+}
+
+/// AMUX-4475 "weird blue highlighting": .tab-bar is overflow-x:auto, which per the
+/// overflow spec forces overflow-y:auto, so a focused tab's focus ring gets its top
+/// and bottom clipped by the scroll box — leaving two stray blue vertical bars. The
+/// fix insets the ring (negative outline-offset) so it draws as a clean box and is
+/// never clipped. Pin the negative offset on the tab focus-visible rule.
+#[test]
+fn the_tab_focus_ring_is_inset_so_it_is_not_clipped_into_blue_bars() {
+    let css = asset("app.css");
+    let rule = regex::Regex::new(
+        r"(?s)\.tab-bar\s+button:focus-visible\s*\{([^}]*)\}",
+    )
+    .unwrap();
+    let block = rule
+        .captures(&css)
+        .expect("a .tab-bar button:focus-visible rule must exist (AMUX-4475)");
+    let decls = &block[1];
+    let off = regex::Regex::new(r"outline-offset:\s*(-?\d+)")
+        .unwrap()
+        .captures(decls)
+        .and_then(|c| c[1].parse::<i32>().ok())
+        .expect("the focus-visible rule must set outline-offset");
+    assert!(
+        off < 0,
+        "the tab focus ring must be INSET (negative outline-offset) so overflow-y:auto \
+         cannot clip it into stray blue vertical bars (AMUX-4475); got {off}"
+    );
+}
+
+/// AMUX-4476: clicking into a worker's Messages was slow because the surfaces
+/// fetched a 200-row first page, and /api/history is 12-120s under this host's
+/// read-pool contention (the wall-clock scales with row count). A small first
+/// page paints fast; "Load older" pages the rest. Pin the first-page ceiling so a
+/// later edit cannot quietly restore the 200-row wait.
+#[test]
+fn the_message_tabs_load_a_small_first_page() {
+    let js = asset("app.js");
+    for name in ["_PEEK_MSG_PAGE", "_MSGS_PAGE"] {
+        let re = regex::Regex::new(&format!(r"const\s+{name}\s*=\s*(\d+)")).unwrap();
+        let n = re
+            .captures(&js)
+            .and_then(|c| c[1].parse::<i32>().ok())
+            .unwrap_or_else(|| panic!("{name} constant must exist (AMUX-4476)"));
+        assert!(
+            n <= 100,
+            "{name} is {n}; the message first page must stay small (<=100) so click-to-display \
+             is fast under read-pool contention (AMUX-4476)"
+        );
+    }
+}
