@@ -78,6 +78,24 @@ async fn output_any(bins: &[&str], args: &[&str]) -> Result<std::process::Output
     Err(errors.join("; "))
 }
 
+fn lsof_stderr_benign(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr);
+    text.is_empty()
+        || text.lines().all(|l| {
+            let t = l.trim();
+            t.is_empty()
+                || t.starts_with("lsof: WARNING: can't stat()")
+                || t.starts_with("Output information may be incomplete")
+        })
+}
+
+// lsof exits 1 for "no matches"; stat warnings about unrelated mounts
+// (Docker overlay/nsfs, fuse.portal) do not make that answer unmeasured.
+fn lsof_enumerated(o: &std::process::Output) -> bool {
+    o.status.success()
+        || (o.status.code() == Some(1) && o.stdout.is_empty() && lsof_stderr_benign(&o.stderr))
+}
+
 fn parse_owners(raw: &str) -> Vec<SocketOwner> {
     let mut pid = None;
     let mut is_tmux = false;
@@ -165,10 +183,7 @@ async fn observe_with_evidence(capture: bool) -> Observation {
         Err(e) => Some(e),
     };
     let (owners, error) = match sockets {
-        Ok(o)
-            if o.status.success()
-                || (o.status.code() == Some(1) && o.stdout.is_empty() && o.stderr.is_empty()) =>
-        {
+        Ok(o) if lsof_enumerated(&o) => {
             (parse_owners(&String::from_utf8_lossy(&o.stdout)), None)
         }
         Ok(o) => (
@@ -434,5 +449,41 @@ mod tests {
         assert_eq!(o.may_create_server(), Ok(true));
         o.measured = false;
         assert!(o.may_create_server().is_err());
+    }
+
+    fn lsof_output(code: i32, stdout: &str, stderr: &str) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    // Shape of lsof 4.98.0 stderr on a Docker host with no tmux server; paths are placeholders.
+    const DOCKER_HOST_STDERR: &str = "\
+lsof: WARNING: can't stat() overlay file system /var/lib/docker/overlay2/<id>/merged
+      Output information may be incomplete.
+lsof: WARNING: can't stat() nsfs file system /run/docker/netns/<id>
+      Output information may be incomplete.
+lsof: WARNING: can't stat() fuse.portal file system /run/user/<uid>/doc
+      Output information may be incomplete.
+";
+
+    #[test]
+    fn lsof_no_owners_with_mount_stat_warnings_is_measured() {
+        let o = lsof_output(1, "", DOCKER_HOST_STDERR);
+        assert!(lsof_enumerated(&o), "stat warnings about unrelated mounts must not make an empty result unmeasured");
+        assert!(lsof_enumerated(&lsof_output(1, "", "")));
+        assert!(lsof_enumerated(&lsof_output(0, "p1\nctmux\nn/tmp/tmux-1000/default\n", DOCKER_HOST_STDERR)));
+    }
+
+    #[test]
+    fn lsof_real_failures_stay_unmeasured() {
+        let real = format!("{DOCKER_HOST_STDERR}lsof: can't open /proc: Permission denied\n");
+        assert!(!lsof_enumerated(&lsof_output(1, "", &real)), "a genuine error beside benign warnings is still a failure");
+        assert!(!lsof_enumerated(&lsof_output(1, "", "lsof: illegal option character: Z\n")));
+        assert!(!lsof_enumerated(&lsof_output(1, "p1\n", DOCKER_HOST_STDERR)), "exit 1 with output is not the no-match case");
+        assert!(!lsof_enumerated(&lsof_output(2, "", DOCKER_HOST_STDERR)));
     }
 }
