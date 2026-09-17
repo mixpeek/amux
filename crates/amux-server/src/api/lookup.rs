@@ -461,15 +461,15 @@ pub(crate) async fn helper_answer(prompt: &str) -> Result<(String, String), (Sta
     let started = std::time::Instant::now();
     let mut attempts: Vec<String> = Vec::new();
     let model = resolve_helper_model();
+
+    // --- Primary: whichever provider the model name selects ---
+
     if is_ollama_model(&model) {
         if let Some(answer) = try_local_model_named(prompt, &model).await {
             return Ok((format!("ollama:{model}"), answer));
         }
-        // The chosen local model is unavailable — fall through to the cheap
-        // Claude default rather than the CLI's own (heavier) default.
         attempts.push(format!("ollama:{model} unavailable at {}s", started.elapsed().as_secs()));
     }
-    // Gemini API: sub-2s on Flash-Lite, free tier covers amux's volume.
     if is_gemini_model(&model) {
         if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
             let key = key.trim().to_string();
@@ -479,20 +479,34 @@ pub(crate) async fn helper_answer(prompt: &str) -> Result<(String, String), (Sta
                     Err(e) => {
                         attempts.push(format!("gemini:{model} failed at {}s ({e})", started.elapsed().as_secs()));
                         tracing::warn!(
-                            "helper_answer: gemini api failed ({e}); falling back to the helper CLI"
+                            "helper_answer: gemini api failed ({e}); falling through"
                         );
                     }
                 }
             }
         }
     }
-    // Prefer the Anthropic Messages API when a key is present (AMUX-3301). The
-    // `claude` CLI boots a full process and auths per call, so its latency is
-    // unbounded — measured 17-45s under fleet contention, hitting the 45s
-    // timeout, which is the Orchestrate "Routing..." hang Ethan reported. A
-    // direct /v1/messages call to haiku answers in ~1-2s. Falls through to the
-    // CLI if the key is absent or the call errors, so nothing regresses without
-    // a key.
+
+    // --- Fallback: ollama (if the primary wasn't already ollama) ---
+    // A local model on the Mac is faster than the CLI and doesn't need a key.
+    if !is_ollama_model(&model) {
+        let fallback_ollama = std::env::var("AMUX_HELPER_OLLAMA_FALLBACK")
+            .unwrap_or_else(|_| String::new());
+        if !fallback_ollama.is_empty() {
+            if let Some(answer) = try_local_model_named(prompt, &fallback_ollama).await {
+                return Ok((format!("ollama:{fallback_ollama}"), answer));
+            }
+            attempts.push(format!(
+                "ollama:{fallback_ollama} fallback unavailable at {}s",
+                started.elapsed().as_secs()
+            ));
+        }
+    }
+
+    // --- Fallback: Anthropic Messages API (AMUX-3301) ---
+    // The `claude` CLI boots a full process and auths per call, so its latency
+    // is unbounded — measured 17-45s under fleet contention. A direct
+    // /v1/messages call to haiku answers in ~1-2s.
     if !is_ollama_model(&model) && !is_gemini_model(&model) {
         if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
             let key = key.trim().to_string();
