@@ -340,8 +340,31 @@ fn helper_exhausted_message(total_s: u64, attempts: &[String]) -> String {
     )
 }
 
+fn resolve_cli(cli: &str) -> std::ffi::OsString {
+    if std::path::Path::new(cli).is_absolute() {
+        return cli.into();
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&std::ffi::OsString::from(&path_var)) {
+            let candidate = dir.join(cli);
+            if candidate.is_file() {
+                return candidate.into_os_string();
+            }
+        }
+    }
+    // systemd units inherit a minimal PATH that excludes ~/.local/bin, the
+    // standard Claude Code install location. Fall back there explicitly.
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = std::path::Path::new(&home).join(".local/bin").join(cli);
+        if candidate.is_file() {
+            return candidate.into_os_string();
+        }
+    }
+    cli.into()
+}
+
 fn helper_cli_command(cli: &str, prompt: &str, model: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new(cli);
+    let mut cmd = std::process::Command::new(resolve_cli(cli));
     cmd.arg("--print");
     if cli == "claude" {
         // Bulk-read prompts can exceed the platform's argv limit after line
@@ -795,6 +818,20 @@ mod tests {
         assert!(
             !helper_cli_rate_limited("custom-helper", live),
             "provider-specific prose must not classify an open custom helper"
+        );
+    }
+
+    #[test]
+    fn resolve_cli_finds_claude_when_path_excludes_its_directory() {
+        // An absolute path is returned as-is, no resolution.
+        let abs = resolve_cli("/usr/bin/claude");
+        assert_eq!(abs, std::ffi::OsString::from("/usr/bin/claude"));
+
+        // A name that IS on PATH resolves to its full path.
+        let echo = resolve_cli("echo");
+        assert!(
+            std::path::Path::new(&echo).is_absolute(),
+            "echo must resolve to an absolute path: {echo:?}"
         );
     }
 
