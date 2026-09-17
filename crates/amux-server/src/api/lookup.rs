@@ -246,6 +246,7 @@ async fn try_local_model_named(prompt: &str, model: &str) -> Option<String> {
             "model": model,
             "prompt": prompt,
             "stream": false,
+            "think": false,
             "keep_alive": ollama_keep_alive(),
         }))
         .send()
