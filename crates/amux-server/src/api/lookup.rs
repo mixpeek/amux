@@ -194,6 +194,11 @@ fn is_ollama_model(m: &str) -> bool {
     m.contains(':')
 }
 
+/// A Gemini model id starts with `gemini-` (e.g. `gemini-3.1-flash-lite`).
+fn is_gemini_model(m: &str) -> bool {
+    m.starts_with("gemini-")
+}
+
 /// The live, no-restart override for the meta-task model, set from the dashboard
 /// settings and stored in the `prefs` table (`helper_model`). Read with a
 /// short-lived read-only connection so the one shared seam (`helper_answer`)
@@ -317,6 +322,57 @@ async fn anthropic_api_answer(prompt: &str, model: &str, key: &str) -> Result<St
     Ok(text)
 }
 
+/// One-shot answer from the Google Gemini generateContent API. Sub-2s on
+/// Flash-Lite, free tier covers amux's volume. Falls through to the CLI on
+/// error so nothing regresses without a key.
+async fn gemini_api_answer(prompt: &str, model: &str, key: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, key
+    );
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&json!({
+            "contents": [{ "parts": [{ "text": prompt }] }],
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let msg = body["error"]["message"]
+            .as_str()
+            .unwrap_or("api error");
+        return Err(format!("{status}: {msg}"));
+    }
+    let text = body["candidates"]
+        .as_array()
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err("empty response".into());
+    }
+    Ok(text)
+}
+
 /// Fastest, cheapest one-shot answer for a fully-formed prompt: a resident LOCAL
 /// model when no `AMUX_HELPER_MODEL` is pinned, else the helper CLI (D3 — the one
 /// knob still wins). This is the ONE place the "fastest cheapest model" seam
@@ -413,6 +469,23 @@ pub(crate) async fn helper_answer(prompt: &str) -> Result<(String, String), (Sta
         // Claude default rather than the CLI's own (heavier) default.
         attempts.push(format!("ollama:{model} unavailable at {}s", started.elapsed().as_secs()));
     }
+    // Gemini API: sub-2s on Flash-Lite, free tier covers amux's volume.
+    if is_gemini_model(&model) {
+        if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                match gemini_api_answer(prompt, &model, &key).await {
+                    Ok(text) => return Ok((format!("gemini:{model}"), text)),
+                    Err(e) => {
+                        attempts.push(format!("gemini:{model} failed at {}s ({e})", started.elapsed().as_secs()));
+                        tracing::warn!(
+                            "helper_answer: gemini api failed ({e}); falling back to the helper CLI"
+                        );
+                    }
+                }
+            }
+        }
+    }
     // Prefer the Anthropic Messages API when a key is present (AMUX-3301). The
     // `claude` CLI boots a full process and auths per call, so its latency is
     // unbounded — measured 17-45s under fleet contention, hitting the 45s
@@ -420,7 +493,7 @@ pub(crate) async fn helper_answer(prompt: &str) -> Result<(String, String), (Sta
     // direct /v1/messages call to haiku answers in ~1-2s. Falls through to the
     // CLI if the key is absent or the call errors, so nothing regresses without
     // a key.
-    if !is_ollama_model(&model) {
+    if !is_ollama_model(&model) && !is_gemini_model(&model) {
         if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
             let key = key.trim().to_string();
             if !key.is_empty() {
@@ -437,9 +510,10 @@ pub(crate) async fn helper_answer(prompt: &str) -> Result<(String, String), (Sta
         }
     }
     let cli = std::env::var("AMUX_HELPER_CLI").unwrap_or_else(|_| "claude".into());
-    // Use the resolved model as the CLI model, unless it was an ollama id that
-    // just failed above, in which case the cheap Claude default answers.
-    let cli_model = if is_ollama_model(&model) {
+    // Use the resolved model as the CLI model, unless it was an ollama or
+    // gemini id that just failed above, in which case the cheap Claude default
+    // answers (the claude CLI doesn't know those model names).
+    let cli_model = if is_ollama_model(&model) || is_gemini_model(&model) {
         DEFAULT_HELPER_MODEL.to_string()
     } else {
         model
@@ -771,6 +845,17 @@ mod tests {
         assert!(!is_ollama_model("sonnet"));
         // The default is the cheap Claude model, not a local model.
         assert_eq!(DEFAULT_HELPER_MODEL, "haiku");
+    }
+
+    #[test]
+    fn gemini_models_are_prefix_tagged_and_disjoint_from_ollama() {
+        assert!(is_gemini_model("gemini-3.1-flash-lite"));
+        assert!(is_gemini_model("gemini-3.6-flash"));
+        assert!(is_gemini_model("gemini-2.5-flash-lite"));
+        assert!(!is_gemini_model("haiku"));
+        assert!(!is_gemini_model("qwen3:8b"));
+        // A gemini model is never mistaken for an ollama model (no colon).
+        assert!(!is_ollama_model("gemini-3.1-flash-lite"));
     }
 
     #[test]
