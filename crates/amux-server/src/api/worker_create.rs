@@ -208,7 +208,8 @@ async fn suggest_branch(Json(body): Json<Value>) -> Response {
          'feat/', one with 'session/', one descriptive without prefix, one short.",
     );
 
-    let cli = std::env::var("AMUX_HELPER_CLI").unwrap_or_else(|_| "claude".into());
+    let raw_cli = std::env::var("AMUX_HELPER_CLI").unwrap_or_else(|_| "claude".into());
+    let cli = super::lookup::resolve_cli(&raw_cli);
     let model = std::env::var("AMUX_HELPER_MODEL").unwrap_or_default();
     let mut cmd = tokio::process::Command::new(&cli);
     cmd.arg("--print").arg(&ask);

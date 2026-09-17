@@ -917,9 +917,11 @@ fn read_only_helper_options(cmd: &mut std::process::Command) {
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
 }
 
-/// The helper CLI both paths invoke.
+/// The helper CLI both paths invoke, resolved to an absolute path so the
+/// server works under systemd's minimal PATH.
 fn helper_cli() -> String {
-    std::env::var("AMUX_HELPER_CLI").unwrap_or_else(|_| "claude".into())
+    let raw = std::env::var("AMUX_HELPER_CLI").unwrap_or_else(|_| "claude".into());
+    super::lookup::resolve_cli(&raw).to_string_lossy().into_owned()
 }
 
 /// How much helper output is retained before the call is refused.

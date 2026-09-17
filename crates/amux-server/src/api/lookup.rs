@@ -340,7 +340,7 @@ fn helper_exhausted_message(total_s: u64, attempts: &[String]) -> String {
     )
 }
 
-fn resolve_cli(cli: &str) -> std::ffi::OsString {
+pub(crate) fn resolve_cli(cli: &str) -> std::ffi::OsString {
     if std::path::Path::new(cli).is_absolute() {
         return cli.into();
     }
