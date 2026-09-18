@@ -32,7 +32,7 @@
 #   AMUX_ALLOW_NO_TMUX=1  install anyway without tmux (dashboard-only)
 set -euo pipefail
 
-BOLD=$'\033[1m' GREEN=$'\033[32m' YELLOW=$'\033[33m' RED=$'\033[31m' RESET=$'\033[0m'
+BOLD=$'\033[1m' DIM=$'\033[2m' GREEN=$'\033[32m' YELLOW=$'\033[33m' RED=$'\033[31m' RESET=$'\033[0m'
 say()  { echo "${GREEN}✓${RESET} $*"; }
 warn() { echo "${YELLOW}!${RESET} $*"; }
 die()  { echo "${RED}✗${RESET} $*" >&2; exit 1; }
@@ -442,6 +442,7 @@ if [[ "$OS" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # the repo copy (ships on save, same convention as the playwright wrapper
   # above), no separate ~/.local/bin copy to fall out of sync.
   envsubst '$BIN_DIR $SCRIPT_DIR' < "$SCRIPT_DIR/scripts/amux-worker-start.service.template" \
+    | sed "/^Environment=PATH=/a EnvironmentFile=-$AMUX_HOME/server.env\nEnvironment=\"AMUX_HOME=$AMUX_HOME\"" \
     > "$SYSTEMD_DIR/amux-worker-start.service" || die "failed to create amux-worker-start.service"
   chmod +x "$SCRIPT_DIR/scripts/amux-start-worker.sh"
 
