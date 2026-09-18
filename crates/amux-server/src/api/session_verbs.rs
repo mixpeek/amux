@@ -655,6 +655,10 @@ fn update_meta(name: &str, updates: &[(&str, Value)]) {
     save_meta(name, &meta);
 }
 
+// Serialize Codex rollout adoption with start_session's final metadata write.
+// Both paths otherwise load and replace the entire metadata file.
+static CODEX_ID_META_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
     meta.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
 }
@@ -2697,37 +2701,71 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
 /// wander, and `session_jsonl_path`'s "newest mtime wins" discipline is applied
 /// the same way here.
 fn codex_rollout_files() -> Vec<(std::time::SystemTime, PathBuf)> {
+    codex_rollout_files_checked().unwrap_or_default()
+}
+
+fn codex_rollout_files_checked() -> std::io::Result<Vec<(std::time::SystemTime, PathBuf)>> {
     // Codex writes to the OS home (`~/.codex`), NOT amux's `home()` (`~/.amux`);
     // the two differ and the first cut pointed at `~/.amux/.codex`, so every
     // resolution missed, which the debug trace in `codex_transcript_events`
     // surfaced immediately (ethos rule 4). Same `$HOME`-based path shape as
     // `claude_home()`.
     let root = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex/sessions");
+    codex_rollout_files_from(&root)
+}
+
+fn codex_rollout_files_from(root: &Path) -> std::io::Result<Vec<(std::time::SystemTime, PathBuf)>> {
     let mut out: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    fn walk(dir: &Path, depth: usize, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<(std::time::SystemTime, PathBuf)>) -> std::io::Result<()> {
         if depth > 3 {
-            return;
+            return Ok(());
         }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
+        for e in std::fs::read_dir(dir)? {
+            let e = e?;
             let p = e.path();
-            if p.is_dir() {
-                walk(&p, depth + 1, out);
+            let metadata = e.metadata()?;
+            if metadata.is_dir() {
+                walk(&p, depth + 1, out)?;
             } else if p
                 .file_name()
                 .and_then(|s| s.to_str())
                 .map(|s| s.starts_with("rollout-") && s.ends_with(".jsonl"))
                 .unwrap_or(false)
             {
-                if let Some(t) = p.metadata().ok().and_then(|m| m.modified().ok()) {
-                    out.push((t, p));
-                }
+                out.push((metadata.modified()?, p));
             }
         }
+        Ok(())
     }
-    walk(&root, 0, &mut out);
+    walk(root, 0, &mut out)?;
     out.sort_by_key(|e| std::cmp::Reverse(e.0));
-    out
+    Ok(out)
+}
+
+/// A pinned Codex id is resumable only while its rollout exists on disk.
+/// Return whether the metadata changed so the caller can persist a dead claim.
+fn codex_launch_command(
+    base_bin: &str,
+    opts: &str,
+    meta: &mut Map<String, Value>,
+    files: Option<&[(std::time::SystemTime, PathBuf)]>,
+) -> (String, bool) {
+    let id = meta_str(meta, "codex_session_id");
+    if id.is_empty() {
+        return (format!("{base_bin}{opts}"), false);
+    }
+    let Some(files) = files else {
+        return (format!("{base_bin} resume{opts} {id}"), false);
+    };
+    let exists = files.iter().any(|(_, path)| {
+        path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.contains(&id))
+    });
+    if exists {
+        (format!("{base_bin} resume{opts} {id}"), false)
+    } else {
+        meta.remove("codex_session_id");
+        (format!("{base_bin}{opts}"), true)
+    }
 }
 
 /// Identity carried by a rollout's first `session_meta` row.
@@ -2860,6 +2898,7 @@ pub(crate) fn codex_rollout_path(name: &str) -> Option<PathBuf> {
             .as_ref()
             .and_then(|path| rollout_session_id(path).map(|id| (path, id)))
         {
+            let _guard = CODEX_ID_META_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             update_meta(name, &[("codex_session_id", json!(rollout_id))]);
             tracing::warn!(
                 target: "status_truth",
@@ -9069,7 +9108,6 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         "codex" => {
             // py:24380 — codex command construction (trust-db side effect not
             // ported).
-            let codex_session_id = if skip_conv_id { String::new() } else { meta_str(&meta, "codex_session_id") };
             let mut codex_flags = flags.clone();
             let codex_yolo = PROVIDER_YOLO_FLAGS.iter().any(|f| codex_flags.contains(f));
             if codex_yolo {
@@ -9107,10 +9145,27 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                     }
                 }
             }
-            if !codex_session_id.is_empty() {
-                format!("{base_bin} resume{opts} {codex_session_id}")
-            } else {
+            if skip_conv_id {
                 format!("{base_bin}{opts}")
+            } else {
+                let codex_session_id = meta_str(&meta, "codex_session_id");
+                let files = if codex_session_id.is_empty() { None } else {
+                    match codex_rollout_files_checked() {
+                        Ok(files) => Some(files),
+                        Err(error) => {
+                            tracing::warn!(session = name, codex_session_id = %codex_session_id, %error,
+                                "could not verify claimed Codex rollout; preserving resume identity");
+                            None
+                        }
+                    }
+                };
+                let (cmd, changed) = codex_launch_command(base_bin, &opts, &mut meta, files.as_deref());
+                if changed {
+                    tracing::warn!(session = name, codex_session_id = %codex_session_id,
+                        "claimed codex session missing on disk; starting a fresh conversation");
+                    save_meta(name, &meta);
+                }
+                cmd
             }
         }
         "gemini" => {
@@ -9773,7 +9828,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         meta.insert("pending_structured_resume_context".into(), json!(context));
         meta.insert("pending_structured_resume_token".into(), token.clone());
     }
-    if let Err(error) = save_resume_meta(name, &meta) {
+    if let Err(error) = save_start_meta(name, &mut meta, &provider) {
         tracing::warn!(session = name, %error, verdict = "swap_context_persist_failed",
             "started worker retains recovery requirement; metadata commit failed");
         return (false, "started, but durable resume context is unresolved".into());
@@ -10876,6 +10931,21 @@ fn save_resume_meta(name: &str, meta: &Map<String, Value>) -> std::io::Result<()
     })();
     if result.is_err() { let _ = std::fs::remove_file(temp); }
     result
+}
+
+fn save_start_meta(name: &str, meta: &mut Map<String, Value>, provider: &str) -> std::io::Result<()> {
+    if provider != "codex" {
+        return save_resume_meta(name, meta);
+    }
+    let _guard = CODEX_ID_META_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A status poll may have adopted the new rollout while startup waited for
+    // the UI. Preserve that durable claim instead of restoring this function's
+    // older snapshot, which intentionally had the dead id removed.
+    match load_meta(name).get("codex_session_id").cloned() {
+        Some(id) => { meta.insert("codex_session_id".into(), id); }
+        None => { meta.remove("codex_session_id"); }
+    }
+    save_resume_meta(name, meta)
 }
 
 fn write_swap_config(
@@ -26886,6 +26956,63 @@ CLAUDE-POSTFIX-COMPLETE
         let mut second = Map::new();
         gemini_session_flag(&mut second, false);
         assert_ne!(&id[..8], &meta_str(&second, "gemini_session_id")[..8], "peers must not share a time-derived filename prefix");
+    }
+
+    #[test]
+    fn codex_missing_rollout_starts_fresh_and_clears_claim() {
+        let mut meta = json!({"codex_session_id":"dead-id", "cc_task":"keep"}).as_object().unwrap().clone();
+        let (cmd, changed) = codex_launch_command("codex", " --model gpt-5.5", &mut meta, Some(&[]));
+        assert_eq!(cmd, "codex --model gpt-5.5");
+        assert!(changed);
+        assert!(!meta.contains_key("codex_session_id"));
+        assert_eq!(meta["cc_task"], "keep");
+    }
+
+    #[test]
+    fn codex_existing_rollout_keeps_resume_claim() {
+        let mut meta = json!({"codex_session_id":"live-id"}).as_object().unwrap().clone();
+        let dir = tempfile::tempdir().unwrap();
+        let rollout = dir.path().join("rollout-2026-09-18-live-id.jsonl");
+        std::fs::write(&rollout, "").unwrap();
+        let files = vec![(std::time::SystemTime::now(), rollout)];
+        let (cmd, changed) = codex_launch_command("codex", " --model gpt-5.5", &mut meta, Some(&files));
+        assert_eq!(cmd, "codex resume --model gpt-5.5 live-id");
+        assert!(!changed);
+        assert_eq!(meta["codex_session_id"], "live-id");
+    }
+
+    #[test]
+    fn codex_rollout_scan_failure_preserves_resume_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(codex_rollout_files_from(&dir.path().join("unreadable-sessions")).is_err());
+        let mut meta = json!({"codex_session_id":"pinned-id"}).as_object().unwrap().clone();
+        let (cmd, changed) = codex_launch_command("codex", " --model gpt-5.5", &mut meta, None);
+        assert_eq!(cmd, "codex resume --model gpt-5.5 pinned-id");
+        assert!(!changed);
+        assert_eq!(meta["codex_session_id"], "pinned-id");
+
+        let files = codex_rollout_files_from(dir.path()).unwrap();
+        let (cmd, changed) = codex_launch_command("codex", " --model gpt-5.5", &mut meta, Some(&files));
+        assert_eq!(cmd, "codex --model gpt-5.5");
+        assert!(changed);
+        assert!(!meta.contains_key("codex_session_id"));
+    }
+
+    #[test]
+    fn codex_start_preserves_rollout_adopted_during_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let name = "codex-adopted-during-launch";
+        let mut start_snapshot = json!({"last_started":1}).as_object().unwrap().clone();
+        save_meta(name, &start_snapshot);
+        // The status poller adopts the newly-created rollout before startup's
+        // final metadata write. That write must retain the adopted identity.
+        update_meta(name, &[("codex_session_id", json!("new-rollout-id"))]);
+        start_snapshot.insert("start_count".into(), json!(1));
+        save_start_meta(name, &mut start_snapshot, "codex").unwrap();
+        let saved = load_meta(name);
+        assert_eq!(saved["codex_session_id"], "new-rollout-id");
+        assert_eq!(saved["start_count"], 1);
     }
 
     #[tokio::test]
