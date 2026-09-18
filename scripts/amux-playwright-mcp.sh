@@ -61,10 +61,13 @@ CONFIG_ARGS=()
 #
 # To upgrade: bump the version here, restart one instance, verify, then the rest.
 PLAYWRIGHT_MCP_VERSION="${AMUX_PLAYWRIGHT_MCP_VERSION:-0.0.68}"
+PLAYWRIGHT_MCP_HOST="${AMUX_PLAYWRIGHT_MCP_HOST:-127.0.0.1}"
+
+echo "browser-security playwright_mcp_host=$PLAYWRIGHT_MCP_HOST" >&2
 
 exec npx -y "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
   --port "$PORT" \
   --user-data-dir "$PROFILE" \
-  --host 0.0.0.0 \
+  --host "$PLAYWRIGHT_MCP_HOST" \
   "${EXEC_ARGS[@]}" \
   "${CONFIG_ARGS[@]}"

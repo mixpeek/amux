@@ -26,8 +26,11 @@ Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Xvbf-only unit did exactly this). Anything else that needs the display
 # (playwright-mcp's automated Chromium instances) should depend on THIS
 # unit being up (Wants=/After=), never spawn its own Xvfb.
+# VNC is local-only: view it over an SSH tunnel with
+# `ssh -L 5900:localhost:5900 <host>`. A user-provided password file takes
+# precedence; without one the local tunnel is the access boundary.
 ExecStart=/bin/bash -c 'Xvfb :0 -screen 0 1920x1080x24 -nolisten tcp &'
-ExecStartPost=/bin/bash -c 'sleep 2; x11vnc -display :0 -forever -shared -bg -nopw'
+ExecStartPost=/bin/bash -c 'sleep 2; if [ -f "%h/.vnc/passwd" ]; then echo "browser-security vnc_bind=localhost vnc_auth=rfbauth"; x11vnc -display :0 -forever -shared -bg -localhost -rfbauth "%h/.vnc/passwd"; else echo "browser-security vnc_bind=localhost vnc_auth=nopw"; x11vnc -display :0 -forever -shared -bg -localhost -nopw; fi'
 ExecStartPost=/bin/bash -c 'DISPLAY=:0 openbox &'
 ExecStartPost=/bin/bash -c 'sleep 1; DISPLAY=:0 chromium --no-first-run --disable-gpu --disable-dev-shm-usage --new-window http://localhost:8824 &'
 
