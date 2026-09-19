@@ -6253,6 +6253,32 @@ async fn pane_has_live_child(name: &str) -> Option<bool> {
     Some(!ch.stdout.iter().all(|b| b.is_ascii_whitespace()))
 }
 
+fn provider_process_command(provider: &str, claude_cmd: Option<&str>) -> String {
+    if provider == "claude" {
+        if let Some(command) = claude_cmd.and_then(|value| value.split_whitespace().next()) {
+            if let Some(binary) = std::path::Path::new(command).file_name().and_then(|value| value.to_str()) {
+                if !binary.is_empty() {
+                    return binary.to_string();
+                }
+            }
+        }
+    }
+    launch_base_binary(provider).to_string()
+}
+
+fn pane_process_running(command: &str, provider: &str, has_child: Option<bool>) -> bool {
+    let claude_cmd = (provider == "claude").then(|| std::env::var("AMUX_CLAUDE_CMD").ok()).flatten();
+    command.trim().trim_start_matches('-') == provider_process_command(provider, claude_cmd.as_deref())
+        || has_child != Some(false)
+}
+
+async fn pane_runs_provider(name: &str, provider: &str) -> bool {
+    let Some(out) = tmux(&["display-message", "-p", "-t", &pt(name), "#{pane_current_command}"]).await else {
+        return false;
+    };
+    out.status.success() && pane_process_running(&String::from_utf8_lossy(&out.stdout), provider, Some(false))
+}
+
 pub(crate) async fn is_running(name: &str) -> bool {
     let cfg = parse_env(name);
     if !iterm2_id(&cfg).is_empty() {
@@ -6269,12 +6295,13 @@ pub(crate) async fn is_running(name: &str) -> bool {
     if output.is_empty() {
         return true;
     }
+    let provider = provider_of(&cfg);
     if at_shell_prompt(&output) {
-        return false;
+        return pane_runs_provider(name, &provider).await;
     }
-    // Shell alive but childless == claude gone even without a visible prompt.
+    // A childless shell is stopped; a provider owning the pane is still live.
     if pane_has_live_child(name).await == Some(false) {
-        return false;
+        return pane_runs_provider(name, &provider).await;
     }
     true
 }
@@ -22114,6 +22141,53 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pane_provider_process_and_shell_children_have_distinct_liveness() {
+        assert!(super::pane_process_running("claude\n", "claude", Some(false)),
+            "provider owning the pane runs without child processes");
+        assert!(super::pane_process_running("codex\n", "ollama", Some(false)),
+            "ollama lanes launch the codex binary");
+        assert!(!super::pane_process_running("bash\n", "claude", Some(false)),
+            "childless shell remains stopped");
+        assert!(super::pane_process_running("bash\n", "claude", Some(true)),
+            "shell with provider child remains running");
+        assert_eq!(
+            super::provider_process_command("claude", Some("/opt/amux/bin/claude-wrapper --flag")),
+            "claude-wrapper",
+            "custom Claude launch commands are matched by first-token basename",
+        );
+        assert_eq!(super::provider_process_command("claude", Some("  ")), "claude",
+            "empty custom commands fall back to the default binary");
+    }
+
+    #[tokio::test]
+    async fn is_running_recognizes_provider_pane_and_keeps_shell_cases() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        let provider_bin = home.path().join("claude");
+        std::os::unix::fs::symlink("/bin/bash", &provider_bin).unwrap();
+        struct Pane(String);
+        impl Drop for Pane {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("tmux").args(["kill-session", "-t", &session_target(&self.0)]).output();
+            }
+        }
+        for (kind, command, expected) in [
+            ("direct", format!("{} -c 'echo provider-visible; read -t 120'", provider_bin.display()), true),
+            ("empty-shell", "/bin/bash -c 'echo shell-visible; read -t 120'".into(), false),
+            ("child-shell", "/bin/bash -c 'echo shell-visible; sleep 120 & wait'".into(), true),
+        ] {
+            let name = format!("gc3-{kind}-{}-{}", std::process::id(), ulid::Ulid::new());
+            std::fs::write(env_path(&name), "CC_PROVIDER=claude\n").unwrap();
+            let pane = Pane(tmux_name(&name));
+            let started = tmux(&["new-session", "-d", "-s", &pane.0, &command]).await.unwrap();
+            assert!(started.status.success(), "{kind}: {}", String::from_utf8_lossy(&started.stderr));
+            sleep_ms(100).await;
+            assert_eq!(is_running(&name).await, expected, "{kind}");
+        }
+    }
+
     #[derive(Clone)]
     struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
