@@ -4737,12 +4737,21 @@ fn disk_candidates(home: &std::path::Path) -> Vec<std::path::PathBuf> {
             }
         }
     }
-    // Build trees AND agent scratch, wherever sessions put them.
-    if let Ok(rd) = std::fs::read_dir("/private/tmp") {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if tmp_candidate_name(&n) && e.metadata().map(|m| m.is_dir()).unwrap_or(false) {
-                v.push(e.path());
+    // Build trees AND agent scratch, wherever sessions put them. The system
+    // temp dir is this OS's own scratch root (/tmp on Linux); /private/tmp is
+    // macOS's and is scanned too when it exists, so neither OS is a blind spot.
+    let mut tmp_roots = vec![std::env::temp_dir()];
+    let private_tmp = std::path::PathBuf::from("/private/tmp");
+    if !tmp_roots.contains(&private_tmp) {
+        tmp_roots.push(private_tmp);
+    }
+    for root in tmp_roots {
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if tmp_candidate_name(&n) && e.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                    v.push(e.path());
+                }
             }
         }
     }
@@ -5353,17 +5362,32 @@ pub fn detect_fd(now: f64) -> (Vec<Finding>, Vec<Suppressed>) {
             ),
             (
                 "if_the_limit_is_low".into(),
-                "macOS defaults a launchd service to 256 descriptors and the amux plist did \
-                 not set NumberOfFiles until 2026-08-10. If `limit` above reads 256, the plist \
-                 is stale — check SoftResourceLimits/HardResourceLimits/NumberOfFiles in \
-                 ~/Library/LaunchAgents/com.amux.server-rs.plist (should be 65536), then \
-                 `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`."
-                    .to_string(),
+                if cfg!(target_os = "macos") {
+                    "macOS defaults a launchd service to 256 descriptors and the amux plist did \
+                     not set NumberOfFiles until 2026-08-10. If `limit` above reads 256, the plist \
+                     is stale — check SoftResourceLimits/HardResourceLimits/NumberOfFiles in \
+                     ~/Library/LaunchAgents/com.amux.server-rs.plist (should be 65536), then \
+                     `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`."
+                        .to_string()
+                } else {
+                    format!(
+                        "On Linux the ceiling is the service's own LimitNOFILE. If `limit` above \
+                         is low, set LimitNOFILE=65536 in the systemd user unit \
+                         (~/.config/systemd/user/amux-server.service, or amux.service), then \
+                         `systemctl --user daemon-reload` and {}.",
+                        crate::config::server_restart_hint()
+                    )
+                },
             ),
         ],
-        recheck: "launchctl print gui/$(id -u)/com.amux.server-rs | grep -A3 'resource limits'; \
-                  lsof -p $(curl -sk $AMUX_URL/health | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"pid\"])') | wc -l"
-            .into(),
+        recheck: {
+            let pid = "$(curl -sk $AMUX_URL/health | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"pid\"])')";
+            if cfg!(target_os = "macos") {
+                format!("launchctl print gui/$(id -u)/com.amux.server-rs | grep -A3 'resource limits'; lsof -p {pid} | wc -l")
+            } else {
+                format!("systemctl --user show amux-server.service -p LimitNOFILE; ls /proc/{pid}/fd | wc -l")
+            }
+        },
         owner: None,
         count: 1,
         last_ts: now,

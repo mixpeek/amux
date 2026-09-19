@@ -494,7 +494,13 @@ fn devtool_roots() -> Vec<(PathBuf, &'static str, &'static str)> {
 }
 
 pub(crate) fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into()))
+    // This install's home, never a literal from the author's machine: $HOME,
+    // then the OS's own answer for this user, and only then a root that owns
+    // nothing, so a missing home can never make a scan reach someone's files.
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(std::env::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// The two roots whose direct children are, by OS convention, meant to be
@@ -612,8 +618,13 @@ fn guard_path(p: &FsPath) -> Result<(), String> {
     // (APFS only bumps a directory's mtime when its direct entries change),
     // so age-based heuristics over it are unreliable in exactly the direction
     // that would move someone's live working files.
-    if s == "/private/tmp/claude-501" || s.starts_with("/private/tmp/claude-501/") {
-        return Err("live Claude Code session scratchpad (claude-501)".into());
+    let uid = unsafe { libc::geteuid() };
+    let scratchpads = [
+        std::env::temp_dir().join(format!("claude-{uid}")),
+        PathBuf::from(format!("/private/tmp/claude-{uid}")),
+    ];
+    if scratchpads.iter().any(|scratchpad| p == scratchpad || p.starts_with(scratchpad)) {
+        return Err("live Claude Code session scratchpad".into());
     }
     Ok(())
 }
@@ -1128,9 +1139,11 @@ pub struct StartScan {
 fn default_roots() -> Vec<PathBuf> {
     let home = home_dir();
     let mut v = vec![home.clone()];
-    for extra in ["/private/tmp", "/private/var/folders"] {
-        let p = PathBuf::from(extra);
-        if p.exists() {
+    // The system temp dir is where this OS actually puts scratch (/tmp on
+    // Linux); the /private paths are macOS's and simply do not exist here.
+    for extra in [std::env::temp_dir(), PathBuf::from("/private/tmp"), PathBuf::from("/private/var/folders")] {
+        let p = extra;
+        if p.exists() && !v.contains(&p) {
             v.push(p);
         }
     }
@@ -2270,6 +2283,7 @@ mod tests {
     #[test]
     fn guard_refuses_paths_no_heuristic_may_touch() {
         let home = home_dir();
+        let uid = unsafe { libc::geteuid() };
         let must_refuse: Vec<PathBuf> = vec![
             home.clone(),
             home.join("Library"),
@@ -2287,10 +2301,17 @@ mod tests {
             PathBuf::from("/Applications"),
             PathBuf::from("/Volumes/Backup"),
             PathBuf::from("relative/path"),
-            PathBuf::from("/Users/ethan/Dev/../../etc"),
-            PathBuf::from("/private/tmp/claude-501"),
-            PathBuf::from("/private/tmp/claude-501/-Users-ethan-Dev/some-session/scratchpad/file.txt"),
+            PathBuf::from("/Users/someone/Dev/../../etc"),
+            // The macOS scratchpad of THIS user (uid 501 is only the author's).
+            PathBuf::from(format!("/private/tmp/claude-{uid}")),
+            PathBuf::from(format!("/private/tmp/claude-{uid}/a-session/scratchpad/file.txt")),
         ];
+        let live_scratchpad = std::env::temp_dir().join(format!("claude-{uid}"));
+        assert!(guard_path(&live_scratchpad).is_err(), "guard MUST refuse live temp scratchpad");
+        assert!(
+            guard_path(&live_scratchpad.join("some-session/scratchpad/file.txt")).is_err(),
+            "and everything under it"
+        );
         for p in must_refuse {
             assert!(
                 guard_path(&p).is_err(),
@@ -2779,4 +2800,30 @@ mod tests {
         assert!(last_seen > 100, "last_seen must advance, got {last_seen}");
         assert_eq!(hits, 1, "hits must be untouched by a refresh");
     }
+
+    /// This install's scratch roots come from the OS, so /tmp is scanned on
+    /// Linux; before this, only macOS paths were, and Linux scratch was a
+    /// blind spot while the guard protected a path that does not exist here.
+    #[test]
+    fn scan_roots_include_this_os_temp_dir() {
+        let tmp = std::env::temp_dir();
+        let trimmed = PathBuf::from(tmp.to_string_lossy().trim_end_matches('/').to_string());
+        assert!(
+            ephemeral_tmp_roots().contains(&trimmed),
+            "temp_dir missing from {:?}",
+            ephemeral_tmp_roots()
+        );
+        assert!(default_roots().iter().any(|r| *r == tmp || *r == trimmed), "{:?}", default_roots());
+    }
+
+    /// home_dir names THIS user's home, never a path from the author's machine.
+    #[test]
+    fn home_dir_is_this_installs_home() {
+        let h = home_dir();
+        assert!(!h.starts_with("/Users/ethan"), "{h:?}");
+        if let Some(env_home) = std::env::var_os("HOME") {
+            assert_eq!(h, PathBuf::from(env_home));
+        }
+    }
+
 }

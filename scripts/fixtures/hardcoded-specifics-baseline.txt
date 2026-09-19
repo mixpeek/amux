@@ -1,5 +1,4 @@
 # path<TAB>snippet: one row per known hit. Remove rows as they are fixed; never add one.
-crates/amux-server/src/api/reclaim.rs	PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into()))
 scripts/friction_themes.py	"ETHAN": "amux",
 scripts/friction_themes.py	Ethan, 2026-08-29 (MSG-35488): "look for opportunities that are thematic such
 scripts/friction_themes.py	`cmd_history.ts` is in MILLISECONDS. `type='user' AND origin=''` is Ethan and

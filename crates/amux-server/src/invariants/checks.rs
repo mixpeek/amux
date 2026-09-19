@@ -1150,6 +1150,21 @@ mod git_index_lock_tests {
     }
 }
 
+/// The unmarked-lineage remedy, naming the restart command THIS OS actually
+/// has (launchd or systemd) — fix text a reader cannot run is not a remedy.
+fn restart_remedy() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "this process lineage predates AMUX_ENV_FROM_FILE, so the value is pinned until a REAL \
+         restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`. Redeploying will not \
+         clear it — self-adoption re-execs with the inherited env"
+    } else {
+        "this process lineage predates AMUX_ENV_FROM_FILE, so the value is pinned until a REAL \
+         restart: `systemctl --user restart amux-server.service` (or amux.service; `amux server \
+         restart` does this). Redeploying will not clear it — self-adoption re-execs with the \
+         inherited env"
+    }
+}
+
 pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<InvariantResult> {
     const ID: &str = "config.env_reaches_process";
     let mut out = Vec::new();
@@ -1193,9 +1208,7 @@ pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Optio
                       refreshed it on the last boot and did not — a real defect in the refresh path")
                 } else {
                     ("config-drift-unmarked-lineage",
-                     "this process lineage predates AMUX_ENV_FROM_FILE, so the value is pinned \
-                      until a REAL restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`. \
-                      Redeploying will not clear it — self-adoption re-execs with the inherited env")
+                     restart_remedy())
                 };
                 out.push(
                     InvariantResult::fail(
@@ -5031,8 +5044,8 @@ mod negative_controls {
         assert_eq!(unmarked.status, Status::Fail);
         assert_eq!(unmarked.evidence["class"], "config-drift-unmarked-lineage");
         assert!(
-            unmarked.observed.contains("launchctl kickstart"),
-            "an unmarked key must name the ONLY thing that clears it: {}",
+            unmarked.observed.contains(if cfg!(target_os = "macos") { "launchctl kickstart" } else { "systemctl --user restart" }),
+            "an unmarked key must name the ONLY thing that clears it, for THIS OS: {}",
             unmarked.observed
         );
         assert!(

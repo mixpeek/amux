@@ -307,6 +307,17 @@ impl ServerConfig {
 /// api/settings.rs's docstring claimed it matched `from_process_env`; it did
 /// not, in both of the ways above. That claim is now true because there is only
 /// one implementation left to be true about (ethos rule 6).
+/// How to really restart the server on THIS OS, for fix text a human runs.
+/// launchd on macOS, the systemd user unit on Linux — printing the other
+/// one's command is an instruction that cannot be followed.
+pub fn server_restart_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "launchctl kickstart -k gui/$(id -u)/com.amux.server-rs"
+    } else {
+        "systemctl --user restart amux-server.service (or amux.service), or `amux server restart`"
+    }
+}
+
 pub fn amux_home() -> PathBuf {
     resolve_home(|k| std::env::var(k).ok())
 }
