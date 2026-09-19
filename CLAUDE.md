@@ -15,6 +15,14 @@ The Python server was deleted at `792ce1f`. Do not resurrect it.
 Gut-check every feature against `.claude/rules/ethos.md` (8 rules). The core question:
 when the next model is better, does this feature get better with it, or become the ceiling?
 
+## Public repo: nothing specific to one person or machine
+
+Anyone can run `install.sh`, so the result must fit THEIR user, home, OS, email
+and hosts. Never hardcode a person's name, email, home path, host or LAN address
+in runtime code; read it from configuration. Rules and sources:
+`.claude/rules/no-hardcoded-specifics.md`. CI enforces it with a ratchet
+(`scripts/test-no-hardcoded-specifics.py`).
+
 ## Primitives (do not reinvent)
 
 board, workers, schedulers, filesystem, groups, memories, environment, messages.

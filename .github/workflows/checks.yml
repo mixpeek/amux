@@ -424,6 +424,17 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-shared-guard-attribution.sh
+      - name: no person, machine or deployment is hardcoded (public repo)
+        run: |
+          set -uo pipefail
+          # On a PR, the baseline may only lose rows relative to the base
+          # branch's copy; otherwise a PR could add its own violation to it.
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+            python3 scripts/test-no-hardcoded-specifics.py --base FETCH_HEAD
+          else
+            python3 scripts/test-no-hardcoded-specifics.py
+          fi
       - name: the shipped status hooks survive real durability regressions
         run: |
           set -uo pipefail
