@@ -119,6 +119,26 @@ pub(crate) fn owner_name(home: &Path) -> String {
     name
 }
 
+/// The owner's name as a needs-you marker word: its first word, lower-case,
+/// letters and digits only ("Nathan Hughes" -> "nathan"), so cards can say
+/// `NEEDS-NATHAN:` on this install and `NEEDS-<THEIRS>:` on anyone else's.
+/// None when nothing usable remains or it collides with a generic marker.
+pub(crate) fn owner_marker_word(name: &str) -> Option<String> {
+    let w: String = name
+        .split_whitespace()
+        .next()?
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (!w.is_empty() && !matches!(w.as_str(), "you" | "owner" | "human")).then_some(w)
+}
+
+/// This install's owner marker word (see `owner_marker_word`).
+pub(crate) fn owner_marker(home: &Path) -> Option<String> {
+    owner_marker_word(&owner_name(home))
+}
+
 /// `owner_name`'s resolution over injected sources, so it is testable without
 /// touching the process env or the machine's git config. Returns the name and
 /// which source supplied it.
@@ -1001,6 +1021,15 @@ mod tests {
         assert_eq!(owner_name(dir.path()), "Nathan");
         set_server_env_key(dir.path(), "AMUX_OWNER_NAME", "Someone Else").unwrap();
         assert_eq!(owner_name(dir.path()), "Someone Else", "must re-read server.env at use");
+    }
+
+    #[test]
+    fn owner_marker_word_is_the_first_word_lower_case_alphanumeric() {
+        assert_eq!(owner_marker_word("Nathan Hughes").as_deref(), Some("nathan"));
+        assert_eq!(owner_marker_word("  O'Brien-Smith ").as_deref(), Some("obriensmith"));
+        assert_eq!(owner_marker_word("owner"), None);
+        assert_eq!(owner_marker_word("   "), None);
+        assert_eq!(owner_marker_word("%_'"), None, "nothing that could break a LIKE survives");
     }
 
     /// Each fallback step, from controlled sources only: the machine's own git

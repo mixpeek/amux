@@ -11217,7 +11217,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.976';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.977';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -28574,14 +28574,18 @@ function _bqSessionIndex() {
 // The owner's name comes from the server (AMUX_OWNER_NAME, else git
 // user.name, else the login), never a baked-in person.
 function _ownerName() { return (window._AMUX_OWNER_NAME || '').trim() || 'owner'; }
-// LEGACY_HUMAN_TAGS were written by earlier clients under the upstream
-// author's name. They stay readable (and clearable) so existing cards do not
-// drop out of Focus mode; nothing writes them any more.
-const _LEGACY_HUMAN_TAGS = ['needs:ethan', 'awaiting-ethan'];
+// The owner as a marker word, same rule as the server's owner_marker_word:
+// first word, lower-case, letters and digits only ("Nathan Hughes" -> "nathan").
+function _ownerMarker() {
+  const w = (_ownerName().split(/\s+/)[0] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return ['you', 'owner', 'human'].includes(w) ? '' : w;
+}
 const _NEEDS_HUMAN_TAGS = new Set(['needs:you', 'needs:human', 'needs:owner',
   'blocked:human', 'human-gated', 'awaiting-decision', 'awaiting-owner',
-  'needs:' + _ownerName().toLowerCase(), 'awaiting-' + _ownerName().toLowerCase(),
-  ..._LEGACY_HUMAN_TAGS]);
+  ...(_ownerMarker() ? ['needs:' + _ownerMarker(), 'awaiting-' + _ownerMarker()] : [])]);
+// NEEDS-YOU / NEEDS-OWNER / NEEDS-HUMAN / NEEDS-<owner>: markers, in any case
+// and with a hyphen, a space or nothing between the words.
+const _NEEDS_MARKER_RE = new RegExp('NEEDS[- ]?(?:YOU|OWNER|HUMAN' + (_ownerMarker() ? '|' + _ownerMarker() : '') + '):\\s*([^\\n]+)', 'ig');
 
 function _bqIs(item, val, ix) {
   const st = _statusCanon(item.status);
@@ -29191,7 +29195,7 @@ function _focusAsk(item) {
   // NEEDS-YOU marker so a re-marked card shows its freshest question. Only
   // then fall back to the desc's first meaningful line, then the title.
   const hay = (item.desc || '') + '\n' + (item.log || '');
-  const ms = [...hay.matchAll(/NEEDS[- ]?(?:YOU|OWNER|HUMAN|ETHAN):\s*([^\n]+)/ig)];
+  const ms = [...hay.matchAll(_NEEDS_MARKER_RE)];
   if (ms.length) return ms[ms.length - 1][1].trim().slice(0, 400);
   // desc_head is the slim counterpart of "first meaningful line of desc".
   const d = (item.desc || '').replace(/^\*\*Prompt:\*\*\s*/i, '').split('\n').find(l => l.trim())

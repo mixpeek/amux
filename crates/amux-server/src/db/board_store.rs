@@ -2580,20 +2580,28 @@ const DESC_PREFIX_CHARS: usize = 512;
 /// colon the same nine spellings match 287, holding 6.9% of the prose, and 367
 /// of the 371 matches across the whole table really do yield a note.
 fn needsyou_marker_sql() -> String {
-    const MARKERS: [&str; 12] = [
-        "needs-you:", "needs you:", "needsyou:",
-        "needs-owner:", "needs owner:", "needsowner:",
-        "needs-human:", "needs human:", "needshuman:",
-        // Legacy: earlier clients wrote the upstream author's name.
-        "needs-ethan:", "needs ethan:", "needsethan:",
-    ];
+    let markers = needsyou_markers(
+        crate::api::settings::owner_marker(&crate::config::amux_home()).as_deref(),
+    );
     let mut parts: Vec<String> = Vec::new();
     for col in ["i.\"desc\"", "i.log"] {
-        for m in MARKERS {
+        for m in &markers {
             parts.push(format!("COALESCE({col},'') LIKE '%{m}%'"));
         }
     }
     parts.join(" OR ")
+}
+
+/// Every lower-case needs-you marker spelling: the generic ones plus this
+/// install's owner (`owner_marker`), each hyphenated, spaced and joined. The
+/// SQL filter, the slim note and the dashboard regex must accept the same set.
+/// `owner` is already reduced to [a-z0-9], so it is safe inside a LIKE.
+pub(crate) fn needsyou_markers(owner: Option<&str>) -> Vec<String> {
+    ["you", "owner", "human"]
+        .into_iter()
+        .chain(owner)
+        .flat_map(|w| [format!("needs-{w}:"), format!("needs {w}:"), format!("needs{w}:")])
+        .collect()
 }
 
 /// `COLS` with the `desc` column swapped for `expr`, aliased back to `desc`.
@@ -3928,6 +3936,20 @@ pub fn dependency_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The owner's marker comes from THIS install's owner, never a baked-in
+    /// person, and the generic spellings are always accepted.
+    #[test]
+    fn needsyou_markers_are_generic_plus_this_installs_owner() {
+        let generic = needsyou_markers(None);
+        assert_eq!(generic.len(), 9);
+        assert!(generic.iter().all(|m| !m.contains("ethan")), "{generic:?}");
+        let pat = needsyou_markers(Some("pat"));
+        for m in ["needs-pat:", "needs pat:", "needspat:", "needs-you:", "needs owner:", "needshuman:"] {
+            assert!(pat.contains(&m.to_string()), "{m} missing from {pat:?}");
+        }
+        assert!(!pat.iter().any(|m| m.contains("nathan")), "another install's owner must not match");
+    }
 
     /// AF-332. The probe must catch what `current_rev()` cannot.
     ///

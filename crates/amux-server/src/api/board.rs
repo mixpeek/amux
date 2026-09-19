@@ -3137,21 +3137,18 @@ pub fn list_body(row: &IssueRow, slim: bool, stale: bool) -> Value {
                 let low = l.to_lowercase();
                 // EVERY SPELLING THE CLIENT REGEX ACCEPTS, or the two disagree
                 // about the same card. app.js's _focusAsk uses
-                // /NEEDS[- ]?(?:YOU|OWNER|HUMAN|ETHAN):/i, which admits the space and
-                // no-separator forms for ETHAN and HUMAN too — this list had
-                // only the hyphenated ones, so a card marked "NEEDS ETHAN:"
+                // /NEEDS[- ]?(?:YOU|OWNER|HUMAN|<owner>):/i, which admits the space and
+                // no-separator forms for the owner and HUMAN too — this list had
+                // only the hyphenated ones, so a card marked "NEEDS <OWNER>:"
                 // produced a note in the client and none here. Under slim the
                 // client reads THIS field, so the divergence would have shown
                 // up as the marker silently ceasing to work for those spellings
                 // the moment the poll flipped.
-                for m in [
-                    "needs-you:", "needs you:", "needsyou:",
-                    "needs-owner:", "needs owner:", "needsowner:",
-                    "needs-human:", "needs human:", "needshuman:",
-                    // Legacy: earlier clients wrote the upstream author's name.
-                    "needs-ethan:", "needs ethan:", "needsethan:",
-                ] {
-                    if let Some(p) = low.find(m) {
+                let markers = bs::needsyou_markers(
+                    super::settings::owner_marker(&crate::config::amux_home()).as_deref(),
+                );
+                for m in &markers {
+                    if let Some(p) = low.find(m.as_str()) {
                         let v = l[p + m.len()..].trim();
                         if !v.is_empty() {
                             found = Some(v.chars().take(400).collect());
@@ -15086,7 +15083,7 @@ mod slim_tests {
         assert!(list_body(&plain, true, false).get("needsyou_note").is_none());
     }
 
-    /// Every spelling app.js's /NEEDS[- ]?(?:YOU|OWNER|HUMAN|ETHAN):/i accepts must
+    /// Every spelling app.js's /NEEDS[- ]?(?:YOU|OWNER|HUMAN|<owner>):/i accepts must
     /// produce a note here, or the slim client and the full client disagree
     /// about the same card. The three ETHAN/HUMAN space and no-separator forms
     /// were missing until 2026-08-11.
@@ -15097,7 +15094,7 @@ mod slim_tests {
             "NEEDS-OWNER:", "NEEDS OWNER:", "NEEDSOWNER:",
             "NEEDS-HUMAN:", "NEEDS HUMAN:", "NEEDSHUMAN:",
             "needs-you:", "needs owner:",
-            "NEEDS-ETHAN:", "needs ethan:",
+            "NEEDS-OWNER:", "needs owner:",
         ] {
             let row = IssueRow {
                 id: "X-1".into(),
