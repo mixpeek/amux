@@ -95,6 +95,17 @@ CC_DEFAULTS="$CC_HOME/defaults.env"
 # The tmux session of THIS process's pane, or nothing outside tmux. Without
 # $TMUX, `tmux display-message` answers for the server's most recently used
 # session, so a plain operator shell ran every command as that lane.
+# The owner's display name, from the same sources as the server's
+# owner_name(): AMUX_OWNER_NAME in server.env, then git user.name, then the
+# login. Never a baked-in person (.claude/rules/no-hardcoded-specifics.md).
+_owner_name() {
+  local v
+  v="${AMUX_OWNER_NAME:-}"
+  [[ -n "$v" ]] || v="$(sed -n 's/^AMUX_OWNER_NAME=//p' "${AMUX_HOME:-$HOME/.amux}/server.env" 2>/dev/null | tail -1 | sed 's/^"//; s/"$//')"
+  [[ -n "$v" ]] || v="$(git config --global --get user.name 2>/dev/null)"
+  [[ -n "$v" ]] || v="${USER:-${LOGNAME:-owner}}"
+  printf '%s' "$v"
+}
 _amux_pane_session() {
   [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] || return 0
   tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true
@@ -1582,21 +1593,52 @@ cmd_resume() {
   fi
 }
 
+# The server's supervisor on THIS machine: launchd on macOS, a systemd user
+# unit on Linux. install.sh names the unit amux-server.service; older Linux
+# installs used amux.service. AMUX_SERVICE_UNIT overrides both.
+_server_unit() {
+  if [[ -n "${AMUX_SERVICE_UNIT:-}" ]]; then echo "$AMUX_SERVICE_UNIT"; return; fi
+  # Prefer the unit that is actually in use: both files can exist after an
+  # upgrade, and only one is enabled.
+  local u
+  for u in amux-server.service amux.service; do
+    if systemctl --user is-active --quiet "$u" 2>/dev/null \
+      || systemctl --user is-enabled --quiet "$u" 2>/dev/null; then echo "$u"; return; fi
+  done
+  for u in amux-server.service amux.service; do
+    if systemctl --user cat "$u" >/dev/null 2>&1; then echo "$u"; return; fi
+  done
+}
+_server_ctl() {
+  local action="$1" unit
+  if [[ "$(uname -s)" == Darwin ]]; then
+    case "$action" in
+      start)   launchctl kickstart "gui/$(id -u)/com.amux.server-rs" ;;
+      stop)    launchctl kill SIGTERM "gui/$(id -u)/com.amux.server-rs" ;;
+      restart) launchctl kickstart -k "gui/$(id -u)/com.amux.server-rs" ;;
+    esac
+    return
+  fi
+  unit="$(_server_unit)"
+  [[ -n "$unit" ]] || die "no amux systemd user unit found (tried amux-server.service, amux.service); set AMUX_SERVICE_UNIT"
+  systemctl --user "$action" "$unit"
+}
+
 cmd_server() {
   case "${1:-}" in
     start)
       echo "Starting amux server..."
-      launchctl kickstart "gui/$(id -u)/com.amux.server-rs"
+      _server_ctl start || die "server start failed"
       echo "${GREEN}server started${RESET}"
       ;;
     stop)
       echo "Stopping amux server..."
-      launchctl kill SIGTERM "gui/$(id -u)/com.amux.server-rs"
+      _server_ctl stop || die "server stop failed"
       echo "${RED}server stopped${RESET}"
       ;;
     restart)
       echo "Restarting amux server..."
-      launchctl kickstart -k "gui/$(id -u)/com.amux.server-rs"
+      _server_ctl restart || die "server restart failed"
       echo "${GREEN}server restarted${RESET}"
       ;;
     status)
@@ -2008,7 +2050,7 @@ Ordinary choices should proceed. If no human act is required, work the blocker:
   amux board backlog $id --trigger \"<the condition that re-arms it>\"   external wait
   amux board doing $id                                                work the blocker
 
-  amux board needsyou $id --actor Ethan --ask decision --question \"...?\" --unblocks \"...\""
+  amux board needsyou $id --actor $(_owner_name) --ask decision --question \"...?\" --unblocks \"...\""
 }
 
 # A response can be unreadable AFTER a write landed. Stop before any dependent
@@ -2912,7 +2954,7 @@ sys.exit(1 if sys.argv[2]=="1" and not v["valid"] else 0)
       _needsyou_types_or_die "$ask_type" "$id"
       case "$(printf '%s' "$ask_actor" | tr '[:upper:]' '[:lower:]')" in
         ''|human|user|owner|someone|you|me) die "amux board needsyou: --actor must name the specific person or external actor who can answer.
-Generic placeholders are not routable. Example: --actor Ethan or --actor vendor-support" ;;
+Generic placeholders are not routable. Example: --actor $(_owner_name) or --actor vendor-support" ;;
       esac
       [[ -n "$ask" ]] || die "amux board needsyou: --question is required — one sentence, what you are asking.
   amux board needsyou $id --actor $ask_actor --ask $ask_type --question \"...?\" --unblocks \"...\""
@@ -4349,7 +4391,7 @@ ${BOLD}amux board${RESET} — manage board issues from the CLI
                                    --unblocks-file. An untyped park is refused and
                                    prints the five types (AF-318).
                                    A sign-in/login ask auto-gets a clickable resume link into
-                                   this session's live browser view (Ethan clicks to sign in).
+                                   this session's live browser view (the owner clicks to sign in).
   amux board ask <ID> [question]   Ask the owning worker to post a status update
   amux board status-update <ID> …  (for the owning worker) post status to the board
                                    (prose, --stdin or --file <path>; NOT the gate flags below)
@@ -5163,8 +5205,7 @@ ${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
 
 Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your dev server.
 Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
-~/.amux/server.env, then restart the server to reload:
-\`launchctl kickstart -k gui/\$(id -u)/com.amux.server-rs\`.
+~/.amux/server.env, then restart the server to reload: \`amux server restart\`.
 EOF
 }
 
@@ -5179,7 +5220,7 @@ cmd_alert() {
       return 0 ;;
   esac
   # Urgent owner alert — USE SPARINGLY. Fires an in-app push + iMessage to the
-  # amux owner (Ethan). For anything a session needs the owner to see NOW.
+  # amux owner. For anything a session needs the owner to see NOW.
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local msg="${1:-}"
   [[ -n "$msg" ]] || die "Usage: amux alert \"<message>\" [reason]

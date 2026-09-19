@@ -126,7 +126,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 ```
 
 Groups are free-form strings. Common conventions:
-- `needs:you` -- requires human (Ethan) action
+- `needs:you` -- requires human (owner) action
 - `p0`, `p1`, `p2` -- priority levels
 - Topic groups matching the worker's focus area
 
