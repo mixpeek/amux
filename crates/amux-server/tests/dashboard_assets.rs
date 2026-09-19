@@ -1558,3 +1558,21 @@ fn the_mdai_viewer_resolves_paths_against_the_scan_root() {
          _AMUX_HOME, or every open under a mdai_root sub-vault hits 'no such path' (AMUX-4477)"
     );
 }
+
+/// Answers, decisions and nudges from the dashboard are written onto cards and
+/// sent to lanes under the owner's name. It must come from the server's
+/// bootstrap, not a name baked into the client: a fork recorded every decision
+/// as the upstream author's and lanes refused them as a stranger's approvals.
+#[test]
+fn dashboard_records_the_configured_owner_not_a_baked_in_name() {
+    let app = asset("app.js");
+    assert!(app.contains("window._AMUX_OWNER_NAME"), "app.js must read the served owner name");
+    for bad in ["'[Ethan", "`answered` Ethan", "`decision` Ethan", "`nudge` Ethan", "did Ethan ask"] {
+        assert!(!app.contains(bad), "app.js still hardcodes the upstream owner: {bad}");
+    }
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/static_files.rs"),
+    )
+    .unwrap();
+    assert!(src.contains("window._AMUX_OWNER_NAME="), "the bootstrap must serve the owner name");
+}

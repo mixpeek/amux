@@ -11217,7 +11217,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.974';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.975';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -28571,8 +28571,17 @@ function _bqSessionIndex() {
 // Tags a session sets to say "this card is parked on a human" — the durable
 // signal is:needsyou reads, so the owning session (which KNOWS) marks it
 // rather than the board guessing from prose (AMUX-2167).
-const _NEEDS_HUMAN_TAGS = new Set(['needs:you', 'needs:ethan', 'needs:human',
-  'blocked:human', 'human-gated', 'awaiting-decision', 'awaiting-ethan']);
+// The owner's name comes from the server (AMUX_OWNER_NAME, else git
+// user.name, else the login), never a baked-in person.
+function _ownerName() { return (window._AMUX_OWNER_NAME || '').trim() || 'owner'; }
+// LEGACY_HUMAN_TAGS were written by earlier clients under the upstream
+// author's name. They stay readable (and clearable) so existing cards do not
+// drop out of Focus mode; nothing writes them any more.
+const _LEGACY_HUMAN_TAGS = ['needs:ethan', 'awaiting-ethan'];
+const _NEEDS_HUMAN_TAGS = new Set(['needs:you', 'needs:human', 'needs:owner',
+  'blocked:human', 'human-gated', 'awaiting-decision', 'awaiting-owner',
+  'needs:' + _ownerName().toLowerCase(), 'awaiting-' + _ownerName().toLowerCase(),
+  ..._LEGACY_HUMAN_TAGS]);
 
 function _bqIs(item, val, ix) {
   const st = _statusCanon(item.status);
@@ -29257,8 +29266,8 @@ async function _focusAnswer() {
     + 'placeholder="Your reply — sent to the owning worker and recorded on the card"></textarea>', 'Send');
   const ans = (document.getElementById('focus-ans') || {}).value || '';
   if (!ok || !ans.trim()) return;
-  if (sess) { try { await _focusSend(sess, '[Ethan, re ' + item.id + '] ' + ans); } catch(e) {} }
-  await _focusPatch(item.id, { desc_append: '`answered` Ethan: ' + ans });
+  if (sess) { try { await _focusSend(sess, '[' + _ownerName() + ', re ' + item.id + '] ' + ans); } catch(e) {} }
+  await _focusPatch(item.id, { desc_append: '`answered` ' + _ownerName() + ': ' + ans });
   await _focusResolveTag(item);
   showToast('Answered ' + item.id);
   _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
@@ -29266,8 +29275,8 @@ async function _focusAnswer() {
 }
 async function _focusDecide(verdict) {
   const item = _focusList[_focusIdx]; if (!item) return;
-  await _focusPatch(item.id, { desc_append: '`decision` Ethan ' + verdict.toUpperCase() + ' ' + new Date().toISOString().slice(0,10) });
-  if (item.session) { try { await _focusSend(item.session, '[Ethan decision on ' + item.id + '] ' + verdict.toUpperCase() + ' — proceed accordingly.'); } catch(e) {} }
+  await _focusPatch(item.id, { desc_append: '`decision` ' + _ownerName() + ' ' + verdict.toUpperCase() + ' ' + new Date().toISOString().slice(0,10) });
+  if (item.session) { try { await _focusSend(item.session, '[' + _ownerName() + ' decision on ' + item.id + '] ' + verdict.toUpperCase() + ' — proceed accordingly.'); } catch(e) {} }
   await _focusResolveTag(item);
   showToast(item.id + ' ' + verdict);
   _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
@@ -29277,7 +29286,7 @@ async function _focusNudge() {
   const item = _focusList[_focusIdx]; if (!item) return;
   if (item.session) { await _focusSend(item.session,
     '[amux] Please advance ' + item.id + ' (' + (item.title||'').slice(0,60) + '): work it now, or post a status-update / mark its blocker. It is showing as blocked.'); }
-  await _focusPatch(item.id, { desc_append: '`nudge` Ethan asked ' + (item.session||'?') + ' to advance this' });
+  await _focusPatch(item.id, { desc_append: '`nudge` ' + _ownerName() + ' asked ' + (item.session||'?') + ' to advance this' });
   showToast('Nudged ' + (item.session||'') + ' on ' + item.id);
   _focusRebuild(); if (_focusIdx >= _focusList.length) _focusIdx = _focusList.length - 1;
   _focusNext();
@@ -37558,7 +37567,7 @@ function _askRenderThread(peek, latestHTML) {
 }
 const _ASK_SUGGESTIONS = [
   'What themes came up most?',
-  'What did Ethan ask for that is still not done?',
+  'What did ' + _ownerName() + ' ask for that is still not done?',
   'Where did two lanes disagree?',
   'What keeps getting repeated?',
 ];

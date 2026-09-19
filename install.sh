@@ -209,6 +209,18 @@ esac
 mkdir -p "$AMUX_HOME/logs"
 say "data dir: $AMUX_HOME (existing data untouched)"
 
+# The owner's name is what cards and messages to lanes call the person who
+# runs this install. Record it once, from THIS machine (AMUX_OWNER_NAME in the
+# environment, else git user.name, else the login), so it is never someone
+# else's. An existing value is the owner's choice and is left alone.
+if ! grep -q '^AMUX_OWNER_NAME=' "$AMUX_HOME/server.env" 2>/dev/null; then
+  _owner="${AMUX_OWNER_NAME:-$(git config --global --get user.name 2>/dev/null || true)}"
+  _owner="${_owner:-$(id -un)}"
+  printf 'AMUX_OWNER_NAME="%s"\n' "${_owner//\"/}" >> "$AMUX_HOME/server.env"
+  chmod 600 "$AMUX_HOME/server.env"
+  say "owner: $_owner (AMUX_OWNER_NAME in $AMUX_HOME/server.env; edit to change)"
+fi
+
 # Worker templates are CODE, not data: they ship with the checkout and an
 # upgrade should carry new ones. They used to be found beside the installed
 # amux-server.py, which was deleted with the Python server — after which

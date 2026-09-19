@@ -13732,8 +13732,8 @@ async fn status_request(
         headers
             .get("X-Amux-User-Email")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("Ethan")
-            .to_string()
+            .map(str::to_string)
+            .unwrap_or_else(|| super::settings::owner_name(&crate::config::amux_home()))
     } else {
         requester
     };

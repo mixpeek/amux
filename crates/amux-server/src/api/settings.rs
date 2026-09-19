@@ -83,6 +83,68 @@ pub(crate) fn effective_env(home: &Path, key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
+/// The name of the person who owns this amux install, as shown on cards and in
+/// messages to lanes. `AMUX_OWNER_NAME` in server.env first (read at use, so a
+/// PATCH takes effect without a restart), then the global git `user.name`, then
+/// the login name. Never a baked-in person: a fork run by someone else used to
+/// record every dashboard decision as the upstream author's, and lanes rightly
+/// refused those as approvals from a stranger.
+pub(crate) fn owner_name(home: &Path) -> String {
+    let (name, source) = resolve_owner_name(
+        effective_env(home, "AMUX_OWNER_NAME"),
+        || {
+            std::process::Command::new("git")
+                .args(["config", "--global", "--get", "user.name"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+        },
+        |k| std::env::var(k).ok(),
+    );
+    // A fallback can name the wrong person: the global git identity may be an
+    // automation account, and the login is often a service user. Say so once
+    // per process, where a log sweep will find it.
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    if source != "AMUX_OWNER_NAME" {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                owner = %name,
+                source,
+                "AMUX_OWNER_NAME is not set; cards and messages name the owner from a fallback. \
+                 Set AMUX_OWNER_NAME in ~/.amux/server.env"
+            );
+        });
+    }
+    name
+}
+
+/// `owner_name`'s resolution over injected sources, so it is testable without
+/// touching the process env or the machine's git config. Returns the name and
+/// which source supplied it.
+pub(crate) fn resolve_owner_name(
+    configured: Option<String>,
+    git_user_name: impl FnOnce() -> Option<String>,
+    env: impl Fn(&str) -> Option<String>,
+) -> (String, &'static str) {
+    let clean = |v: String| {
+        let v = v.trim().to_string();
+        (!v.is_empty()).then_some(v)
+    };
+    if let Some(v) = configured.and_then(clean) {
+        return (v, "AMUX_OWNER_NAME");
+    }
+    if let Some(v) = git_user_name().and_then(clean) {
+        return (v, "git user.name");
+    }
+    for k in ["USER", "LOGNAME"] {
+        if let Some(v) = env(k).and_then(clean) {
+            return (v, "login");
+        }
+    }
+    ("owner".to_string(), "default")
+}
+
 /// Python's server.env line-replace: rewrite the first `KEY=`/`KEY =` line,
 /// else append. Non-atomic plain write, matching Python (`_env_set`).
 /// `pub(crate)`: shared with the alert-config PATCH (api/alerts.rs), which
@@ -927,6 +989,37 @@ pub(crate) mod test_env {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The owner shown on cards comes from AMUX_OWNER_NAME and is re-read at
+    /// use; with it unset the answer is still a real local identity, never the
+    /// upstream author's name.
+    #[test]
+    fn owner_name_reads_the_configured_owner_and_never_a_baked_in_person() {
+        let _lock = test_env::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().expect("tmp");
+        set_server_env_key(dir.path(), "AMUX_OWNER_NAME", "  Nathan ").unwrap();
+        assert_eq!(owner_name(dir.path()), "Nathan");
+        set_server_env_key(dir.path(), "AMUX_OWNER_NAME", "Someone Else").unwrap();
+        assert_eq!(owner_name(dir.path()), "Someone Else", "must re-read server.env at use");
+    }
+
+    /// Each fallback step, from controlled sources only: the machine's own git
+    /// identity and login never decide this test.
+    #[test]
+    fn owner_name_falls_back_to_git_then_login_then_a_generic_word() {
+        let none = |_: &str| None;
+        assert_eq!(
+            resolve_owner_name(Some("  ".into()), || Some("Git Person\n".into()), none),
+            ("Git Person".to_string(), "git user.name")
+        );
+        let login = |k: &str| (k == "LOGNAME").then(|| "casey".to_string());
+        assert_eq!(resolve_owner_name(None, || None, login), ("casey".to_string(), "login"));
+        assert_eq!(resolve_owner_name(None, || Some(" ".into()), none), ("owner".to_string(), "default"));
+        assert_eq!(
+            resolve_owner_name(Some("Pat".into()), || Some("Git Person".into()), login),
+            ("Pat".to_string(), "AMUX_OWNER_NAME")
+        );
+    }
 
 
     /// AMUX-2904. Clearing an API key must actually clear it. `effective_env`
