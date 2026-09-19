@@ -37,8 +37,8 @@
 //!
 //! # Knobs (server.env, both optional)
 //!
-//! - `AMUX_INTERNAL_EMAIL_DOMAINS` — comma list ADDED to the built-in
-//!   OUR_DOMAINS set. A recipient at any of these needs no approval.
+//! - `AMUX_INTERNAL_EMAIL_DOMAINS` — comma list of domains whose recipients
+//!   need no approval. Empty by default.
 //! - `AMUX_EMAIL_EXTERNAL_EXEMPT` — comma list of session names whose
 //!   external sends skip the gate. DELIBERATELY EMPTY by default: gtm-ticker
 //!   and refresh-house sent 26 external emails in the last 14 days and WILL
@@ -46,7 +46,6 @@
 //!   exemption is Ethan's one env line to write, not this code's to assume.
 
 use crate::config::now_f64;
-use crate::integrations::email::OUR_DOMAINS;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -63,11 +62,9 @@ fn env_list(home: &Path, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// The domains that count as "us": the built-in set plus server.env additions.
+/// The domains that count as "us". There are no built-in exemptions.
 pub fn internal_domains(home: &Path) -> Vec<String> {
-    let mut out: Vec<String> = OUR_DOMAINS.iter().map(|d| d.to_string()).collect();
-    out.extend(env_list(home, "AMUX_INTERNAL_EMAIL_DOMAINS"));
-    out
+    crate::integrations::email::internal_email_domains(home)
 }
 
 /// Sessions whose external sends skip the gate. Empty unless Ethan sets it.
@@ -398,8 +395,9 @@ mod tests {
     }
 
     #[test]
-    fn classifier_external_is_external_and_every_internal_shape_is_not() {
-        let internal: Vec<String> = internal_domains(Path::new("/nonexistent-home"));
+    fn classifier_defaults_external_and_honors_configured_domains() {
+        let home = tempfile::tempdir().unwrap();
+        let internal = internal_domains(home.path());
         let connected = vec!["ethan@mixpeek.com".to_string(), "esteininger21@gmail.com".to_string()];
         // The incident's own recipients: all external.
         let ext = external_recipients(
@@ -408,9 +406,9 @@ mod tests {
             &connected,
         );
         assert_eq!(ext.len(), 2, "{ext:?}");
-        // Internal domain, any case; a connected account's own address
-        // (self-send, gmail.com!); empty and junk entries.
-        assert!(external_recipients("Ops@Mixpeek.com", &internal, &connected).is_empty());
+        // No domain is implicitly internal. Connected accounts remain exact
+        // self-send exemptions; empty and junk entries are ignored.
+        assert_eq!(external_recipients("Ops@Mixpeek.com", &internal, &connected).len(), 1);
         assert!(external_recipients("esteininger21@gmail.com", &internal, &connected).is_empty());
         assert!(external_recipients(" , not-an-address ,", &internal, &connected).is_empty());
         // Mixed list: exactly the external one survives.
@@ -427,6 +425,15 @@ mod tests {
             external_recipients("someone-else@gmail.com", &internal, &connected).len(),
             1
         );
+
+        std::fs::write(
+            home.path().join("server.env"),
+            "AMUX_INTERNAL_EMAIL_DOMAINS=example.test, MIXPEEK.COM\n",
+        )
+        .unwrap();
+        let internal = internal_domains(home.path());
+        assert!(external_recipients("Ops@Mixpeek.com", &internal, &connected).is_empty());
+        assert!(external_recipients("person@example.test", &internal, &connected).is_empty());
     }
 
     #[test]

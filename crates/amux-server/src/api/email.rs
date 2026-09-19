@@ -19,9 +19,7 @@
 //! contract.
 
 use super::AppState;
-use crate::integrations::email::{
-    email_log, read_email_log, Attachment, GmailClient, OUR_DOMAINS,
-};
+use crate::integrations::email::{email_log, read_email_log, Attachment, GmailClient};
 use base64::Engine as _;
 use crate::integrations::{self, IntegrationRegistry, IntegrationState};
 use axum::extract::{Path, Query};
@@ -186,7 +184,7 @@ fn gmail_scope_allowed(home: &std::path::Path, lane: &str) -> Option<Vec<String>
 /// Returns the refusal body, or `None` to allow. Also resolves the empty-`from`
 /// case: an unscoped lane keeps the historical default, a scoped lane defaults to
 /// its FIRST allowed account rather than to a global default it may not hold —
-/// otherwise "scoped to the personal account" would still send as ethan@ whenever
+/// otherwise "scoped to the personal account" would still use the global default whenever
 /// `from` was omitted, which is the same bug wearing a default.
 fn gmail_scope_check(home: &std::path::Path, lane: &str, from: &str) -> Result<Option<String>, Value> {
     let Some(allowed) = gmail_scope_allowed(home, lane) else {
@@ -353,6 +351,20 @@ fn bad_addrs(list: &str) -> Vec<String> {
         .collect()
 }
 
+fn suggested_from(
+    requested: &str,
+    owner_email: Option<String>,
+    connected: &[String],
+) -> Option<String> {
+    if !requested.trim().is_empty() {
+        return Some(requested.to_string());
+    }
+    owner_email
+        .filter(|address| !address.trim().is_empty())
+        .map(|address| address.trim().to_string())
+        .or_else(|| connected.first().cloned())
+}
+
 // ---- POST /api/email/send -------------------------------------------------
 
 pub async fn send(
@@ -477,14 +489,16 @@ pub async fn send(
     // fails open on Gmail API errors (latest_matching -> None).
     if !body.get("force_new_thread").map(truthy).unwrap_or(false) {
         let conn_lc: Vec<String> = connected.iter().map(|a| a.to_lowercase()).collect();
+        let internal = crate::api::email_approval::internal_domains(ctx.client.home());
         let ext_rcpts: Vec<String> = to
             .split(',')
             .map(str::trim)
             .filter(|a| !a.is_empty())
             .filter(|a| {
                 let al = a.to_lowercase();
+                let domain = al.rsplit('@').next().unwrap_or("");
                 !conn_lc.contains(&al)
-                    && !OUR_DOMAINS.iter().any(|d| al.ends_with(&format!("@{d}")))
+                    && !internal.iter().any(|d| domain == d)
             })
             .map(String::from)
             .collect();
@@ -519,8 +533,13 @@ pub async fn send(
                             "body": {
                                 "message_id": cand.get("message_id").cloned().unwrap_or(json!("")),
                                 "body": "...",
-                                "from": if from_acct.is_empty() { "ethan@mixpeek.com".to_string() } else { from_acct.clone() },
+                                "from": suggested_from(
+                                    &from_acct,
+                                    crate::api::settings::effective_env(ctx.client.home(), "AMUX_OWNER_EMAIL"),
+                                    &connected,
+                                ),
                             },
+                            "from_note": "Set AMUX_OWNER_EMAIL when no connected Gmail account is available",
                         },
                         "or_force": {
                             "force_new_thread": true,
@@ -1256,7 +1275,7 @@ pub async fn message(
     // autodesk: the snippet path truncated bodies and hid attachments).
     //
     // SERVE THE SENT COPY WHEN WE SENT IT (GT-59). A cross-account send
-    // (info@ -> ethan@) stores TWO objects with one Message-ID, and Gmail's
+    // Sending between two connected accounts stores TWO objects with one Message-ID, and Gmail's
     // DELIVERY pipeline rewrites the recipient copy's text/plain part —
     // measured on the 2026-08-20 RB2B digest and reproduced with a controlled
     // probe: the sent copy read 120 lines / 44 blanks, the delivered copy 87
@@ -1883,6 +1902,11 @@ mod tests {
     #[tokio::test]
     async fn send_from_unconnected_account_is_honest_501() {
         let home = temp_home();
+        std::fs::write(
+            home.path().join("server.env"),
+            "AMUX_INTERNAL_EMAIL_DOMAINS=mixpeek.com\n",
+        )
+        .unwrap();
         let (app, _d, _r) = app_with(MockHttp::new(vec![]), home.path());
         let (st, e) = send_req(
             &app,
@@ -1923,6 +1947,11 @@ mod tests {
     #[tokio::test]
     async fn send_happy_path_writes_attributed_audit_and_updates_registry() {
         let home = temp_home();
+        std::fs::write(
+            home.path().join("server.env"),
+            "AMUX_INTERNAL_EMAIL_DOMAINS=mixpeek.com\n",
+        )
+        .unwrap();
         let http = MockHttp::new(vec![
             // Guard probe finds no active thread.
             ("GET", "/messages?q=", 200, json!({ "messages": [] })),
@@ -1934,9 +1963,8 @@ mod tests {
             &app,
             "POST",
             "/api/email/send",
-            // ops@mixpeek.com: INTERNAL, so this stays a plain attributed
-            // send — worker sends to external recipients are the approval
-            // gate's own cells now (AMUX-3510).
+            // Explicitly configured internal recipient: this stays a plain
+            // attributed send.
             Some(json!({ "to": "ops@mixpeek.com", "subject": "Hi", "body": "hello",
                          "from": ACCT, "cc": "" })),
             &[("x-amux-session", "tester-session")],
@@ -2014,6 +2042,20 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK, "{res}");
         assert_eq!(res["id"], json!("m2"));
+    }
+
+    #[test]
+    fn reply_suggestion_prefers_owner_email_then_connected_account() {
+        let connected = vec!["connected@example.test".to_string()];
+        assert_eq!(
+            suggested_from("", None, &connected).as_deref(),
+            Some("connected@example.test")
+        );
+        assert_eq!(
+            suggested_from("", Some("owner@example.test".into()), &connected).as_deref(),
+            Some("owner@example.test")
+        );
+        assert_eq!(suggested_from("", None, &[]), None);
     }
 
     #[tokio::test]
@@ -2199,7 +2241,7 @@ mod tests {
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "hilmar.koch@autodesk.com", "subject": "Update",
+            Some(json!({ "to": "ops@mixpeek.com", "subject": "Update",
                          "body": "hello", "from": ACCT })),
             &[("x-amux-session", "autodesk")],
         )
@@ -2208,7 +2250,7 @@ mod tests {
         assert_eq!(res["code"], json!("approval_required"));
         let apr = res["approval_id"].as_str().unwrap().to_string();
         assert!(crate::api::email_approval::valid_id(&apr));
-        assert_eq!(res["preview"]["external_recipients"][0], json!("hilmar.koch@autodesk.com"));
+        assert_eq!(res["preview"]["external_recipients"][0], json!("ops@mixpeek.com"));
         // NOTHING reached the transport.
         assert!(
             http.calls.lock().unwrap().iter().all(|(m, u, _)| !(m == "POST" && u.contains("/send"))),

@@ -38,10 +38,16 @@ use std::sync::{Arc, Mutex};
 pub const GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 pub const DEFAULT_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 
-/// Python's own-domain exemption list (`_gmail_reply_send` / the new-thread
-/// guard), ported verbatim.
-pub const OUR_DOMAINS: [&str; 4] =
-    ["mixpeek.com", "trymixpeek.com", "joinmixpeek.com", "getmixpeek.com"];
+/// Domains explicitly configured as internal. Empty by default so a fork
+/// never inherits another installation's approval exemptions.
+pub fn internal_email_domains(home: &Path) -> Vec<String> {
+    crate::api::settings::effective_env(home, "AMUX_INTERNAL_EMAIL_DOMAINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|domain| domain.trim().to_lowercase())
+        .filter(|domain| !domain.is_empty())
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // base64 (std + urlsafe) — implemented here because the workspace forbids new
@@ -450,6 +456,7 @@ pub fn derive_reply_plan(
     fallback_msgid: &str,
     account: &str,
     connected: &[String],
+    internal_domains: &[String],
     reply_all: bool,
     allow_self: bool,
 ) -> Result<ReplyPlan, String> {
@@ -481,8 +488,8 @@ pub fn derive_reply_plan(
             .into_iter()
             .filter(|a| {
                 let al = a.to_lowercase();
-                !(connected_lc.contains(&al)
-                    || OUR_DOMAINS.iter().any(|d| al.ends_with(&format!("@{d}"))))
+                let domain = al.rsplit('@').next().unwrap_or("");
+                !(connected_lc.contains(&al) || internal_domains.iter().any(|d| domain == d))
             })
             .collect()
     };
@@ -1444,6 +1451,7 @@ impl GmailClient {
             rfc822_message_id,
             account,
             &connected,
+            &internal_email_domains(&self.home),
             reply_all,
             allow_self,
         )?;
@@ -1496,6 +1504,7 @@ impl GmailClient {
             rfc822_message_id,
             account,
             &connected,
+            &internal_email_domains(&self.home),
             reply_all,
             allow_self,
         )?;
@@ -2446,7 +2455,7 @@ mod tests {
             ("to", "owner@mixpeek.com"),
             ("references", "<root@ext>"),
         ]);
-        let plan = derive_reply_plan(&h, "<orig@ext>", ME, &connected(), false, false).unwrap();
+        let plan = derive_reply_plan(&h, "<orig@ext>", ME, &connected(), &[], false, false).unwrap();
         assert_eq!(plan.to, "p@customer.com");
         assert_eq!(plan.subject, "Re: Deal");
         assert_eq!(plan.in_reply_to, "<orig@ext>");
@@ -2464,7 +2473,7 @@ mod tests {
             ("from", "Us <owner@mixpeek.com>"),
             ("to", "p@customer.com, other@customer.com"),
         ]);
-        let plan = derive_reply_plan(&h, "<sent@us>", ME, &connected(), false, false).unwrap();
+        let plan = derive_reply_plan(&h, "<sent@us>", ME, &connected(), &[], false, false).unwrap();
         assert_eq!(plan.to, "p@customer.com, other@customer.com");
         // subject already Re: — not doubled.
         assert_eq!(plan.subject, "Re: Deal");
@@ -2479,7 +2488,16 @@ mod tests {
             ("to", "owner@mixpeek.com, b@ext.com, a@ext.com"),
             ("cc", "info@mixpeek.com, c@ext.com, teammate@trymixpeek.com"),
         ]);
-        let plan = derive_reply_plan(&h, "<m@x>", ME, &connected(), true, false).unwrap();
+        let plan = derive_reply_plan(
+            &h,
+            "<m@x>",
+            ME,
+            &connected(),
+            &["trymixpeek.com".into()],
+            true,
+            false,
+        )
+        .unwrap();
         assert_eq!(plan.to, "a@ext.com, b@ext.com, c@ext.com");
     }
 
@@ -2491,7 +2509,7 @@ mod tests {
             ("from", "owner@mixpeek.com"),
             ("to", "info@mixpeek.com"),
         ]);
-        let err = derive_reply_plan(&h, "<m@x>", ME, &connected(), false, false).unwrap_err();
+        let err = derive_reply_plan(&h, "<m@x>", ME, &connected(), &[], false, false).unwrap_err();
         assert!(err.starts_with("no external recipient on this thread (would email ourselves)"), "{err}");
         assert!(err.contains("allow_self"), "{err}");
     }
@@ -2504,14 +2522,14 @@ mod tests {
             ("from", "info@mixpeek.com"),
             ("to", "owner@mixpeek.com"),
         ]);
-        let plan = derive_reply_plan(&h, "<m@x>", ME, &connected(), false, true).unwrap();
+        let plan = derive_reply_plan(&h, "<m@x>", ME, &connected(), &[], false, true).unwrap();
         assert_eq!(plan.to, "info@mixpeek.com"); // the other owned account, never the sender
     }
 
     #[test]
     fn missing_angle_bracket_gets_pythons_exact_fixup() {
         let h = hdrs(&[("subject", "s"), ("from", "x@ext.com"), ("message-id", "bare@id>")]);
-        let plan = derive_reply_plan(&h, "bare@id>", ME, &connected(), false, false).unwrap();
+        let plan = derive_reply_plan(&h, "bare@id>", ME, &connected(), &[], false, false).unwrap();
         // Python wraps unconditionally when no leading '<' (amux-server.py:26957
         // f"<{id}>"), so a trailing '>' doubles. Parity beats prettiness: the
         // doubled form is what the Python server puts on the wire today.

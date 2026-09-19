@@ -32,8 +32,30 @@ Fail-open: any parse/error lets the command through — a guard must never wedge
 tool call (the amux hook rule).
 """
 import json
+import os
+from pathlib import Path
 import re
+import shlex
 import sys
+
+
+def owner_email() -> str:
+    value = os.environ.get("AMUX_OWNER_EMAIL", "").strip()
+    if value:
+        return value
+    env_file = Path(os.environ.get("AMUX_HOME", Path.home() / ".amux")) / "server.env"
+    try:
+        for raw in env_file.read_text().splitlines():
+            line = raw.strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if not line.startswith("AMUX_OWNER_EMAIL="):
+                continue
+            parsed = shlex.split(line.split("=", 1)[1], comments=True)
+            return parsed[0].strip() if parsed else ""
+    except (OSError, ValueError):
+        pass
+    return ""
 
 
 def main() -> None:
@@ -55,6 +77,9 @@ def main() -> None:
     targets_mail = re.search(r"""application\s+["']mail["']""", cmd, re.IGNORECASE) is not None
 
     if has_osascript and targets_mail:
+        configured_owner = owner_email()
+        from_example = f',"from":{json.dumps(configured_owner)}' if configured_owner else ""
+        owner_hint = "" if configured_owner else " Set AMUX_OWNER_EMAIL before sending."
         sys.stderr.write(
             "BLOCKED — amux email is EXCLUSIVELY the amux email API, NEVER Mail.app "
             "(Ethan, 2026-08-13).\n"
@@ -63,8 +88,9 @@ def main() -> None:
             "send a BLANK email. Use the API instead:\n"
             "  SEND:  curl -sk -X POST -H 'Content-Type: application/json' "
             "-H \"X-Amux-Session: $AMUX_SESSION\" \\\n"
-            "           -d '{\"to\":\"x@y.z\",\"subject\":\"...\",\"body\":\"...\","
-            "\"from\":\"ethan@mixpeek.com\"}' \"$AMUX_URL/api/email/send\"\n"
+            "           -d '{\"to\":\"x@y.z\",\"subject\":\"...\",\"body\":\"...\""
+            f"{from_example}}}' \"$AMUX_URL/api/email/send\"\n"
+            f"{owner_hint}\n"
             "  REPLY: POST \"$AMUX_URL/api/email/reply\"  {message_id, body, from}\n"
             "  READ:  GET \"$AMUX_URL/api/email/inbox\"  ·  /search?q=  ·  /message/<id>\n"
             "If the account is not a connected Gmail account, CONNECT it "
