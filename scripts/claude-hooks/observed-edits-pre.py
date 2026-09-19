@@ -30,8 +30,13 @@ def _derive_session_from_tmux():
     session "UNKNOWN", so pre- and post-half failures of this kind land in one
     place.
     """
+    # Only from inside a pane: outside tmux, display-message answers for the
+    # server's most recently used session, naming an unrelated lane.
+    pane = os.environ.get("TMUX_PANE")
+    if not os.environ.get("TMUX") or not pane:
+        return ""
     try:
-        name = subprocess.run(["tmux", "display-message", "-p", "#S"],
+        name = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#S"],
                               capture_output=True, text=True, timeout=3).stdout.strip()
     except Exception as e:
         _warn_derive_failed(e)

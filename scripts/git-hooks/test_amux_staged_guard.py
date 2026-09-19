@@ -7,8 +7,10 @@ Run: python3 ~/.amux/hooks/test_amux_staged_guard.py   (exit 0 = all pass)
 """
 import importlib.machinery
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amux-staged-guard")
 mod = importlib.machinery.SourceFileLoader("_asg_test", HOOK).load_module()
@@ -27,6 +29,17 @@ def _fake_run(stdout):
 def main():
     failures = []
     real_run = subprocess.run
+    real_tmux = os.environ.get("TMUX")
+    os.environ["TMUX"] = "/tmp/tmux-test/default,1,0"
+    real_pane = os.environ.get("TMUX_PANE")
+    os.environ["TMUX_PANE"] = "%7"
+    # AMUX-4602: only a name with an env file is a lane. Supply one here so the
+    # control does not depend on which lanes this host happens to have.
+    real_home = os.environ.get("AMUX_HOME")
+    home = tempfile.mkdtemp()
+    os.makedirs(os.path.join(home, "sessions"))
+    open(os.path.join(home, "sessions", "mixpeek-research.env"), "w").close()
+    os.environ["AMUX_HOME"] = home
 
     # CONTROL FIRST: an amux-prefixed pane name DOES resolve, so a matcher that
     # silently always returns "" cannot hide behind an all-negative suite.
@@ -58,7 +71,27 @@ def main():
     elif got != "":
         failures.append(f"tmux unavailable should derive '', got {got!r}")
 
+    # Outside tmux ($TMUX unset) display-message still answers, for the
+    # server's most recently used session. That answer is not this process's
+    # pane and must never name a lane.
+    del os.environ["TMUX"]
+    subprocess.run = _fake_run("amux-mixpeek-research\n")
+    got = mod._derive_session_from_tmux()
+    if got != "":
+        failures.append(f"outside tmux must not adopt the last-used lane: got {got!r}")
+
     subprocess.run = real_run
+    if real_tmux is not None:
+        os.environ["TMUX"] = real_tmux
+    if real_pane is None:
+        os.environ.pop("TMUX_PANE", None)
+    else:
+        os.environ["TMUX_PANE"] = real_pane
+    if real_home is None:
+        os.environ.pop("AMUX_HOME", None)
+    else:
+        os.environ["AMUX_HOME"] = real_home
+    shutil.rmtree(home, ignore_errors=True)
 
     # GUARD_VERSION must have moved off the pre-fix baseline, or every already-
     # installed copy on this machine reads as current and never re-syncs (the

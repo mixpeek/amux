@@ -173,6 +173,18 @@ PY
 fi
 MODE="${1:-idle}"; SRC="${2:-stop-hook}"
 DERIVED=0
+# The tmux session name of THIS hook's pane, or nothing when the hook is not
+# running inside tmux. Without $TMUX, `tmux display-message` does not fail: it
+# answers for the server's most recently used session. An operator's plain
+# Claude session on the same host then reported as whichever lane was touched
+# last and got its conversation pinned to that lane (review-claude, 2026-09-19).
+# $TMUX_PANE pins the answer to this pane, not the client's current one.
+# Without $TMUX_PANE there is no pane to ask about, and an untargeted query
+# has the same last-used-session answer, so both are required.
+pane_session() {
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null
+}
 if [ -z "$AMUX_SESSION" ]; then
   # MR-43: the var can go missing INSIDE a lane that IS running in its
   # amux-launched pane (spawn always injects it — session_verbs.rs — so this
@@ -180,7 +192,7 @@ if [ -z "$AMUX_SESSION" ]; then
   # lane is not invisible to its own liveness report, and flag the recovery
   # in the body so /api/logs/analyze can count how often this happens instead
   # of a human noticing a lane that silently never reported.
-  TNAME=$(tmux display-message -p '#S' 2>/dev/null)
+  TNAME=$(pane_session)
   case "$TNAME" in
     amux-*) export AMUX_SESSION="${TNAME#amux-}"; DERIVED=1 ;;
   esac
@@ -203,7 +215,7 @@ fi
 # there the claimed session exists and this leaves it alone.
 CORRECTED=0
 if [ -n "$AMUX_SESSION" ] && [ ! -f "$HOME/.amux/sessions/$AMUX_SESSION.env" ]; then
-  _TN=$(tmux display-message -p '#S' 2>/dev/null)
+  _TN=$(pane_session)
   case "$_TN" in
     amux-*)
       _TRUE="${_TN#amux-}"

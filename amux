@@ -92,8 +92,15 @@ CC_DEFAULTS="$CC_HOME/defaults.env"
 # without a separate edit per site. Scoped to amux- prefixed panes: a human's
 # own tmux session (or no tmux at all) leaves AMUX_SESSION exactly as unset as
 # before this.
+# The tmux session of THIS process's pane, or nothing outside tmux. Without
+# $TMUX, `tmux display-message` answers for the server's most recently used
+# session, so a plain operator shell ran every command as that lane.
+_amux_pane_session() {
+  [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] || return 0
+  tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true
+}
 if [[ -z "${AMUX_SESSION:-}" ]]; then
-  _mr43_tname="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  _mr43_tname="$(_amux_pane_session)"
   if [[ "$_mr43_tname" == amux-* ]]; then
     export AMUX_SESSION="${_mr43_tname#amux-}"
   fi
@@ -116,7 +123,7 @@ fi
 # 404), and it cannot hijack a deliberate cross-session claim, because there the
 # claimed session exists and this leaves it alone.
 if [[ -n "${AMUX_SESSION:-}" && ! -f "$CC_HOME/sessions/$AMUX_SESSION.env" ]]; then
-  _stale_tname="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  _stale_tname="$(_amux_pane_session)"
   if [[ "$_stale_tname" == amux-* ]]; then
     _stale_true="${_stale_tname#amux-}"
     if [[ "$_stale_true" != "$AMUX_SESSION" && -f "$CC_HOME/sessions/$_stale_true.env" ]]; then
@@ -5244,10 +5251,8 @@ cmd_whoami() {
   # the live binding. The tmux pane is the ground truth when present.
   local env_id="${AMUX_SESSION:-}"
   local live_id=""
-  if [[ -n "${TMUX:-}" ]]; then
-    live_id=$(tmux display-message -p '#S' 2>/dev/null)
-    live_id="${live_id#amux-}"
-  fi
+  live_id=$(_amux_pane_session)
+  live_id="${live_id#amux-}"
   echo "env  AMUX_SESSION : ${env_id:-'(unset)'}"
   if [[ -n "$live_id" ]]; then
     echo "live tmux pane   : $live_id"

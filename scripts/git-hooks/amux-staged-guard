@@ -50,7 +50,7 @@ import json, os, shlex, ssl, subprocess, sys, time, urllib.error, urllib.request
 # `^`-anchored, because an unanchored match now finds the comment line first
 # (checked: it returned empty, which would have made `grep -L` match nothing and
 # report a clean fleet).
-GUARD_VERSION = 17
+GUARD_VERSION = 18
 
 
 def amux_base_url():
@@ -445,8 +445,13 @@ def _derive_session_from_tmux():
     requiring one costs nothing today and refuses the next leaked fixture by
     construction rather than by anyone remembering.
     """
+    # Only from inside a pane: outside tmux, display-message answers for the
+    # server's most recently used session, naming an unrelated lane.
+    pane = os.environ.get("TMUX_PANE")
+    if not os.environ.get("TMUX") or not pane:
+        return ""
     try:
-        name = subprocess.run(["tmux", "display-message", "-p", "#S"],
+        name = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#S"],
                               capture_output=True, text=True, timeout=3).stdout.strip()
     except Exception:
         return ""

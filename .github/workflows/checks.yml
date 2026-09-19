@@ -428,6 +428,14 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-status-hooks.sh
+      - name: the report hook only derives its lane inside its own tmux pane
+        run: |
+          set -uo pipefail
+          bash scripts/test-hook-report-tmux-derivation.sh
+      - name: Playwright MCP binds localhost unless a host is given
+        run: |
+          set -uo pipefail
+          bash scripts/test-amux-playwright-mcp.sh
       - name: the test receipt describes the bytes it actually compiled
         run: |
           set -uo pipefail
