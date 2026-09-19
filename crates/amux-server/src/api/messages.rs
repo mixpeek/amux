@@ -737,8 +737,9 @@ pub(crate) async fn accountability_tick(state: &AppState) {
         if now - last < cooldown_s {
             continue; // within cooldown — one nudge/day, not one/tick
         }
+        let owner = crate::api::settings::owner_name(&crate::config::amux_home());
         let text = format!(
-            "[amux accountability] You have {msgs} message(s) from Ethan in the last {since_h}h with \
+            "[amux accountability] You have {msgs} message(s) from {owner} in the last {since_h}h with \
              no board card created or moved — the work isn't tracked yet. Please open a board card \
              for the ask (owned by you) and pursue it. Most recent: \"{snippet}\"",
         );

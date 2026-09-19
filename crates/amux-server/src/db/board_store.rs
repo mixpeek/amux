@@ -2580,10 +2580,12 @@ const DESC_PREFIX_CHARS: usize = 512;
 /// colon the same nine spellings match 287, holding 6.9% of the prose, and 367
 /// of the 371 matches across the whole table really do yield a note.
 fn needsyou_marker_sql() -> String {
-    const MARKERS: [&str; 9] = [
+    const MARKERS: [&str; 12] = [
         "needs-you:", "needs you:", "needsyou:",
-        "needs-ethan:", "needs ethan:", "needsethan:",
+        "needs-owner:", "needs owner:", "needsowner:",
         "needs-human:", "needs human:", "needshuman:",
+        // Legacy: earlier clients wrote the upstream author's name.
+        "needs-ethan:", "needs ethan:", "needsethan:",
     ];
     let mut parts: Vec<String> = Vec::new();
     for col in ["i.\"desc\"", "i.log"] {

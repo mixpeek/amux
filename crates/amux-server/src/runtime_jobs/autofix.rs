@@ -2686,7 +2686,7 @@ fn steering_fan_out(
              card closes itself. The work is only real if the queues are STILL full after \
              the reset, which points at the drain loop rather than at the limit. A credit \
              cap has no reset clock at all, and then the question is whether the fleet \
-             should be running this many lanes on one subscription, which is Ethan's call \
+             should be running this many lanes on one subscription, which is the owner's call \
              and not a per-sender fix."
                 .to_string()
         } else if reason == "not-running" {

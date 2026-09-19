@@ -3137,7 +3137,7 @@ pub fn list_body(row: &IssueRow, slim: bool, stale: bool) -> Value {
                 let low = l.to_lowercase();
                 // EVERY SPELLING THE CLIENT REGEX ACCEPTS, or the two disagree
                 // about the same card. app.js's _focusAsk uses
-                // /NEEDS[- ]?(?:YOU|ETHAN|HUMAN):/i, which admits the space and
+                // /NEEDS[- ]?(?:YOU|OWNER|HUMAN|ETHAN):/i, which admits the space and
                 // no-separator forms for ETHAN and HUMAN too — this list had
                 // only the hyphenated ones, so a card marked "NEEDS ETHAN:"
                 // produced a note in the client and none here. Under slim the
@@ -3146,8 +3146,10 @@ pub fn list_body(row: &IssueRow, slim: bool, stale: bool) -> Value {
                 // the moment the poll flipped.
                 for m in [
                     "needs-you:", "needs you:", "needsyou:",
-                    "needs-ethan:", "needs ethan:", "needsethan:",
+                    "needs-owner:", "needs owner:", "needsowner:",
                     "needs-human:", "needs human:", "needshuman:",
+                    // Legacy: earlier clients wrote the upstream author's name.
+                    "needs-ethan:", "needs ethan:", "needsethan:",
                 ] {
                     if let Some(p) = low.find(m) {
                         let v = l[p + m.len()..].trim();
@@ -15070,7 +15072,7 @@ mod slim_tests {
         assert_eq!(list_body(&row, true, false)["needsyou_note"], "the fresh one");
 
         // Spelling variants the client accepts, case-insensitively.
-        for spelling in ["NEEDS-YOU:", "needs you:", "NEEDSYOU:", "Needs-Ethan:", "needs-human:"] {
+        for spelling in ["NEEDS-YOU:", "needs you:", "NEEDSYOU:", "Needs-Owner:", "needs-human:"] {
             let r = IssueRow { desc: format!("{spelling} answer me"), ..Default::default() };
             assert_eq!(
                 list_body(&r, true, false)["needsyou_note"], "answer me",
@@ -15084,7 +15086,7 @@ mod slim_tests {
         assert!(list_body(&plain, true, false).get("needsyou_note").is_none());
     }
 
-    /// Every spelling app.js's /NEEDS[- ]?(?:YOU|ETHAN|HUMAN):/i accepts must
+    /// Every spelling app.js's /NEEDS[- ]?(?:YOU|OWNER|HUMAN|ETHAN):/i accepts must
     /// produce a note here, or the slim client and the full client disagree
     /// about the same card. The three ETHAN/HUMAN space and no-separator forms
     /// were missing until 2026-08-11.
@@ -15092,9 +15094,10 @@ mod slim_tests {
     fn needsyou_matches_every_spelling_the_client_regex_accepts() {
         for spelling in [
             "NEEDS-YOU:", "NEEDS YOU:", "NEEDSYOU:",
-            "NEEDS-ETHAN:", "NEEDS ETHAN:", "NEEDSETHAN:",
+            "NEEDS-OWNER:", "NEEDS OWNER:", "NEEDSOWNER:",
             "NEEDS-HUMAN:", "NEEDS HUMAN:", "NEEDSHUMAN:",
-            "needs-you:", "needs ethan:",
+            "needs-you:", "needs owner:",
+            "NEEDS-ETHAN:", "needs ethan:",
         ] {
             let row = IssueRow {
                 id: "X-1".into(),

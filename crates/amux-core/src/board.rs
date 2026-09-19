@@ -1732,8 +1732,8 @@ pub fn is_status_report(text: &str) -> bool {
     const BROADCAST_OPENERS: &[&str] = &[
         "quiesce", "heads-up", "heads up", "fyi ", "fyi:", "override from",
         "override:", "override,", "do not push", "do not pull", "do not merge",
-        "hold any new", "hold all", "it is already restored", "ethan asked at",
-        "ethan asked to",
+        "hold any new", "hold all", "it is already restored", "the owner asked at",
+        "the owner asked to",
     ];
     if BROADCAST_OPENERS.iter().any(|p| first.starts_with(p)) {
         return true;

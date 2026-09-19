@@ -284,8 +284,8 @@ async fn send_sms(phone: &str, text: &str) -> (bool, String) {
 pub(crate) fn imessage_wall_reason() -> &'static str {
     "imessage timed out (-1712, a HANG not a denial): the AppleEvent is attributed to the \
      launchd-rooted tmux server, which has no Automation entry to grant and no session to \
-     prompt in. Two things that DO work: set TWILIO_* creds, or have Ethan trigger a send \
-     while he is at the Mac so the consent prompt can surface (AF-553)"
+     prompt in. Two things that DO work: set TWILIO_* creds, or have the owner trigger a send \
+     while they are at the Mac so the consent prompt can surface (AF-553)"
 }
 
 /// The wall stamp's file: mtime = when the 12s TCC timeout last fired.

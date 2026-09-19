@@ -17032,7 +17032,7 @@ pub(crate) fn no_reply_path_stamp(origin: &str, is_isolated: bool) -> Option<Str
         return None;
     }
     Some(format!(
-        "\n\n[no reply path: `{origin}` is an isolated (raw-agent) worker. A peer send back to it is REFUSED — it is reachable only by its owner from the dashboard. If this message asks you something, answer via Ethan or relay through a lane that is not isolated; do not write a reply you cannot deliver.]"
+        "\n\n[no reply path: `{origin}` is an isolated (raw-agent) worker. A peer send back to it is REFUSED — it is reachable only by its owner from the dashboard. If this message asks you something, answer via the owner (dashboard) or relay through a lane that is not isolated; do not write a reply you cannot deliver.]"
     ))
 }
 
@@ -17671,7 +17671,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                     out["code"] = json!("approval_required");
                     out["grant_id"] = json!(gid);
                     out["what_to_do"] = json!(
-                        "STOP and surface this to Ethan — do not retry, do not reroute, do not \
+                        "STOP and surface this to the owner — do not retry, do not reroute, do not \
                          approve it yourself. A human approves from the dashboard origin: POST \
                          /api/grants/<grant_id>/approve (no X-Amux-Session header). The approval \
                          releases exactly ONE send to this target and expires in 1h."
