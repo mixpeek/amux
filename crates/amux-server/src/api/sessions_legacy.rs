@@ -5508,7 +5508,7 @@ pub(crate) fn ensure_work_dir(dir: &str) -> WorkDirOutcome {
     if !p.is_absolute() {
         return WorkDirOutcome::Refused(format!(
             "working directory '{dir}' does not exist and is not an absolute path — give a \
-             full path (e.g. /Users/you/Projects/thing) and it will be created"
+             full path (e.g. $HOME/Projects/thing) and it will be created"
         ));
     }
     match std::fs::create_dir_all(p) {

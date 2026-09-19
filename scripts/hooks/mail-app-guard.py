@@ -82,8 +82,8 @@ def main() -> None:
         owner_hint = "" if configured_owner else " Set AMUX_OWNER_EMAIL before sending."
         sys.stderr.write(
             "BLOCKED — amux email is EXCLUSIVELY the amux email API, NEVER Mail.app "
-            "(Ethan, 2026-08-13).\n"
-            "Mail.app sends from the machine's DEFAULT (Ethan's personal) account, "
+            "(owner's rule, 2026-08-13).\n"
+            "Mail.app sends from the machine's DEFAULT (the owner's personal) account, "
             "bypasses the /api/email/log audit ledger, and a hand-rolled reply can "
             "send a BLANK email. Use the API instead:\n"
             "  SEND:  curl -sk -X POST -H 'Content-Type: application/json' "

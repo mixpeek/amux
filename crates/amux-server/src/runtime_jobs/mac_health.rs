@@ -551,7 +551,7 @@ fn spotlight_exclude_paths() -> Vec<std::path::PathBuf> {
             .map(|s| std::path::PathBuf::from(shellexpand_home(s)))
             .collect();
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
+    let home = std::env::var("HOME").ok().or_else(|| std::env::home_dir().map(|p| p.display().to_string())).unwrap_or_default();
     let uid = std::process::Command::new("id")
         .arg("-u")
         .output()
@@ -570,7 +570,7 @@ fn spotlight_exclude_paths() -> Vec<std::path::PathBuf> {
 
 fn shellexpand_home(s: &str) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
+        let home = std::env::var("HOME").ok().or_else(|| std::env::home_dir().map(|p| p.display().to_string())).unwrap_or_default();
         format!("{home}/{rest}")
     } else {
         s.to_string()
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn shellexpand_home_only_touches_a_leading_tilde_slash() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
+        let home = std::env::var("HOME").ok().or_else(|| std::env::home_dir().map(|p| p.display().to_string())).unwrap_or_default();
         assert_eq!(shellexpand_home("~/Dev"), format!("{home}/Dev"));
         assert_eq!(shellexpand_home("/private/tmp/claude-501"), "/private/tmp/claude-501");
         // A bare `~` with no trailing slash is not the pattern this function

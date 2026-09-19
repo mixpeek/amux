@@ -36,7 +36,7 @@
 
 set -uo pipefail
 
-AMUX_BIN="${AMUX_BIN:-/Users/ethan/Dev/amux/amux}"
+AMUX_BIN="${AMUX_BIN:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 LOG="${AMUX_FLEET_BOOT_LOG:-$HOME/.amux/logs/fleet-boot.log}"
 HEALTH_TIMEOUT="${AMUX_FLEET_BOOT_HEALTH_TIMEOUT:-120}"
 

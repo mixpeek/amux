@@ -264,7 +264,9 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // unreported while every lane routed around it. This is the fleet-visible
     // half; AF-503 shipped the half that reaches the blocked lane.
     out.extend(git_index_lock_check(std::path::Path::new(
-        &std::env::var("AMUX_REPO_ROOT").unwrap_or_else(|_| "/Users/ethan/Dev/amux".into()),
+        // Default: the checkout this server was built from.
+        &std::env::var("AMUX_REPO_ROOT")
+            .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../..").to_string()),
     ))
     .await);
 

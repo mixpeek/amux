@@ -176,18 +176,18 @@ all of the above.
 
 ---
 
-## Email (via Mail.app)
+## Email (amux email API, never Mail.app)
 
-Accounts: ethan@mixpeek.com · esteininger21@gmail.com
+Accounts: the Gmail accounts connected to this install; the owner's is `AMUX_OWNER_EMAIL`.
 
 ```bash
 # Read inbox (returns recent messages with subject, from, date, body, message_id)
-curl -sk "$AMUX_URL/api/email/inbox?account=ethan@mixpeek.com&count=20&days=7"
+curl -sk "$AMUX_URL/api/email/inbox?account=<connected-account>&count=20&days=7"
 # Params: account (filter to one account), count (max messages, default 20), days (lookback, default 7)
 
 # Send email (validates email format, optional from account)
 curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"to":"x@example.com","subject":"Hi","body":"...","from":"ethan@mixpeek.com"}' \
+  -d '{"to":"x@example.com","subject":"Hi","body":"...","from":"<connected-account>"}' \
   $AMUX_URL/api/email/send
 
 # Reply to an existing email (by message_id from inbox response)

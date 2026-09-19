@@ -799,10 +799,10 @@ fn approval_required_response(id: &str, preview: Value) -> Response {
             "code": "approval_required",
             "approval_id": id,
             "preview": preview,
-            "why": "external recipients + worker origin: Ethan's rule (2026-08-22) — no email \
+            "why": "external recipients + worker origin: the owner's rule (2026-08-22) — no email \
                     to anyone outside the internal domains without explicit per-message human \
                     approval",
-            "what_to_do": "surface the preview to Ethan (board card or your turn output) and \
+            "what_to_do": "surface the preview to the owner (board card or your turn output) and \
                            STOP — do not resend, do not rephrase, do not approve it yourself. \
                            A human approves from the dashboard origin: \
                            POST /api/email/approve/<approval_id> (no X-Amux-Session header). \
@@ -903,7 +903,7 @@ pub async fn approve(
             StatusCode::FORBIDDEN,
             json!({
                 "error": "approval must come from a human context — this request carries a \
-                          worker origin. Surface the preview to Ethan instead.",
+                          worker origin. Surface the preview to the owner instead.",
                 "code": "worker_cannot_approve",
             }),
         );

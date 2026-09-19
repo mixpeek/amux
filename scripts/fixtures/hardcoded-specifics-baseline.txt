@@ -1,19 +1,9 @@
 # path<TAB>snippet: one row per known hit. Remove rows as they are fixed; never add one.
 crates/amux-dashboard/static/app.js	const _LEGACY_HUMAN_TAGS = ['needs:ethan', 'awaiting-ethan'];
 crates/amux-dashboard/static/app.js	const ms = [...hay.matchAll(/NEEDS[- ]?(?:YOU|OWNER|HUMAN|ETHAN):\s*([^\n]+)/ig)];
-crates/amux-server/src/api/board.rs	"`ask_question` has to be an actual question, in a sentence. \"Blocked on Ethan\" with no question is not an ask — that phrasing is most of what is sitting in this queue today.",
-crates/amux-server/src/api/board.rs	"`ask_question` has to be an actual question, in a sentence. \"Blocked on Ethan\" with no question is not an ask — that phrasing is most of what is sitting in this queue today.",
 crates/amux-server/src/api/board.rs	"needs-ethan:", "needs ethan:", "needsethan:",
-crates/amux-server/src/api/email.rs	"what_to_do": "surface the preview to Ethan (board card or your turn output) and \
-crates/amux-server/src/api/email.rs	"why": "external recipients + worker origin: Ethan's rule (2026-08-22) — no email \
-crates/amux-server/src/api/email.rs	worker origin. Surface the preview to Ethan instead.",
 crates/amux-server/src/api/reclaim.rs	PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into()))
-crates/amux-server/src/api/sessions_legacy.rs	full path (e.g. /Users/you/Projects/thing) and it will be created"
 crates/amux-server/src/db/board_store.rs	"needs-ethan:", "needs ethan:", "needsethan:",
-crates/amux-server/src/invariants/monitor.rs	&std::env::var("AMUX_REPO_ROOT").unwrap_or_else(|_| "/Users/ethan/Dev/amux".into()),
-crates/amux-server/src/runtime_jobs/mac_health.rs	let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
-crates/amux-server/src/runtime_jobs/mac_health.rs	let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
-scripts/fleet-boot.sh	AMUX_BIN="${AMUX_BIN:-/Users/ethan/Dev/amux/amux}"
 scripts/friction_themes.py	"ETHAN": "amux",
 scripts/friction_themes.py	Ethan, 2026-08-29 (MSG-35488): "look for opportunities that are thematic such
 scripts/friction_themes.py	`cmd_history.ts` is in MILLISECONDS. `type='user' AND origin=''` is Ethan and
@@ -31,13 +21,8 @@ scripts/frustrations-archive.py	Ethan, 2026-08-24: "its only verified when the o
 scripts/frustrations-archive.py	Every archived entry names the actual verifier and evidence. Ethan's 2026-09-11
 scripts/frustrations-archive.py	gone/isolated author under Ethan’s AF-352 decision (2026-09-11). `VALIDATED:` names
 scripts/frustrations_retire.py	and nothing about its name warns you: `retire` is closer to the words Ethan
-scripts/hooks/mail-app-guard.py	"(Ethan, 2026-08-13).\n"
-scripts/hooks/mail-app-guard.py	"Mail.app sends from the machine's DEFAULT (Ethan's personal) account, "
 scripts/hooks/mail-app-guard.py	- Mail.app sends from the machine's DEFAULT account — Ethan's PERSONAL one —
 scripts/hooks/mail-app-guard.py	Ethan, 2026-08-13: "make sure amux is never using mail.app — it should
 scripts/mac-pressure-tripwire.sh	amux alert "$msg" "$why" >/dev/null 2>&1 && echo "mac-tripwire: PAGED Ethan — $reasons" \
 scripts/seo-data.js	eh-auth-feature # Ethan, auth domain, feature work
 scripts/token-baseline.py	Ethan, 2026-08-23: *"audit system level prompt injections/commands etc sent by
-skills/amux.md	-d '{"to":"x@example.com","subject":"Hi","body":"...","from":"ethan@mixpeek.com"}' \
-skills/amux.md	Accounts: ethan@mixpeek.com · esteininger21@gmail.com
-skills/amux.md	curl -sk "$AMUX_URL/api/email/inbox?account=ethan@mixpeek.com&count=20&days=7"

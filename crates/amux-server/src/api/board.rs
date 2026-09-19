@@ -4164,7 +4164,7 @@ fn needsyou_ask_refusal(verdict: bs::AskVerdict, id: &str, session: Option<&str>
             "needsyou_requires_specific_actor",
         ),
         bs::AskVerdict::NoQuestion => (
-            "`ask_question` has to be an actual question, in a sentence. \"Blocked on Ethan\" with no question is not an ask — that phrasing is most of what is sitting in this queue today.",
+            "`ask_question` has to be an actual question, in a sentence. \"Blocked on the owner\" with no question is not an ask — that phrasing is most of what is sitting in this queue today.",
             "needsyou_ask_has_no_question",
         ),
         bs::AskVerdict::NotAQuestion => (
@@ -11169,7 +11169,7 @@ pub async fn patch_item(
                                     "needsyou_requires_specific_actor",
                                 ),
                                 bs::AskVerdict::NoQuestion => (
-                                    "`ask_question` has to be an actual question, in a sentence. \"Blocked on Ethan\" with no question is not an ask — that phrasing is most of what is sitting in this queue today.",
+                                    "`ask_question` has to be an actual question, in a sentence. \"Blocked on the owner\" with no question is not an ask — that phrasing is most of what is sitting in this queue today.",
                                     "needsyou_ask_has_no_question",
                                 ),
                                 bs::AskVerdict::NotAQuestion => (
