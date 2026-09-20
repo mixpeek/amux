@@ -1623,6 +1623,27 @@ impl Runtime {
                         ))),
                     }
                 }
+                amux_core::protocol::WorkerCommand::MemoryResupply { .. } => {
+                    // Durable memory re-supply (#73): resolve the worker's
+                    // live visible memories and send one bounded turn. The
+                    // store borrow ends before the send (`Connection` is
+                    // not `Sync`); a skip (no memories, or a start/resume
+                    // whose conversation already exists) is still Ok, and the
+                    // transition below advances the command instead of
+                    // wedging the queue head.
+                    let prepared = {
+                        let conn = self.store.read()?;
+                        crate::orchestrator::memory_resupply::prepare_resupply(
+                            &conn,
+                            &cmd,
+                            crate::orchestrator::memory_resupply::resupply_max_chars(),
+                        )?
+                    };
+                    match prepared {
+                        Some(prompt) => protocol.send_prompt(&worker, prompt).await,
+                        None => Ok(()),
+                    }
+                }
                 other => {
                     protocol
                         .send_prompt(
@@ -2132,6 +2153,73 @@ mod pump_tests {
         let conn = store.read().unwrap();
         let cmd = crate::db::commands::by_id(&conn, &cmd_id).unwrap().unwrap();
         assert_eq!(cmd.state, CommandState::Delivered);
+    }
+
+    /// #73: a queued memory re-supply flows through the real pump and
+    /// reaches the provider as one bounded turn carrying the worker's
+    /// live visible memories, the same text shape `prepare_resupply`
+    /// builds, delivered by the dispatch arm rather than asserted in
+    /// isolation.
+    #[tokio::test]
+    async fn pump_delivers_memory_resupply_with_live_memories() {
+        use amux_core::ids::MemoryId;
+        use amux_core::memory::{MemoryEntry, MemoryProvenance, MemoryType};
+        use amux_core::protocol::MemoryResupplyReason;
+        use amux_core::scope::Scope;
+        let store = store();
+        let protocol = Arc::new(MockProtocol::new());
+        protocol.register(wid(), AgentState::Idle);
+        {
+            let w = wid();
+            store
+                .write(move |conn| {
+                    let e = MemoryEntry::new(
+                        MemoryId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 610)),
+                        Scope::Worker { id: w.clone() },
+                        "migration-plan",
+                        "move the sessions table first",
+                        MemoryType::Project,
+                        MemoryProvenance::HumanWritten,
+                        chrono::Utc::now(),
+                    );
+                    crate::db::memories::insert(conn, &e)?;
+                    let queued = crate::orchestrator::memory_resupply::enqueue_resupply(
+                        conn,
+                        &w,
+                        MemoryResupplyReason::PostCompaction,
+                        chrono::Utc::now(),
+                    )?;
+                    assert!(queued, "fresh resupply must queue");
+                    Ok(WriteOutcome { applied: true, events: vec![] })
+                })
+                .unwrap();
+        }
+        let rt = runtime_with(store.clone(), protocol.clone());
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        let calls = protocol.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let RecordedCall::SendPrompt { worker, prompt } = &calls[0] else {
+            panic!("resupply must arrive as a prompt turn: {calls:?}");
+        };
+        assert_eq!(worker, &wid());
+        assert!(prompt.text.contains("migration-plan"), "{}", prompt.text);
+        assert!(prompt.text.contains("move the sessions table first"), "{}", prompt.text);
+        assert_eq!(
+            prompt.idempotency_key,
+            crate::orchestrator::memory_resupply::resupply_key(
+                &wid(),
+                MemoryResupplyReason::PostCompaction
+            )
+        );
+        let conn = store.read().unwrap();
+        let key = crate::orchestrator::memory_resupply::resupply_key(
+            &wid(),
+            MemoryResupplyReason::PostCompaction,
+        );
+        let cmd = crate::db::commands::by_idempotency_key(&conn, &wid(), &key)
+            .unwrap()
+            .expect("resupply row must exist");
+        assert_eq!(cmd.state, CommandState::Delivered, "pump transitioned the resupply");
     }
 
     /// RR-0044b: the fleet gate outranks the timing gate. The worker's own

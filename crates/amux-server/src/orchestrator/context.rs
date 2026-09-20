@@ -73,6 +73,67 @@ fn memory_layer(level: ScopeLevel) -> (u32, &'static str) {
     }
 }
 
+/// Resolution target for a worker: itself plus its group (looked up from
+/// the worker row; a worker with no row still resolves as itself plus
+/// globals). One spelling shared by assembly and re-supply.
+fn resolution_target(conn: &Connection, worker: &WorkerId) -> rusqlite::Result<ResolutionTarget> {
+    let group: Option<GroupId> = crate::db::queries::get_worker(conn, worker.as_str())?
+        .and_then(|row| row.group_id)
+        .and_then(|g| GroupId::parse(&g).ok());
+    Ok(ResolutionTarget {
+        worker: Some(worker.clone()),
+        group,
+    })
+}
+
+/// Deterministic memory-only fragments for `worker`, most general scope
+/// first. Reads the canonical store through the ONE visibility predicate
+/// (`db::memories::list_visible`, Invariant 2), which already excludes
+/// soft-deleted, expired, and superseded entries, so provenance, expiry,
+/// supersession, and trust boundaries arrive preserved, not re-derived.
+/// Untrimmed: callers apply their own budget (`assemble_context_*` trims
+/// the whole assembly; re-supply trims the memory set to its own cap).
+pub fn memory_fragments(
+    conn: &Connection,
+    worker: &WorkerId,
+) -> rusqlite::Result<Vec<ContextFragment>> {
+    let target = resolution_target(conn, worker)?;
+    let mut fragments = Vec::new();
+    // Memory layers: org -> global -> group -> worker (general to specific,
+    // so the more specific layer lands closer to the task and can override
+    // in the model's reading, the same precedence direction as Invariant 2).
+    for e in memories::list_visible(conn, &target)? {
+        let (priority, source) = memory_layer(e.scope.level());
+        fragments.push(ContextFragment {
+            priority,
+            source: source.into(),
+            content: format!("{}: {}", e.name, e.content),
+            trust: match &e.provenance {
+                amux_core::memory::MemoryProvenance::Imported { .. } => TrustLevel::Untrusted,
+                _ => TrustLevel::Trusted,
+            },
+            provenance: serde_json::to_string(&e.provenance).unwrap_or_else(|_| "unknown".into()),
+        });
+    }
+    Ok(fragments)
+}
+
+/// Bounded memory-only snapshot for lifecycle re-supply (#73). Returns
+/// `None` when the worker sees no live memories, in which case the caller
+/// must deliver no turn at all rather than an empty one. `Some` is trimmed
+/// to `max_chars` with the same deterministic omission receipts as assembly.
+pub fn memory_snapshot(
+    conn: &Connection,
+    worker: &WorkerId,
+    max_chars: usize,
+) -> rusqlite::Result<Option<ContextSnapshot>> {
+    let fragments = memory_fragments(conn, worker)?;
+    if fragments.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(ContextSnapshot::build(trim_to_budget(fragments, max_chars))))
+}
+
 /// Assemble the context snapshot for assigning `task` to `worker`.
 ///
 /// Deterministic by construction: every input is read from the DB in this
@@ -102,34 +163,14 @@ pub fn assemble_context_with_budget(
     max_chars: usize,
 ) -> rusqlite::Result<ContextSnapshot> {
     let now = chrono::Utc::now();
-    // Resolution target: the worker plus its group (looked up from the
-    // worker row; a worker with no row still resolves as itself + globals).
-    let group: Option<GroupId> = crate::db::queries::get_worker(conn, worker.as_str())?
-        .and_then(|row| row.group_id)
-        .and_then(|g| GroupId::parse(&g).ok());
-    let target = ResolutionTarget {
-        worker: Some(worker.clone()),
-        group: group.clone(),
-    };
+    // Resolution target through the shared spelling (worker plus its
+    // group); the group half is also needed for guide-rule scoping below.
+    let group = resolution_target(conn, worker)?.group;
 
-    let mut fragments: Vec<ContextFragment> = Vec::new();
-
-    // Memory layers: org -> global -> group -> worker (general to specific,
-    // so the more specific layer lands closer to the task and can override
-    // in the model's reading — the same precedence direction as Invariant 2).
-    for e in memories::list_visible(conn, &target)? {
-        let (priority, source) = memory_layer(e.scope.level());
-        fragments.push(ContextFragment {
-            priority,
-            source: source.into(),
-            content: format!("{}: {}", e.name, e.content),
-            trust: match &e.provenance {
-                amux_core::memory::MemoryProvenance::Imported { .. } => TrustLevel::Untrusted,
-                _ => TrustLevel::Trusted,
-            },
-            provenance: serde_json::to_string(&e.provenance).unwrap_or_else(|_| "unknown".into()),
-        });
-    }
+    // Memory layers through the shared builder: assignment assembly and
+    // lifecycle re-supply render the same store state identically. No
+    // budget is applied here; the whole assembly is trimmed once below.
+    let mut fragments: Vec<ContextFragment> = memory_fragments(conn, worker)?;
 
     // Active failure-derived rules are real context, with a stable harness
     // hash recorded beside them. Scope spellings are intentionally simple:
