@@ -193,7 +193,7 @@ fn scan_worker_groups(conn: &Connection) -> Vec<(String, Vec<String>)> {
 }
 
 /// `_caller_scope` (py:15208-15224): (scoped, caller_tags_lowercased, name).
-fn caller_scope(home: &Path, headers: &HeaderMap) -> (bool, BTreeSet<String>, String) {
+pub(crate) fn caller_scope(home: &Path, headers: &HeaderMap) -> (bool, BTreeSet<String>, String) {
     let name = hdr_worker(headers);
     if name.is_empty() {
         return (false, BTreeSet::new(), String::new());

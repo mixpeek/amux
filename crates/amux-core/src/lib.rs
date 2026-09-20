@@ -42,6 +42,7 @@ pub mod message;
 pub mod orchestrator;
 pub mod policy;
 pub mod protocol;
+pub mod project;
 pub mod provider;
 pub mod provider_fleet;
 pub mod revision;

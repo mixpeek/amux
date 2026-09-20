@@ -33,6 +33,7 @@ pub mod grants;
 pub mod gmail_auth;
 pub mod google_sa;
 pub mod groups;
+pub mod projects;
 pub mod crm;
 pub mod speedtest;
 pub mod habits;
@@ -253,6 +254,7 @@ pub fn router(state: AppState) -> Router {
         // CC_TAGS env files, config from the shared group_config table
         // (api/groups.rs). Both spellings, matching python's alias.
         .nest("/api/groups", groups::routes())
+        .nest("/api/projects", projects::routes())
         .nest("/api/tags", groups::tags_routes())
         .nest("/api/journal", journal::routes())
         // CRM: a PORT of the python contract, not a new feature — the schema and

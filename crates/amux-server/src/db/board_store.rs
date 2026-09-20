@@ -1921,6 +1921,8 @@ pub fn next_issue_id(conn: &Connection, prefix: &str) -> rusqlite::Result<String
 /// to check one property is a test that stops being written.
 #[derive(Debug, Clone, Default)]
 pub struct IssueRow {
+    /// Stable group/project owner. Session is the executor when this is set.
+    pub project_group: Option<String>,
     /// The semantic id ("AMUX-123") — the wire identity. See [`internal_id`].
     pub id: String,
     pub title: String,
@@ -2228,6 +2230,7 @@ impl IssueRow {
             obj.insert("desc".into(), serde_json::json!(self.desc));
             obj.insert("log".into(), serde_json::json!(self.log));
         }
+        if let Some(project) = &self.project_group { v["project_group"] = serde_json::json!(project); }
         v
     }
 
@@ -2329,7 +2332,7 @@ const COLS: &str = "i.id, i.title, i.\"desc\", i.status, i.session, i.creator, i
      i.callback_prompt, i.callback_state, i.callback_message_id, \
      i.callback_fired_at, i.callback_error, i.ask_actor, \
      i.lease_owner, i.lease_acquired_at, i.lease_heartbeat_at, \
-     i.lease_expires_at, COALESCE(i.lease_generation,0)";
+     i.lease_expires_at, COALESCE(i.lease_generation,0), i.project_group";
 
 /// Read an INTEGER-typed timestamp column that some row may hold as REAL or TEXT.
 ///
@@ -2404,6 +2407,7 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
         .map(str::to_string)
         .collect();
     Ok(IssueRow {
+        project_group: r.get(57)?,
         id: r.get(0)?,
         title: r.get(1)?,
         desc: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -2525,6 +2529,13 @@ pub fn get_issue(conn: &Connection, id: &str) -> rusqlite::Result<Option<IssueRo
         issue_from_row,
     )
     .optional()
+}
+
+/// The project owns these rows even when its executor expires or is replaced.
+pub fn project_issues(conn: &Connection, name: &str) -> rusqlite::Result<Vec<IssueRow>> {
+    let mut q = conn.prepare(&format!("SELECT {COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id=i.id WHERE i.project_group=?1 AND i.deleted IS NULL AND i.archived=0 GROUP BY i.id ORDER BY i.pos,i.created,i.id"))?;
+    let rows = q.query_map([name], issue_from_row)?.collect();
+    rows
 }
 
 /// Archived filter for the list (`archived` query param), Python's grammar
@@ -6088,7 +6099,7 @@ mod tests {
         // newest verified, and the 100 newest done — the lumped 100-cap
         // showed 9 of a 141-card bulk-verify while Python showed all of it.
         let mk = |i: i64, status: &str| IssueRow {
-            lease_owner: None, lease_acquired_at: None, lease_heartbeat_at: None, lease_expires_at: None, lease_generation: 0,
+            project_group: None, lease_owner: None, lease_acquired_at: None, lease_heartbeat_at: None, lease_expires_at: None, lease_generation: 0,
             desc_prefixed: None,
             id: format!("T-{i}"),
             title: String::new(),
@@ -6420,7 +6431,7 @@ mod configured_gate_tests {
 
     fn row(item_type: &str, gate: Option<&str>) -> IssueRow {
         IssueRow {
-            lease_owner: None, lease_acquired_at: None, lease_heartbeat_at: None, lease_expires_at: None, lease_generation: 0,
+            project_group: None, lease_owner: None, lease_acquired_at: None, lease_heartbeat_at: None, lease_expires_at: None, lease_generation: 0,
             desc_prefixed: None,
             id: "T-1".into(), title: String::new(), desc: String::new(),
             status: "doing".into(), session: None, creator: String::new(),

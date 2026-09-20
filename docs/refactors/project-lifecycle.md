@@ -112,7 +112,7 @@ Full production rollout and migration of the user's active boards happens after 
 
 - [x] Branch created from fresh remote main; previous retirement fix retained.
 - [x] Current paths and constraints inspected; full staged scope recorded.
-- [ ] Stage 1: ownership/policy and migration preview.
+- [x] Stage 1: ownership/policy and migration preview. Targeted server `project_` tests: 5 passed; persistent policy CAS, preview conflicts, ownership across executor changes and scoped API covered. Full suite remains the final branch gate.
 - [ ] Stage 2: durable project intake.
 - [ ] Stage 3: single execution authority.
 - [ ] Stage 4: verification/integration/retirement.

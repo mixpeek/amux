@@ -9,6 +9,7 @@ pub mod backend;
 pub mod config;
 pub mod fanout_workspace;
 mod fanout_retirement;
+pub mod project_execution;
 mod cargo_target_guard;
 pub mod legacy_port;
 pub mod log_dedupe;

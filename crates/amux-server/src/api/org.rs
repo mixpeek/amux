@@ -279,6 +279,11 @@ pub(crate) fn authorize_local_member_request(
             .is_some_and(|worker| scope.allows_worker(&worker));
         return (!allowed).then(|| forbidden(&scope, target));
     }
+    // Project handlers enforce both membership and worker group scope. Policy
+    // and migration mutations remain operator-only inside that boundary.
+    if path == "/api/projects" || path.starts_with("/api/projects/") {
+        return None;
+    }
     if path == "/api/board" || path == "/api/board/" {
         // GET is filtered below; POST validates the requested session in the
         // handler before it writes.
