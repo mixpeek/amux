@@ -495,7 +495,7 @@ pub const CATALOG: &[Doc] = &[
             },
             EnvControl {
                 var: "AMUX_TUNNEL_GATEWAY",
-                effect: "gateway base URL (default https://cloud.amux.io); point at your own for the self-hosted OSS gateway",
+                effect: "gateway base URL — REQUIRED, no default: the tunnel refuses to start until you name one (self-host cloud/gateway/, or a hosted service you chose)",
                 off: None,
             },
             EnvControl {

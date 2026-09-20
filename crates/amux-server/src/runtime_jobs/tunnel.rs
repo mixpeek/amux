@@ -30,14 +30,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-/// The gateway this client dials. Overridable so the OSS gateway in
-/// `cloud/gateway/` can be self-hosted (the Proxies tab says so in its hint).
+/// The gateway this client dials. EMPTY unless the operator names one: this
+/// fork ships no default, so an install never has a host it would dial that
+/// its owner did not choose. `cloud/gateway/` is open source and self-hostable,
+/// and the upstream service is one valid value among others — it is simply not
+/// a value we pick on someone's behalf.
 pub fn gateway() -> String {
     std::env::var("AMUX_TUNNEL_GATEWAY")
         .ok()
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "https://cloud.amux.io".into())
+        .unwrap_or_default()
 }
 
 pub fn token() -> String {
@@ -45,7 +48,26 @@ pub fn token() -> String {
 }
 
 pub fn configured() -> bool {
-    !token().is_empty()
+    credentials_refusal(&token(), &gateway()).is_none()
+}
+
+/// Why the tunnel may not dial, over injected values so it is testable without
+/// touching the process env (which races every other test). None = both halves
+/// present. A token alone is NOT enough: with no gateway named, there is no
+/// host this install has agreed to contact.
+fn credentials_refusal(token: &str, gateway: &str) -> Option<String> {
+    if token.trim().is_empty() {
+        return Some("no tunnel token — set AMUX_TUNNEL_TOKEN (from your gateway account)".into());
+    }
+    if gateway.trim().is_empty() {
+        return Some(
+            "no tunnel gateway — set AMUX_TUNNEL_GATEWAY to the gateway you want to dial \
+             (self-host cloud/gateway/, or name a hosted one). This fork ships no default, so \
+             nothing is contacted unless you choose it."
+                .into(),
+        );
+    }
+    None
 }
 
 fn env_u32(key: &str, default: u32) -> u32 {
@@ -175,8 +197,8 @@ pub async fn start(target_port: Option<u16>) -> Result<TunnelState, String> {
         }
     }
     let token = token();
-    if token.is_empty() {
-        return Err("no tunnel token — set AMUX_TUNNEL_TOKEN (from your amux cloud account)".into());
+    if let Some(why) = credentials_refusal(&token, &gateway()) {
+        return Err(why);
     }
     let self_port = crate::legacy_port::canonical_port();
     let port = target_port.unwrap_or(self_port);
@@ -493,8 +515,11 @@ async fn run(token: String, gw: String, target_base: String, generation: u64) {
 /// header. Returns what it did so the caller can log a fact rather than an
 /// intention.
 pub async fn maybe_boot_start() -> &'static str {
-    if !configured() {
+    if token().trim().is_empty() {
         return "no token";
+    }
+    if gateway().trim().is_empty() {
+        return "no gateway";
     }
     let Some(port) = boot_target_port() else {
         return "no AMUX_TUNNEL_PORT";
@@ -582,10 +607,25 @@ mod tests {
     fn the_env_knobs_default_to_pythons_values() {
         assert_eq!(rate_per_min(), 180);
         assert_eq!(max_concurrent(), 8);
-        assert_eq!(gateway(), "https://cloud.amux.io");
+        // No default gateway: an unset AMUX_TUNNEL_GATEWAY means "dial nobody",
+        // not "dial whoever upstream ships".
+        assert_eq!(gateway(), "");
         // 0 and empty are "unset", not "a cap of zero" — a literal 0 would shed
         // every request while reporting the tunnel healthy.
         assert_eq!(env_u32("AMUX_TUNNEL_NOPE_XYZ", 7), 7);
+    }
+
+    /// A token alone must not be enough: with no gateway named there is no
+    /// host this install has agreed to dial, and shipping someone else's as a
+    /// default is exactly what this removes.
+    #[test]
+    fn a_token_without_a_gateway_is_not_configured() {
+        assert!(credentials_refusal("", "").unwrap().contains("AMUX_TUNNEL_TOKEN"));
+        let why = credentials_refusal("tok", "").expect("a token alone must be refused");
+        assert!(why.contains("AMUX_TUNNEL_GATEWAY"), "{why}");
+        assert!(why.contains("no default"), "say why there is nothing to fall back to: {why}");
+        assert!(credentials_refusal("tok", "   ").is_some(), "whitespace is not a gateway");
+        assert!(credentials_refusal("tok", "https://gw.example.test").is_none());
     }
 
     /// `maybe_boot_start` must refuse to do anything without BOTH halves. The

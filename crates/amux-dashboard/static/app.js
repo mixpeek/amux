@@ -11217,7 +11217,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.977';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.978';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -32802,7 +32802,7 @@ async function _renderIcalBody(box) {
     html += '<button id="tun-toggle" class="btn" style="font-size:0.78rem;" onclick="_tunnelStartUI(this.closest(\'[data-ical-box]\'))">Start public tunnel</button>';
   } else {
     html += '<div style="margin-bottom:0.3rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.35rem;">Expose this calendar at a public URL, no port forwarding. Set <code>AMUX_TUNNEL_TOKEN</code> from <b>amux cloud</b> (paid), or self-host the gateway (OSS) and point <code>AMUX_TUNNEL_GATEWAY</code> at it.</p>';
+    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.35rem;">Expose this calendar at a public URL, no port forwarding. Point <code>AMUX_TUNNEL_GATEWAY</code> at a gateway you run (<code>cloud/gateway/</code> is OSS) or a hosted one you chose, and set <code>AMUX_TUNNEL_TOKEN</code> for it. There is no default gateway.</p>';
     html += '<p style="color:var(--muted);font-size:0.76rem;margin:0;">No public URL? <b>Download .ics</b> below and import it — static, but works everywhere with zero infra.</p>';
   }
   html += '</div>';

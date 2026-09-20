@@ -437,12 +437,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div id="settings-connections-list" style="display:flex;flex-direction:column;gap:4px;"></div>
           <div id="add-conn-form" style="display:none;margin-top:8px;padding:8px;background:var(--bg3);border-radius:6px;" onclick="event.stopPropagation()">
             <div style="display:flex;gap:4px;margin-bottom:6px;">
-              <button onclick="event.stopPropagation();_addConnPreset('Cloud','https://cloud.amux.io')" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.68rem;color:var(--dim);cursor:pointer;">&#x2601; cloud.amux.io</button>
               <button onclick="event.stopPropagation();_addConnPreset('Local','https://localhost:8824')" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.68rem;color:var(--dim);cursor:pointer;">&#x1F4BB; localhost</button>
             </div>
-            <input id="add-conn-name" type="text" placeholder="Name (e.g. Cloud)" autocomplete="off"
+            <input id="add-conn-name" type="text" placeholder="Name (e.g. Laptop)" autocomplete="off"
               style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
-            <input id="add-conn-url" type="text" placeholder="URL (e.g. https://cloud.amux.io)" autocomplete="off"
+            <input id="add-conn-url" type="text" placeholder="URL (e.g. https://amux.your-domain.tld)" autocomplete="off"
               onkeydown="if(event.key==='Enter')_addConnectionSave()"
               style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:6px;outline:none;">
             <div style="display:flex;gap:6px;">
