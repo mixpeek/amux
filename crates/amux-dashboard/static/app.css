@@ -6891,3 +6891,20 @@ select.input { height:var(--control-height); }
   .msg-ctx-close { min-height:44px; }
   .msg-ctx-k { flex-basis:38%; }
 }
+
+/* The project view keeps outcomes primary; executors are a detail of a task. */
+.projects-view{flex:1;min-height:0;padding:24px;max-width:1800px;margin:0 auto;width:100%;box-sizing:border-box;overflow:auto}
+.project-heading,.project-status,.project-send{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.project-heading h2{margin:0;font-size:24px}.project-heading p{color:var(--muted);margin:6px 0}.project-heading>div{flex:1}
+.projects-view label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600}
+.projects-view input,.projects-view select,.projects-view textarea{font:inherit;padding:11px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);box-sizing:border-box;min-width:0}
+.projects-view textarea{width:100%;resize:vertical;margin:8px 0}.project-composer-label{margin-top:20px}
+.project-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.project-settings{padding:16px;border:1px solid var(--border);border-radius:12px;margin-top:20px}.project-settings summary{cursor:pointer;font-weight:600;margin-bottom:12px}
+.project-columns{display:flex;gap:16px;overflow-x:auto;padding:12px 0 20px}.project-column{flex:1;min-width:240px;max-width:360px}.project-column h3{font-size:13px;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between}
+.project-card{padding:16px;margin-bottom:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg)}.project-card h4{margin:8px 0;font-size:16px;line-height:1.4}.project-card p{font-size:13px;line-height:1.5}.project-card small,.project-empty,.project-usage{color:var(--muted)}
+.project-working{border-color:#28a455;box-shadow:0 0 0 1px #28a455}.project-wait{color:#986000}.project-card pre,.project-settings pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.project-intake{border-left:3px solid #d09515;padding:12px;margin-bottom:12px;background:var(--card-bg)}
+#project-error{color:var(--error);white-space:pre-wrap}.project-card .btn{margin-top:8px}.project-usage{font-size:13px;line-height:1.6}
+@media(max-width:600px){.projects-view{padding:16px}.project-heading{align-items:stretch}.project-heading>div{flex-basis:100%}.project-columns{flex-direction:column;overflow-x:visible}.project-column{min-width:0;max-width:none;width:100%}.project-form-grid{grid-template-columns:1fr}}
+
+#orch-projects ul{padding-left:20px;overflow-wrap:anywhere}

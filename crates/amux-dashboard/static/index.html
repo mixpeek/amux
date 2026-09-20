@@ -539,6 +539,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <div class="tab-bar-outer">
 <div class="tab-bar">
+  <button id="tab-projects" onclick="switchView('projects')"><span class="tab-ico">◈</span><span class="tab-lbl">Projects</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
@@ -1655,6 +1656,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<div id="projects-view" style="display:none" class="projects-view"></div>
 <div id="orchestrations-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
   <div style="padding:12px 14px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
     <h2 style="font-size:1rem;font-weight:600;margin:0;">Orchestrations</h2>
@@ -1662,6 +1664,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <span style="flex:1;"></span>
     <button class="btn primary" onclick="switchView('board');_toggleLaunchBar()" style="font-size:.8rem;">+ Launch</button>
   </div>
+  <div id="orch-projects" style="padding:0 14px;"></div>
   <div id="orch-list" style="flex:1;min-height:0;overflow-x:auto;overflow-y:auto;padding:0 14px 14px;"></div>
 </div>
 <div id="graph-view" style="display:none;flex-direction:row;overflow:hidden;">

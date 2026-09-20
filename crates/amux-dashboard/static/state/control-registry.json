@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2069,
+  "n_considered": 2089,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1912,6 +1912,12 @@
     },
     "_peekPollBeacon": {
       "kind": "command._peekPollBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekPollNow": {
+      "kind": "command._peekPollNow",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

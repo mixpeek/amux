@@ -783,6 +783,7 @@ let _peekEtag = null;    // ETag of last FULL peek response — enables conditio
 let _peekLiveEtag = null; // ETag of last live=1 response — keeps idle polls a cheap 304
 // Adaptive peek polling: fast while the session generates, back off when idle
 // (each idle poll is a cheap 304 anyway), and pause entirely when the tab is hidden.
+let _peekPollInFlight = false, _peekPollAgain = false;
 let _peekUrgentUntil = 0;    // bounded low-latency window after local input
 let _peekLastChangeMs = 0;   // performance.now() of the last time the live frame ACTUALLY changed
 function _peekPollInterval() {
@@ -800,7 +801,7 @@ function _peekPollInterval() {
   if (sinceChange < 6000) return 650;    // just settled → still brisk
   if (st === 'active') return 900;       // model working, no visible output yet
   if (st === 'waiting') return 1500;
-  return 3000;   // idle ticks are 304s — near-free
+  return 1500;   // idle ticks remain lightweight conditional requests
 }
 // After a send/keystroke, treat the session as "just changed" and re-arm the poll
 // loop immediately so the streaming RESPONSE is picked up at the fast cadence —
@@ -857,6 +858,8 @@ function _schedulePeekPoll(delay) {
   peekTimer = setTimeout(async () => {
     peekTimer = null;
     if (gen !== _peekPollGen) return;
+    const tickStart = performance.now();
+    _peekPollInFlight = true;
     try {
       const _s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
       const _st = (_s && _s.status) || '';
@@ -874,9 +877,24 @@ function _schedulePeekPoll(delay) {
       // flip to "needs input" shows without closing and reopening the view.
       if (typeof updatePeekStatus === 'function') updatePeekStatus();
     } catch(e) {}
-    if (gen !== _peekPollGen) return;
-    _schedulePeekPoll();
+    _peekPollInFlight = false;
+    if (gen !== _peekPollGen) { _peekPollAgain = false; return; }
+    // The cadence is a PERIOD, so the request's own duration comes out of the
+    // wait. It used to be added on top: a 350ms setting with a ~200ms request
+    // polled every ~500ms (measured p50 504ms). The 40ms floor keeps a slow
+    // link strictly serial and bounded, never back-to-back.
+    const again = _peekPollAgain; _peekPollAgain = false;
+    _schedulePeekPoll(again ? 40 : Math.max(40, _peekPollInterval() - (performance.now() - tickStart)));
   }, delay ?? _peekPollInterval());
+}
+// Ask the serial loop for a live tick NOW, instead of starting a second fetch
+// beside it. Callers that only need "the frame may have changed" go through
+// here, so there is one request in flight and frames paint in order.
+function _peekPollNow() {
+  if (!peekSession || document.hidden) return;
+  if (_peekPollInFlight) { _peekPollAgain = true; return; }
+  if (_peekPollActive) _schedulePeekPoll(0);
+  else refreshPeek(true);   // embedded peek has no loop; still the ~3KB frame
 }
 // Composer drafts live in ONE place: _draftGet/_draftSave, keyed by session.
 // There used to be three stores (this in-memory map, the peekState snapshot's
@@ -11579,7 +11597,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1005';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1006';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -25929,7 +25947,7 @@ function switchView(view) {
   // silently blank screen is the bug, not the omission. Triples cannot
   // misalign — a new view is one row or it is absent, never half-present.
   const _svViews = [
-    ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
+    ['projects', 'projects', ''], ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
     ['files', 'files', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
@@ -25945,6 +25963,7 @@ function switchView(view) {
     const te = document.getElementById('tab-' + name);
     if (te) te.classList.toggle('active', view === name);
   }
+  if (view === 'projects') _projectsLoad(); else _projectsStop();
   if (view === 'groups') { _renderGroupsTab(); fetchBoard().then(() => _renderGroupsTab()); }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
@@ -32593,6 +32612,7 @@ function _bdRenderFanoutChildren(item) {
 let _orchTimer = null;
 let _orchFilter = 'all';
 let _orchData = null;
+let _orchProjects = [];
 let _orchLoading = false;
 
 function _orchSetFilter(f) {
@@ -32601,6 +32621,7 @@ function _orchSetFilter(f) {
     p.classList.toggle('active', p.dataset.filter === f);
   });
   if (_orchData) _orchRender(_orchData);
+  _projectOrchestrationsRender();
 }
 
 // A fan-out worker (epic-level or child-level) that is not currently running
@@ -32621,6 +32642,7 @@ async function _orchLoad() {
   const el = document.getElementById('orch-list');
   if (!el || _orchLoading) return;
   _orchLoading = true;
+  await _projectOrchestrations();
   if (!_orchData) el.innerHTML = '<div role="status" style="padding:12px">Loading orchestration boards…</div>';
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), 15000);
@@ -32651,6 +32673,7 @@ function _orchBuild(allCards, allSess) {
   (allCards.ephemeral_workers || []).forEach(name => {
     if (!sessMap[name]) sessMap[name] = {name,ephemeral:true,running:null,lifecycle:'unknown'};
   });
+  const projectWorkers = new Set(_orchProjects.flatMap(p=>p.cards.map(c=>c.execution_plan.execution.worker).filter(Boolean)));
   const cards = allCards.cards;
   const byId = new Map(cards.map(c => [c.id,c]));
   const byWorker = new Map();
@@ -32663,8 +32686,8 @@ function _orchBuild(allCards, allSess) {
   };
   // Worker configuration is the membership authority. Ordinary board epics
   // never create groups, and extra tasks never manufacture extra workers.
-  Object.values(sessMap).filter(s => s.orchestrator || s.role === 'orchestrator').forEach(s => addGroup(s.name));
-  Object.values(sessMap).filter(s => s.ephemeral).forEach(s => {
+  Object.values(sessMap).filter(s => !projectWorkers.has(s.name) && (s.orchestrator || s.role === 'orchestrator')).forEach(s => addGroup(s.name));
+  Object.values(sessMap).filter(s => s.ephemeral && !projectWorkers.has(s.name)).forEach(s => {
     const parent = s.ephemeral_parent && s.ephemeral_parent !== s.name ? s.ephemeral_parent : null;
     const group = addGroup(parent || s.name, !parent);
     if (!group.workerNames.includes(s.name)) group.workerNames.push(s.name);
@@ -32704,6 +32727,7 @@ function _orchBuild(allCards, allSess) {
 function _orchRenderFilters(epics) {
   const fb = document.getElementById('orch-filters');
   if (!fb) return;
+  epics = [...epics,..._orchProjects.map(p=>({_orchGroup:_projectOrchestrationState(p)}))];
   const counts = { all: epics.length, active: 0, paused: 0, archived: 0, expired: 0 };
   epics.forEach(e => { counts[e._orchGroup] = (counts[e._orchGroup] || 0) + 1; });
   const pills = [
@@ -32739,6 +32763,7 @@ function _orchRender(data) {
   const {orchEpics,sessMap,byWorker} = data;
   const filtered = orchEpics.filter(g => _orchFilter === 'all' || g._orchGroup === _orchFilter);
   if (!filtered.length) {
+    if (_orchProjects.some(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter)) {el.innerHTML='';return;}
     el.innerHTML = '<div role="status" class="orch-empty">'+(_orchFilter === 'all' ? 'No orchestrations or fan-out workers yet. Use + Launch to create one.' : 'No '+esc(_orchFilter)+' orchestrations.')+'</div>';
     return;
   }
@@ -44819,3 +44844,142 @@ window.addEventListener('pagehide', () => {
 });
 window.addEventListener('online', () => { if (_recorderUsed()) setTimeout(() => _recorderSync(), 1500); });
 if (_recorderUsed()) setTimeout(() => _recorderSync(), 5000);
+
+// Project-owned outcomes. Rendering consumes the server's execution plan; it
+// never invents a second readiness/status classification in the browser.
+let _projectsName = '';
+let _projectsData = null;
+let _projectsTimer = null;
+let _projectsLoading = false;
+function _projectsStop() { clearTimeout(_projectsTimer); _projectsTimer = null; }
+function _projectStorage(key, value) {
+  const name = 'amux_project_' + key;
+  try { if (value === undefined) return localStorage.getItem(name) || ''; localStorage.setItem(name,value); } catch (e) { console.warn('project_draft_storage_unavailable',e); }
+  return '';
+}
+function _projectError(error) { const el=document.getElementById('project-error'); if(el) el.textContent=String(error.message || error); console.warn('project_operation_failed',error); }
+async function _projectRequest(path, method='GET', body) {
+  const r=await fetch(API+'/api/projects'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+  const result=await r.json(); if(!r.ok) throw new Error(result.error || ('Request failed: '+r.status)); return result;
+}
+function _projectDraft() { _projectStorage('draft_'+_projectsName, document.getElementById('project-command').value); }
+function _projectChoose(name) { _projectsName=name;_projectsData=null;_projectStorage('selected',name);document.getElementById('project-detail').innerHTML='';_projectsLoad(); }
+async function _projectsLoad() {
+  _projectsStop(); if(_projectsLoading || activeView!=='projects') return;
+  _projectsLoading=true;
+  const root=document.getElementById('projects-view');
+  if(!document.getElementById('project-selector')) {
+    root.innerHTML='<div class="project-heading"><div><h2>Projects</h2><p>Describe an outcome. Follow its progress and evidence.</p></div><label>Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn" onclick="_projectChoose(\'\')">+ New project</button></div><p id="project-error" role="alert"></p><div id="project-detail"></div>';
+    _projectsName=_projectStorage('selected');
+  }
+  try {
+    const inventory=await _projectRequest('');
+    const select=document.getElementById('project-selector');
+    const options='<option value="">New project</option>'+inventory.projects.map(p=>'<option value="'+esc(p.name)+'">'+esc(p.name)+'</option>').join('');
+    if(select.innerHTML!==options) select.innerHTML=options;select.value=_projectsName;
+    if(!_projectsName) {
+      if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=_projectConfig(null);
+    } else {
+      const expected=_projectsName;const data=await _projectRequest('/'+encodeURIComponent(expected));
+      if(expected!==_projectsName) return;
+      if(!_projectsData) {
+        document.getElementById('project-detail').innerHTML='<div class="project-status"><strong id="project-state"></strong><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div id="project-usage" class="project-usage"></div><label class="project-composer-label" for="project-command">What outcome do you want?</label><textarea id="project-command" rows="3" placeholder="Describe the result and how to verify it" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div><div id="project-cards" class="project-columns"></div><details class="project-settings"><summary>Execution settings</summary>'+_projectConfig(data.project)+'</details><details class="project-settings"><summary>Migrate existing boards</summary><p>Preview explicit worker boards. Existing tasks and evidence keep their IDs. Pause this project before applying or rolling back.</p><label>Worker names, comma separated<input id="project-migration-workers"></label><button class="btn" onclick="_projectMigrationPreview()">Preview migration</button><pre id="project-migration-preview"></pre><button class="btn" id="project-migration-apply" hidden onclick="_projectMigrationApply()">Apply reviewed migration</button><div id="project-migration-history"></div><label>Migration ID<input id="project-migration-id"></label><button class="btn" onclick="_projectMigrationRollback()">Roll back unchanged rows</button></details>';
+        document.getElementById('project-command').value=_projectStorage('draft_'+expected);
+      }
+      _projectsData=data;_projectRender(data);
+    }
+  } catch(e) {_projectError(e);} finally {
+    _projectsLoading=false;
+    if(activeView==='projects') _projectsTimer=setTimeout(_projectsLoad,2000);
+  }
+}
+function _projectConfig(project) {
+  const p=project?.policy || {repository:'',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2};
+  return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()"><div class="project-form-grid">'+
+    '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
+    '<label>Repository<input id="project-repository" required placeholder="/absolute/path/to/repository" value="'+esc(p.repository)+'"></label>'+
+    '<label>Coordinator model (Claude)<input id="project-coordinator" required value="'+esc(p.coordinator.model)+'"></label>'+
+    '<label>Executor provider<select id="project-provider">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
+    '<label>Executor model<input id="project-executor" required value="'+esc(p.executor.model)+'"></label>'+
+    '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
+    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+
+    '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
+    '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
+    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div><p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button></form>';
+}
+async function _projectSave() {
+  const value=id=>document.getElementById('project-'+id).value.trim();
+  const name=value('name'); const current=_projectsData?.project;
+  const policy={repository:value('repository'),coordinator:{provider:'claude',model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
+  try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectChoose(name);} catch(e){_projectError(e);}
+}
+async function _projectPause() {
+  if(!_projectsData) return;
+  const project=_projectsData.project;
+  try {await _projectRequest('/'+encodeURIComponent(project.name),'PUT',{expect_rev:project.revision,policy:{...project.policy,paused:!project.policy.paused}});await _projectsLoad();} catch(e){_projectError(e);}
+}
+async function _projectSend() {
+  const name=_projectsName,input=document.getElementById('project-command'),button=document.getElementById('project-send');
+  const text=input.value.trim();if(!text || button.disabled) return;
+  let pending;try{pending=JSON.parse(_projectStorage('pending_'+name));}catch(e){}
+  if(!pending || pending.text!==text) pending={text,idempotency_key:crypto.randomUUID()};
+  _projectStorage('pending_'+name,JSON.stringify(pending));button.disabled=true;
+  try {
+    const receipt=await _projectRequest('/'+encodeURIComponent(name)+'/commands','POST',pending);
+    if(_projectStorage('draft_'+name).trim()===text) _projectStorage('draft_'+name,'');
+    _projectStorage('pending_'+name,'');
+    if(name===_projectsName && input.value.trim()===text) input.value='';
+    if(name===_projectsName) document.getElementById('project-receipt').textContent='Request '+receipt.id+' accepted';await _projectsLoad();
+  } catch(e){_projectError(e);} finally {button.disabled=false;}
+}
+function _projectRender(data) {
+  const p=data.project,u=data.usage;
+  document.getElementById('project-state').textContent=p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):p.policy.enabled?'Driving project outcomes':'Disabled';
+  document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
+  document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
+  document.getElementById('project-usage').textContent=u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake · '+u.execution_attempts+' execution attempts · '+u.intake_calls+' intake calls · '+(u.measured?u.tokens.toLocaleString()+' observed tokens':'Token usage not yet observed')+' · Coverage: '+u.intake_calls_measured+'/'+u.intake_calls+' intake calls; '+u.execution_turns_measured+' execution turns measured';
+  document.getElementById('project-commands').innerHTML=data.commands.filter(c=>c.pending).map(c=>'<div class="project-intake"><strong>Request '+c.id+' · '+(c.waiting_reason?(c.waiting_reason==='intake_attempts_exhausted'?'Intake needs clarification':esc(c.waiting_reason.replaceAll('_',' '))):'Interpreting')+'</strong><p>'+esc(c.text)+'</p>'+(c.result?.error?'<p>'+esc(c.result.error)+'</p>':'')+'</div>').join('');
+  const migrations=data.migrations || [];
+  document.getElementById('project-migration-history').innerHTML=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
+  const migrationInput=document.getElementById('project-migration-id');
+  if(!migrationInput.value) migrationInput.value=migrations.find(m=>m.event==='project.migrated')?.id || '';
+  const phases=[['intake','Intake'],['ready','Ready'],['working','Working'],['verifying','Verifying'],['verified','Verified'],['closed','Closed'],['unrecognized','Needs classification']];
+  document.getElementById('project-cards').innerHTML=phases.map(([phase,label])=>{
+    const rows=data.cards.filter(c=>c.phase===phase);if(!rows.length) return '';return '<section class="project-column"><h3>'+label+' <span>'+rows.length+'</span></h3>'+rows.map(c=>{
+      const plan=c.execution_plan,e=plan.execution,working=phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
+      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_reason.split(':')[0].replaceAll('_',' '))+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((['waiting','repair'].includes(e.stage) || phase==='closed')?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Retry with current requirements</button>':'')+'</article>';
+    }).join('')+(rows.length?'':'<p class="project-empty">No tasks</p>')+'</section>';
+  }).join('');
+}
+let _projectMigration = null;
+async function _projectMigrationPreview() {
+  const workers=document.getElementById('project-migration-workers').value.split(',').map(s=>s.trim()).filter(Boolean);
+  try {_projectMigration=await _projectRequest('/'+encodeURIComponent(_projectsName)+'/migration/preview','POST',{source_workers:workers});document.getElementById('project-migration-preview').textContent=JSON.stringify(_projectMigration,null,2);document.getElementById('project-migration-apply').hidden=_projectMigration.conflicts.length>0;} catch(e){_projectError(e);}
+}
+async function _projectMigrationApply() {
+  if(!_projectMigration || _projectMigration.project!==_projectsName) return;
+  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/migration/apply','POST',{source_workers:_projectMigration.source_workers,fingerprint:_projectMigration.fingerprint});document.getElementById('project-migration-apply').hidden=true;await _projectsLoad();}catch(e){_projectError(e);}
+}
+async function _projectMigrationRollback() {
+  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/migration/rollback','POST',{migration:document.getElementById('project-migration-id').value.trim()});await _projectsLoad();}catch(e){_projectError(e);}
+}
+async function _projectRetry(id) {
+  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/tasks/'+encodeURIComponent(id)+'/retry','POST',{});await _projectsLoad();}catch(e){_projectError(e);}
+}
+
+function _projectOrchestrationState(data) {
+  return data.project.policy.paused || !data.project.policy.enabled ? 'paused' : 'active';
+}
+function _projectOrchestrationsRender() {
+  const el=document.getElementById('orch-projects');if(!el) return;
+  el.innerHTML=_orchProjects.filter(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter).map(data=>'<article class="project-card"><h4>'+esc(data.project.name)+'</h4><p>Coordinator: '+esc(data.project.policy.coordinator.model)+' · on demand. Executor: '+esc(data.project.policy.executor.model)+' · capacity '+data.project.policy.max_executors+'.</p><p>'+data.usage.verified_outcomes+' / '+data.usage.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake</p><ul>'+data.cards.filter(c=>c.execution_plan.execution.worker).map(c=>'<li>'+esc(c.title)+' · '+esc(c.phase)+' · '+esc(c.execution_plan.execution.worker)+'</li>').join('')+'</ul><button class="btn" onclick="switchView(\'projects\');_projectChoose(\''+escJs(data.project.name)+'\')">Open project board</button></article>').join('');
+}
+async function _projectOrchestrations() {
+  const el=document.getElementById('orch-projects');if(!el) return;
+  try {
+    const inventory=await _projectRequest('');
+    _orchProjects=await Promise.all(inventory.projects.map(p=>_projectRequest('/'+encodeURIComponent(p.name))));
+    _projectOrchestrationsRender();
+    if(_orchData) _orchRenderFilters(_orchData.orchEpics);
+  }catch(e){el.textContent='Project orchestrations could not load: '+e.message;}
+}

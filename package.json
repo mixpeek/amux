@@ -9,7 +9,8 @@
     "test:lifecycle": "python3 scripts/lifecycle/run.py full",
     "test:lifecycle:browser": "python3 scripts/lifecycle/run.py browser",
     "test:lifecycle:plan": "python3 scripts/lifecycle/run.py plan",
-    "lint:spa": "bash scripts/spa-lint.sh"
+    "lint:spa": "bash scripts/spa-lint.sh",
+    "test:project-ui": "python3 e2e/project-lifecycle/run.py"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
