@@ -211,7 +211,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with: { node-version: '22', cache: 'npm' }
+      # The browsers are ~46s of every shard of every run, and they are pure
+      # inputs: the same playwright version downloads the same binaries. Keyed
+      # on the lockfile, so a version bump misses the cache and re-downloads —
+      # a stale browser would be a wrong ANSWER, which no cache may cause.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright
         # webkit is NOT optional: the ios-safari project (devices['iPhone 15'])
         # is a webkit project, and this job runs EVERY project (no --project
@@ -222,7 +232,15 @@ jobs:
         # worse than none, and the whole reason that project exists is that
         # desktop+mobile chromium at 375px went green while the real phone was
         # broken (AMUX-3057).
-        run: npm ci --ignore-scripts 2>/dev/null || npm install; npx playwright install --with-deps chromium webkit
+        # On a cache hit only the OS deps are installed (they live outside the
+        # cached path); the browser download itself is skipped.
+        run: |
+          npm ci --ignore-scripts 2>/dev/null || npm install
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium webkit
+          else
+            npx playwright install --with-deps chromium webkit
+          fi
       - name: SPA static gate (no-undef kills the silent-dead-handler class)
         # Two silent-dead-handler bugs shipped in one week (schedule delete,
         # worker delete 2026-08-09): an undefined name in an async handler makes

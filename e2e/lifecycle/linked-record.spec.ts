@@ -11,7 +11,13 @@ test('LC-LINKED-RECORD: epic, children, criteria, evidence and real file/URL/com
   const dir = await mkdtemp(path.join(os.tmpdir(), 'amux-linked-record-'));
   const worker = `lc-record-${info.project.name}-${Date.now()}`;
   await writeFile(path.join(dir, 'result.md'), '# Linked output\nVerified invoice total: 42\n');
-  for (const args of [['init'], ['add', 'result.md'], ['-c', 'user.name=Lifecycle Test', '-c', 'user.email=lifecycle@example.test', 'commit', '-m', 'Produce linked invoice report']]) execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+  // HERMETIC: `git init` copies $HOME's init.templatedir, so a developer whose
+  // git installs a commit-msg hook (a Conventional Commits enforcer, say) gets
+  // it inside this fixture repo, where it rejects this deliberately plain
+  // message and fails the test. Measured on a machine with one; CI has no
+  // template, so the suite was green there and red for the developer.
+  const gitEnv = { ...process.env, GIT_TEMPLATE_DIR: '' };
+  for (const args of [['init'], ['add', 'result.md'], ['-c', 'user.name=Lifecycle Test', '-c', 'user.email=lifecycle@example.test', 'commit', '-m', 'Produce linked invoice report']]) execFileSync('git', args, { cwd: dir, stdio: 'pipe', env: gitEnv });
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
   await boot(page); const headers = await auth(page);
   expect((await request.post('/api/sessions', { headers, data: { name: worker, dir } })).ok()).toBe(true);
