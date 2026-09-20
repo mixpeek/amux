@@ -15,6 +15,16 @@
 # Runs against a fixture repo and a fake log; touches no real builder state.
 # Exit 0 = pass, 1 = failure.
 set -euo pipefail
+# Fixtures are HERMETIC: no template from the developer's own git config.
+# `git init` copies $HOME's init.templatedir into every new repo, so a global
+# commit-msg hook (a Conventional Commits enforcer, say) lands in the throwaway
+# repos below and rejects their fixture commits. 17 of this repo's test scripts
+# failed that way on a machine that had one, while CI stayed green because the
+# runner has no template — a test that passes only on machines configured like
+# the author's. Empty means "no template", and git then creates no .git/hooks,
+# so a test that installs a hook makes that directory itself.
+export GIT_TEMPLATE_DIR=
+
 cd "$(dirname "$0")/.."
 SCRIPT="$(pwd)/scripts/unbuilt-commits.sh"
 [ -x "$SCRIPT" ] || { echo "FAIL: $SCRIPT missing"; exit 1; }

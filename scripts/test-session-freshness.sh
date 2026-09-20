@@ -19,6 +19,16 @@
 #
 # Exit 0 = all pass, 1 = a failure. Wired into .github/workflows/checks.yml.
 set -euo pipefail
+# Fixtures are HERMETIC: no template from the developer's own git config.
+# `git init` copies $HOME's init.templatedir into every new repo, so a global
+# commit-msg hook (a Conventional Commits enforcer, say) lands in the throwaway
+# repos below and rejects their fixture commits. 17 of this repo's test scripts
+# failed that way on a machine that had one, while CI stayed green because the
+# runner has no template — a test that passes only on machines configured like
+# the author's. Empty means "no template", and git then creates no .git/hooks,
+# so a test that installs a hook makes that directory itself.
+export GIT_TEMPLATE_DIR=
+
 cd "$(dirname "$0")/.."
 HOOK="$(pwd)/.claude/session-freshness.sh"
 PASS=0; FAIL=0
@@ -374,6 +384,7 @@ hooks_repo() { # $1 name
     for h in pre-commit pre-push prepare-commit-msg amux-staged-guard; do
       printf '#!/bin/sh\n# v1 %s\n' "$h" > "scripts/git-hooks/$h"
       chmod +x "scripts/git-hooks/$h"
+      mkdir -p .git/hooks
       cp "scripts/git-hooks/$h" ".git/hooks/$h"
     done
     echo seed > seed.txt; git add -A; git commit -qm seed ) >/dev/null 2>&1
@@ -395,6 +406,7 @@ lacks "$HOOKMARK" "$out"
 
 # (j) one installed hook DIFFERS — named, and named specifically.
 w=$(hooks_repo hk_diff)
+mkdir -p "$w/.git/hooks"
 printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/pre-commit"
 out=$(hooks_run "$w")
 says "$HOOKMARK" "$out"
@@ -510,6 +522,7 @@ MINEMARK="YOU EDITED THIS SESSION"
 
 # (l1) drift AND this session has an edit record for that exact hook.
 w=$(hooks_repo hk_mine)
+mkdir -p "$w/.git/hooks"
 printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/amux-staged-guard"
 printf '%s lane1 n=1 sent paths=scripts/git-hooks/amux-staged-guard\n' "$(date +%s)" > "$TMP/oe-mine.log"
 out=$(hooks_run "$w" lane1 "$TMP/oe-mine.log")
@@ -525,6 +538,7 @@ says "check the INSTALLED copy" "$out"
 #      record cannot support it: it has no content hash (AMUX-3954), so all it
 #      can ever say is which session wrote to a path.
 w=$(hooks_repo hk_theirs)
+mkdir -p "$w/.git/hooks"
 printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/amux-staged-guard"
 printf '%s lane2 n=1 sent paths=scripts/git-hooks/amux-staged-guard\n' "$(date +%s)" > "$TMP/oe-theirs.log"
 out=$(hooks_run "$w" lane1 "$TMP/oe-theirs.log")
@@ -535,6 +549,7 @@ lacks "$MINEMARK" "$out"
 #      and found nothing are different answers, and the silent version of this
 #      is the exact failure the file exists to record (ethos rule 4).
 w=$(hooks_repo hk_norec)
+mkdir -p "$w/.git/hooks"
 printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/amux-staged-guard"
 out=$(hooks_run "$w" lane1 "$TMP/no-such-edit-record.log")
 lacks "$MINEMARK" "$out"
@@ -555,6 +570,7 @@ lacks "$HOOKMARK" "$out"
 #     a worktree actually executes.
 w=$(hooks_repo hk_wt)
 ( cd "$w" && git worktree add -q "$TMP/hk_wt_linked" -b wtbranch ) >/dev/null 2>&1
+mkdir -p "$w/.git/hooks"
 printf '#!/bin/sh\n# v0 stale\n' > "$w/.git/hooks/pre-commit"
 mkdir -p "$TMP/hk_wt_linked/.claude"
 cp "$HOOK" "$TMP/hk_wt_linked/.claude/session-freshness.sh"
