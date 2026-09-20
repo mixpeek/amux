@@ -11597,7 +11597,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1008';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1009';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -20349,6 +20349,7 @@ function _fileBindAnchors(container) {
 }
 
 function setFileViewMode(mode) {
+  if (_fileData?.readOnly) return;
   _fileViewMode = mode;
   document.getElementById('file-tab-preview').classList.toggle('active', mode === 'preview');
   document.getElementById('file-tab-raw').classList.toggle('active', mode === 'raw');
@@ -20557,7 +20558,8 @@ function _xlsxShowSheet(i) {
   document.querySelectorAll('.xlsx-tab').forEach((el, idx) => { el.classList.toggle('active', idx === i); });
 }
 
-async function openFilePreview(path) {
+async function openFilePreview(path, options = {}) {
+  if (options.readOnly && !/\.(md|json|png|webm)$/.test(path)) return;
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
   // the node's metadata (model / date / cached), lets you scroll the run
   // versions, and RUNS THE CHAIN on open — none of which the generic file body
@@ -20568,6 +20570,8 @@ async function openFilePreview(path) {
   if (/\.(xlsx|xls|ods)$/i.test(path || '')) { _openXlsxPreview(path); return; }
   _fileData = null;
   _fileViewMode = 'preview';
+  document.getElementById('file-save-btn').style.display = 'none';
+  document.getElementById('file-edit-wrap').style.display = 'none';
   document.getElementById('file-title').textContent = path.split('/').pop();
   // Title bar shows the file name plus the folder it lives in, like a file manager.
   const _subEl = document.getElementById('file-subpath');
@@ -20585,6 +20589,7 @@ async function openFilePreview(path) {
     _subEl.onclick = () => openExplore(_dir,
       (typeof peekSession !== 'undefined' && peekSession) ? peekSession : null);
   }
+  if (options.readOnly && _subEl) { _subEl.onclick=null;_subEl.classList.remove('clickable');_subEl.title='Retained verified asset'; }
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -20619,6 +20624,8 @@ async function openFilePreview(path) {
       return;
     }
     _fileData = data;
+    _fileData.readOnly = !!options.readOnly;
+    if (options.readOnly && !data.is_image && !data.is_video) _fileViewMode = 'raw';
     // Preview is the default for every file type, markdown included (Ethan,
     // 2026-09-15, reversing the 2026-09-14 markdown-opens-to-Raw decision
     // below this comment's old text). _fileViewMode is already 'preview'
@@ -20633,10 +20640,10 @@ async function openFilePreview(path) {
     // Show tabs only for text files
     const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary && !data.is_ebook;
     if (isTextFile) {
-      document.getElementById('file-view-tabs').style.display = '';
+      document.getElementById('file-view-tabs').style.display = options.readOnly ? 'none' : '';
       // Show Edit tab only for markdown
-      document.getElementById('file-tab-edit').style.display = data.is_markdown ? '' : 'none';
-      document.getElementById('file-tab-teleprompter').style.display = data.is_markdown ? '' : 'none';
+      document.getElementById('file-tab-edit').style.display = (data.is_markdown && !options.readOnly) ? '' : 'none';
+      document.getElementById('file-tab-teleprompter').style.display = (data.is_markdown && !options.readOnly) ? '' : 'none';
       // Show Find and Read Aloud tabs only for markdown
       const searchTab = document.getElementById('file-tab-search');
       if (searchTab) searchTab.style.display = (data.is_markdown && _fileViewMode === 'preview') ? '' : 'none';
@@ -20670,6 +20677,7 @@ async function openFilePreview(path) {
       _offlineBudgetEnforce();     // throttled FIFO trim to the server-saved cap
     }
   } catch(e) {
+    if (options.readOnly) {document.getElementById('file-body').textContent='Retained asset unavailable.';return;}
     // Offline: try IDB cache
     const cached = await _idb.getFile(path);
     if (cached && cached.type === 'file') {
@@ -20744,7 +20752,7 @@ async function _fileDownload() {
 }
 
 async function _fileSave() {
-  if (!_fileData || (!_fileData.is_markdown && !_fileData._isNew)) return;
+  if (!_fileData || _fileData.readOnly || (!_fileData.is_markdown && !_fileData._isNew)) return;
   const ta = document.getElementById('file-edit-ta');
   const btn = document.getElementById('file-save-btn');
   const content = ta.value;
@@ -44971,13 +44979,25 @@ function _projectRender(data) {
   document.getElementById('project-migration-history').innerHTML=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
   const migrationInput=document.getElementById('project-migration-id');
   if(!migrationInput.value) migrationInput.value=migrations.find(m=>m.event==='project.migrated')?.id || '';
-  const phases=[['intake','Intake'],['ready','Ready'],['working','Working'],['verifying','Verifying'],['verified','Verified'],['closed','Closed'],['unrecognized','Needs classification']];
+  const phases=[['intake','Intake'],['ready','Ready'],['working','Working'],['waiting','Waiting'],['verifying','Verifying'],['verified','Verified'],['closed','Closed'],['unrecognized','Needs classification']];
   document.getElementById('project-cards').innerHTML=phases.map(([phase,label])=>{
     const rows=data.cards.filter(c=>c.phase===phase);if(!rows.length) return '';return '<section class="project-column"><h3>'+label+' <span>'+rows.length+'</span></h3>'+rows.map(c=>{
       const plan=c.execution_plan,e=plan.execution,working=phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
-      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_reason.split(':')[0].replaceAll('_',' '))+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((['waiting','repair'].includes(e.stage) || phase==='closed')?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Retry with current requirements</button>':'')+'</article>';
+      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_reason.split(':')[0].replaceAll('_',' '))+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+_projectAssetLinks(c)+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((e.stage==='waiting' && !p.policy.paused && !['spend','customer_outbound','required_outputs'].includes(e.wait_category))?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button>':'')+'</article>';
     }).join('')+(rows.length?'':'<p class="project-empty">No tasks</p>')+'</section>';
   }).join('');
+}
+function _projectAssetLinks(card) {
+  const assets=card.execution_plan.execution.retained_assets || [];
+  return assets.map((a,i)=>/\.(md|json|png|webm)$/.test(a.source?.path || '') && /^[a-f0-9]{64}$/.test(a.source?.sha256 || '') ? '<button class="btn project-report-asset" data-asset="'+i+'" onclick="_projectAssetPreview(\''+escJs(card.id)+'\','+i+')">'+esc(a.source.path)+'</button>' : '').join('');
+}
+function _projectAssetPreview(id,index) {
+  const card=_projectsData?.cards?.find(c=>c.id===id);
+  const a=card?.execution_plan.execution.retained_assets?.[index];
+  if(!a || !/\.(md|json|png|webm)$/.test(a.source?.path || '') || !/^[a-f0-9]{64}$/.test(a.source.sha256)) return;
+  const ext=a.source.path.split('.').pop();
+  if(!a.path.endsWith('/artifacts/project-reports/'+a.source.sha256+'.'+ext)) return;
+  openFilePreview(a.path,{readOnly:true});
 }
 let _projectMigration = null;
 async function _projectMigrationPreview() {
@@ -44992,7 +45012,14 @@ async function _projectMigrationRollback() {
   try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/migration/rollback','POST',{migration:document.getElementById('project-migration-id').value.trim()});await _projectsLoad();}catch(e){_projectError(e);}
 }
 async function _projectRetry(id) {
-  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/tasks/'+encodeURIComponent(id)+'/retry','POST',{});await _projectsLoad();}catch(e){_projectError(e);}
+  const name=_projectsName,key='task_retry_'+name+'_'+id,c=_projectsData?.cards.find(c=>c.id===id);
+  if(!c || _projectIntakeRetries.has(key))return;
+  let body;try{body=JSON.parse(_projectStorage(key));}catch(e){}
+  if(!body)body={idempotency_key:crypto.randomUUID(),expect_generation:c.execution_plan.execution.generation,expect_revision:c.rev,input_hash:c.execution_plan.execution.input_hash};
+  _projectStorage(key,JSON.stringify(body));_projectIntakeRetries.add(key);
+  try {await _projectRequest('/'+encodeURIComponent(name)+'/tasks/'+encodeURIComponent(id)+'/retry','POST',body);_projectStorage(key,'');}
+  catch(e){if(e.status===409)_projectStorage(key,'');_projectError(e);}
+  finally{_projectIntakeRetries.delete(key);await _projectsLoad();}
 }
 
 function _projectOrchestrationState(data) {

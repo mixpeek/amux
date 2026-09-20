@@ -3782,3 +3782,47 @@ CARD: AAB-2
 SYMPTOM: Codex 0.153.4 displayed a dim empty prompt followed by an unstyled model/path footer. Composer parsing labeled the footer typed input and steering held MSG-7 at not-at-turn-boundary.
 COST: Parent manually delivered the bootstrap repair assignment and disabled bootstrap lifecycle; actual project executor delivery still needs live proof.
 FIX: Recognize the final unstyled path-bearing footer only beside a dim empty Codex placeholder. Busy and draft controls remain blocked. Log codex_plain_footer_recognized on first observed frame; regression covers actual layout and negative cases.
+
+## Project output arrival cannot wake an explicit operational wait
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Live PAA-3 correctly failed its candidate-relative browser gate without PAA-2 backend source, then its second attempt reported an operational wait. The free-text wait had no typed output reference or automatic continuation when PAA-2 became Verified.
+COST: Existing committed Studio work stopped behind its own project output and required another harness repair; the first failed browser gate and second-attempt waiting evidence must remain inspectable.
+FIX: Add an explicit same-project required-output declaration on existing task dependency edges, exact old-wait acknowledgement and idempotency. Recheck the shared planner in the writer, reserve a fresh delivery generation without another repair attempt, preserve failure/attempt history, and announce project.outputs_declared/continued/refused. Arbitrary operational and authorization waits do not auto-resume. Parent live acceptance remains pending.
+
+## Project continuation and display need the same durable execution truth
+AREA: runtime
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: A project task with Doing status but a waiting execution projected into Working while its provider was idle. Review also found continuation attribution needed its own bounded claim interval rather than reopening old attempt history or relying on a historical claim fallback.
+COST: The UI implied work was progressing and continuation usage could be absent or assigned outside its true interval.
+FIX: Project planner projects Waiting from its waiting decision; UI consumes that phase. Durable continuation events define bounded ledger intervals with inside/before/after negative controls; prior attempt history remains immutable.
+
+## Codex named footer displayed idle without a recognized delivery boundary
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: A resumed interrupted bootstrap pane appeared idle but blocked queued delivery. The shared adapter required the footer's final middle-dot segment to be a filesystem path; current Codex adds a session label after that path. Composer and boundary parsing disagreed.
+COST: Supervisor recorded an explicit Send now intervention after observing idle.
+FIX: Read the structural model/location segments with an optional session label, require no active spinner or typed draft for pane boundary, and retain measured fallback-boundary logging. Tests cover interrupted idle, working, draft and foreign-provider shapes. Live unattended acceptance remains separate.
+
+## Project steering, retry and evidence lacked durable boundaries
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Project worker Send now re-entered legacy intake instead of its current task; treating task steering as outcome receipts inflated usage denominators. Task retry reset attempt counters. Shared parent CC_DIR left distinct Codex worktrees unowned. Report paths were inert prose and repeated criterion checks reran identical suites.
+COST: A redundant legacy receipt remained pending, the original steering remained queued, actual task spend was unowned and human verification assets could not be opened after disposal.
+FIX: One project routing authority with durable task steering and genuine-outcome receipt filters; operator cancellation preserves receipt history. One bounded idempotent retry grant preserves monotonic attempts. Validated active/retired workspace identity recovers only unowned exact matches. Explicit hashed passive assets are retained and registered before Verified/disposal, with read-only Projects links. Deduplicate byte-identical checks within each immutable phase. Logs: project.within_task_steering, project.legacy_intake_held, project.legacy_receipt_cancelled, project.retry_granted/refused, codex_workspace_usage_recovered, project.assets_retained, project.asset_retention_failed and project.verification_commands. Final parent Rust/browser checks and isolated live acceptance remain pending.

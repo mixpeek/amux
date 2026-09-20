@@ -744,12 +744,16 @@ pub async fn attribute_tasks(store: &SharedStore) -> anyhow::Result<()> {
                 }
             }
 
+            attempts.extend(crate::project_execution::outputs::usage_windows(conn,now,MAX_CLAIM_WINDOW_S)?);
+
             // The historical source: one interval per claim, ending at that
             // lane's next claim. `data` carries {"issue": "<id>", ...}.
             let claims: Vec<(String, String, i64)> = {
                 let mut stmt = conn.prepare(
                     "SELECT session, data, CAST(ts AS INTEGER) FROM session_events \
                      WHERE type='task.claimed' AND COALESCE(session,'') <> '' \
+                     AND NOT EXISTS(SELECT 1 FROM issues i WHERE i.project_group IS NOT NULL \
+                       AND i.id=CASE WHEN json_valid(session_events.data) THEN json_extract(session_events.data,'$.issue') END) \
                      ORDER BY session, ts",
                 )?;
                 let rows = stmt.query_map([], |r| {

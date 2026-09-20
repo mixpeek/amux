@@ -35,6 +35,9 @@ fn permit(state: &AppState, project: &str, id: &str, expected: &Execution) -> Re
     {
         return Err("claim or requirements changed".into());
     }
+    if !super::outputs::ready(&c, &row).map_err(|e| e.to_string())? {
+        return Err("required output no longer verified".into());
+    }
     if ["CC_PAUSED", "CC_ARCHIVED", "CC_ISOLATED"]
         .iter()
         .any(|key| sv::parse_env(&expected.worker).get(key) == Some("1"))
@@ -107,7 +110,8 @@ async fn prepare(
 }
 
 pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
-    format!("Execute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{\"generation\":{},\"input_hash\":\"{}\",\"report\":{{\"head\":\"40-character SHA\",\"summary\":\"output\",\"checks\":[{{\"criterion\":\"exact criterion\",\"command\":\"falsifiable check\"}}]}}}}. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.\nTask packet:\n{}",p.name,row.id,e.generation,e.input_hash,p.name,row.id,json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"attempt":e.attempt,"max_attempts":p.policy.max_attempts,"previous_result":e.last_failure,"verification":p.policy.verify_command}))
+    let output_protocol=format!("For an unavailable concrete same-project output, POST /api/projects/{}/tasks/{}/required-outputs with generation, input_hash, idempotency_key, required_outputs (explicit task IDs), reason, and replaces_wait (null for a new wait; exact prior waiting string to replace an operational wait). Never turn spend/customer authorization into outputs. Stop after declaration. When outputs are Verified the harness continues the SAME attempt with a fresh generation and delivery ID. On continuation fetch the accepted local origin/main and compose required commits into your own candidate without resetting your existing work, then rerun/report every criterion; an output arriving is not verification of your task. Required output receipts below identify accepted reports and integration evidence.",p.name,row.id);
+    format!("{output_protocol}\nExecute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{\"generation\":{},\"input_hash\":\"{}\",\"report\":{{\"head\":\"40-character SHA\",\"summary\":\"output\",\"checks\":[{{\"criterion\":\"exact criterion\",\"command\":\"falsifiable check\"}}]}}}}. Optionally include report.assets as an array of objects with path (candidate-relative) and sha256 (lowercase hex). Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.\nTask packet:\n{}",p.name,row.id,e.generation,e.input_hash,p.name,row.id,json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":e.last_failure,"verification":p.policy.verify_command}))
 }
 
 async fn transition(
@@ -140,6 +144,14 @@ async fn transition(
     Ok(())
 }
 
+fn verification_commands<'a>(gate: &'a str, report: &'a planner::Report) -> Vec<&'a str> {
+    let mut seen = std::collections::HashSet::new();
+    std::iter::once(gate)
+        .chain(report.checks.iter().map(|c| c.command.as_str()))
+        .filter(|c| seen.insert(*c))
+        .collect()
+}
+
 async fn verify(
     state: &AppState,
     p: &store::Project,
@@ -159,9 +171,8 @@ async fn verify(
     {
         return Err("worktree has uncommitted changes".into());
     }
-    let commands = std::iter::once(p.policy.verify_command.as_str())
-        .chain(report.checks.iter().map(|c| c.command.as_str()))
-        .collect::<Vec<_>>();
+    let commands = verification_commands(&p.policy.verify_command, report);
+    tracing::info!(task=id,measured=true,n_considered=report.checks.len()+1,distinct=commands.len(),verdict="project.verification_commands","byte-identical commands run once per immutable candidate phase; criterion mappings retained");
     // Each check runs independently; a later success cannot mask an earlier failure.
     for command in &commands {
         workspace::validate_verification_command(&w, command)?;
@@ -184,6 +195,9 @@ async fn verify(
     {
         return Err("verification changed the reported worktree".into());
     }
+    let retained = super::assets::retain(&home, std::path::Path::new(&w.path), report)
+        .await
+        .map_err(|e| e.to_string())?;
     let merged = workspace::integrate(
         &w,
         &commands
@@ -212,7 +226,10 @@ async fn verify(
         let row=bs::get_issue(c,&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let mut current=planner::execution(c,&id).map_err(store::sql_error)?;
         let policy=store::get(c,&project).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        if current.generation!=expected.generation || planner::input_hash(&row)!=expected.input_hash || policy.policy.paused || !policy.policy.enabled {return Err(rusqlite::Error::InvalidQuery);}
+        if current.generation!=expected.generation || planner::input_hash(&row)!=expected.input_hash || policy.policy.paused || !policy.policy.enabled || !super::outputs::ready(c,&row).map_err(store::sql_error)? {return Err(rusqlite::Error::InvalidQuery);}
+        super::assets::check(&retained).map_err(store::sql_error)?;
+        super::assets::register(c,&id,&retained)?;
+        current.retained_assets=retained;
         current.stage="verified".into();current.waiting=None;
         c.execute("UPDATE issues SET status='verified',evidence=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",params![id,json!({"report":current.report,"merged":merged,"gate":policy.policy.verify_command}).to_string()])?;
         planner::save_execution(c,&row,&current,"project.verified").map_err(store::sql_error)
@@ -238,7 +255,7 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         let id = plan.id;
         let e = plan.execution;
         let result: Result<(), String> = match plan.action.as_str() {
-            "claim" => {
+            "claim" | "resume_outputs" => {
                 if !e.worker.is_empty()
                     && (fleet.active_child_work(&e.worker)
                         || (fleet.is_running(&e.worker).await
@@ -246,11 +263,16 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                 {
                     continue;
                 }
+                let continuation = plan.action == "resume_outputs";
                 let (id, project) = (id.clone(), name.to_string());
                 state
                     .store
                     .write_async(move |c| {
-                        planner::claim(c, &project, &id).map_err(store::sql_error)
+                        if continuation {
+                            super::outputs::resume(c, &project, &id).map_err(store::sql_error)
+                        } else {
+                            planner::claim(c, &project, &id).map_err(store::sql_error)
+                        }
                     })
                     .await?;
                 Ok(())
@@ -324,7 +346,7 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             if paused {
                 continue;
             }
-            let repair = e.attempt < p.policy.max_attempts
+            let repair = e.attempt < e.attempt_limit(p.policy.max_attempts)
                 && (plan.action == "verify"
                     || matches!(
                         error.as_str(),
@@ -340,6 +362,10 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             .await?;
         }
         if e.stage == "verified" && crate::api::session_verbs::env_path(&e.worker).exists() {
+            if let Err(error) = super::assets::check(&e.retained_assets) {
+                tracing::warn!(task=%id,%error,verdict="project.asset_retention_failed",measured=true,n_considered=e.retained_assets.len(),"workspace disposal refused");
+                continue;
+            }
             if let Err(error) = crate::fanout_retirement::retire(
                 state,
                 &fleet,
@@ -447,6 +473,7 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
                     let removed=c.execute("DELETE FROM steering_queue WHERE session=?1 AND guard='project-execution'",[&e.worker])?;
                     tracing::info!(session=%e.worker,removed,verdict="project_resume_superseded_deliveries",measured=true,n_considered=removed,"resume replaces only its prior execution packets");
                     e.generation+=1;e.delivery_id=format!("project-resume:{}:{}",id,e.generation);
+                    if let Some(output)=e.output_wait.as_mut().filter(|o|o.continued_generation.is_some()) {output.continued_generation=Some(e.generation);}
                     e.stage="reserved".into();e.waiting=None;
                     c.execute("UPDATE issues SET lease_generation=?2 WHERE id=?1",params![id,e.generation])?;
                 }
@@ -455,4 +482,40 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod command_tests {
+    #[test]
+    fn project_verification_deduplicates_only_identical_bytes() {
+        use super::planner::{Check, Report};
+        let report = Report {
+            head: "a".repeat(40),
+            summary: String::new(),
+            assets: vec![],
+            checks: vec![
+                Check {
+                    criterion: "one".into(),
+                    command: "./suite".into(),
+                },
+                Check {
+                    criterion: "two".into(),
+                    command: "./suite".into(),
+                },
+                Check {
+                    criterion: "three".into(),
+                    command: "./distinct".into(),
+                },
+                Check {
+                    criterion: "four".into(),
+                    command: "./suite ".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            super::verification_commands("./suite", &report),
+            vec!["./suite", "./distinct", "./suite "]
+        );
+        assert_eq!(report.checks.len(), 4);
+    }
 }

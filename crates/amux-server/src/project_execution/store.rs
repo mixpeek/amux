@@ -350,10 +350,20 @@ mod tests {
             c.execute("INSERT INTO issues(id,title,status,session,created,updated,project_group,evidence) VALUES('A-1','Outcome','done','old-executor',1,1,'example','retained evidence')",[])?;
             Ok(WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        assert_eq!(
-            board(&store.read().unwrap(), "example").unwrap()["cards"][0]["phase"],
-            "verifying"
-        );
+        let disabled = board(&store.read().unwrap(), "example").unwrap();
+        assert_eq!(disabled["cards"][0]["phase"], "waiting");
+        assert_eq!(disabled["cards"][0]["execution_plan"]["waiting_reason"], "project_disabled");
+        assert_eq!(disabled["cards"][0]["execution_plan"]["action"], "wait");
+        store.write(|c| {
+            let mut project = get(c, "example").map_err(sql_error)?.unwrap();
+            project.policy.enabled = true;
+            save(c, "example", project.revision, &project.policy, "test").map_err(sql_error)
+        }).unwrap();
+        // Once enabled, missing executable details still prevent verification.
+        let before = board(&store.read().unwrap(), "example").unwrap();
+        assert_eq!(before["cards"][0]["phase"], "waiting");
+        assert_eq!(before["cards"][0]["execution_plan"]["waiting_reason"], "intake_required");
+        assert_eq!(before["cards"][0]["execution_plan"]["action"], "wait");
         store
             .write(|c| {
                 c.execute(
@@ -370,6 +380,10 @@ mod tests {
         assert_eq!(view["n_considered"], 1);
         assert_eq!(view["cards"][0]["project_group"], "example");
         assert_eq!(view["cards"][0]["assignee"], "new-executor");
+        assert_eq!(view["cards"][0]["phase"], "waiting");
+        assert_eq!(view["cards"][0]["execution_plan"]["waiting_reason"], "intake_required");
+        assert_eq!(view["cards"][0]["execution_plan"]["action"], "wait");
+        assert_eq!(bs::get_issue(&store.read().unwrap(), "A-1").unwrap().unwrap().status, "done");
         assert_eq!(
             bs::get_issue(&store.read().unwrap(), "A-1")
                 .unwrap()

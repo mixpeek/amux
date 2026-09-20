@@ -27,7 +27,7 @@ fn setting(session: &str, key: &str) -> Option<String> {
         .or_else(|| std::env::var(key).ok())
 }
 pub(crate) fn enabled(session: &str) -> bool {
-    policy_enabled(setting(session, POLICY_KEY).as_deref())
+    !session_verbs::parse_env(session).get("CC_PROJECT").is_some() && policy_enabled(setting(session, POLICY_KEY).as_deref())
 }
 
 fn policy_enabled(value: Option<&str>) -> bool {
@@ -857,7 +857,7 @@ pub(crate) async fn capture_inner(
     }
     let prompt_chars = prompt.chars().count();
     if let Some(project)=&project {
-        prompt.push_str(&format!("\nProject repository: {}. All outcomes belong to this project, never to an executor. Do not modify a working task; defer such refinements with a clear reason. No outside dependency edges.",project.policy.repository));
+        prompt.push_str(&format!("\nProject repository: {}. All outcomes belong to this project, never to an executor. Do not modify a working task; defer such refinements with a clear reason. No outside dependency edges. Model verification inputs explicitly: if a task cannot run its acceptance checks without another task output, put that producer key in needs with a concrete dependency_reason, even if implementation could begin independently. Dependencies wait for Verified outputs in this project; never encode unavailable outputs only as prose operational waits.",project.policy.repository));
     }
     let model = project.as_ref().map(|p|p.policy.coordinator.model.clone()).unwrap_or_else(||mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref()));
     let started = std::time::Instant::now();

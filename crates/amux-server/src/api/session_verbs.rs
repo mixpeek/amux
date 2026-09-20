@@ -5547,7 +5547,8 @@ async fn cmd_hist_record_with_id(
     // Admit it and let `attach_prompt_qualifier` decide: with no live card from
     // the prompt before it, capture declines back to exactly this outcome, so
     // the widening can only add the attachment, never a card.
-    let capture_pending = task_bearing && landed && !peer_coordination
+    let project_executor=parse_env(&session).get("CC_PROJECT").is_some();
+    let capture_pending = !project_executor && task_bearing && landed && !peer_coordination
         && (amux_core::board::title_from_prompt(&text).is_some()
             || (ctype == "user"
                 && amux_core::board::reads_as_qualifier(&text)
@@ -5580,6 +5581,11 @@ async fn cmd_hist_record_with_id(
                 ],
             )?;
             let row_id = conn.last_insert_rowid();
+            if project_executor {
+                if let Ok(Some((project,task)))=super::projects::executor_task(conn,&session) {
+                    conn.execute("UPDATE cmd_history SET card_id=?2,project_group=?3,capture_pending=0,type='steering' WHERE id=?1",rusqlite::params![row_id,task,project])?;
+                }
+            }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             conn.execute(
                 "DELETE FROM cmd_history WHERE session=?1 AND capture_pending=0 AND ts<?3 \
@@ -5930,6 +5936,12 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
             return;
         }
     };
+    if parse_env(&cap_session).get("CC_PROJECT").is_some() {
+        if crate::log_dedupe::first_this_bucket(&format!("project-legacy-intake:{row_id}"),crate::log_dedupe::hour_bucket(now_f64())) {
+            tracing::warn!(message_id=row_id,session=cap_session,measured=true,n_considered=1,verdict="project.legacy_intake_held","project worker receipt cannot enter independent legacy intake; settle duplicate through project cancellation API");
+        }
+        return;
+    }
     let _intake_guard = super::board_intake::lock(&cap_session, "agent").await;
     let loaded = (|| -> anyhow::Result<Option<(String, String, String, i64)>> {
         let conn = state.store.read()?;
@@ -6489,11 +6501,12 @@ async fn steer_enqueue_precond_with_id(
     // Owner peek/send stay working, which is the documented boundary. This
     // REFUSES rather than silently dropping: a producer that thinks it
     // delivered is how a board card gets claimed for a lane nobody is driving.
-    if parse_env(name).get("CC_PROJECT").is_some() && !guard.is_empty() && guard != "project-execution" {
+    if parse_env(name).get("CC_PROJECT").is_some() && !guard.is_empty() && !matches!(guard,"project-execution"|"project-steering") {
         tracing::info!(session=name,guard,verdict="project_legacy_prompt_suppressed",measured=true,n_considered=1,"project controller owns executor prompts");
         return Err("project controller owns executor prompts");
     }
-    if !guard.is_empty() && session_is_isolated(name) {
+    let automation = !guard.is_empty() && !(guard=="project-steering" && sender.is_empty());
+    if automation && session_is_isolated(name) {
         return Err("target is an isolated (raw-agent) worker: amux automation is not \
                     delivered into it. The owner's own send still works.");
     }
@@ -6502,7 +6515,7 @@ async fn steer_enqueue_precond_with_id(
     // producer names itself in `guard`, the owner's send passes "". Measured on
     // 2026-09-14: 48 task callbacks were queued into 8 paused lanes in the ten
     // minutes after they were paused, all waiting to land at once on resume.
-    if !guard.is_empty() && lane_is_paused(name) {
+    if automation && lane_is_paused(name) {
         return Err("target is paused: amux automation is not queued for a paused worker. \
                     Resume it first (amux resume); the owner's own send still works.");
     }
@@ -6575,6 +6588,9 @@ async fn steer_enqueue_precond_with_id(
     let persisted = store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
+            if guard_s=="project-steering" && super::projects::executor_task(conn,&session).map_err(crate::project_execution::store::sql_error)?.is_none() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
             if let Some(ref fixed) = stable_w {
                 if fixed.starts_with("board-drive-resume:") {
                     if !resume_id_is_current(conn, &session, fixed) {
@@ -14306,7 +14322,7 @@ pub(crate) async fn steer_lane_at_boundary(state: &AppState, name: &str) -> bool
 /// with the mechanism it describes is worse than no view (ethos rule 1).
 pub(crate) fn pane_is_at_boundary(raw: &str) -> bool {
     if let Some(generating) = crate::backend::adapter::codex_pane_generation_state(raw) {
-        return !generating;
+        return !generating && composer_state(raw).typed().is_none();
     }
     !pane_bar_says_generating(raw) && detect_claude_status(raw) == "idle"
 }
@@ -15564,7 +15580,10 @@ async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
             if let Some(session) = session {
                 let env = parse_env(&session);
                 if let Some(project) = env.get("CC_PROJECT") {
-                    if !crate::project_execution::planner::delivery_current(conn, project, &session, &id).map_err(crate::project_execution::store::sql_error)? {
+                    let guard:String=conn.query_row("SELECT COALESCE(guard,'') FROM steering_queue WHERE id=?1",[&id],|r|r.get(0))?;
+                    let current=if guard=="project-execution" {crate::project_execution::planner::delivery_current(conn, project, &session, &id).map_err(crate::project_execution::store::sql_error)?}
+                        else {super::projects::executor_task(conn,&session).map_err(crate::project_execution::store::sql_error)?.is_some() && crate::project_execution::store::get(conn,project).map_err(crate::project_execution::store::sql_error)?.is_some_and(|p|p.policy.enabled && !p.policy.paused)};
+                    if !current {
                         tracing::info!(session,delivery_id=id,verdict="project_stale_delivery_refused",measured=true,n_considered=1,"project paused or execution superseded");
                         return Ok(crate::db::WriteOutcome{applied:false,events:vec![]});
                     }
@@ -19241,6 +19260,22 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                 "code": "session_blocked",
             }),
         );
+    }
+    if parse_env(name).get("CC_PROJECT").is_some() {
+        let task=state.store.read().ok().and_then(|c|super::projects::executor_task(&c,name).ok().flatten());
+        let Some((project,task))=task else {send_dedup_forget(state,name,&msg_id).await;return jresp(StatusCode::CONFLICT,json!({"error":"project executor has no current task; submit new outcomes through Projects"}));};
+        let stable=if msg_id.is_empty(){format!("project-owner-{}",ulid::Ulid::new())}else{format!("project-owner:{name}:{msg_id}")};
+        match steer_enqueue_idempotent_report(state,name,&orig_text,"project-steering",&origin,&stable).await {
+            Ok(result)=>{
+                if result.disposition==StableEnqueueDisposition::New {
+                    cmd_hist_record_with_id(state,name,&orig_text,"user",member_actor.as_deref().unwrap_or(""),true,DeliveryMeta::queued(now_i64()*1000)).await;
+                }
+                send_dedup_accept(state,name,&msg_id,&result.id).await;
+                tracing::info!(session=name,project,task,delivery_id=result.id,measured=true,n_considered=1,verdict="project.within_task_steering","project owns the task; within-task steering bypasses independent intake");
+                return jresp(StatusCode::OK,json!({"ok":true,"id":result.id,"task":task,"message":"queued within project task","submission":"queued","submitted":null}));
+            }
+            Err(e)=>{send_dedup_forget(state,name,&msg_id).await;return jresp(StatusCode::CONFLICT,json!({"error":e}));}
+        }
     }
     // A command is a durable request before it is execution. Sending its raw
     // text first raced the planner and invited a second, worker-created board.
@@ -32848,6 +32883,22 @@ mod composer_state_tests {
     }
 
     #[test]
+    fn codex_interrupted_named_footer_is_a_boundary_only_without_work_or_draft() {
+        let idle="■ Conversation interrupted - tell the model what to do differently.\n\n\u{1b}[1m›\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  gpt-6-astra medium · ~/private/repo · Resume AAB-1 worker\n";
+        assert_eq!(crate::backend::adapter::codex_pane_generation_state(idle),Some(false));
+        assert!(pane_is_at_boundary(idle));
+        let busy=idle.replace("■ Conversation interrupted - tell the model what to do differently.","• Working (3m 27s • esc to interrupt)");
+        assert_eq!(crate::backend::adapter::codex_pane_generation_state(&busy),Some(true));
+        assert!(!pane_is_at_boundary(&busy));
+        let background=busy.replace("• Working (3m 27s • esc to interrupt)","• Waiting for background terminal (3m 27s • esc to interrupt)");
+        assert!(!pane_is_at_boundary(&background));
+        let draft=idle.replace("\u{1b}[2mAsk Codex to do anything\u{1b}[0m","do not send this draft");
+        assert!(!pane_is_at_boundary(&draft));
+        let other=idle.replace('›',"❯");
+        assert_eq!(crate::backend::adapter::codex_pane_generation_state(&other),None);
+    }
+
+    #[test]
     fn codex_01534_unstyled_footer_does_not_wedge_idle_or_hide_busy_draft() {
         // Exact footer/placeholder shape captured from the private bootstrap;
         // repository path shortened, no ANSI invented for the footer.
@@ -36080,5 +36131,33 @@ mod spawn_argv_secret_tests {
             "the pane's shell already exists when set-environment runs, so without the \
              import the provider never sees the key"
         );
+    }
+}
+
+#[cfg(test)]
+mod project_steering_tests {
+    use super::*;
+    #[test]
+    fn project_send_route_has_one_execution_authority_and_durable_idempotent_steering() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        let worker=crate::project_execution::planner::execution(&db.read().unwrap(),"A").unwrap().worker;
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(env_path(&worker),"CC_PROJECT=sample\nCC_BOARD_CARD=A\nCC_COMMAND_LIFECYCLE=1\n").unwrap();
+        assert!(!super::super::board_lifecycle::enabled(&worker));
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for id in ["owner1","owner1","owner2"] {
+                let response=send_post(&state,&worker,&HeaderMap::new(),&json!({"text":"Repair current task","msg_id":id,"force":true})).await;
+                assert_eq!(response.status(),StatusCode::OK);
+            }
+        });
+        let c=state.store.read().unwrap();
+        let queued:i64=c.query_row("SELECT COUNT(*) FROM steering_queue WHERE session=?1 AND guard='project-steering'",[&worker],|r|r.get(0)).unwrap();assert_eq!(queued,2);
+        let rows:i64=c.query_row("SELECT COUNT(*) FROM cmd_history WHERE session=?1 AND type='steering' AND card_id='A' AND project_group='sample' AND capture_pending=0 AND intake_attempts=0",[&worker],|r|r.get(0)).unwrap();assert_eq!(rows,2);
+        assert_eq!(crate::project_execution::intake::receipts(&c,"sample").unwrap().len(),0);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+        std::fs::write(env_path("normal-fixture"),"CC_COMMAND_LIFECYCLE=1\n").unwrap();
+        assert!(super::super::board_lifecycle::enabled("normal-fixture"));
     }
 }

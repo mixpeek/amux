@@ -17,9 +17,11 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list))
         .route("/{name}", get(detail).put(configure))
         .route("/{name}/commands", axum::routing::post(command))
+        .route("/{name}/legacy-receipts/{id}/cancel", axum::routing::post(cancel_legacy_receipt))
         .route("/{name}/commands/{id}/retry", axum::routing::post(retry_intake))
         .route("/{name}/tasks/{id}/report", axum::routing::post(report))
         .route("/{name}/tasks/{id}/wait", axum::routing::post(wait))
+        .route("/{name}/tasks/{id}/required-outputs", axum::routing::post(required_outputs))
         .route("/{name}/tasks/{id}/retry", axum::routing::post(retry))
         .route("/{name}/migration/preview", axum::routing::post(preview))
         .route("/{name}/migration/apply", axum::routing::post(migrate))
@@ -277,6 +279,35 @@ async fn command(
     }
 }
 
+/// The dedicated project worker remains bound to one task across attempts.
+pub(crate) fn executor_task(c:&rusqlite::Connection,worker:&str)->anyhow::Result<Option<(String,String)>> {
+    let env=super::session_verbs::parse_env(worker);
+    let Some(project)=env.get("CC_PROJECT") else {return Ok(None)};
+    let id=env.get("CC_BOARD_CARD").ok_or_else(||anyhow::anyhow!("project worker has no task"))?;
+    let row=crate::db::board_store::get_issue(c,id)?.ok_or_else(||anyhow::anyhow!("project task missing"))?;
+    let e=crate::project_execution::planner::execution(c,id)?;
+    anyhow::ensure!(row.project_group.as_deref()==Some(project) && e.worker==worker && row.session.as_deref()==Some(worker) && row.archived==0 && !crate::db::board_store::is_terminal_status(&row.status),"project worker task identity changed");
+    Ok(Some((project.into(),id.into())))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelLegacy {idempotency_key:String,expect_attempts:i64,reason:String,superseded_by_steering:String}
+async fn cancel_legacy_receipt(State(state):State<AppState>,Path((project,id)):Path<(String,i64)>,headers:HeaderMap,Json(body):Json<CancelLegacy>)->Response {
+    if !operator(&headers){return error(StatusCode::FORBIDDEN,"cancellation requires operator scope");}
+    match state.store.write_async(move|c| {
+        let (worker,pending,attempts,retry,card,raw):(String,bool,i64,i64,Option<String>,Option<String>)=c.query_row("SELECT session,capture_pending,intake_attempts,intake_retry_at,card_id,intake_result FROM cmd_history WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+        let task=executor_task(c,&worker).map_err(store::sql_error)?.ok_or(rusqlite::Error::InvalidQuery)?;
+        let prior:serde_json::Value=raw.and_then(|r|serde_json::from_str(&r).ok()).unwrap_or(serde_json::Value::Null);
+        if task.0!=project || body.idempotency_key.is_empty() || body.idempotency_key.len()>160 || body.reason.trim().is_empty() || body.reason.len()>4000 {return Err(rusqlite::Error::InvalidQuery);}
+        if prior["state"]=="cancelled" && prior["key"]==body.idempotency_key && prior["superseded_by_steering"]==body.superseded_by_steering && prior["reason"]==body.reason && prior["expect_attempts"]==body.expect_attempts {return Ok(crate::db::WriteOutcome{applied:false,events:vec![]});}
+        let original:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE id=?1 AND session=?2 UNION ALL SELECT 1 FROM steering_history WHERE id=?1 AND session=?2)",rusqlite::params![body.superseded_by_steering,worker],|r|r.get(0))?;
+        if !pending || card.is_some() || attempts!=body.expect_attempts || retry>chrono::Utc::now().timestamp() || !original {return Err(rusqlite::Error::InvalidQuery);}
+        c.execute("UPDATE cmd_history SET capture_pending=0,intake_result=?2 WHERE id=?1",rusqlite::params![id,json!({"state":"cancelled","key":body.idempotency_key,"reason":body.reason,"expect_attempts":attempts,"superseded_by_steering":body.superseded_by_steering,"prior_result":prior}).to_string()])?;
+        tracing::info!(message_id=id,project,measured=true,n_considered=1,verdict="project.legacy_receipt_cancelled","duplicate legacy intake retained as cancelled; original steering unchanged");
+        Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+    }).await {Ok(out)=>Json(json!({"applied":out.applied,"state":"cancelled","submitted":false})).into_response(),Err(e)=>error(StatusCode::CONFLICT,e)}
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReportBody {
@@ -314,6 +345,18 @@ async fn report(
         Err(e) => error(StatusCode::CONFLICT, e),
     }
 }
+async fn required_outputs(
+    State(state):State<AppState>,Path((name,id)):Path<(String,String)>,headers:HeaderMap,
+    Json(body):Json<crate::project_execution::outputs::Request>,
+)->Response {
+    if !permitted(&headers,&name) {return error(StatusCode::FORBIDDEN,"outside project scope");}
+    let worker=groups::hdr_worker(&headers);let project=name.clone();let task=id.clone();
+    match state.store.write_async(move |c|crate::project_execution::outputs::declare(c,&project,&task,&worker,&body).map_err(store::sql_error)).await {
+        Ok(out)=>Json(json!({"applied":out.applied,"task":id,"verified":false})).into_response(),
+        Err(e)=>{tracing::warn!(project=name,task=id,error=%e,measured=true,n_considered=1,verdict="project.outputs_refused","structured required-output declaration refused");error(StatusCode::CONFLICT,e)}
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitBody {
@@ -357,6 +400,7 @@ async fn wait(
                 return Err(rusqlite::Error::InvalidQuery);
             }
             e.stage = "waiting".into();
+            e.wait_category=Some(body.category.clone());
             e.waiting = Some(format!("{}: {}", body.category, body.reason));
             crate::project_execution::planner::save_execution(c, &row, &e, "project.waiting")
                 .map_err(store::sql_error)
@@ -439,21 +483,15 @@ async fn rollback(
 }
 
 async fn retry(
-    State(state): State<AppState>,
-    Path((name, id)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    if !operator(&headers) {
-        return error(StatusCode::FORBIDDEN, "retry requires operator scope");
+    State(state): State<AppState>,Path((name,id)):Path<(String,String)>,headers:HeaderMap,
+    Json(body):Json<crate::project_execution::task_retry::Request>,
+)->Response {
+    if !operator(&headers){return error(StatusCode::FORBIDDEN,"retry requires operator scope");}
+    let project=name.clone();let task=id.clone();
+    match state.store.write_async(move|c|crate::project_execution::task_retry::grant(c,&project,&task,&body).map_err(store::sql_error)).await {
+        Ok(out)=>Json(json!({"state":"ready","applied":out.applied})).into_response(),
+        Err(e)=>{tracing::warn!(project=name,task=id,error=%e,measured=true,n_considered=1,verdict="project.retry_refused","operator retry refused");error(StatusCode::CONFLICT,e)}
     }
-    match state.store.write_async(move|c| {
-        let row=crate::db::board_store::get_issue(c,&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        let mut e=crate::project_execution::planner::execution(c,&id).map_err(store::sql_error)?;
-        if row.project_group.as_deref()!=Some(&name) || matches!(e.stage.as_str(),"working"|"reserved"|"reported"|"verifying") || row.status=="verified" {return Err(rusqlite::Error::InvalidQuery);}
-        e.last_failure=e.waiting.take().or(e.last_failure);e.stage.clear();e.attempt=0;e.input_hash.clear();e.report=None;
-        c.execute("UPDATE issues SET status='todo',lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",[&id])?;
-        crate::project_execution::planner::save_execution(c,&row,&e,"project.operator_retry").map_err(store::sql_error)
-    }).await {Ok(_)=>Json(json!({"state":"ready","applied":true})).into_response(),Err(e)=>error(StatusCode::CONFLICT,e)}
 }
 
 /// A temporary executor cannot expand its resource graph through legacy APIs.
@@ -476,7 +514,7 @@ pub(crate) fn executor_mutation_guard(
     let env = super::session_verbs::parse_env(&worker);
     let project = env.get("CC_PROJECT")?;
     let owns_report = path.starts_with(&format!("/api/projects/{project}/tasks/"))
-        && (path.ends_with("/report") || path.ends_with("/wait"));
+        && (path.ends_with("/report") || path.ends_with("/wait") || path.ends_with("/required-outputs"));
     let runtime_report =
         path == format!("/api/sessions/{worker}/report") || path == "/api/client-debug";
     let graph_mutation = [
@@ -503,6 +541,58 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use tower::ServiceExt;
+    #[test]
+    fn project_outputs_supported_api_is_scoped_strict_and_idempotent() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,body)=crate::project_execution::outputs::tests::fixture();
+        let worker=crate::project_execution::planner::execution(&db.read().unwrap(),"A").unwrap().worker;
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions").join(format!("{worker}.env")),"CC_PROJECT=sample\nCC_TAGS=sample\n").unwrap();
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let app=routes().with_state(state);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for (caller,path,expected) in [("foreign","/sample/tasks/A/required-outputs",StatusCode::FORBIDDEN),(worker.as_str(),"/other/tasks/A/required-outputs",StatusCode::FORBIDDEN),(worker.as_str(),"/sample/tasks/B/required-outputs",StatusCode::CONFLICT),(worker.as_str(),"/sample/tasks/A/required-outputs",StatusCode::OK),(worker.as_str(),"/sample/tasks/A/required-outputs",StatusCode::OK)] {
+                let response=app.clone().oneshot(axum::http::Request::builder().method("POST").uri(path).header("x-amux-session",caller).header("content-type","application/json").body(Body::from(serde_json::to_string(&body).unwrap())).unwrap()).await.unwrap();
+                assert_eq!(response.status(),expected,"{caller} {path}");
+            }
+            let mut invalid=serde_json::to_value(&body).unwrap();invalid["category"]=json!("spend");
+            let response=app.oneshot(axum::http::Request::builder().method("POST").uri("/sample/tasks/A/required-outputs").header("x-amux-session",&worker).header("content-type","application/json").body(Body::from(invalid.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::UNPROCESSABLE_ENTITY);
+        });
+        let mut headers=HeaderMap::new();headers.insert("x-amux-session",worker.parse().unwrap());
+        assert!(executor_mutation_guard(&axum::http::Method::POST,"/api/projects/sample/tasks/A/required-outputs",&headers).is_none());
+        assert!(executor_mutation_guard(&axum::http::Method::POST,"/api/projects/other/tasks/A/required-outputs",&headers).is_some());
+    }
+    #[test]
+    fn project_retry_and_legacy_cancellation_routes_fail_closed_and_preserve_history() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        let e=crate::project_execution::planner::execution(&db.read().unwrap(),"A").unwrap();
+        let row=crate::db::board_store::get_issue(&db.read().unwrap(),"A").unwrap().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();std::fs::write(home.path().join("sessions").join(format!("{}.env",e.worker)),"CC_PROJECT=sample\nCC_BOARD_CARD=A\n").unwrap();
+        let worker=e.worker.clone();
+        db.write(move|c| {c.execute("INSERT INTO cmd_history(id,text,type,session,ts,capture_pending,intake_result) VALUES(42,'duplicate','user',?1,1,1,'{\"old_failure\":\"retained\"}')",[&worker])?;c.execute("INSERT INTO steering_queue(id,session,text,queued_at) VALUES('original',?1,'sole delivery',1)",[&worker])?;Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};let app=routes().with_state(state.clone());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let retry=json!({"idempotency_key":"retry","expect_generation":e.generation,"expect_revision":row.rev,"input_hash":e.input_hash});
+            let cancel=json!({"idempotency_key":"cancel","expect_attempts":0,"reason":"duplicate instruction","superseded_by_steering":"original"});
+            for (path,body,worker,status) in [
+                ("/sample/tasks/A/retry",json!({}),false,StatusCode::UNPROCESSABLE_ENTITY),
+                ("/sample/tasks/A/retry",retry.clone(),true,StatusCode::FORBIDDEN),
+                ("/other/tasks/A/retry",retry.clone(),false,StatusCode::CONFLICT),
+                ("/sample/legacy-receipts/42/cancel",cancel.clone(),true,StatusCode::FORBIDDEN),
+                ("/other/legacy-receipts/42/cancel",cancel.clone(),false,StatusCode::CONFLICT),
+                ("/sample/legacy-receipts/42/cancel",cancel.clone(),false,StatusCode::OK),
+                ("/sample/legacy-receipts/42/cancel",cancel,false,StatusCode::OK),
+                ("/sample/tasks/A/retry",retry.clone(),false,StatusCode::OK),
+                ("/sample/tasks/A/retry",retry,false,StatusCode::OK)] {
+                let mut req=axum::http::Request::builder().method("POST").uri(path).header("content-type","application/json");if worker {req=req.header("x-amux-worker","executor");}
+                let response=app.clone().oneshot(req.body(Body::from(body.to_string())).unwrap()).await.unwrap();assert_eq!(response.status(),status,"{path}, worker={worker}");
+            }
+        });
+        let c=state.store.read().unwrap();let (pending,result):(bool,String)=c.query_row("SELECT capture_pending,intake_result FROM cmd_history WHERE id=42",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();assert!(!pending);assert!(result.contains("retained"));
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue WHERE id='original'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
     #[tokio::test]
     async fn project_intake_retry_requires_operator_and_current_receipt() {
         let dir=tempfile::tempdir().unwrap();

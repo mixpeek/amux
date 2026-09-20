@@ -1106,10 +1106,12 @@ fn scan_gemini(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
 /// short-circuit idle/trust) and [`TerminalAdapter::generating`] (which the
 /// clock-holding caller uses to mint the turn that makes the worker Active).
 fn codex_model_bar(line: &str) -> bool {
-    let Some((identity, location)) = line.rsplit_once('\u{b7}') else {
+    let Some((identity, remainder)) = line.split_once('\u{b7}') else {
         return false;
     };
-    let location = location.trim();
+    // Current Codex adds a session label AFTER its location. The final
+    // segment is no longer necessarily the path; model/effort stay open-ended.
+    let location = remainder.split('\u{b7}').next().unwrap_or("").trim();
     let identity_parts = identity.split_whitespace().count();
     identity_parts >= 2
         && (location == "~" || location.starts_with("~/") || location.starts_with('/'))

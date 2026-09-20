@@ -45,5 +45,26 @@ try {
   assert.equal(proof.grants,1);assert.equal(proof.receipt,6);assert.equal(proof.paused,true);
   assert.equal(await page.getByRole('button',{name:'Retry intake',exact:true}).count(),0);
   assert.match(await page.locator('#project-receipt').innerText(),/when resumed/);
-  console.log('project intake retry UI: PASS (original receipt, explicit bounded grant, uncertain-response key reuse, pause preserved)');
+  await page.evaluate(()=>{
+    data.cards=[{id:'A',title:'Studio output',phase:'waiting',next_action:'Continue after backend verification',acceptance_criteria:[],execution_plan:{waiting_reason:'required_output:B',execution:{stage:'waiting',worker:'executor'}}}];
+    _projectRender(data);
+  });
+  assert.match(await page.locator('#project-cards .project-column h3').innerText(),/^Waiting/);
+  assert.match(await page.locator('#project-cards').innerText(),/required output/);
+  assert.doesNotMatch(await page.locator('#project-cards').innerText(),/Working now/);
+  await page.evaluate(()=>{
+    requests=[];loseResponse=true;grants=0;data.project.policy.paused=false;
+    Object.assign(data.cards[0],{rev:7,execution_plan:{waiting_reason:'attempts_exhausted',execution:{stage:'waiting',worker:'executor',generation:2,input_hash:'requirements',attempt:2}}});
+    _projectRender(data);
+  });
+  await page.getByRole('button',{name:'Authorize one retry',exact:true}).click();
+  await page.waitForFunction(()=>requests.length===1 && !_projectIntakeRetries.size);
+  await page.getByRole('button',{name:'Authorize one retry',exact:true}).click();
+  await page.waitForFunction(()=>requests.length===2 && !_projectIntakeRetries.size);
+  const taskProof=await page.evaluate(()=>({requests,grants}));
+  assert.deepEqual(taskProof.requests[0],taskProof.requests[1]);
+  assert.equal(taskProof.requests[0].path,'/sample/tasks/A/retry');
+  assert.equal(taskProof.requests[0].body.expect_generation,2);assert.equal(taskProof.requests[0].body.expect_revision,7);
+  assert.equal(taskProof.grants,1);
+  console.log('project intake retry UI: PASS (original receipt, bounded grant, key reuse, pause preserved, waiting phase, task retry uncertainty key)');
 } finally {await browser.close();}

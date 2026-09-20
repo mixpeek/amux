@@ -176,9 +176,31 @@ pub(crate) fn unambiguous_owners(workdirs: &BTreeMap<String, String>) -> HashMap
         .collect()
 }
 
+/// Prefer durable validated workspace identity over the configured parent clone.
+/// Retirement keeps both the workspace record and .env.reaped as provenance.
+pub(crate) fn workspace_workdirs(home:&Path,mut dirs:BTreeMap<String,String>)->BTreeMap<String,String>{
+    if let Ok(entries)=std::fs::read_dir(home.join("workspaces")) {
+        for entry in entries.flatten(){
+            let path=entry.path();if path.extension().and_then(|s|s.to_str())!=Some("json"){continue;}
+            let Some(name)=path.file_stem().and_then(|s|s.to_str()) else {continue};
+            if !crate::api::session_verbs::valid_session_name(name){continue;}
+            let Some(w)=crate::fanout_workspace::load(home,name) else {continue};
+            let env=home.join("sessions").join(format!("{name}.env"));
+            let env=if env.exists(){env}else{env.with_extension("env.reaped")};
+            let settings=crate::config::parse_env_file(&env);
+            if w.path!=home.join("worktrees").join(name).to_string_lossy()
+                || w.branch!=format!("amux/fanout/{name}") || !Path::new(&w.repo).is_absolute()
+                || w.base.len()!=40 || !w.base.bytes().all(|b|b.is_ascii_hexdigit())
+                || settings.get("CC_DIR")!=Some(&w.repo) {continue;}
+            dirs.insert(name.into(),w.path);
+        }
+    }
+    dirs
+}
+
 /// One pass over the codex rollouts. Returns how many ledger rows were written.
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
-    index_once_at(store, home, &codex_sessions_dir(), &crate::api::session_verbs::all_session_workdirs()).await
+    index_once_at(store, home, &codex_sessions_dir(), &workspace_workdirs(home,crate::api::session_verbs::all_session_workdirs())).await
 }
 
 /// The pass with its roots injected, so a test drives a temp tree and a fixed
@@ -198,18 +220,16 @@ pub async fn index_once_at(
     let cursors = token_ledger::read_cursors(store)?;
 
     let mut batches: Vec<LedgerFileBatch> = Vec::new();
+    let mut repairs=Vec::new();
     for path in rollout_files(sessions) {
         let conversation = conversation_key(&path);
         let Ok(meta) = path.metadata() else { continue };
         let size = meta.len();
         let offset = cursors.get(&conversation).copied().unwrap_or(0);
-        if offset >= size {
-            continue;
-        }
+        let lane = rollout_cwd(&path).and_then(|cwd| owners.get(&cwd).cloned()).unwrap_or_default();
+        if !lane.is_empty(){repairs.push((conversation.clone(),lane.clone()));}
+        if offset == size {continue;}
         let offset = if offset > size { 0 } else { offset };
-        let lane = rollout_cwd(&path)
-            .and_then(|cwd| owners.get(&cwd).cloned())
-            .unwrap_or_default();
         let mtime = meta
             .modified()
             .ok()
@@ -240,7 +260,14 @@ pub async fn index_once_at(
 
     token_ledger::warn_unpriced("codex", &table, &batches);
     let inserted = token_ledger::commit_ledger_batch(store, batches).await?;
-    if inserted > 0 {
+    let repaired=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));let count=repaired.clone();
+    store.write_async(move|c|{
+        let mut n=0;for (conversation,lane) in repairs {n+=c.execute("UPDATE token_ledger SET session=?2 WHERE conversation=?1 AND session='' AND task=''",rusqlite::params![conversation,lane])?;}
+        count.store(n,std::sync::atomic::Ordering::Relaxed);
+        if n>0 {tracing::info!(measured=true,n_considered=n,verdict="codex_workspace_usage_recovered","unowned exact-match rollout rows assigned from durable workspace identity");}
+        Ok(crate::db::WriteOutcome{applied:n>0,events:vec![]})
+    }).await?;
+    if inserted > 0 || repaired.load(std::sync::atomic::Ordering::Relaxed)>0 {
         token_ledger::attribute_tasks(store).await?;
     }
     Ok(inserted)
@@ -393,4 +420,32 @@ mod tests {
         assert_eq!(session, "", "unowned, not dropped and not guessed");
         assert_eq!(input, 500);
     }
+    #[tokio::test]
+    async fn project_workspace_owners_survive_retirement_and_recover_exact_unowned_rows() {
+        let home=tempfile::tempdir().unwrap();let sessions=tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let mut parent_dirs=BTreeMap::new();
+        for (name,suffix) in [("active","env"),("retired","env.reaped")] {
+            let w=crate::fanout_workspace::Workspace{repo:"/parent/clone".into(),path:home.path().join("worktrees").join(name).to_string_lossy().into(),branch:format!("amux/fanout/{name}"),base:"a".repeat(40)};
+            crate::fanout_workspace::save(home.path(),name,&w).unwrap();
+            std::fs::write(home.path().join("sessions").join(format!("{name}.{suffix}")),"CC_DIR=/parent/clone\n").unwrap();
+            parent_dirs.insert(name.into(),w.repo);
+        }
+        let dirs=workspace_workdirs(home.path(),parent_dirs);
+        assert_eq!(dirs.len(),2);assert_ne!(dirs["active"],dirs["retired"]);
+        assert!(!unambiguous_owners(&dirs).contains_key("/parent/clone"));
+        let st=store();
+        rollout(sessions.path(),&dirs["retired"],&format!("{}\n",token_count(2,"2026-09-15T10:00:02.000Z",500,0,0,10)));
+        assert_eq!(index_once_at(&st,home.path(),sessions.path(),&BTreeMap::new()).await.unwrap(),1);
+        let mut ambiguous=dirs.clone();ambiguous.insert("other".into(),dirs["retired"].clone());
+        index_once_at(&st,home.path(),sessions.path(),&ambiguous).await.unwrap();
+        assert_eq!(st.read().unwrap().query_row("SELECT session FROM token_ledger",[],|r|r.get::<_,String>(0)).unwrap(),"");
+        index_once_at(&st,home.path(),sessions.path(),&dirs).await.unwrap();
+        index_once_at(&st,home.path(),sessions.path(),&dirs).await.unwrap();
+        let c=st.read().unwrap();let row:(String,String,i64)=c.query_row("SELECT session,task,count(*) FROM token_ledger",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(row,("retired".into(),"".into(),1),"ownership repair neither double bills nor invents a claim window");
+        std::fs::write(home.path().join("sessions/active.env"),"CC_DIR=/foreign\n").unwrap();
+        assert!(!workspace_workdirs(home.path(),BTreeMap::new()).contains_key("active"));
+    }
+
 }

@@ -7,12 +7,12 @@ use serde_json::{json, Value};
 pub fn summary(conn: &Connection, name: &str) -> anyhow::Result<Value> {
     let (turns,tokens,cost):(i64,Option<i64>,Option<f64>)=conn.query_row("SELECT count(*),sum(l.input+l.output+l.cache_read+l.cache_write),sum(l.cost_usd) FROM token_ledger l JOIN issues i ON i.id=l.task WHERE i.project_group=?1",[name],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let (calls, receipts): (i64, i64) = conn.query_row(
-        "SELECT coalesce(sum(intake_attempts),0),count(*) FROM cmd_history WHERE project_group=?1",
+        "SELECT coalesce(sum(intake_attempts),0),count(*) FROM cmd_history WHERE session='project:'||project_group AND type='user' AND project_group=?1",
         [name],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let mut q = conn.prepare(
-        "SELECT intake_result FROM cmd_history WHERE project_group=?1 AND intake_attempts>0",
+        "SELECT intake_result FROM cmd_history WHERE session='project:'||project_group AND type='user' AND project_group=?1 AND intake_attempts>0",
     )?;
     let raw = q
         .query_map([name], |r| r.get::<_, Option<String>>(0))?
@@ -47,7 +47,7 @@ pub fn summary(conn: &Connection, name: &str) -> anyhow::Result<Value> {
             }
         }
     }
-    let (outcomes,verified):(i64,i64)=conn.query_row("SELECT count(DISTINCT c.card_id),count(DISTINCT CASE WHEN i.status='verified' THEN c.card_id END) FROM cmd_history c JOIN issues i ON i.id=c.card_id WHERE c.project_group=?1 AND c.capture_pending=0",[name],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (outcomes,verified):(i64,i64)=conn.query_row("SELECT count(DISTINCT c.card_id),count(DISTINCT CASE WHEN i.status='verified' THEN c.card_id END) FROM cmd_history c JOIN issues i ON i.id=c.card_id WHERE c.session='project:'||c.project_group AND c.type='user' AND c.project_group=?1 AND c.capture_pending=0",[name],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let attempts:i64=conn.query_row("SELECT count(*) FROM session_events WHERE type='project.claimed' AND json_extract(data,'$.project_group')=?1",[name],|r|r.get(0))?;
     let measured = turns > 0 || measured_calls > 0;
     let observed = measured.then_some(tokens.unwrap_or(0) as u64 + intake_tokens);

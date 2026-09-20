@@ -24,7 +24,7 @@ pub fn receive(
         "command must contain 1..100000 bytes"
     );
     anyhow::ensure!(store::get(conn, project)?.is_some(), "project not found");
-    let prior:Option<(i64,String)>=conn.query_row("SELECT id,text FROM cmd_history WHERE project_group=?1 AND json_extract(client_meta,'$.idempotency_key')=?2",params![project,key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let prior:Option<(i64,String)>=conn.query_row("SELECT id,text FROM cmd_history WHERE session='project:'||project_group AND type='user' AND project_group=?1 AND json_extract(client_meta,'$.idempotency_key')=?2",params![project,key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     if let Some((id, original)) = prior {
         anyhow::ensure!(
             original == text,
@@ -58,7 +58,7 @@ pub fn receipts(conn: &Connection, project: &str) -> anyhow::Result<Vec<Value>> 
     let project_policy =
         store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
     let budget_wait = super::usage::waiting(conn, &project_policy)?;
-    let mut q=conn.prepare("SELECT c.id,c.text,c.capture_pending,c.intake_attempts,c.intake_result,c.card_id,c.ts,p.intake_attempts,p.intake_result,c.client_meta,c.intake_retry_at,p.client_meta FROM cmd_history c LEFT JOIN cmd_history p ON p.id=json_extract(c.intake_result,'$.waiting_on') AND p.project_group=c.project_group AND p.capture_pending!=0 WHERE c.project_group=?1 ORDER BY c.id DESC LIMIT 100")?;
+    let mut q=conn.prepare("SELECT c.id,c.text,c.capture_pending,c.intake_attempts,c.intake_result,c.card_id,c.ts,p.intake_attempts,p.intake_result,c.client_meta,c.intake_retry_at,p.client_meta FROM cmd_history c LEFT JOIN cmd_history p ON p.id=json_extract(c.intake_result,'$.waiting_on') AND p.project_group=c.project_group AND p.capture_pending!=0 WHERE c.session='project:'||c.project_group AND c.type='user' AND c.project_group=?1 ORDER BY c.id DESC LIMIT 100")?;
     let rows=q.query_map([project],|r| {
         let raw:Option<String>=r.get(4)?;
         let mut result:Value=raw.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
@@ -85,6 +85,14 @@ pub(crate) async fn interpret(
     project: &str,
     client: Arc<dyn mdai::ModelClient>,
 ) -> anyhow::Result<()> {
+    {
+        let c = state.store.read()?;
+        let genuine:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM cmd_history WHERE id=?1 AND project_group=?2 AND session='project:'||project_group AND type='user')",params![id,project],|r|r.get(0))?;
+        anyhow::ensure!(
+            genuine,
+            "within-task steering is not a project outcome receipt"
+        );
+    }
     let result =
         board_lifecycle::capture_inner(state, id, &format!("project:{project}"), client).await;
     if let Err(error) = &result {
@@ -101,7 +109,7 @@ pub(crate) async fn interpret(
 fn pending_receipts(conn: &Connection, now: i64) -> rusqlite::Result<Vec<(i64, String)>> {
     // Exhausted malformed responses and duplicates waiting on them must not
     // monopolize the bounded recovery batch and starve newer accepted commands.
-    let mut q=conn.prepare("SELECT c.id,c.project_group FROM cmd_history c JOIN group_config g ON g.name=c.project_group WHERE c.capture_pending!=0 AND c.intake_retry_at<=?1 AND json_extract(g.execution_policy,'$.paused')!=1 AND CASE WHEN json_extract(c.intake_result,'$.waiting_on') IS NOT NULL THEN EXISTS(SELECT 1 FROM cmd_history p WHERE p.id=json_extract(c.intake_result,'$.waiting_on') AND p.capture_pending=0) ELSE c.intake_attempts<2+coalesce(json_array_length(c.client_meta,'$.intake_retries'),0) OR json_extract(c.intake_result,'$.state')='prepared' OR (json_extract(c.intake_result,'$.state')='received' AND json_extract(c.intake_result,'$.error') IS NULL) END ORDER BY c.id LIMIT 2")?;
+    let mut q=conn.prepare("SELECT c.id,c.project_group FROM cmd_history c JOIN group_config g ON g.name=c.project_group WHERE c.session='project:'||c.project_group AND c.type='user' AND c.capture_pending!=0 AND c.intake_retry_at<=?1 AND json_extract(g.execution_policy,'$.paused')!=1 AND CASE WHEN json_extract(c.intake_result,'$.waiting_on') IS NOT NULL THEN EXISTS(SELECT 1 FROM cmd_history p WHERE p.id=json_extract(c.intake_result,'$.waiting_on') AND p.capture_pending=0) ELSE c.intake_attempts<2+coalesce(json_array_length(c.client_meta,'$.intake_retries'),0) OR json_extract(c.intake_result,'$.state')='prepared' OR (json_extract(c.intake_result,'$.state')='received' AND json_extract(c.intake_result,'$.error') IS NULL) END ORDER BY c.id LIMIT 2")?;
     let rows = q
         .query_map([now], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect();
@@ -159,6 +167,33 @@ mod tests {
                 reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
         )
+    }
+    #[tokio::test]
+    async fn project_steering_never_counts_or_interprets_as_an_outcome() {
+        let (_dir, state) = fixture();
+        let id = receipt(&state, "original");
+        state.store.write(move|c| {
+            c.execute("INSERT INTO issues(id,title,status,project_group,created,updated) VALUES('A','Outcome','verified','sample',1,1)",[])?;
+            c.execute("UPDATE cmd_history SET card_id='A',capture_pending=0 WHERE id=?1",[id])?;
+            for n in 100..110 {c.execute("INSERT INTO cmd_history(id,text,type,session,ts,project_group,card_id,capture_pending) VALUES(?1,'steer','steering','executor',1,'sample','A',1)",[n])?;}
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let fake = Arc::new(Fake {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            response: "must not run".into(),
+        });
+        for id in 100..110 {
+            assert!(interpret(&state, id, "sample", fake.clone()).await.is_err());
+        }
+        let c = state.store.read().unwrap();
+        assert!(pending_receipts(&c, i64::MAX).unwrap().is_empty());
+        assert_eq!(receipts(&c, "sample").unwrap().len(), 1);
+        let usage = super::super::usage::summary(&c, "sample").unwrap();
+        assert_eq!(usage["commands"], 1);
+        assert_eq!(usage["requested_outcomes"], 1);
+        assert_eq!(usage["verified_outcomes"], 1);
+        assert_eq!(usage["intake_calls"], 0);
+        assert_eq!(fake.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
     fn receipt(state: &AppState, key: &str) -> i64 {
         let key = key.to_string();

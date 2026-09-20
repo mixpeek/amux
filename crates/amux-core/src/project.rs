@@ -86,6 +86,7 @@ pub enum Phase {
     Intake,
     Ready,
     Working,
+    Waiting,
     Verifying,
     Verified,
     Closed,

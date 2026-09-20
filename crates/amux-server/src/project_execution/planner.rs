@@ -17,13 +17,19 @@ pub struct Check {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Report {
+    #[serde(default)]
+    pub assets: Vec<super::assets::Asset>,
     pub head: String,
     pub checks: Vec<Check>,
     pub summary: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Execution {
+    #[serde(default)]
+    pub retained_assets: Vec<super::assets::Retained>,
     pub stage: String,
+    #[serde(default)]
+    pub retry_grants: Vec<super::task_retry::Grant>,
     pub attempt: u32,
     pub generation: i64,
     pub input_hash: String,
@@ -31,12 +37,23 @@ pub struct Execution {
     pub delivery_id: String,
     pub waiting: Option<String>,
     #[serde(default)]
+    pub wait_category: Option<String>,
+    #[serde(default)]
+    pub output_wait: Option<super::outputs::OutputWait>,
+    #[serde(default)]
     pub last_failure: Option<String>,
     pub report: Option<Report>,
     pub usage: Option<Value>,
     pub observed_at: i64,
     #[serde(default)]
     pub suspended: bool,
+}
+impl Execution {
+    pub fn attempt_limit(&self, default: u32) -> u32 {
+        self.retry_grants
+            .last()
+            .map_or(default, |g| g.allowed_through)
+    }
 }
 pub fn execution(conn: &Connection, id: &str) -> anyhow::Result<Execution> {
     let raw: Option<String> = conn.query_row(
@@ -114,13 +131,18 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 phase(&row.status, bs::has_execution_details(row))
             };
         let mut action = "wait";
+        let output_continuation = state.stage == "waiting"
+            && state
+                .output_wait
+                .as_ref()
+                .is_some_and(|w| w.continued_generation.is_none());
         let waiting = if phase == Phase::Verified || phase == Phase::Closed {
             None
         } else if !project.policy.enabled {
             Some("project_disabled".into())
         } else if project.policy.paused {
             Some("project_paused".into())
-        } else if state.waiting.is_some() && state.stage != "repair" {
+        } else if state.waiting.is_some() && state.stage != "repair" && !output_continuation {
             state.waiting.clone()
         } else if !bs::has_execution_details(row) && row.item_type != "epic" {
             Some("intake_required".into())
@@ -139,6 +161,18 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             .find(|id| !rows.iter().any(|r| &r.id == *id && r.status == "verified"))
         {
             Some(format!("required_output:{dep}"))
+        } else if !super::outputs::ready(conn, row)? {
+            Some("required_output_unavailable".into())
+        } else if output_continuation {
+            if let Some(reason) = &budget_wait {
+                Some(reason.clone())
+            } else if available == 0 {
+                Some("executor_capacity".into())
+            } else {
+                available -= 1;
+                action = "resume_outputs";
+                None
+            }
         } else if row.item_type == "epic" {
             if !row.depends_on.is_empty() {
                 action = "complete_epic";
@@ -155,7 +189,7 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
         } else if state.stage == "working" {
             action = "observe";
             None
-        } else if state.attempt >= project.policy.max_attempts {
+        } else if state.attempt >= state.attempt_limit(project.policy.max_attempts) {
             Some("attempts_exhausted".into())
         } else if phase == Phase::Unrecognized {
             Some("unrecognized_status".into())
@@ -167,6 +201,16 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             available -= 1;
             action = "claim";
             None
+        };
+        // Execution truth owns the display too: an idle wait is not work.
+        let phase = if waiting.is_some()
+            && !matches!(
+                phase,
+                Phase::Verified | Phase::Closed | Phase::Intake | Phase::Unrecognized
+            ) {
+            Phase::Waiting
+        } else {
+            phase
         };
         result.push(CardPlan {
             id: row.id.clone(),
@@ -230,16 +274,19 @@ pub fn save_execution(
     }
     // Session/terminal projections use this existing causal identity. The project
     // transition alone is not consumed by them and would show active-without-card.
-    if event == "project.claimed" {
+    if matches!(event, "project.claimed" | "project.outputs_continued") {
         conn.execute(
             "INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,'task.claimed',?3,'project-driver')",
             params![crate::config::now_f64(), state.worker,
-                json!({"issue":row.id,"status":"doing","from":row.status}).to_string()],
+                json!({"issue":row.id,"status":"doing","from":row.status,"continuation":event=="project.outputs_continued"}).to_string()],
         )?;
     }
     // A valid structured response is positive receipt evidence, even if the
     // transport died after typing but before moving its claim to history.
-    if matches!(event, "project.reported" | "project.waiting") {
+    if matches!(
+        event,
+        "project.reported" | "project.waiting" | "project.outputs_declared"
+    ) {
         let text: Option<String> = conn.query_row(
             "SELECT text FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution'",
             params![state.delivery_id, state.worker], |r| r.get(0),
@@ -384,6 +431,7 @@ pub fn delivery_current(
             && e.delivery_id == delivery
             && matches!(e.stage.as_str(), "reserved" | "working")
             && e.input_hash == input_hash(&row)
+            && super::outputs::ready(conn, &row)?
         {
             return Ok(true);
         }
@@ -452,7 +500,7 @@ mod tests {
             let e=execution(c,"A").unwrap();
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES(?1,?2,'Task packet API_KEY=fixture-secret',1,'project-execution',2)",params![e.delivery_id,e.worker])?;
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('unrelated',?1,'Owner input',1,'')",[&e.worker])?;
-            let report=Report{head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
+            let report=Report{assets:vec![],head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
             assert!(record_report(c,"sample","A",&e.worker,e.generation+1,&e.input_hash,&report).is_err());
             assert_eq!(c.query_row("SELECT count(*) FROM steering_queue",[],|r|r.get::<_,i64>(0))?,2);
             record_report(c,"sample","A",&e.worker,e.generation,&e.input_hash,&report).map_err(store::sql_error)?;
@@ -538,6 +586,7 @@ mod tests {
             .unwrap();
         let e = execution(&db.read().unwrap(), "A").unwrap();
         let report = Report {
+            assets: vec![],
             head: "a".repeat(40),
             summary: "implemented".into(),
             checks: vec![Check {

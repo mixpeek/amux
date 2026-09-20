@@ -25,7 +25,7 @@ pub fn grant(
         "retry idempotency key required (1..160 bytes)"
     );
     let (pending, attempts, retry_at, raw, meta): (bool, i64, i64, Option<String>, Option<String>) = conn.query_row(
-        "SELECT capture_pending,intake_attempts,intake_retry_at,intake_result,client_meta FROM cmd_history WHERE id=?1 AND project_group=?2",
+        "SELECT capture_pending,intake_attempts,intake_retry_at,intake_result,client_meta FROM cmd_history WHERE session='project:'||project_group AND type='user' AND id=?1 AND project_group=?2",
         params![id,project], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
     let mut meta: Value = meta
         .map(|s| serde_json::from_str(&s))
