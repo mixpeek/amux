@@ -535,6 +535,7 @@ mod tests {
         let inc = live_incidents(&s).unwrap();
         assert_eq!(inc.len(), 1, "100 identical failures must be ONE incident");
         assert_eq!(inc[0]["occurrences"], 100);
+        assert_eq!(result_log_stats(&s).unwrap().0, 1, "identical verdicts are one log row");
     }
 
     /// Two entities failing the same check are two incidents — collapsing them
@@ -586,7 +587,7 @@ mod tests {
         let old = now() - 7200.0;
         let _ = s
             .write_async(move |conn| {
-                for (st, id) in [("pass", "old.pass"), ("fail", "old.fail")] {
+        for (st, id) in [("pass", "old.pass"), ("unknown", "old.unknown"), ("fail", "old.fail")] {
                     conn.execute(
                         "INSERT INTO _amux_invariant_result
                            (ts, invariant_id, status, entity_key, expected, observed, evidence, duration_ms)
@@ -612,7 +613,7 @@ mod tests {
         assert_eq!(
             left,
             vec!["fresh.check".to_string(), "old.fail".to_string()],
-            "stale pass gone, stale fail kept, fresh row kept"
+            "stale pass and unknown gone, stale fail kept, fresh row kept"
         );
 
         let (rows, oldest) = result_log_stats(&s).unwrap();
