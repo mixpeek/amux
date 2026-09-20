@@ -236,6 +236,64 @@ impl EnvFile {
         self.pairs.iter().map(|(k, _)| k.clone()).collect()
     }
 
+/// Escape a value for a DOUBLE-QUOTED shell assignment.
+///
+/// THIS FILE IS SOURCED. Before this existed, `write_unlocked` emitted
+/// `K="<raw value>"` with no escaping at all, so:
+///
+///   * a value containing `$(...)` or a backtick EXECUTED on every source. Observed
+///     2026-09-20 on a CC_WORKTREE_VERIFY value, which ran `git rev-parse` and
+///     printed `graft_inflight_order_key: command not found` from a shell that was
+///     only meant to read variables.
+///   * a value containing a bare `"` ended the string early and turned the remainder
+///     of the line into commands. That is why CC_ACCEPTANCE_CRITERIA, which stores a
+///     JSON array of quoted strings, breaks `amux info` with `search: command not
+///     found`.
+///
+/// The four characters that keep their meaning inside double quotes are `\`, `"`,
+/// `$` and a backtick, so those are exactly the four escaped here.
+///
+/// NEWLINES ARE DELIBERATELY LEFT ALONE. A literal newline inside double quotes is
+/// valid shell and survives `source`, so escaping it would change the value a
+/// consumer sees. `load` is line-based and will not round-trip one, which is a
+/// pre-existing limit this change neither fixes nor worsens.
+fn env_quote(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 8);
+    for c in v.chars() {
+        if matches!(c, '\\' | '"' | '$' | '`') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Reverse `env_quote`.
+///
+/// Only the four sequences `env_quote` can emit are consumed; any other backslash is
+/// left exactly as it was. That matters for BACKWARD COMPATIBILITY: 154 session env
+/// files existed when this landed, written by the unescaped writer, and none of them
+/// contained a backslash at all, so no stored value changes meaning. A legacy value
+/// that did contain one keeps it unless it happens to precede one of the four.
+fn env_unquote(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut chars = v.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some(&n) if matches!(n, '\\' | '"' | '$' | '`') => {
+                    out.push(n);
+                    chars.next();
+                }
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
     pub(crate) fn load(path: &Path) -> Self {
         let mut pairs = Vec::new();
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -251,10 +309,20 @@ impl EnvFile {
                 continue;
             }
             let v = v.trim();
-            let v = if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2)
-                || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2)
+            let (v, was_double_quoted) = if v.starts_with('"') && v.ends_with('"') && v.len() >= 2
             {
-                &v[1..v.len() - 1]
+                (&v[1..v.len() - 1], true)
+            } else if v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2 {
+                (&v[1..v.len() - 1], false)
+            } else {
+                (v, false)
+            };
+            // Only a DOUBLE-quoted value was escaped on the way out, and single quotes
+            // in shell do not take escapes at all, so unescaping one would corrupt it.
+            let owned;
+            let v = if was_double_quoted {
+                owned = Self::env_unquote(v);
+                owned.as_str()
             } else {
                 v
             };
@@ -303,7 +371,7 @@ impl EnvFile {
         use std::io::Write as _;
         let mut out = format!("# updated: {}\n", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f"));
         for (k, v) in &self.pairs {
-            out.push_str(&format!("{k}=\"{v}\"\n"));
+            out.push_str(&format!("{k}=\"{}\"\n", Self::env_quote(v)));
         }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -27239,6 +27307,93 @@ mod tests {
         // A bare shell is still NOT ready — otherwise the prompt is typed into a shell.
         assert!(!agent_ui_visible("slopmachine@host worker-muse % "),
                 "a shell prompt was read as an agent composer");
+    }
+
+    #[test]
+    fn a_value_with_command_substitution_is_INERT_when_the_file_is_sourced() {
+        // THE REGRESSION. This file is sourced. Before env_quote, a value containing
+        // $(...) ran on every source: a CC_WORKTREE_VERIFY value executed `git
+        // rev-parse` and printed `graft_inflight_order_key: command not found` from a
+        // shell that was only meant to read variables.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.env");
+        let marker = dir.path().join("SHOULD_NOT_EXIST");
+        let payload = format!("before $(touch {}) after", marker.display());
+
+        let mut e = EnvFile::default();
+        e.set("CC_TEST", &payload);
+        e.write(&p).unwrap();
+
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(". {}; printf %s \"$CC_TEST\"", p.display()))
+            .output()
+            .unwrap();
+
+        assert!(!marker.exists(), "sourcing the env file EXECUTED the value");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), payload);
+        assert_eq!(EnvFile::load(&p).get("CC_TEST"), Some(payload.as_str()));
+    }
+
+    #[test]
+    fn a_value_containing_double_quotes_survives_a_source_and_a_reload() {
+        // The CC_ACCEPTANCE_CRITERIA shape: a JSON array of quoted strings. Unescaped,
+        // the first inner quote ended the assignment and the rest of the line became
+        // commands, which is why `amux info` died on `search: command not found`.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.env");
+        let payload = r#"["search returns identical results","no regressions"]"#;
+
+        let mut e = EnvFile::default();
+        e.set("CC_ACCEPTANCE_CRITERIA", payload);
+        e.write(&p).unwrap();
+
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                ". {}; printf %s \"$CC_ACCEPTANCE_CRITERIA\"",
+                p.display()
+            ))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "the env file did not parse as shell");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), payload);
+        assert_eq!(EnvFile::load(&p).get("CC_ACCEPTANCE_CRITERIA"), Some(payload));
+    }
+
+    #[test]
+    fn backticks_and_a_lone_backslash_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.env");
+        let payload = r"a `id` b \ c $HOME";
+        let mut e = EnvFile::default();
+        e.set("CC_TEST", payload);
+        e.write(&p).unwrap();
+        assert_eq!(EnvFile::load(&p).get("CC_TEST"), Some(payload));
+    }
+
+    #[test]
+    fn legacy_unescaped_files_still_load_unchanged() {
+        // BACKWARD COMPATIBILITY. 154 session env files existed when escaping landed,
+        // all written by the unescaped writer, and none contained a backslash. A value
+        // that never had one must read back byte-identical.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.env");
+        std::fs::write(&p, "CC_DIR=\"/tmp/a b\"\nCC_TAGS='x, y'\nCC_DESC=plain\n").unwrap();
+        let e = EnvFile::load(&p);
+        assert_eq!(e.get("CC_DIR"), Some("/tmp/a b"));
+        assert_eq!(e.get("CC_TAGS"), Some("x, y"));
+        assert_eq!(e.get("CC_DESC"), Some("plain"));
+    }
+
+    #[test]
+    fn a_single_quoted_legacy_value_is_not_unescaped() {
+        // Single quotes take no escapes in shell, so a backslash inside them is
+        // literal. Unescaping one would silently change a stored value.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.env");
+        std::fs::write(&p, "CC_TAGS='a\\\"b'\n").unwrap();
+        assert_eq!(EnvFile::load(&p).get("CC_TAGS"), Some("a\\\"b"));
     }
 
     #[test]
