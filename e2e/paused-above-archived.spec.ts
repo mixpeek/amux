@@ -32,10 +32,19 @@ test('the Paused accordion renders immediately above the Archived accordion, bel
   expect(order).toEqual({afterCards: 'cards', beforeArchived: 'archived-section'});
 
   // Visual order: Paused sits above Archived and below the live worker card.
+  // WAIT FOR THE CARD FIRST. `render()` skips the card-list build when a menu
+  // or edit overlay is open, so #cards can still be empty when the evaluate
+  // above returns — and an empty flex container has a zero-area box, which
+  // Playwright reports as `null` rather than as "not laid out yet". Locally
+  // the poll wins that race; in CI it does not, which is what made this red
+  // on mobile and ios-safari only.
+  await expect(page.locator('#cards .card')).toHaveCount(1);
   const pb = await paused.boundingBox();
   const ab = await archived.boundingBox();
   const card = await page.locator('#cards').boundingBox();
-  expect(pb && ab && card).toBeTruthy();
+  // Name the one that was missing: `pb && ab && card` reports only `null`.
+  expect({paused: !!pb, archived: !!ab, cards: !!card})
+    .toEqual({paused: true, archived: true, cards: true});
   expect(pb!.y + pb!.height).toBeLessThanOrEqual(ab!.y);
   expect(card!.y).toBeLessThan(pb!.y);
   // Nothing wider than the viewport on a phone.

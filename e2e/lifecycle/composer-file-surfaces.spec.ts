@@ -17,7 +17,17 @@ for(const surface of ['card','details'] as const) for(const mode of ['Send','Que
   const open=async()=>{
     await page.goto('/');if(await page.locator('#peek-overlay.active').isVisible())await page.getByRole('button',{name:'Close worker',exact:true}).click();const card=page.locator(`#cards .card[data-session="${name}"]`).locator('visible=true').first();
     if(surface==='card'){await card.locator('.card-name').click();return card;}
-    await card.locator('.card-menu-btn').click();await page.locator('.card-menu.open [data-worker-action="peek-terminal"]').click();return page.locator('#peek-overlay');
+    // The peek overlay from the previous surface is still on screen and its
+    // controls sit over the card, so the click lands on
+    // `.peek-output-controls` instead of the menu button. The close above is
+    // issued but not awaited to completion, and ios-safari is slow enough to
+    // lose that race every time. Wait for the overlay to be GONE before
+    // touching the card underneath it.
+    await expect(page.locator('#peek-overlay.active')).toHaveCount(0);
+    const menuBtn=card.locator('.card-menu-btn');await expect(menuBtn).toBeVisible();
+    await menuBtn.click();
+    const menu=page.locator('.card-menu.open');await expect(menu).toBeVisible();
+    await menu.locator('[data-worker-action="peek-terminal"]').click();return page.locator('#peek-overlay');
   };
   const queue=()=>page.evaluate(name=>JSON.parse(localStorage.getItem('amux_offline_queue')||'[]').filter((q:any)=>q.url.includes('/'+name+'/')),name);
   try {

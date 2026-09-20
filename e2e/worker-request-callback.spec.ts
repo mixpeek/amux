@@ -13,6 +13,7 @@ test('a worker creates only on its own board and links peers explicitly', async 
   const reviewer = `board-reviewer-${suffix}`;
   const shepherd = `board-shepherd-${suffix}`;
   let dependency = '';
+  let localDependency = '';
   let owned = '';
 
   try {
@@ -46,6 +47,32 @@ test('a worker creates only on its own board and links peers explicitly', async 
       code: 'cross_board_create_forbidden', caller: owner, requested_owner: reviewer,
     });
 
+    // A dependency on ANOTHER board is refused outright: docs/worker-owned-board-contract.md
+    // says new `depends_on` edges stay on the same worker's board and cross-board
+    // evidence belongs in the description. The whole mutation is rejected.
+    const foreignDep = await request.post('/api/board', {
+      headers: { ...auth, 'X-Amux-Worker': owner },
+      data: {
+        title: 'Owner work gated on a peer card', status: 'backlog', session: owner,
+        type: 'chore', depends_on: [dependency],
+      },
+    });
+    expect(foreignDep.status()).toBe(409);
+    expect(await foreignDep.json()).toMatchObject({
+      code: 'cross_board_dependency_forbidden',
+      dependencies: [{ id: dependency, session: reviewer }],
+    });
+
+    // Peer REVIEW and SHEPHERD links are the explicit, allowed form of the
+    // same coordination, and a same-board dependency still works — so the
+    // refusal above discriminates rather than blanket-refusing depends_on.
+    const localPrereq = await request.post('/api/board', {
+      headers: { ...auth, 'X-Amux-Worker': owner },
+      data: { title: 'Own prerequisite', status: 'backlog', session: owner, type: 'chore' },
+    });
+    expect(localPrereq.status()).toBe(201);
+    localDependency = (await localPrereq.json()).id;
+
     const made = await request.post('/api/board', {
       headers: { ...auth, 'X-Amux-Worker': owner },
       data: {
@@ -56,7 +83,7 @@ test('a worker creates only on its own board and links peers explicitly', async 
         type: 'chore',
         reviewer,
         shepherd,
-        depends_on: [dependency],
+        depends_on: [localDependency],
       },
     });
     expect(made.status()).toBe(201);
@@ -66,7 +93,7 @@ test('a worker creates only on its own board and links peers explicitly', async 
       session: owner,
       reviewer,
       shepherd,
-      depends_on: [dependency],
+      depends_on: [localDependency],
     });
 
     const reassignRefused = await request.patch(`/api/board/${encodeURIComponent(owned)}`, {
@@ -96,6 +123,7 @@ test('a worker creates only on its own board and links peers explicitly', async 
   } finally {
     if (owned) await request.delete(`/api/board/${encodeURIComponent(owned)}`, { headers: auth }).catch(() => {});
     if (dependency) await request.delete(`/api/board/${encodeURIComponent(dependency)}`, { headers: auth }).catch(() => {});
+    if (localDependency) await request.delete(`/api/board/${encodeURIComponent(localDependency)}`, { headers: auth }).catch(() => {});
     for (const name of [owner, reviewer, shepherd]) {
       await request.delete(`/api/sessions/${name}`, { headers: auth }).catch(() => {});
     }

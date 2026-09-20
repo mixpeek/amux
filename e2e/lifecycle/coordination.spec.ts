@@ -40,13 +40,29 @@ test('LC-COORD-POLICY: peer task awareness spans groups; explicit deny and isola
     const deny = await request.patch(`/api/sessions/${author}/config`, { headers, data: { send_allow: '' } });
     expect(deny.ok()).toBeTruthy();
     // Only refusal paths here: no real model launches in the deterministic harness.
+    // REFUSAL PRECEDENCE, as the send path documents it. Isolation is checked
+    // first and is absolute (403 isolated_target: no grant can authorize peer
+    // delivery). The lifecycle/liveness check comes next and deliberately
+    // outranks the group gate (409 target_not_running): a cross-group refusal
+    // mints a single-use approval grant, and no grant can make a lane that is
+    // not running into a peer, so that answer must never reach the grant
+    // branch. These fixtures are registered but never launched — no model
+    // launches in this deterministic harness — so `outside` is refused for
+    // liveness before the group policy is consulted. The group policy itself
+    // is unit-covered (cross_group_send_ok and friends in session_verbs.rs).
+    const expected: Record<string, { status: number; code: string; error: RegExp }> = {
+      [raw]: { status: 403, code: 'isolated_target', error: /isolated/i },
+      [outside]: { status: 409, code: 'target_not_running', error: /not running/i },
+    };
     for (const target of [outside, raw]) {
       const refused = await request.post(`/api/sessions/${target}/send`, {
         headers: workerHeaders, data: { text: `lc-denied-${suffix}` } });
-      expect(refused.status()).toBe(403);
+      const want = expected[target];
+      expect(refused.status(), `${target} refusal status`).toBe(want.status);
       const body = await refused.json();
       if (body.grant_id) grants.push(body.grant_id);
-      expect(body.error).toMatch(target === raw ? /isolated/i : /cross.group|allowance/i);
+      expect(body.code).toBe(want.code);
+      expect(body.error).toMatch(want.error);
       await info.attach(`refused-${target}`, { body: JSON.stringify(body), contentType: 'application/json' });
     }
     await page.locator('#board-detail-overlay.active > .overlay-header').getByRole('button', { name: /Back/ }).click();

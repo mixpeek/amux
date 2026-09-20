@@ -5038,7 +5038,13 @@ function _renderBoardActivity(host, workerName) {
     strip.id = id;
     strip.className = 'board-activity';
     strip.setAttribute('aria-label', 'Current worker activity');
-    host.insertBefore(strip, host.firstChild);
+    // SIBLING, NOT CHILD. `renderPeekIssues` rewrites `list.innerHTML` at four
+    // points, so a child is wiped on the very next render and the banner
+    // disappears (267729ab made it a child; 085f5a16's CSS, which is still
+    // here, and its e2e test both assume the sibling). The strip scrolls
+    // because `#peek-issues-panel` is the scroller, not because it lives
+    // inside the list.
+    host.parentNode.insertBefore(strip, host);
   }
   const entries = _boardActivityEntries(workerName);
   strip.hidden = !entries.length;
@@ -11217,7 +11223,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.978';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.979';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

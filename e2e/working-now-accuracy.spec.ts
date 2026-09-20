@@ -70,6 +70,12 @@ test('one active worker marks exactly its claimed card as Working now', async ({
       n_considered: 4,
       verdict: 'linked',
       status: 'linked',
+      // The renderer reads `runtime_status` (the PHYSICAL runtime state) and
+      // `status` (the compact board-link verdict) as two different facts, and
+      // the live server sends both (sessions_legacy.rs builds this object).
+      // A fixture carrying only `status` describes a payload the server never
+      // sends, so every live label silently disappeared here.
+      runtime_status: 'active',
       card_id: claimed,
       card_live: true,
       violation: false,

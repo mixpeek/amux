@@ -174,9 +174,16 @@ test('local invitee joins, shares work, uses worker APIs, appears in logs, and c
       fleetCreator: 'member:guest@example.com',
       infoStatus: 200,
       infoBody: { name: memberWorker },
-      sendStatus: 200,
-      sendBody: { ok: true, authored_by: 'member:guest@example.com' },
+      // The worker is registered but never launched, so the send auto-wakes it
+      // and the throwaway-home spawn guard (AMUX-4724) declines: this server
+      // runs from a /tmp AMUX_HOME and waking a lane would create a live
+      // session on the host. That is a refusal, not a fault, so it is a 409
+      // carrying a next step — and the point this assertion exists for, the
+      // member's identity on the send, survives the refusal.
+      sendStatus: 409,
+      sendBody: { ok: false, authored_by: 'member:guest@example.com' },
     });
+    expect(workerAccess.sendBody.fix).toMatch(/AMUX_ALLOW_TMUX_SPAWN_FROM_TEST_HOME/);
     createdWorkers.push(memberWorker);
     for (const [name, tags] of [
       [groupPeer, ['e2e-multiplayer']],

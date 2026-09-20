@@ -6844,6 +6844,19 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
             ),
         );
     }
+    // The throwaway-home spawn guard (AMUX-4724) is a deliberate refusal with
+    // an obvious next step, and it reaches this function through the auto-wake
+    // wrapper above. It was unclassified, so every send that woke a stopped
+    // lane from a test home shipped as 500 — the exact shape AMUX-2681 exists
+    // to prevent, reintroduced by a refusal added after that fix.
+    if m.starts_with("refusing to spawn a worker: AMUX_HOME is") {
+        return (
+            StatusCode::CONFLICT,
+            Some(
+                "this server runs from a throwaway AMUX_HOME, so waking a lane would create a                  live session on the host. Start the lane deliberately, or set                  AMUX_ALLOW_TMUX_SPAWN_FROM_TEST_HOME=1 if that is genuinely intended.",
+            ),
+        );
+    }
     // --- 404: the target does not exist.
     if m.starts_with("session '") && m.ends_with("not found") {
         return (StatusCode::NOT_FOUND, Some("GET /api/sessions lists the live lanes"));
@@ -32148,6 +32161,28 @@ mod refusal_status_tests {
             let (code, fix) = send_failure_status(msg);
             assert_eq!(code, StatusCode::CONFLICT, "{msg}");
             assert!(fix.is_some(), "{msg} must carry a next step");
+        }
+    }
+
+    /// The throwaway-home spawn guard reaches here through the auto-wake
+    /// wrapper. It is a deliberate refusal, so it must not wear a 500 — and
+    /// the next step it names must be the real override variable, not a
+    /// plausible-looking one.
+    #[test]
+    fn a_throwaway_home_spawn_refusal_is_a_conflict_naming_the_real_override() {
+        let inner = crate::backend::tmux_health::spawn_allowed_from(
+            std::path::Path::new("/tmp/amux-e2e-desktop"),
+            false,
+        )
+        .expect_err("a /tmp home must refuse the spawn");
+        for msg in [inner.clone(), format!("auto-wake failed: {inner}")] {
+            let (code, fix) = send_failure_status(&msg);
+            assert_eq!(code, StatusCode::CONFLICT, "{msg}");
+            let fix = fix.expect("a refusal must name a next step");
+            assert!(
+                fix.contains(crate::backend::tmux_health::SPAWN_OVERRIDE),
+                "the next step must name the override that actually exists: {fix}"
+            );
         }
     }
 
