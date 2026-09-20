@@ -15,8 +15,8 @@
 # failure bug in the CLI. This script doesn't depend on that CLI's own
 # internal error handling; it drives the HTTP API directly per lane so a
 # single failure can never truncate the loop.
-LOG_FILE="/home/syseng/.amux/worker-start.log"
-SESSIONS_DIR="/home/syseng/.amux/sessions"
+LOG_FILE="$HOME/.amux/worker-start.log"
+SESSIONS_DIR="$HOME/.amux/sessions"
 
 echo "$(date): Starting worker startup script" >> "$LOG_FILE"
 
