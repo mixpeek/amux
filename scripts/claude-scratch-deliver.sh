@@ -137,7 +137,7 @@ for lane in $(printf '%s\n' "$deliverable" | awk -F'\t' '{print $5}' | sort -u);
   total=$(printf '%s\n' "$rows" | awk -F'\t' '{s += $1} END {printf "%.2f", s}')
   body=$(printf '%s\n' "$rows" | awk -F'\t' '{printf "  %s GB  %s  last write %s  %s\n", $1, $3, $2, $6}')
 
-  title="$MARKER $lane is holding ${total} GB in /private/tmp/claude-501"
+  title="$MARKER $lane is holding ${total} GB in ${ROOT:-its scratch root}"
 
   # Constraint 2: FIND AN EXISTING CARD BEFORE FILING ONE. Keyed on the marker
   # plus the lane, over that lane's own non-terminal cards.
@@ -169,7 +169,7 @@ for r in rows:
     continue
   fi
 
-  note="Your scratchpad under /private/tmp/claude-501 is holding ${total} GB.
+  note="Your scratchpad under ${ROOT:-your scratch root} is holding ${total} GB.
 
 $body
 Reported by scripts/claude-scratch-report.sh, run from $ME. NOTHING HAS BEEN

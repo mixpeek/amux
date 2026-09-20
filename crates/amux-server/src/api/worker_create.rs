@@ -342,6 +342,16 @@ tell application "iTerm2"
 end tell"#;
 
 async fn iterm2_sessions() -> Response {
+    // iTerm2 and osascript are macOS-only. Without this the Linux spawn
+    // failure was reported as "osascript did not answer within 5s", which
+    // reads as a hung Mac rather than a platform that has no iTerm2.
+    if !cfg!(target_os = "macos") {
+        return Json(json!({
+            "panes": [],
+            "error": "iTerm2 panes are macOS-only; this server runs on another platform"
+        }))
+        .into_response();
+    }
     let out = run("osascript", &["-e", ITERM2_LIST_PANES], OP_TIMEOUT).await;
     // `panes: []` with a REASON. The client's own catch arm blames the user's
     // machine ("Make sure iTerm2 is running"), which was wrong for the whole

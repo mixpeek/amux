@@ -22,7 +22,20 @@
 # Usage: scripts/claude-scratch-report.sh [--min-gb N] [--dead-days N] [--tsv]
 set -uo pipefail
 
-ROOT=${CLAUDE_SCRATCH_ROOT:-/private/tmp/claude-501}
+# This user's Claude scratch root on THIS OS: $TMPDIR/claude-<uid> (so
+# /tmp/claude-1000 on Linux), with macOS's /private/tmp form as the fallback.
+# It used to default to /private/tmp/claude-501 — the author's uid on his OS —
+# so on Linux it measured nothing and this report could never fire.
+_default_scratch_root() {
+  local uid tmp
+  uid=$(id -u)
+  tmp=${TMPDIR:-/tmp}; tmp=${tmp%/}
+  for c in "$tmp/claude-$uid" "/private/tmp/claude-$uid"; do
+    [ -d "$c" ] && { printf '%s\n' "$c"; return; }
+  done
+  printf '%s\n' "$tmp/claude-$uid"
+}
+ROOT=${CLAUDE_SCRATCH_ROOT:-$(_default_scratch_root)}
 PROJ=${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}
 SESS=${AMUX_SESSIONS_DIR:-$HOME/.amux/sessions}
 MIN_GB=1.0        # a subfolder smaller than this is noise, not a finding

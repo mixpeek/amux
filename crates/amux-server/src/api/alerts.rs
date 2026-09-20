@@ -182,6 +182,18 @@ async fn send_sms(phone: &str, text: &str) -> (bool, String) {
             Err(e) => (false, format!("twilio error: {}", truncate(&e.to_string(), 120))),
         };
     }
+    // Past Twilio, the only SMS path is iMessage via osascript, which exists
+    // only on macOS. Elsewhere, say which setting turns this channel on
+    // instead of surfacing "No such file or directory (os error 2)" as if the
+    // send had been attempted and failed.
+    if !cfg!(target_os = "macos") {
+        return (
+            false,
+            "no SMS channel on this platform: iMessage is macOS-only — set TWILIO_ACCOUNT_SID, \
+             TWILIO_AUTH_TOKEN and TWILIO_FROM in ~/.amux/server.env to send texts here"
+                .to_string(),
+        );
+    }
     // Circuit breaker on the TCC wall (AMUX-3492). With the Automation
     // permission missing, the osascript below hangs to the full 12s timeout —
     // and it did so INLINE on every owner alert, three pages in three days at

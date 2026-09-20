@@ -4975,9 +4975,15 @@ pub fn detect_disk(now: f64, home: &std::path::Path) -> (Vec<Finding>, Vec<Suppr
         signature,
         title,
         evidence,
-        recheck: "df -h /System/Volumes/Data; tmutil listlocalsnapshots /; \
-                  curl -sk $AMUX_URL/api/debug/storage"
-            .into(),
+        // The reader runs this: name the mount convention and the snapshot tool
+        // THIS OS has (tmutil and /System/Volumes/Data are macOS's).
+        recheck: if cfg!(target_os = "macos") {
+            "df -h /System/Volumes/Data; tmutil listlocalsnapshots /; \
+             curl -sk $AMUX_URL/api/debug/storage"
+                .to_string()
+        } else {
+            "df -h /; curl -sk $AMUX_URL/api/debug/storage".to_string()
+        },
         owner: None,
         count: 1,
         last_ts: now,
