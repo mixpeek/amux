@@ -240,6 +240,76 @@ mod tests {
             })
             .unwrap();
     }
+    #[test]
+    fn project_provider_routing_reaches_real_cli_callsite_once_per_attempt() {
+        use std::os::unix::fs::PermissionsExt;
+        let scope = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(scope.path());
+        struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) { for (key, value) in &self.0 { match value {Some(v)=>std::env::set_var(key,v),None=>std::env::remove_var(key)} } }
+        }
+        let _restore = Restore(["AMUX_HELPER_CLI","AMUX_CODEX_HELPER_CLI"].into_iter().map(|k|(k,std::env::var_os(k))).collect());
+        let plan = json!({"kind":"tasks","reason":"one report requested","confidence":0.99,"tasks":[{"key":"a","title":"Repository module report","description":"Describe the repository modules","type":"doc","action":"create","existing_id":null,"next_action":"Inspect modules and write report","acceptance_criteria":["Report lists each module"],"needs":[],"dependency_reason":""}]}).to_string();
+        let calls = scope.path().join("calls");
+        for (provider, env_key) in [("claude","AMUX_HELPER_CLI"),("codex","AMUX_CODEX_HELPER_CLI")] {
+            let events = if provider == "claude" { json!({"type":"result","result":plan,"usage":{"input_tokens":20,"output_tokens":5}}).to_string() }
+                else { format!("{}\n{}",json!({"type":"item.completed","item":{"type":"agent_message","text":plan}}),json!({"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":5}})) };
+            let cli = scope.path().join(provider);
+            std::fs::write(&cli,format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{provider}' >> '{}'\nprintf '%s\\n' \"$@\" >> '{}.args'\ncat <<'EVENTS'\n{events}\nEVENTS\n",calls.display(),cli.display())).unwrap();
+            std::fs::set_permissions(&cli,std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::env::set_var(env_key,cli);
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Deliberately misleading model names: routing is exclusively policy-driven.
+            for (provider, model) in [("codex","claude-looking-custom"),("claude","gpt-looking-custom")] {
+                let (_dir,state) = fixture();
+                state.store.write(move |c| {
+                    let mut p=store::get(c,"sample").unwrap().unwrap();
+                    p.policy.coordinator.provider=provider.into();p.policy.coordinator.model=model.into();
+                    store::save(c,"sample",p.revision,&p.policy,"test").map_err(store::sql_error)
+                }).unwrap();
+                let id=receipt(&state,"routing");
+                for _ in 0..2 { interpret(&state,id,"sample",Arc::new(mdai::ProjectIntakeModel)).await.unwrap(); }
+                let c=state.store.read().unwrap();
+                let attempts:i64=c.query_row("SELECT intake_attempts FROM cmd_history WHERE id=?1",[id],|r|r.get(0)).unwrap();
+                assert_eq!(attempts,1);
+                let raw:String=c.query_row("SELECT intake_result FROM cmd_history WHERE id=?1",[id],|r|r.get(0)).unwrap();
+                assert!(raw.contains(provider) && raw.contains(model),"{raw}");
+                let usage=super::super::usage::summary(&c,"sample").unwrap();
+                assert_eq!(usage["tokens"],if provider=="codex" {105}else{25});
+                assert!(usage["estimated_cost_usd"].is_null());
+                assert_eq!(bs::project_issues(&c,"sample").unwrap().len(),1);
+            }
+        });
+        assert_eq!(std::fs::read_to_string(calls).unwrap(),"codex\nclaude\n");
+        let args=std::fs::read_to_string(scope.path().join("codex.args")).unwrap();
+        assert!(args.lines().any(|s|s=="exec"));
+        assert!(args.lines().any(|s|s=="--ignore-user-config"));
+        assert!(args.lines().any(|s|s=="claude-looking-custom"));
+        // A nonzero process can put quota details after a large JSONL prelude.
+        // Preserve that detail and one recorded attempt, without falling back.
+        let codex=scope.path().join("codex");
+        std::fs::write(&codex,format!("#!/bin/sh\ncat >/dev/null\nprintf 'codex-error\\n' >> '{}'\ncat <<'EVENTS'\n{{\"type\":\"thread.started\",\"thread_id\":\"{}\"}}\n{{\"type\":\"turn.failed\",\"error\":{{\"message\":\"usage limit resets tomorrow\"}}}}\nEVENTS\nexit 7\n",scope.path().join("calls").display(),"x".repeat(2000))).unwrap();
+        rt.block_on(async {
+            let (_dir,state)=fixture();
+            state.store.write(|c| {
+                let mut p=store::get(c,"sample").unwrap().unwrap();p.policy.coordinator.provider="codex".into();
+                store::save(c,"sample",p.revision,&p.policy,"test").map_err(store::sql_error)
+            }).unwrap();
+            let id=receipt(&state,"quota");
+            let error=interpret(&state,id,"sample",Arc::new(mdai::ProjectIntakeModel)).await.unwrap_err();
+            assert!(error.to_string().contains("provider quota wait: usage limit resets tomorrow"),"{error}");
+            interpret(&state,id,"sample",Arc::new(mdai::ProjectIntakeModel)).await.unwrap();
+            let c=state.store.read().unwrap();
+            let rows=receipts(&c,"sample").unwrap();
+            assert_eq!(rows[0]["attempts"],1);assert_eq!(rows[0]["waiting_reason"],"provider_quota_wait");
+            assert!(bs::project_issues(&c,"sample").unwrap().is_empty());
+        });
+        assert_eq!(std::fs::read_to_string(scope.path().join("calls")).unwrap(),"codex\nclaude\ncodex-error\n");
+    }
+
     #[tokio::test]
     async fn project_intake_retries_preserve_receipt_and_reuse_one_interpretation() {
         let (_dir, state) = fixture();

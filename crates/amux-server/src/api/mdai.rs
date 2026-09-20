@@ -657,6 +657,10 @@ pub fn parse_mdai(text: &str) -> Result<MdaiDoc, MdaiError> {
 pub trait ModelClient: Send + Sync {
     /// Run `model` over `prompt`, returning the completion or an error string.
     fn complete(&self, model: &str, prompt: &str) -> Result<String, String>;
+    /// Explicit durable provider selection; ordinary helper clients retain their transport.
+    fn complete_for_provider(&self, _provider: &str, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
+        self.complete_measured(model, prompt)
+    }
     /// Provider usage, when the transport measured it. Missing is not zero.
     fn complete_measured(&self, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
         self.complete(model, prompt).map(|text| ModelCompletion { text, usage: None })
@@ -900,6 +904,19 @@ impl ModelClient for ReadOnlyCliModel {
 /// Project intake is on demand: no speculative warm subprocess after a receipt.
 pub(crate) struct ProjectIntakeModel;
 impl ModelClient for ProjectIntakeModel {
+    fn complete_for_provider(&self, provider: &str, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
+        let result = match provider {
+            "claude" => self.complete_measured(model, prompt),
+            "codex" => codex_helper::complete(model, prompt),
+            _ => Err(format!("unsupported project coordinator provider: {provider}")),
+        };
+        if let Err(error) = &result {
+            tracing::warn!(target: "amux::model_helper", provider, model, %error,
+                measured=true, n_considered=1, verdict="project_provider_failed",
+                "project interpretation failed; no provider fallback or second invocation");
+        }
+        result
+    }
     fn complete(&self,model:&str,prompt:&str)->Result<String,String> {self.complete_measured(model,prompt).map(|r|r.text)}
     fn complete_measured(&self,model:&str,prompt:&str)->Result<ModelCompletion,String> {
         let cli=helper_cli();
@@ -963,6 +980,7 @@ fn complete_cli(model: &str, prompt: &str, read_only: bool) -> Result<String, St
         run_cli_command(cmd, &cli, prompt, std::time::Duration::from_secs(MODEL_TIMEOUT_S))
 }
 
+mod codex_helper;
 mod helper_io;
 mod warm_helper;
 

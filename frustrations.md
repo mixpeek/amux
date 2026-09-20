@@ -3727,3 +3727,25 @@ CARD: CLA-11
 SYMPTOM: The ephemeral reaper explicitly retained workspaces and required the provider process to have already exited. A clean, fully Verified and merged board could therefore retain an idle provider indefinitely; retirement did not remove its worktree. Its type-specific terminal check also allowed Done-only non-code boards to retire without every card being Verified.
 COST: Completion did not reclaim worktree disk/registrations or consistently expire idle fan-outs; the user had to request another lifecycle repair.
 FIX: Require a nonempty fully Verified board, fresh remote-main ancestry of the clean integrated head and an idle boundary with no queued/child work. Stop the provider, remove only that worktree without force, and expire only after confirmed removal; preserve history and restore the clean worktree if finalization loses its board/config comparison. Real Git regression tests cover the failure paths.
+
+## Private bootstrap worker CLI routed to the default home and endpoint
+AREA: cli
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-1
+SYMPTOM: The server launched a private worker with AMUX_URL but without authoritative CC_HOME/AMUX_API. amux board show attempted the default CLI transport log and default endpoint; the private AAB-1 assignment was initially inaccessible.
+COST: Two resume attempts stopped without the full assignment; explicit private CLI variables and a provider restart were needed to continue.
+FIX: AAB-1 forwards both home and endpoint variable pairs on fresh/resumed launches and exports them after env sources. Runtime logs announce both decisions. Focused fixture and real provider acceptance evidence are tracked separately; no production changes or new cards.
+
+## Codex linked worktrees omit writable Git metadata
+AREA: cli
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-1
+SYMPTOM: Parent review found the Codex launcher only adds root/.git when it is a directory. A linked worktree has a .git pointer file, leaving its common object database and per-worktree index outside workspace-write.
+COST: Live project executor acceptance requires an additional launcher fix and real linked-worktree regression before executors can commit their artifacts.
+FIX: AAB-1 resolves only the launched repository's git-common-dir and git-dir, adds those metadata directories, and logs codex_git_write_paths. The private parent runtime will independently validate real provider execution.

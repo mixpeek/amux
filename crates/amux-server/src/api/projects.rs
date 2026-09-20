@@ -124,10 +124,13 @@ async fn configure(
     {
         return error(StatusCode::BAD_REQUEST, "unsupported execution provider");
     }
-    if body.policy.coordinator.provider != "claude" {
+    if !matches!(body.policy.coordinator.provider.as_str(), "claude" | "codex") {
+        tracing::warn!(provider=%body.policy.coordinator.provider,model=%body.policy.coordinator.model,
+            measured=true,n_considered=1,verdict="project_coordinator_unsupported",
+            "project configuration refused an unsupported intake provider");
         return error(
             StatusCode::BAD_REQUEST,
-            "read-only intake currently supports Claude coordinator models",
+            "read-only intake supports Claude and Codex coordinator models",
         );
     }
     let stop = body.policy.paused || !body.policy.enabled;
@@ -484,6 +487,28 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use tower::ServiceExt;
+    #[tokio::test]
+    async fn project_coordinator_profiles_round_trip_and_refuse_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(crate::db::Store::open(&dir.path().join("db")).unwrap()),
+            started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let app = routes().with_state(state);
+        for (provider, model, expected) in [("codex", "gpt-6-astra", StatusCode::OK), ("claude", "haiku", StatusCode::OK), ("gemini", "gemini-pro", StatusCode::BAD_REQUEST)] {
+            let body = json!({"expect_rev":0,"policy":{"repository":"/repo","coordinator":{"provider":provider,"model":model},"executor":{"provider":"codex","model":"executor-custom"},"verify_command":"./verify.sh"}});
+            let response = app.clone().oneshot(axum::http::Request::builder().method("PUT").uri(format!("/{provider}")).header("content-type","application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), expected, "coordinator {provider}");
+            if expected == StatusCode::OK {
+                let response = app.clone().oneshot(axum::http::Request::builder().uri(format!("/{provider}")).body(Body::empty()).unwrap()).await.unwrap();
+                let data: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(),1024*1024).await.unwrap()).unwrap();
+                assert_eq!(data["project"]["policy"]["coordinator"], body["policy"]["coordinator"]);
+                assert_eq!(data["project"]["policy"]["executor"], body["policy"]["executor"]);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn configured_empty_project_is_visible_and_unknown_workers_cannot_read_or_change_it() {
         let dir = tempfile::tempdir().unwrap();

@@ -862,8 +862,10 @@ pub(crate) async fn capture_inner(
     }
     let model = project.as_ref().map(|p|p.policy.coordinator.model.clone()).unwrap_or_else(||mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref()));
     let started = std::time::Instant::now();
+    let provider = project.as_ref().map(|p|p.policy.coordinator.provider.clone()).unwrap_or_else(||"claude".into());
     let m = model.clone();
-    let completion = tokio::task::spawn_blocking(move || client.complete_measured(&m, &prompt))
+    let p = provider.clone();
+    let completion = tokio::task::spawn_blocking(move || client.complete_for_provider(&p, &m, &prompt))
         .await?
         .map_err(anyhow::Error::msg)?;
     let raw = completion.text
@@ -878,7 +880,7 @@ pub(crate) async fn capture_inner(
     let mut attempt_responses = saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok())
         .and_then(|v|v.get("attempt_responses").and_then(Value::as_array).cloned()).unwrap_or_default();
     attempt_responses.push(json!(raw));
-    let telemetry = json!({"model":model,"model_calls":1,"attempt":attempts+1,"prompt_chars":prompt_chars,"response_chars":raw.chars().count(),"token_usage_measured":completion.usage.is_some(),"usage":completion.usage,"attempt_usage":attempt_usage,"model_ms":started.elapsed().as_millis() as u64,"n_considered":rows.len(),"n_available":available});
+    let telemetry = json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"prompt_chars":prompt_chars,"response_chars":raw.chars().count(),"token_usage_measured":completion.usage.is_some(),"usage":completion.usage,"attempt_usage":attempt_usage,"model_ms":started.elapsed().as_millis() as u64,"n_considered":rows.len(),"n_available":available});
     let received = json!({"state":"received","response":raw,"attempt_responses":attempt_responses,"candidates":rows,"telemetry":telemetry}).to_string();
     state.store.write_async(move |c| {
         c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,received])?;

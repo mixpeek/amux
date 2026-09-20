@@ -104,6 +104,15 @@ pub(crate) fn home() -> PathBuf {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
     })
 }
+/// The CLI reads CC_HOME/AMUX_API while hooks read AMUX_HOME/AMUX_URL.
+/// Keep all consumers attached to the server that launched this worker.
+fn worker_harness_env(name: &str, root: &Path, endpoint: &str) -> Vec<(String, String)> {
+    [("TMUX_SESSION_NAME", name), ("AMUX_WORKER", name), ("AMUX_SESSION", name),
+        ("AMUX_URL", endpoint), ("AMUX_API", endpoint),
+        ("AMUX_HOME", root.to_str().unwrap_or_default()), ("CC_HOME", root.to_str().unwrap_or_default())]
+        .into_iter().map(|(k,v)|(k.to_string(),v.to_string())).collect()
+}
+
 fn sessions_dir() -> PathBuf {
     home().join("sessions")
 }
@@ -9828,6 +9837,30 @@ fn seed_codex_dir_trust(work_dir: &str) {
     }
 }
 
+/// A linked worktree's .git is a pointer file. Git writes objects in its
+/// common dir and the index/HEAD in its per-worktree git dir; neither can be
+/// inferred by appending /.git to the checkout. Resolve only this repository.
+async fn codex_repository_write_dirs(work_dir: &str) -> Vec<PathBuf> {
+    let Some(out) = run_cmd("git", &["-C", work_dir, "rev-parse", "--path-format=absolute",
+        "--show-toplevel", "--git-common-dir", "--git-dir"], OP_TIMEOUT).await else {
+        tracing::warn!(work_dir,measured=false,n_considered=0,verdict="codex_git_paths_unmeasured",
+            "could not resolve repository write paths for Codex");
+        return vec![];
+    };
+    if !out.status.success() { return vec![]; } // Non-Git workspaces are supported.
+    let mut dirs=Vec::new();
+    let checkout=Path::new(work_dir).canonicalize().unwrap_or_else(|_|PathBuf::from(work_dir));
+    for raw in String::from_utf8_lossy(&out.stdout).lines() {
+        let path=PathBuf::from(raw);
+        if path.is_absolute() && path.is_dir() && path != checkout && !dirs.contains(&path) {
+            dirs.push(path);
+        }
+    }
+    tracing::info!(work_dir,measured=true,n_considered=dirs.len(),verdict="codex_git_write_paths",
+        "resolved checkout and Git metadata directories for Codex workspace writes");
+    dirs
+}
+
 /// Whether codex's config already records ANY trust decision for `dir`. PARSED,
 /// not a text scan, so header spacing/quoting cannot fool it. Returns `true` when
 /// the dir has an entry — seeding is then a no-op that respects codex's or the
@@ -10158,16 +10191,10 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             if !opts.contains(&logs) {
                 opts += &format!(" --add-dir {}", sh_quote(&logs));
             }
-            if let Some(gr) = run_cmd("git", &["-C", &work_dir, "rev-parse", "--show-toplevel"], OP_TIMEOUT).await {
-                if gr.status.success() {
-                    let root = String::from_utf8_lossy(&gr.stdout).trim().to_string();
-                    if root != work_dir && !opts.contains(&root) {
-                        opts += &format!(" --add-dir {}", sh_quote(&root));
-                    }
-                    let git_dir = format!("{root}/.git");
-                    if Path::new(&git_dir).is_dir() && !opts.contains(&git_dir) {
-                        opts += &format!(" --add-dir {}", sh_quote(&git_dir));
-                    }
+            for path in codex_repository_write_dirs(&work_dir).await {
+                let path = path.to_string_lossy();
+                if !opts.contains(path.as_ref()) {
+                    opts += &format!(" --add-dir {}", sh_quote(&path));
                 }
             }
             if !codex_session_id.is_empty() {
@@ -10432,6 +10459,19 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             .find(|(name, _)| name == key)
             .map(|(_, value)| value.clone())
     };
+    let scheme = if std::env::args().any(|a| a == "--no-tls") { "http" } else { "https" };
+    let endpoint = format!("{scheme}://localhost:{}", crate::config::canonical_port());
+    let harness_env = if isolated { vec![] } else { worker_harness_env(name, &home(), &endpoint) };
+    // Scoped env files may carry stale endpoint values. Export authoritative
+    // routing after sourcing them, including when reusing an existing shell.
+    for (key, value) in &harness_env {
+        shell_rc.push_str(&format!("export {key}={}; ", sh_quote(value)));
+    }
+    if !isolated {
+        tracing::info!(session=name, endpoint, home=%home().display(), measured=true,
+            n_considered=harness_env.len(), verdict="worker_harness_routing",
+            "worker CLI and hooks use the launching server home and endpoint");
+    }
     let mut env_args: Vec<String> = Vec::new();
     // SECRET VALUES NEVER GO IN ARGV (AMUX-4803). Process arguments are
     // world-readable on macOS, and a tmux SERVER keeps the argv of the
@@ -10490,6 +10530,13 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         // `let pt = pane_target(sess)` a few thousand lines down is the same
         // convention.
         let st = st(name);
+        for (key, value) in &harness_env {
+            if !tmux(&["set-environment", "-t", &st, key, value]).await.is_some_and(|o| o.status.success()) {
+                tracing::warn!(session=name,key,measured=true,n_considered=1,
+                    verdict="worker_harness_refresh_failed","worker routing environment was not refreshed");
+                return (false, format!("could not refresh worker routing variable {key}"));
+            }
+        }
         for key in super::settings::PROVIDER_ENV_KEYS {
             let value = if has_oauth && key == "ANTHROPIC_API_KEY" {
                 None
@@ -10617,7 +10664,6 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         };
         let cols = tmux_cols();
         let rows = tmux_rows();
-        let scheme = if std::env::args().any(|a| a == "--no-tls") { "http" } else { "https" };
         let mut args: Vec<String> = vec![
             "new-session".into(), "-d".into(), "-s".into(), tmux_sess.clone(),
             "-n".into(), name.into(), "-c".into(), work_dir.clone(),
@@ -10642,18 +10688,9 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 "spawn: ISOLATED worker, amux harness suppressed (no AMUX_SESSION/AMUX_URL/AMUX_WORKER env, no --mcp-config); owner peek/send still work, peers cannot discover or target it"
             );
         } else {
-            args.extend([
-                "-e".into(), format!("TMUX_SESSION_NAME={name}"),
-                "-e".into(), format!("AMUX_WORKER={name}"),
-                "-e".into(), format!("AMUX_SESSION={name}"),
-                // The port THIS server answers on, never a literal: a new lane
-                // must reach the server that started it. The old hardcoded 8822
-                // outlived its own deployment: it kept minting the retired
-                // address into every new session locally, and it forced the
-                // cloud image to bind 8822 to match (cloud/docker/Dockerfile
-                // named this line).
-                "-e".into(), format!("AMUX_URL={scheme}://localhost:{}", crate::config::canonical_port()),
-            ]);
+            for (key, value) in &harness_env {
+                args.extend(["-e".into(), format!("{key}={value}")]);
+            }
         }
         args.extend(env_args.iter().cloned());
         args.push(user_shell());
@@ -24111,6 +24148,42 @@ mod tests {
             assert!(trust_seed_merge(result, "/work").is_none());
         }
         assert_eq!(trust_seed_merge(json!({}), "/new").unwrap()["diffSidebarOpen"], false);
+    }
+
+    #[tokio::test]
+    async fn codex_linked_worktree_writes_use_its_actual_git_metadata() {
+        let temp=tempfile::tempdir().unwrap();
+        let repo=temp.path().join("private repo");let linked=temp.path().join("linked executor");
+        let run=|args:&[&str]| {
+            let output=std::process::Command::new("git").args(args).output().unwrap();
+            assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        run(&["init",repo.to_str().unwrap()]);
+        run(&["-C",repo.to_str().unwrap(),"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","--allow-empty","-m","fixture"]);
+        run(&["-C",repo.to_str().unwrap(),"worktree","add","--detach",linked.to_str().unwrap()]);
+        assert!(linked.join(".git").is_file());
+        let dirs=codex_repository_write_dirs(linked.to_str().unwrap()).await;
+        let common=PathBuf::from(run(&["-C",linked.to_str().unwrap(),"rev-parse","--path-format=absolute","--git-common-dir"]));
+        let index_dir=PathBuf::from(run(&["-C",linked.to_str().unwrap(),"rev-parse","--path-format=absolute","--git-dir"]));
+        assert!(dirs.contains(&common),"common object database missing: {dirs:?}");
+        assert!(dirs.contains(&index_dir),"worktree index missing: {dirs:?}");
+        assert!(!dirs.contains(&repo),"must not grant the main checkout tree");
+        let root=temp.path().canonicalize().unwrap();
+        assert!(dirs.iter().all(|p|p.canonicalize().unwrap().starts_with(&root)));
+        let ordinary=codex_repository_write_dirs(repo.to_str().unwrap()).await;
+        assert_eq!(ordinary,vec![common]);
+    }
+
+    #[test]
+    fn private_worker_harness_routes_cli_and_hooks_without_changing_provider_policy() {
+        let vars = worker_harness_env("bootstrap", Path::new("/tmp/private home"), "https://localhost:18972");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.envs(vars).env("CC_FLAGS", "--model gpt-6-astra --sandbox read-only -c sandbox_workspace_write.network_access=true");
+        let out = cmd.args(["-c", "printf '%s\\n' \"$CC_HOME\" \"$AMUX_HOME\" \"$AMUX_API\" \"$AMUX_URL\" \"$AMUX_SESSION\" \"$CC_FLAGS\""]).output().unwrap();
+        assert!(out.status.success());
+        let lines = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(lines.lines().collect::<Vec<_>>(), vec!["/tmp/private home", "/tmp/private home", "https://localhost:18972", "https://localhost:18972", "bootstrap", "--model gpt-6-astra --sandbox read-only -c sandbox_workspace_write.network_access=true"]);
     }
 
     /// AMUX-3159 seed direction (codex analog of AC-346): the codex trust seed

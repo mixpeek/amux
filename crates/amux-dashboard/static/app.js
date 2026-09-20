@@ -11597,7 +11597,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1006';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1007';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44893,14 +44893,23 @@ async function _projectsLoad() {
     if(activeView==='projects') _projectsTimer=setTimeout(_projectsLoad,2000);
   }
 }
+function _projectModelSuggestions(provider) {
+  const models=provider==='codex'?['gpt-6-astra','gpt-5.5']:provider==='claude'?['haiku','sonnet','opus']:[];
+  return models.map(model=>'<option value="'+esc(model)+'"></option>').join('');
+}
+function _projectModelOptions(role,provider) {
+  // Suggestions change; an explicitly entered model remains the user's choice.
+  document.getElementById('project-'+role+'-models').innerHTML=_projectModelSuggestions(provider);
+}
 function _projectConfig(project) {
   const p=project?.policy || {repository:'',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2};
   return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()"><div class="project-form-grid">'+
     '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
     '<label>Repository<input id="project-repository" required placeholder="/absolute/path/to/repository" value="'+esc(p.repository)+'"></label>'+
-    '<label>Coordinator model (Claude)<input id="project-coordinator" required value="'+esc(p.coordinator.model)+'"></label>'+
-    '<label>Executor provider<select id="project-provider">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
-    '<label>Executor model<input id="project-executor" required value="'+esc(p.executor.model)+'"></label>'+
+    '<label>Coordinator provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
+    '<label>Coordinator model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label>'+
+    '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
+    '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
     '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
     '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+
     '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
@@ -44910,7 +44919,7 @@ function _projectConfig(project) {
 async function _projectSave() {
   const value=id=>document.getElementById('project-'+id).value.trim();
   const name=value('name'); const current=_projectsData?.project;
-  const policy={repository:value('repository'),coordinator:{provider:'claude',model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
+  const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
   try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectChoose(name);} catch(e){_projectError(e);}
 }
 async function _projectPause() {
