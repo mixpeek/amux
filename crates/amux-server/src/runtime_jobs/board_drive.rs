@@ -1969,7 +1969,7 @@ fn blocked_card_is_releasable(conn: &Connection, row: &bs::IssueRow) -> bool {
         && row.archived == 0
         && !row.depends_on.is_empty()
         && row.blocked_on.as_deref().map(str::trim).unwrap_or("").is_empty()
-        && !parked_on_live_trigger(row)
+        && !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
         && deps_blocking(conn, row).is_empty()
 }
 
@@ -2024,11 +2024,33 @@ pub(crate) async fn unblock_resolved_blocked(state: &AppState) -> usize {
     moved
 }
 
-fn parked_on_live_trigger(row: &bs::IssueRow) -> bool {
-    row.source_ref
+/// A trigger holds a deps-cleared card only while the owner has verified it
+/// within `SOURCE_REF_STALE_S`. Until 2026-09-20 this tested only that
+/// `source_ref` was non-empty, so a ref nobody had looked at in weeks outranked
+/// "every dependency is done" forever. Measured on the live board that day: of
+/// the 13 backlog cards the store's own resolution rule called releasable, 10
+/// carried a source_ref, every one unverified for over 24h, and the promotion
+/// arm released none of them; fleet-wide 771 of the 837 backlog cards with a
+/// source_ref were stale, so the arm reached almost nothing (MB-53).
+///
+/// The MG-1388 protection survives: a deliberate re-park bumps
+/// `last_verified_at`, which makes the trigger fresh again and holds the card.
+fn parked_on_live_trigger(row: &bs::IssueRow, now: i64) -> bool {
+    fresh_source_ref_trigger(row, now)
+}
+
+/// Age in seconds of a source_ref the owner has NOT verified within
+/// `SOURCE_REF_STALE_S`, for the promotion log line. `None` when there is no
+/// trigger or it is fresh. A never-verified ref reports its age as `i64::MAX`.
+fn stale_trigger_age(row: &bs::IssueRow, now: i64) -> Option<i64> {
+    let has_ref = row
+        .source_ref
         .as_deref()
-        .map(str::trim)
-        .is_some_and(|s| !s.is_empty())
+        .is_some_and(|v| !v.trim().is_empty());
+    if !has_ref || fresh_source_ref_trigger(row, now) {
+        return None;
+    }
+    Some(row.last_verified_at.map_or(i64::MAX, |at| now - at))
 }
 
 /// Fleet-wide scan for the drive-to-verified pass: every agent-owned, live,
@@ -2091,7 +2113,8 @@ fn still_promotable(conn: &Connection, row: &bs::IssueRow, arm: PromoteArm) -> b
     }
     match arm {
         PromoteArm::DepsCleared => {
-            !parked_on_live_trigger(row) && promotable_deps(conn, row).is_some()
+            !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
+                && promotable_deps(conn, row).is_some()
         }
         // A REVISIT DATE OUTRANKS A `source_ref` TRIGGER, deliberately.
         //
@@ -2232,7 +2255,7 @@ fn backlog_due_promotions(conn: &Connection) -> (Vec<String>, usize) {
     (due_drain_plan(&pairs, &todo_depth, drain_todo_ceiling()), due_total)
 }
 
-fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usize) {
+fn backlog_dep_promotions(conn: &Connection, now: i64) -> (Vec<(String, Vec<String>)>, usize) {
     let rows = bs::list_issues(
         conn,
         &["backlog".to_string()],
@@ -2258,11 +2281,22 @@ fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usi
         let Some(deps) = promotable_deps(conn, &r) else {
             continue;
         };
-        // The owner's own trigger OVERRIDES terminal deps — hold the card, and
-        // count the hold so the promotion pass leaving it parked is visible.
-        if parked_on_live_trigger(&r) {
+        // The owner's own FRESH trigger OVERRIDES terminal deps — hold the card,
+        // and count the hold so the promotion pass leaving it parked is visible.
+        if parked_on_live_trigger(&r, now) {
             held_on_trigger += 1;
             continue;
+        }
+        // A stale trigger no longer holds the card. Say so, with the age, so a
+        // promotion past a ref the owner meant to keep is self-announcing.
+        if let Some(age) = stale_trigger_age(&r, now) {
+            let age_h = if age == i64::MAX { -1 } else { age / 3600 };
+            tracing::info!(
+                target: "amux::board_drive", card = %r.id, trigger_age_h = age_h,
+                measured = true, n_considered = 1, verdict = "trigger_stale_promoted",
+                "board_drive: source_ref unverified past {}h no longer holds a deps-cleared backlog card (MB-53)",
+                SOURCE_REF_STALE_S / 3600
+            );
         }
         promotions.push((r.id.clone(), deps));
     }
@@ -2283,8 +2317,9 @@ fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usi
 /// that cleared it (two-fixes: the next promotion — or a wrongful one — is
 /// self-announcing).
 pub(crate) async fn promote_ready_backlog(state: &AppState) -> (usize, usize) {
+    let now = crate::runtime_jobs::registry::unix_now() as i64;
     let (candidates, held_on_trigger) = match state.store.read() {
-        Ok(conn) => backlog_dep_promotions(&conn),
+        Ok(conn) => backlog_dep_promotions(&conn, now),
         Err(_) => return (0, 0),
     };
     let mut promoted = 0;
@@ -9304,11 +9339,23 @@ mod tests {
         ins("FREE", "blocked", "[\"DONE-DEP\"]", None, None);
         ins("WATCHED", "blocked", "[\"DONE-DEP\"]", Some("vendor ships the fix"), None);
         ins("TRIGGERED", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        // A trigger holds only while the owner has verified it recently (MB-53).
+        conn.execute(
+            "UPDATE issues SET last_verified_at=?1 WHERE id='TRIGGERED'",
+            [now_f64() as i64],
+        )
+        .unwrap();
+        ins("STALE-TRIGGER", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        conn.execute(
+            "UPDATE issues SET last_verified_at=?1 WHERE id='STALE-TRIGGER'",
+            [now_f64() as i64 - 30 * 24 * 3600],
+        )
+        .unwrap();
         ins("STILL", "blocked", "[\"OPEN-DEP\"]", None, None);
         ins("PROSE", "blocked", "[]", None, None);
         let got: Vec<String> = blocked_dep_unblocks(&conn).into_iter().map(|(id, _)| id).collect();
-        assert_eq!(got, vec!["FREE".to_string()],
-            "only a card whose dependencies were the whole block is released");
+        assert_eq!(got, vec!["FREE".to_string(), "STALE-TRIGGER".to_string()],
+            "a card whose dependencies were the whole block is released, and a trigger nobody has verified in 30 days no longer counts as a block (MB-53)");
     }
 
     #[tokio::test]
@@ -11263,7 +11310,7 @@ mod tests {
         )
         .unwrap();
 
-        let (got, _held) = backlog_dep_promotions(&conn);
+        let (got, _held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
 
         assert!(ids.contains("P-all-terminal"), "all-terminal deps must promote: {ids:?}");
@@ -11297,10 +11344,27 @@ mod tests {
             [],
         )
         .unwrap();
-        // The MG-1388 shape: a terminal dep AND a live source_ref trigger.
+        // The MG-1388 shape: a terminal dep AND a live source_ref trigger, verified
+        // by the owner within the last 24h.
+        conn.execute(
+            "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,last_verified_at,updated,created) \
+             VALUES ('T-armed','T-armed','backlog','me','agent','investigation','[\"A-done\"]',\
+                     'some namespace holds both an archive- and a competitor-shaped collection',999_000,100,100)",
+            [],
+        )
+        .unwrap();
+        // The MB-53 shape: the same trigger, last verified 30 days ago -> promotes.
+        conn.execute(
+            "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,last_verified_at,updated,created) \
+             VALUES ('T-stale','T-stale','backlog','me','agent','investigation','[\"A-done\"]',\
+                     'some namespace holds both an archive- and a competitor-shaped collection',100,100,100)",
+            [],
+        )
+        .unwrap();
+        // And a trigger that was NEVER verified -> promotes.
         conn.execute(
             "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,updated,created) \
-             VALUES ('T-armed','T-armed','backlog','me','agent','investigation','[\"A-done\"]',\
+             VALUES ('T-never','T-never','backlog','me','agent','investigation','[\"A-done\"]',\
                      'some namespace holds both an archive- and a competitor-shaped collection',100,100)",
             [],
         )
@@ -11320,9 +11384,17 @@ mod tests {
         )
         .unwrap();
 
-        let (got, held) = backlog_dep_promotions(&conn);
+        let (got, held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
         assert!(!ids.contains("T-armed"), "a live-trigger park must NOT be promoted: {ids:?}");
+        assert!(
+            ids.contains("T-stale"),
+            "a trigger unverified for 30 days no longer holds a deps-cleared card (MB-53): {ids:?}"
+        );
+        assert!(
+            ids.contains("T-never"),
+            "a trigger that was never verified is not a live trigger (MB-53): {ids:?}"
+        );
         assert!(
             ids.contains("T-plain"),
             "a no-trigger terminal-deps card still promotes (guard not vacuous): {ids:?}"
@@ -11331,7 +11403,7 @@ mod tests {
             ids.contains("T-blank"),
             "a whitespace-only source_ref is not a live trigger: {ids:?}"
         );
-        assert_eq!(held, 1, "exactly the one live-trigger card is counted as held");
+        assert_eq!(held, 1, "exactly the one FRESH live-trigger card is counted as held");
     }
 
     /// AMUX-3777: the HELD-CARD re-nag arm, which had NO coverage at all.
