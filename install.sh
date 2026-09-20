@@ -644,6 +644,11 @@ cat > "$SERVER_PLIST" <<PLIST
   </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>
+  <!-- launchd defaults a service to 256 descriptors. amux holds one per
+       session pane, SSE client and open file; the fd-pressure card tells the
+       reader this should be 65536, so set it rather than only claiming it. -->
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
+  <key>HardResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
   <key>StandardOutPath</key><string>$AMUX_HOME/logs/server-rs.log</string>
   <key>StandardErrorPath</key><string>$AMUX_HOME/logs/server-rs.log</string>
 </dict>

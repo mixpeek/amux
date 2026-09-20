@@ -265,30 +265,59 @@ fn resolve_bin(name: &str) -> &str {
     }
 }
 
+/// The three load figures from either source: macOS `sysctl -n vm.loadavg`
+/// ("{ 1.23 4.56 7.89 }") or Linux /proc/loadavg ("1.23 4.56 7.89 2/915 123"),
+/// which carries two non-load fields after them.
+fn parse_loadavg(raw: &str) -> Vec<f64> {
+    raw.trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
+        .split_whitespace()
+        .take(3)
+        .filter_map(|s| s.parse::<f64>().ok())
+        .map(|v| (v * 100.0).round() / 100.0)
+        .collect()
+}
+
+/// kB values from /proc/meminfo: (MemTotal, MemAvailable, SwapTotal, SwapFree).
+/// MemAvailable is the kernel's own estimate of what a workload can have
+/// without swapping, which is the honest counterpart of macOS's free+speculative.
+fn parse_meminfo(raw: &str) -> std::collections::HashMap<String, u64> {
+    raw.lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            let kb = v.split_whitespace().next()?.parse::<u64>().ok()?;
+            Some((k.trim().to_string(), kb))
+        })
+        .collect()
+}
+
 fn collect_system_metrics() -> serde_json::Value {
     let hostname = cmd_output("hostname", &[]).unwrap_or_default().trim().to_string();
     let mut sys = serde_json::Map::new();
     sys.insert("hostname".into(), json!(hostname));
     sys.insert("psutil".into(), json!(false));
 
-    // Load average
-    if let Some(sysctl_out) = cmd_output("sysctl", &["-n", "vm.loadavg"]) {
-        // Format: "{ 1.23 4.56 7.89 }"
-        let nums: Vec<f64> = sysctl_out
-            .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
-            .split_whitespace()
-            .filter_map(|s| s.parse::<f64>().ok())
-            .map(|v| (v * 100.0).round() / 100.0)
-            .collect();
+    // Load average and CPU count. These used to be sysctl-only, OUTSIDE the
+    // macOS block below: on Linux the keys do not exist, the command fails,
+    // and both fields silently vanished from /api/metrics and the dashboard
+    // with no error anywhere — a wrong answer that looks like no answer.
+    let load = if cfg!(target_os = "macos") {
+        // "{ 1.23 4.56 7.89 }"
+        cmd_output("sysctl", &["-n", "vm.loadavg"]).map(|o| parse_loadavg(&o))
+    } else {
+        std::fs::read_to_string("/proc/loadavg").ok().map(|o| parse_loadavg(&o))
+    };
+    if let Some(nums) = load {
         if !nums.is_empty() {
             sys.insert("load_avg".into(), json!(nums));
         }
     }
-    // CPU count
-    if let Some(ncpu_s) = cmd_output("sysctl", &["-n", "hw.logicalcpu"]) {
-        if let Ok(n) = ncpu_s.trim().parse::<u64>() {
-            sys.insert("cpu_count".into(), json!(n));
-        }
+    let cpu_count = if cfg!(target_os = "macos") {
+        cmd_output("sysctl", &["-n", "hw.logicalcpu"]).and_then(|s| s.trim().parse::<u64>().ok())
+    } else {
+        std::thread::available_parallelism().ok().map(|n| n.get() as u64)
+    };
+    if let Some(n) = cpu_count {
+        sys.insert("cpu_count".into(), json!(n));
     }
 
     // RAM via sysctl + vm_stat (macOS)
@@ -360,6 +389,33 @@ fn collect_system_metrics() -> serde_json::Value {
                         .unwrap_or(0);
                     sys.insert("uptime_seconds".into(), json!(now - boot_sec));
                 }
+            }
+        }
+    } else {
+        // Linux: the same three facts from /proc, so the dashboard shows RAM,
+        // swap and uptime here too instead of leaving them out.
+        if let Ok(raw) = std::fs::read_to_string("/proc/meminfo") {
+            let kb = parse_meminfo(&raw);
+            if let (Some(total), Some(avail)) = (kb.get("MemTotal"), kb.get("MemAvailable")) {
+                let used = total.saturating_sub(*avail);
+                sys.insert("ram_total_mb".into(), json!((*total as f64 / 1024.0 * 10.0).round() / 10.0));
+                sys.insert("ram_used_mb".into(), json!((used as f64 / 1024.0 * 10.0).round() / 10.0));
+                sys.insert(
+                    "ram_percent".into(),
+                    json!(if *total > 0 { (used as f64 / *total as f64 * 1000.0).round() / 10.0 } else { 0.0 }),
+                );
+            }
+            if let (Some(stotal), Some(sfree)) = (kb.get("SwapTotal"), kb.get("SwapFree")) {
+                sys.insert("swap_total_mb".into(), json!((*stotal as f64 / 1024.0 * 10.0).round() / 10.0));
+                sys.insert(
+                    "swap_used_mb".into(),
+                    json!((stotal.saturating_sub(*sfree) as f64 / 1024.0 * 10.0).round() / 10.0),
+                );
+            }
+        }
+        if let Ok(raw) = std::fs::read_to_string("/proc/uptime") {
+            if let Some(secs) = raw.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()) {
+                sys.insert("uptime_seconds".into(), json!(secs as i64));
             }
         }
     }
@@ -734,6 +790,25 @@ async fn fleet(State(state): State<AppState>) -> Response {
 
 #[cfg(test)]
 mod tests {
+    /// Both sources, and the Linux one carries two extra fields that are NOT
+    /// load figures — taking them would report "915" as a load average.
+    #[test]
+    fn loadavg_parses_macos_and_linux_shapes() {
+        assert_eq!(super::parse_loadavg("{ 1.23 4.56 7.89 }"), vec![1.23, 4.56, 7.89]);
+        assert_eq!(super::parse_loadavg("1.23 4.56 7.89 2/915 1234\n"), vec![1.23, 4.56, 7.89]);
+        assert!(super::parse_loadavg("").is_empty());
+    }
+
+    #[test]
+    fn meminfo_reads_the_kernels_own_available_estimate() {
+        let raw = "MemTotal:       16316884 kB\nMemFree:          123 kB\nMemAvailable:    8158442 kB\nSwapTotal:       4194304 kB\nSwapFree:        4194304 kB\n";
+        let kb = super::parse_meminfo(raw);
+        assert_eq!(kb.get("MemTotal"), Some(&16_316_884));
+        assert_eq!(kb.get("MemAvailable"), Some(&8_158_442));
+        assert_eq!(kb.get("SwapFree"), Some(&4_194_304));
+        assert!(super::parse_meminfo("garbage").is_empty());
+    }
+
     use crate::api::{router, AppState};
     use crate::db::{SharedStore, Store, WriteOutcome};
     use amux_core::worker::{WorkerConfig, WorkerState};

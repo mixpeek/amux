@@ -20,6 +20,15 @@
 # empty and boot recovery exited 1 without being able to write this log.
 AMUX_HOME="${AMUX_HOME:-${CC_HOME:-$HOME/.amux}}"
 LOG_FILE="$AMUX_HOME/worker-start.log"
+# This install's API base: the server's own endpoint file, else AMUX_RS_PORT,
+# else the default. Hardcoding 8824 meant an install on any other port waited
+# out the boot timeout and silently started nobody.
+AMUX_API="${AMUX_URL:-}"
+if [[ -z "$AMUX_API" && -f "$AMUX_HOME/endpoint.json" ]]; then
+  AMUX_API="$(sed -n 's/.*"canonical_url":"\([^"]*\)".*/\1/p' "$AMUX_HOME/endpoint.json" | head -1)"
+fi
+AMUX_API="${AMUX_API:-https://localhost:${AMUX_RS_PORT:-8824}}"
+AMUX_API="${AMUX_API%/}"
 SESSIONS_DIR="$AMUX_HOME/sessions"
 
 # Lanes deliberately NOT auto-started at boot. The default stays "start every
@@ -46,7 +55,7 @@ while true; do
     sleep "$wait_time"
 
     # Try to reach the health endpoint
-    if /usr/bin/curl -sk --connect-timeout 2 --max-time 5 "https://localhost:8824/health" > /dev/null 2>&1; then
+    if curl -sk --connect-timeout 2 --max-time 5 "$AMUX_API/health" > /dev/null 2>&1; then
         echo "$(date): Server is responding, attempting to start workers..." >> "$LOG_FILE"
         break
     fi
@@ -66,7 +75,7 @@ done
 
 # Clean up the initialization session (no longer needed)
 echo "$(date): Cleaning up amux-init session" >> "$LOG_FILE"
-/usr/bin/tmux kill-session -t amux-init 2>/dev/null || true
+tmux kill-session -t amux-init 2>/dev/null || true
 
 # Every lane amux knows about, in the same directory `amux start-all` reads.
 # Glob a var so an empty dir doesn't loop once over a literal "*.env".
@@ -97,7 +106,7 @@ verify_running() {
     local name="$1" tries=0
     while [ $tries -lt 5 ]; do
         sleep 2
-        if /usr/bin/curl -sk --connect-timeout 3 --max-time 5 "https://localhost:8824/api/sessions/$name" 2>/dev/null \
+        if curl -sk --connect-timeout 3 --max-time 5 "$AMUX_API/api/sessions/$name" 2>/dev/null \
           | grep -q '"running":true'; then
             return 0
         fi
@@ -120,7 +129,7 @@ for f in "${lane_files[@]}"; do
         echo "$(date): [$name] SKIPPED — on-demand; start it by hand with: amux start $name" >> "$LOG_FILE"
     else
         echo "$(date): Calling amux API to start worker: $name..." >> "$LOG_FILE"
-        RESPONSE=$(/usr/bin/curl -sk --connect-timeout 5 --max-time 10 -X POST "https://localhost:8824/api/sessions/$name/start" \
+        RESPONSE=$(curl -sk --connect-timeout 5 --max-time 10 -X POST "$AMUX_API/api/sessions/$name/start" \
           -H "Content-Type: application/json" \
           -d '{"backend": "tmux"}' 2>&1)
         CURL_RC=$?
