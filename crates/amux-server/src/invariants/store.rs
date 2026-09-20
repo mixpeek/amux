@@ -53,7 +53,17 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
         .write_async(move |conn| {
             let ts = now();
             for r in &results {
-                conn.execute(
+                // The incident table preserves repeated observations. The evaluation
+                // log is only a verdict-change timeline, not a per-sweep heartbeat.
+                let unchanged: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM _amux_invariant_result
+                     WHERE invariant_id=?1 AND entity_key=?2 AND status=?3
+                       AND expected=?4 AND observed=?5 AND evidence=?6
+                     ORDER BY ts DESC LIMIT 1)",
+                    rusqlite::params![r.invariant_id, r.entity_key, r.status.as_str(), r.expected, r.observed, r.evidence.to_string()],
+                    |row| row.get(0),
+                )?;
+                if !unchanged { conn.execute(
                     // Stamp the loaded process image on every row. Replacing
                     // the file on disk does not change the code executing this
                     // pass; build_hash caches startup identity until exec.
@@ -71,7 +81,7 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                         duration_ms,
                         crate::build_hash(),
                     ],
-                )?;
+                )?; }
 
                 if r.status.opens_incident() {
                     // UPSERT: one incident per (invariant, entity), forever.
@@ -166,7 +176,7 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
             let _ = conn.execute(
                 "DELETE FROM _amux_invariant_result WHERE rowid IN (
                     SELECT rowid FROM _amux_invariant_result
-                     WHERE ts < ?2 AND (status = 'pass' OR ts < ?1)
+                     WHERE ts < ?2 AND (status IN ('pass', 'unknown') OR ts < ?1)
                      LIMIT ?3)",
                 rusqlite::params![
                     ts - RESULT_RETAIN_SECS,
