@@ -85,7 +85,9 @@ except Exception:
 PY
 )
   fi
-  printf '%s\n' "${api:-https://localhost:8824}"
+  # Last resort only (no endpoint.json yet): honour this install's configured
+  # port rather than assuming the default one.
+  printf '%s\n' "${api:-https://localhost:${AMUX_RS_PORT:-8824}}"
 }
 
 # One measurement owns both the decision and its receipt. A later successful

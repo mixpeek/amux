@@ -104,6 +104,22 @@ else
   die "install tmux and re-run ./install.sh (or AMUX_ALLOW_NO_TMUX=1 ./install.sh for a dashboard-only install)"
 fi
 
+# python3 is a HARD prerequisite, not an optional extra: the status hooks, the
+# git guards and the CLI installer all shell out to it. Checked here, beside
+# the other prerequisites, because discovering it after a full Rust build
+# wastes the build and leaves a half-installed tree.
+if command -v python3 >/dev/null 2>&1; then
+  say "python3: $(python3 --version 2>&1)"
+else
+  warn "python3 not found — amux's hooks, git guards and CLI installer need it."
+  if [[ "$OS" == "Darwin" ]]; then
+    echo "  install it with:  brew install python3"
+  else
+    echo "  install it with your package manager, e.g.:  sudo apt install python3"
+  fi
+  die "install python3 and re-run ./install.sh"
+fi
+
 if command -v herdr >/dev/null 2>&1; then
   say "herdr: found (optional backend for headless workers)"
 else
@@ -255,6 +271,20 @@ fi
 # edited a hook and ran install.sh must not be left believing their edit is
 # live. And outside a git checkout (tarball, container image) fall back to the
 # file, loudly, because there refusing would be worse than installing.
+# sha256 of a file, on either OS. `shasum` is a Perl script and is absent from
+# minimal Linux images; `sha256sum` is coreutils and absent from macOS. Under
+# `set -euo pipefail` reaching for the missing one aborted the install with
+# binaries already in place.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    die "neither sha256sum nor shasum found — install coreutils (or perl) and re-run ./install.sh"
+  fi
+}
+
 install_hook_from_head() {
   local rel="$1" dest="$2"
   local head_bytes="" src_ref=""
@@ -347,7 +377,7 @@ if [[ -f "$SCRIPT_DIR/scripts/git-hooks/git-shared-guard.py" ]]; then
   mkdir -p "$AMUX_HOME/hooks"
   install_hook_from_head scripts/git-hooks/git-shared-guard.py "$AMUX_HOME/hooks/git-shared-guard.py"
   chmod +x "$AMUX_HOME/hooks/git-shared-guard.py"
-  _guard_sha="$(shasum -a 256 "$AMUX_HOME/hooks/git-shared-guard.py" | cut -d' ' -f1)"
+  _guard_sha="$(sha256_of "$AMUX_HOME/hooks/git-shared-guard.py")"
   printf '%s  git-shared-guard.py\n' "$_guard_sha" > "$AMUX_HOME/hooks/git-shared-guard.py.sha256"
   say "git guard: $AMUX_HOME/hooks/git-shared-guard.py (sha ${_guard_sha:0:12})"
 fi
@@ -360,7 +390,7 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/large-read-guard.py" ]]; then
   mkdir -p "$AMUX_HOME/hooks"
   install_hook_from_head scripts/hooks/large-read-guard.py "$AMUX_HOME/hooks/large-read-guard.py"
   chmod +x "$AMUX_HOME/hooks/large-read-guard.py"
-  _read_guard_sha="$(shasum -a 256 "$AMUX_HOME/hooks/large-read-guard.py" | cut -d' ' -f1)"
+  _read_guard_sha="$(sha256_of "$AMUX_HOME/hooks/large-read-guard.py")"
   printf '%s  large-read-guard.py\n' "$_read_guard_sha" > "$AMUX_HOME/hooks/large-read-guard.py.sha256"
   say "read router: $AMUX_HOME/hooks/large-read-guard.py (sha ${_read_guard_sha:0:12})"
 fi
@@ -382,7 +412,7 @@ fi
 if [[ -f "$SCRIPT_DIR/scripts/hooks/hook-report.sh" ]]; then
   install_hook_from_head scripts/hooks/hook-report.sh "$AMUX_HOME/hook-report.sh"
   chmod +x "$AMUX_HOME/hook-report.sh"
-  _rep_sha="$(shasum -a 256 "$AMUX_HOME/hook-report.sh" | cut -d' ' -f1)"
+  _rep_sha="$(sha256_of "$AMUX_HOME/hook-report.sh")"
   printf '%s  hook-report.sh\n' "$_rep_sha" > "$AMUX_HOME/hook-report.sh.sha256"
   say "report hook: $AMUX_HOME/hook-report.sh (sha ${_rep_sha:0:12})"
 
@@ -420,7 +450,11 @@ if [[ "$OS" == "Linux" ]] && command -v systemctl &>/dev/null; then
 
   # Substitute variables in service templates and write to systemd directory.
   # Export variables so envsubst can find them.
-  export BIN_DIR PORT AMUX_HOME SCRIPT_DIR
+  # The unit spawns tmux by absolute path (systemd has no PATH lookup in
+  # ExecStartPre), so resolve THIS machine's tmux instead of assuming
+  # /usr/bin/tmux — it lives elsewhere on many distros and in nix stores.
+  TMUX_BIN="$(command -v tmux || echo /usr/bin/tmux)"
+  export BIN_DIR PORT AMUX_HOME SCRIPT_DIR TMUX_BIN
 
   envsubst < "$SCRIPT_DIR/scripts/amux-server.service.template" \
     > "$SYSTEMD_DIR/amux-server.service" || die "failed to create amux-server.service"

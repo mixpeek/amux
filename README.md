@@ -61,13 +61,15 @@ make test       # clippy + cargo test
 
 ### Linux: systemd user services
 
-On Linux with systemd (Ubuntu 22.04+, Debian 11+, Fedora 36+), `./install.sh` automatically creates and enables three user-level services:
+On Linux with systemd (Ubuntu 22.04+, Debian 11+, Fedora 36+), `./install.sh` writes user-level unit files. It does not enable or start them — you do that below:
 
 - `amux-server.service` — the main server
-- `amux-builder.service` — auto-rebuild on code changes  
-- `amux-builder.timer` — periodic rebuild check (every 60s)
+- `amux-builder.service` + `amux-builder.timer` — rebuild on new commits (checked every 60s)
+- `amux-worker-start.service` — starts registered workers at boot
+- `amux-xvfb.service` — optional virtual display for headed browser automation
+- `amux-playwright-mcp@.service` — optional, one instance per worker
 
-After `./install.sh` completes, the services are ready to start:
+After `./install.sh` completes, enable and start what you want:
 
 ```bash
 systemctl --user enable amux-server amux-builder.timer

@@ -42,7 +42,8 @@ test:
 # Server health + launchd status.
 status:
 	@echo "=== launchd ==="
-	@launchctl list $(LABEL) 2>/dev/null || echo "$(LABEL) not loaded"
+	@if [ "$$(uname -s)" = Darwin ]; then launchctl list $(LABEL) 2>/dev/null || echo "$(LABEL) not loaded"; \
+	else systemctl --user status amux-server.service --no-pager 2>/dev/null || systemctl --user status amux.service --no-pager 2>/dev/null || echo "no amux systemd user unit"; fi
 	@echo ""
 	@echo "=== /health ==="
 	@curl -sk https://localhost:$(PORT)/health 2>/dev/null | python3 -m json.tool \
@@ -50,7 +51,7 @@ status:
 
 # Restart the launchd-managed server.
 restart:
-	launchctl kickstart -k gui/$$(id -u)/$(LABEL)
+	@if [ "$$(uname -s)" = Darwin ]; then launchctl kickstart -k gui/$$(id -u)/$(LABEL); else amux server restart; fi
 	@sleep 2
 	@curl -sk https://localhost:$(PORT)/health | python3 -m json.tool 2>/dev/null \
 		|| echo "Server not responding yet"
