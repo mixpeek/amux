@@ -64,3 +64,36 @@ No paid model trials were added. These tests establish harness behavior, not liv
 Usage gaps remain visible. Observed budget stops prevent subsequent calls; they cannot impose a hard cap on an already running provider turn. An operational failure or real authorization boundary is a recorded waiting reason, not fabricated Verified work.
 
 Production workers and boards remain on their existing path until explicit project migration. Legacy dispatch has no authority over project-owned work. Apply/rollback require a paused project and matching revisions; changed work is never overwritten. No main deployment or production migration is included in this branch validation.
+
+### Real extractor-consolidation acceptance attempt — 2026-09-20
+
+Submitted the user's full shared extractor consolidation request through the
+Projects UI on a separate server (`https://localhost:18972`), with a private
+Mixpeek clone and local bare remote. The configured coordinator was Claude
+Haiku; executor Sonnet, capacity 1, maximum 2 attempts. The command was retained
+and its draft cleared. **Real autonomous acceptance did not complete:** the
+Claude CLI returned its account weekly limit before any model input/output
+tokens, with reset Sep 23 at 11am America/New_York. No paid overages were used.
+Implementation of the Mixpeek case proceeded separately and is not evidence of
+Amux decomposing, executing, or merging that command autonomously.
+
+The attempt exposed a diagnostic defect: a long CLI JSON metadata envelope
+hid the useful quota result after the 400-character truncation, and exhausted
+intake appeared as a clarification request. The helper now extracts a structured
+provider error before truncating it; receipts and duplicates preserve the quota
+reason and reset text. The existing two-attempt bound remains; this does not add
+an automatic quota-reset retry or paid fallback.
+
+Regression validation:
+- Helper subprocess error tests: 6 passed, including oversized JSON metadata.
+- Quota receipt/duplicate test: passed.
+- New isolated server browser run: 11 scenarios passed, using captured quota
+  shape at the explicitly fake provider boundary and real tmux/Git/UI behavior.
+- The quota scenario preserves the command, shows the reset, and stops retrying.
+
+Local evidence: `work/extractor-case-run/` next to the isolated checkouts,
+including live submission screenshot, CLI zero-token result, and
+`amux-quota-ui/results.json`. Mixpeek's independent test report distinguishes
+browser/schema checks from the service-backed batch run that hit its memory
+limit. Neither that batch run nor the provider-blocked Amux run is a completion
+or production deployment claim.

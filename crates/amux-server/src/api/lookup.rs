@@ -584,7 +584,7 @@ fn activity_label(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect()
 }
 
-fn helper_cli_rate_limited(cli: &str, output: &str) -> bool {
+pub(crate) fn helper_cli_rate_limited(cli: &str, output: &str) -> bool {
     if cli != "claude" {
         return false;
     }

@@ -58,12 +58,18 @@ pub fn receipts(conn: &Connection, project: &str) -> anyhow::Result<Vec<Value>> 
     let project_policy =
         store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
     let budget_wait = super::usage::waiting(conn, &project_policy)?;
-    let mut q=conn.prepare("SELECT c.id,c.text,c.capture_pending,c.intake_attempts,c.intake_result,c.card_id,c.ts,p.intake_attempts FROM cmd_history c LEFT JOIN cmd_history p ON p.id=json_extract(c.intake_result,'$.waiting_on') AND p.project_group=c.project_group AND p.capture_pending!=0 WHERE c.project_group=?1 ORDER BY c.id DESC LIMIT 100")?;
+    let mut q=conn.prepare("SELECT c.id,c.text,c.capture_pending,c.intake_attempts,c.intake_result,c.card_id,c.ts,p.intake_attempts,p.intake_result FROM cmd_history c LEFT JOIN cmd_history p ON p.id=json_extract(c.intake_result,'$.waiting_on') AND p.project_group=c.project_group AND p.capture_pending!=0 WHERE c.project_group=?1 ORDER BY c.id DESC LIMIT 100")?;
     let rows=q.query_map([project],|r| {
         let raw:Option<String>=r.get(4)?;
-        let result:Value=raw.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+        let mut result:Value=raw.and_then(|s|serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
         let pending:bool=r.get(2)?;let attempts:i64=r.get(3)?;let waiting_attempts=r.get::<_,Option<i64>>(7)?.unwrap_or(attempts);
-        Ok(json!({"id":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?,"pending":pending,"attempts":attempts,"result":result,"card_id":r.get::<_,Option<String>>(5)?,"ts":r.get::<_,f64>(6)?,"waiting_reason":if pending && budget_wait.is_some() {budget_wait.as_deref()}else if pending && waiting_attempts>=2 {Some("intake_attempts_exhausted")}else{None}}))
+        if result.get("error").is_none() {
+            if let Some(parent) = r.get::<_,Option<String>>(8)?.and_then(|s|serde_json::from_str::<Value>(&s).ok()) {
+                if let Some(error) = parent.get("error") { result["error"] = error.clone(); }
+            }
+        }
+        let quota_wait = result.get("error").and_then(Value::as_str).is_some_and(|error| error.contains("provider quota wait:"));
+        Ok(json!({"id":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?,"pending":pending,"attempts":attempts,"result":result,"card_id":r.get::<_,Option<String>>(5)?,"ts":r.get::<_,f64>(6)?,"waiting_reason":if pending && budget_wait.is_some() {budget_wait.as_deref()}else if pending && quota_wait {Some("provider_quota_wait")}else if pending && waiting_attempts>=2 {Some("intake_attempts_exhausted")}else{None}}))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -170,6 +176,23 @@ mod tests {
         let result = *id.lock().unwrap();
         result
     }
+    #[test]
+    fn project_quota_wait_is_not_a_request_for_clarification() {
+        let (_dir, state) = fixture();
+        let original = receipt(&state, "limited");
+        let duplicate = receipt(&state, "duplicate-limit");
+        state.store.write(move |c| {
+            c.execute("UPDATE cmd_history SET intake_attempts=2,intake_result=?2 WHERE id=?1",params![original,json!({"state":"pending","error":"provider quota wait: You've hit your weekly limit · resets Sep 23 at 11am"}).to_string()])?;
+            c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1",params![duplicate,json!({"state":"waiting","waiting_on":original}).to_string()])?;
+            for row in receipts(c, "sample").unwrap() {
+                assert_eq!(row["waiting_reason"], "provider_quota_wait");
+                assert!(row["result"]["error"].as_str().unwrap().contains("Sep 23"));
+            }
+            assert!(pending_receipts(c,chrono::Utc::now().timestamp())?.is_empty());
+            Ok(WriteOutcome {applied:false,events:vec![]})
+        }).unwrap();
+    }
+
     #[test]
     fn project_exhausted_intake_and_its_duplicates_do_not_starve_new_commands() {
         let (_dir, state) = fixture();

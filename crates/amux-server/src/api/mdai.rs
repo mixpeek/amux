@@ -1019,8 +1019,18 @@ fn finish_cli_exchange(exchange: Result<std::process::Output, helper_io::Error>,
         if !out.status.success() {
             // A quota error or partial JSON on stdout is not a model decision.
             // Preserve a useful bounded diagnostic, without logging prompt/output.
-            let diagnostic = if !stderr.trim().is_empty() { stderr.trim() } else { &stdout };
+            // Claude can put the actual error after a large usage envelope.
+            // Extract the provider result before bounding it, or quota/auth
+            // failures become an unreadable prefix of unrelated metadata.
+            let provider_error = serde_json::from_str::<serde_json::Value>(&stdout).ok()
+                .filter(|v| v.get("is_error").and_then(|v| v.as_bool()) == Some(true))
+                .and_then(|v| v.get("result").and_then(|v| v.as_str()).map(str::to_owned));
+            let diagnostic = provider_error.as_deref().unwrap_or_else(||
+                if !stderr.trim().is_empty() { stderr.trim() } else { &stdout });
             let diagnostic: String = diagnostic.chars().take(400).collect();
+            if provider_error.as_deref().is_some_and(|message| super::lookup::helper_cli_rate_limited("claude", message)) {
+                return Err(format!("provider quota wait: {diagnostic}"));
+            }
             let status = out.status.code().map(|code| format!("status {code}"))
                 .unwrap_or_else(|| out.status.to_string());
             tracing::warn!(target: "amux::model_helper", helper = cli,
@@ -2285,6 +2295,17 @@ mod tests {
         assert!(error.chars().count() < 500, "diagnostic grew without bound");
         assert_eq!(helper_fixture("printf '{\"action\":\"create\"}'; printf warning >&2", std::time::Duration::from_secs(2)).unwrap(), "{\"action\":\"create\"}");
         assert!(helper_fixture("exit 0", std::time::Duration::from_secs(2)).unwrap_err().contains("without output"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_failure_extracts_quota_message_after_large_json_metadata() {
+        let banner = "You have hit your weekly limit · resets Sep 23 at 11am";
+        let payload = serde_json::json!({"metadata":"x".repeat(1000),"is_error":true,"result":banner});
+        let script = format!("printf '%s' '{}'; printf warning >&2; exit 1", payload);
+        let error = helper_fixture(&script, std::time::Duration::from_secs(2)).unwrap_err();
+        assert!(error.contains(banner), "{error}");
+        assert!(!error.contains("metadata"), "{error}");
     }
 
     #[cfg(unix)]

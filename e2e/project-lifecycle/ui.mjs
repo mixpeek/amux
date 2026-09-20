@@ -103,6 +103,14 @@ try {
   await saveSettings();await verified(5);await retired();assert.equal(main('budget'),'budget');
   record('Observed budget stops new claims, explains waiting, resumes after explicit policy edit');
 
+  const beforeQuotaCalls=calls().length;
+  await submit('Handle provider quota wait and retain the command.');
+  await page.getByText(/provider quota wait/i).first().waitFor({timeout:60000});
+  await page.getByText(/resets Sep 23 at 11am/).first().waitFor();
+  await wait(()=>calls().length>=beforeQuotaCalls+2,'quota attempts did not settle');
+  const beforeQuotaIdle=calls().length;await new Promise(r=>setTimeout(r,2400));assert.equal(calls().length,beforeQuotaIdle);
+  record('Provider quota is shown with its reset time, retains the command, and makes no unbounded retries');
+
   await submit('Create malformed report and verify it.');
   await page.getByText(/Intake needs clarification/).waitFor({timeout:60000});
   await submit('Create another malformed report and verify it.');
