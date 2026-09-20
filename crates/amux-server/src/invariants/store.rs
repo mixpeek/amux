@@ -56,10 +56,17 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                 // The incident table preserves repeated observations. The evaluation
                 // log is only a verdict-change timeline, not a per-sweep heartbeat.
                 let unchanged: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM _amux_invariant_result
-                     WHERE invariant_id=?1 AND entity_key=?2 AND status=?3
-                       AND expected=?4 AND observed=?5 AND evidence=?6
-                     ORDER BY ts DESC LIMIT 1)",
+                    "SELECT EXISTS(
+                         SELECT 1 FROM (
+                             SELECT status, expected, observed, evidence
+                             FROM _amux_invariant_result
+                             WHERE invariant_id=?1 AND entity_key=?2
+                             ORDER BY ts DESC, rowid DESC
+                             LIMIT 1
+                         ) AS previous
+                         WHERE previous.status=?3 AND previous.expected=?4
+                           AND previous.observed=?5 AND previous.evidence=?6
+                     )",
                     rusqlite::params![r.invariant_id, r.entity_key, r.status.as_str(), r.expected, r.observed, r.evidence.to_string()],
                     |row| row.get(0),
                 )?;
@@ -536,6 +543,13 @@ mod tests {
         assert_eq!(inc.len(), 1, "100 identical failures must be ONE incident");
         assert_eq!(inc[0]["occurrences"], 100);
         assert_eq!(result_log_stats(&s).unwrap().0, 1, "identical verdicts are one log row");
+
+        // Only the immediately preceding verdict is suppressible.  A value
+        // that changes and later reverts is a meaningful transition, not the
+        // same old observation resurfacing.
+        record(&s, vec![InvariantResult::fail("x.check", "a", "c").entity("w1")], 1).await;
+        record(&s, vec![InvariantResult::fail("x.check", "a", "b").entity("w1")], 1).await;
+        assert_eq!(result_log_stats(&s).unwrap().0, 3, "a reverted verdict must be recorded");
     }
 
     /// Two entities failing the same check are two incidents — collapsing them
