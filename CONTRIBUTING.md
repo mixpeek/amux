@@ -11,7 +11,7 @@ Thanks for your interest in amux! The product is a Rust workspace (`crates/`) se
 ## Local development
 
 ```bash
-git clone https://github.com/mixpeek/amux && cd amux
+git clone https://github.com/njhughes-01/amux && cd amux
 ./install.sh              # one command: build, install, launchd agent, dashboard on :8824
 ```
 

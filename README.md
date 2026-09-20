@@ -29,7 +29,7 @@ What the fleet gets that a single agent never had:
 ## Quickstart — one command
 
 ```bash
-git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+git clone https://github.com/njhughes-01/amux && cd amux && ./install.sh
 ```
 
 That is the whole setup. The installer checks prerequisites (Rust toolchain, tmux; it prompts before installing anything), builds the workspace, installs the server and CLI to `~/.local/bin`, loads the launchd agents on macOS, mints `~/.amux` (DB, TLS, auth token) on first boot, waits for `/health`, and prints:

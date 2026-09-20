@@ -136,25 +136,11 @@ string, so that argument is the EMPTY string and the command is `grep -c ''`,
 which counts every line. It reads like a NUL count and is a line count. Read the
 bytes if you need the real figure.
 
-## Reading CI: use the App token, and CHECK that you got it
+## Reading CI
 
-`gh` here defaults to the user identity (`esteininger`, id 15973166) on a **5000/hr**
-budget shared by every amux lane. A GitHub App is already provisioned on this box
-and sits on its own larger budget:
-
-```bash
-eval "$(~/.amux/github-app/get-token.sh)"
-gh api rate_limit --jq '.resources.core | "limit=\(.limit) remaining=\(.remaining)"'
-```
-
-**The limit number is the check, and it costs nothing** because `rate_limit` is not
-itself counted. `limit=5000` means you are on the shared user budget; anything
-higher means you got the App. Measured 2026-09-01: bare `gh` reported
-`limit=5000 remaining=4999`, the App `limit=8700 remaining=8625`.
-
-Run the check, do not assume the eval worked. `get-token.sh`'s own docstring records
-why: if the script exits non-zero the `eval` sets nothing, `gh` falls back to user
-auth, and you are back on the contended budget with no sign that anything happened.
+`gh` uses this machine's own login (`~/.config/gh/hosts.yml`). There is no shared
+GitHub App here: if you read a runbook that says to `eval` one, it is upstream's,
+not ours. If `gh` returns 401, stop and say so on the card — do not log in yourself.
 
 **Do not poll `gh` in a loop.** Secondary limits are per-account and trigger on
 request RATE, so one lane's 30s `until` loop 403s every other lane, on every
@@ -163,59 +149,47 @@ for hours that way, and `gh api rate_limit` reported `used: 0, remaining: 5000`
 throughout, because the counter it reads is not the counter being enforced. Use
 ScheduleWakeup, or one delay sized to the job. (AF-396)
 
-## Deploy
+## Shipping a change (this fork: PRs only, never push to main)
 
-**Before `git push origin main`:**
+`main` moves ONLY through a squash-merged PR that an operator merges. Nobody
+pushes to `main`, and no lane merges its own work. From your own worktree:
+
 ```bash
-git fetch origin
-scripts/push-consent.sh          # who must you ask, and who CANNOT be asked
+git fetch origin && git switch -c <worker>/<card-id>-<slug> origin/main
+# work test-first, Conventional Commits
+git push -u origin <branch>
+gh pr create --draft --base main --title "<title> (<CARD-ID>)" --body "<card, paths, commands run>"
 ```
-If foreign commits exist, ask their author before pushing.
 
-**Some authors cannot be asked, and the script names them rather than leaving you
-to not know.** An ISOLATED lane refuses sends carrying a worker origin, so for its
-commits that instruction has no truthful path — the two moves are push unasked
-while a MANDATORY rule says otherwise, or never push. Found live 2026-09-07, when
-a consent poll named 16 of 23 commits and missed 5 belonging to an isolated `amux`
-(AF-548). Pushing is defensible: a lane committing to shared main has already
-accepted that a peer will push it. Claiming consent you could not obtain is not.
-State the exemption; a named exemption is a truthful path and silence is not.
+Then hand the card to review-claude (`amux board review <ID> --reviewer
+review-claude ...`). The operator merges it and fast-forwards the live install
+`~/amux`; the builder rebuilds within ~60s. "Deploy" is never `git push origin
+main` here — that is upstream's workflow, and following it on this fork is a
+rule violation.
 
-**And a green Rust gate is not push-readiness for the range.** `cargo clippy
---workspace` and `cargo test -p amux-server` are scoped to a LANGUAGE and get
-quoted as a verdict on a PUSH. In that same range 10 of 23 commits touched no
-`.rs` file at all, including the commit of the lane that asked. The script prints
-both counts so the denominator travels with the verdict.
-
-**Run gates on a DETACHED worktree, not this one.** Every local check here reads a
+**Run gates on a DETACHED worktree, not a shared one.** Every local check reads a
 tree with other lanes' uncommitted files in it, so a green is a claim about your
 peers' drafts as much as about your commits:
 ```bash
 git worktree add --detach /tmp/push-check main
 git -C /tmp/push-check status --porcelain --untracked-files=no   # must be empty
 ```
-This is how the 2026-09-07 push was found to carry a test that passes alone and
+This is how a 2026-09-07 push was found to carry a test that passes alone and
 fails in the suite (AF-549) — 2013 passed, 1 failed, on bytes nobody had ever
 compiled in isolation.
 
-When user says "deploy": `git add` + `git commit` + verify above + `git push origin main`.
+**And a green Rust gate is not readiness for the whole change.** `cargo clippy
+--workspace` and `cargo test -p amux-server` are scoped to a LANGUAGE: in one
+range 10 of 23 commits touched no `.rs` file at all. Say which clause you tested.
 
 A fix in `git log` is not live until `/health`'s `commit` matches.
 
-## Local integration testing while PRs await upstream merge
+## Local integration testing while our PRs await review
 
-A session's `gh` account can be a **fork-and-PR contributor** on the upstream
-repo with zero write access there (`push`/`admin`/`maintain` all `false` —
-check with `gh api /repos/<owner>/<repo> | jq .permissions`, not by trying an
-action and reading the error), even though it has full admin on its own fork.
-That session cannot merge PRs, re-run failed CI jobs, or trigger the upstream
-auto-builder — those need someone who IS a collaborator on the upstream repo.
-Confirmed 2026-08-28: `gh run rerun` and the Actions "re-run" API both 403
-identically ("Must have admin rights to Repository"), so there is no CLI path
-around a missing merge permission — only a NEW PUSH triggers fresh CI, since
-pushing a branch only needs write access to the FORK.
+Our PRs land one at a time after review, so several can sit open and green at
+once. Do not wait idle — and do not merge them yourself.
 
-**While several PRs sit open and green awaiting that merge, build a LOCAL
+**Build a LOCAL
 integration branch instead of waiting idle:**
 
 ```bash
@@ -457,7 +431,8 @@ Differences driven by env vars/headers from the gateway, not build flags.
 
 `~/.amux/server.env` -- persistent env vars, loaded at startup as setdefault.
 Credential VALUES live here only (repo is public). Inventory: `docs/credentials.md`.
-After editing: `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`.
+After editing, restart the server: `amux server restart` (launchd on macOS, the
+systemd user unit on Linux).
 
 ## iCal sync
 
