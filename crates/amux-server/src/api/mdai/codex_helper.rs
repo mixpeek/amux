@@ -1,5 +1,5 @@
 //! One cold, bounded Codex interpretation. No warm-up or provider fallback.
-use super::ModelCompletion;
+use super::{ModelCompletion, ModelFailure};
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -69,7 +69,7 @@ pub(super) fn command(cli: &str, model: &str, cwd: &Path) -> Command {
     cmd
 }
 
-pub(super) fn complete(model: &str, prompt: &str) -> Result<ModelCompletion, String> {
+pub(super) fn complete(model: &str, prompt: &str) -> Result<ModelCompletion, ModelFailure> {
     let cwd = tempfile::tempdir().map_err(|e| format!("Codex helper workspace: {e}"))?;
     let cli = std::env::var("AMUX_CODEX_HELPER_CLI").unwrap_or_else(|_| "codex".into());
     let budget = Duration::from_secs(super::MODEL_TIMEOUT_S);
@@ -82,8 +82,14 @@ pub(super) fn complete(model: &str, prompt: &str) -> Result<ModelCompletion, Str
     if let Ok(output) = &exchange {
         if !output.status.success() {
             if let Some(error) = provider_error(&String::from_utf8_lossy(&output.stdout)) {
-                return Err(error);
+                return Err(ModelFailure {
+                    message: error,
+                    usage: observed_usage(&String::from_utf8_lossy(&output.stdout)),
+                });
             }
+            let usage = observed_usage(&String::from_utf8_lossy(&output.stdout));
+            let message = super::finish_cli_exchange(exchange, &cli, budget).unwrap_err();
+            return Err(ModelFailure { message, usage });
         }
     }
     let transcript = super::finish_cli_exchange(exchange, &cli, budget)?;
@@ -122,7 +128,42 @@ fn provider_error(transcript: &str) -> Option<String> {
     None
 }
 
-pub(super) fn parse_completion(transcript: &str) -> Result<ModelCompletion, String> {
+fn observed_usage(transcript: &str) -> Option<Value> {
+    // Only accept an actual valid provider usage event. Never infer token counts
+    // from text, a successful exit, or an incomplete response.
+    transcript.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).find_map(|v| {
+        if v["type"]!="turn.completed" {return None;}
+        let raw=v.get("usage")?;
+        let input=raw["input_tokens"].as_u64()?;let output=raw["output_tokens"].as_u64()?;
+        let cached=raw["cached_input_tokens"].as_u64().unwrap_or(0);
+        Some(json!({"input_tokens":input.checked_sub(cached)?,"output_tokens":output,"cache_read_input_tokens":cached,"provider_usage":raw}))
+    })
+}
+
+pub(super) fn parse_completion(transcript: &str) -> Result<ModelCompletion, ModelFailure> {
+    let result = parse_completion_inner(transcript);
+    let diagnostics: Vec<String> = transcript
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "item.completed" && v["item"]["type"] == "error")
+        .filter_map(|v| {
+            v["item"]["message"]
+                .as_str()
+                .map(|s| s.chars().take(400).collect::<String>().replace('\0', "\\0"))
+        })
+        .collect();
+    if !diagnostics.is_empty() {
+        tracing::warn!(target:"amux::model_helper",provider="codex",measured=true,n_considered=diagnostics.len(),
+            accepted=result.is_ok(),details=?diagnostics.iter().take(4).collect::<Vec<_>>(),verdict="codex_helper_diagnostics",
+            "Codex reported diagnostic items; outcome still requires a completed data-only response");
+    }
+    result.map_err(|message| ModelFailure {
+        message,
+        usage: observed_usage(transcript),
+    })
+}
+
+fn parse_completion_inner(transcript: &str) -> Result<ModelCompletion, String> {
     if let Some(error) = provider_error(transcript) {
         return Err(error);
     }
@@ -147,6 +188,19 @@ pub(super) fn parse_completion(transcript: &str) -> Result<ModelCompletion, Stri
                 match event["item"]["type"].as_str().unwrap_or("") {
                     "agent_message" if event["type"] == "item.completed" => {
                         text = event["item"]["text"].as_str().map(str::to_owned);
+                    }
+                    "error" if event["type"] == "item.completed" => {
+                        let message = event["item"]["message"]
+                            .as_str()
+                            .ok_or("Codex diagnostic item has no message")?;
+                        // Item diagnostics are nonfatal only alongside a valid
+                        // final turn. Quota diagnostics remain actionable waits.
+                        let diagnostic = json!({"type":"error","message":message}).to_string();
+                        if let Some(error) = provider_error(&diagnostic)
+                            .filter(|e| e.starts_with("provider quota wait:"))
+                        {
+                            return Err(error);
+                        }
                     }
                     "reasoning" | "agent_message" => {}
                     other => {
@@ -195,6 +249,36 @@ pub(super) fn parse_completion(transcript: &str) -> Result<ModelCompletion, Stri
 mod tests {
     use super::*;
     #[test]
+    fn codex_observed_diagnostics_require_successful_data_only_turn() {
+        // Codex 0.153.4, captured outside the nested sandbox on 2026-09-20.
+        let diagnostics = concat!(
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably."}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`."}}"#,
+            "\n"
+        );
+        let final_turn = concat!(
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"{\"ok\":true}"}}"#,
+            "\n",
+            r#"{"type":"turn.completed","usage":{"input_tokens":6264,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":9,"reasoning_output_tokens":0}}"#
+        );
+        let result = parse_completion(&format!("{diagnostics}{final_turn}")).unwrap();
+        assert_eq!(result.text, "{\"ok\":true}");
+        assert_eq!(result.usage.unwrap()["input_tokens"], 6264);
+        assert!(parse_completion(diagnostics).is_err());
+        for rejected in [
+            r#"{"type":"error","message":"fatal transport failure"}"#,
+            r#"{"type":"turn.failed","error":{"message":"failed"}}"#,
+            r#"{"type":"item.completed","item":{"type":"error","message":"You've hit your usage limit. Try again tomorrow"}}"#,
+            r#"{"type":"item.completed","item":{"type":"command_execution","command":"true"}}"#,
+            r#"{"type":"item.completed","item":{"type":"mcp_tool_call"}}"#,
+        ] {
+            let error =
+                parse_completion(&format!("{diagnostics}{rejected}\n{final_turn}")).unwrap_err();
+            assert_eq!(error.usage.unwrap()["output_tokens"], 9, "{rejected}");
+        }
+    }
+    #[test]
     fn codex_final_usage_and_failures_are_honest() {
         let transcript = concat!("{\"type\":\"thread.started\",\"thread_id\":\"test\"}\n",
             "{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"ignore\"}}\n",
@@ -217,7 +301,7 @@ mod tests {
             "{\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit resets tomorrow\"}}",
         )
         .unwrap_err();
-        assert!(quota.contains("usage limit resets tomorrow"));
+        assert!(quota.message.contains("usage limit resets tomorrow"));
         let missing = parse_completion("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{}\"}}\n{\"type\":\"turn.completed\"}").unwrap();
         assert!(missing.usage.is_none());
         assert!(parse_completion(

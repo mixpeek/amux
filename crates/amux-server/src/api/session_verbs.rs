@@ -7574,11 +7574,27 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
             stripped[idx].trim().trim_start_matches(['\u{276f}', ' ', '\u{a0}']).split_whitespace().collect(),
         );
     }
+    // Codex 0.153.4 paints its entire footer without ANSI attributes. Only
+    // recognize that layout beside its dim, empty prompt: a real draft (even
+    // one that looks like a model/path row) must retain the Typed verdict.
+    let (prompt_plain,prompt_dim)=dim_mask(raw_lines[idx]);
+    let codex_empty_prompt=stripped[idx].trim_start().starts_with('›')
+        && prompt_plain.trim().trim_start_matches('›').trim().is_empty()
+        && prompt_dim.trim()=="Ask Codex to do anything";
     let mut block: Vec<&str> = vec![raw_lines[idx]];
     for (i, s) in stripped.iter().enumerate().skip(idx + 1) {
         let t = s.trim();
+        let plain_footer=codex_empty_prompt && i==idx+1 && i+1==stripped.len()
+            && !raw_lines[i].contains('\u{1b}') && possible_codex_footer_chrome(raw_lines[i]);
+        if plain_footer {
+            static ANNOUNCED: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+            if !ANNOUNCED.swap(true,std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(measured=true,n_considered=1,verdict="codex_plain_footer_recognized",
+                    "unstyled Codex footer beside a dim empty prompt is chrome, not a pending draft");
+            }
+        }
         if matches!(t.chars().next(), Some('\u{2500}') | Some('\u{23f5}'))
-            || codex_model_footer_chrome(raw_lines[i], s)
+            || plain_footer || codex_model_footer_chrome(raw_lines[i], s)
             || (is_muse && muse_popup_row(t))
         {
             break;
@@ -32832,6 +32848,24 @@ mod composer_state_tests {
     }
 
     #[test]
+    fn codex_01534_unstyled_footer_does_not_wedge_idle_or_hide_busy_draft() {
+        // Exact footer/placeholder shape captured from the private bootstrap;
+        // repository path shortened, no ANSI invented for the footer.
+        let idle="done 5:39 PM\n\n\u{1b}[1m›\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  gpt-6-astra medium · ~/private/repo · Resume AAB-1 worker\n";
+        assert!(matches!(composer_state(idle), ComposerState::Placeholder(_)));
+        assert!(!pane_bar_says_generating(idle));
+        assert_eq!(detect_claude_status(idle), "");
+        // The captured busy frame has no intervening completion line: the
+        // spinner is immediately above the empty prompt and footer.
+        let busy=format!("• \u{1b}[2mWorking\u{1b}[0m \u{1b}[2m(3m 27s • esc to interrupt)\u{1b}[0m\n{}",idle.strip_prefix("done 5:39 PM\n").unwrap());
+        assert!(pane_bar_says_generating(&busy));
+        let draft=idle.replace("\u{1b}[2mAsk Codex to do anything\u{1b}[0m","do not send yet");
+        assert!(composer_state(&draft).typed().unwrap().starts_with("donotsendyet"));
+        let plain_prompt=idle.replace("\u{1b}[2mAsk Codex to do anything\u{1b}[0m","Ask Codex to do anything");
+        assert!(composer_state(&plain_prompt).typed().is_some(),"no dim placeholder proof means keep the draft");
+    }
+
+    #[test]
     fn a_codex_model_footer_is_chrome_not_unsubmitted_text() {
         for frame in [
             LIVE_CODEX_IDLE,
@@ -32859,15 +32893,13 @@ mod composer_state_tests {
         );
         assert_eq!(composer_state(&typed).typed(), Some("shipthecurrenttask"));
 
-        // Observability control: path-bearing prose without Codex's raw style
-        // proof stays typed, but is called out as possible footer drift by the
-        // existing session.composer_stuck WARN/event.
+        // The unstyled footer is chrome only after a provably empty dim prompt.
+        // A typed draft keeps the entire candidate block as input.
         let unstyled = "\u{1b}[1m\u{203a}\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  gpt-5.6-sol xhigh \u{b7} ~/Dev/amux \u{b7} Main [default]\n";
         assert!(possible_codex_footer_chrome(unstyled.lines().last().unwrap()));
-        assert_eq!(
-            composer_state(unstyled).typed(),
-            Some("gpt-5.6-solxhigh\u{b7}~/Dev/amux\u{b7}Main[default]")
-        );
+        assert_eq!(composer_state(unstyled).typed(), None);
+        let draft=unstyled.replace("\u{1b}[2mAsk Codex to do anything\u{1b}[0m", "my actual draft");
+        assert!(composer_state(&draft).typed().unwrap().starts_with("myactualdraft"));
     }
 
     #[test]

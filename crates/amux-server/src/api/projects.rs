@@ -17,6 +17,7 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list))
         .route("/{name}", get(detail).put(configure))
         .route("/{name}/commands", axum::routing::post(command))
+        .route("/{name}/commands/{id}/retry", axum::routing::post(retry_intake))
         .route("/{name}/tasks/{id}/report", axum::routing::post(report))
         .route("/{name}/tasks/{id}/wait", axum::routing::post(wait))
         .route("/{name}/tasks/{id}/retry", axum::routing::post(retry))
@@ -175,6 +176,21 @@ async fn configure(
         ),
     }
 }
+async fn retry_intake(
+    State(state): State<AppState>, Path((name,id)): Path<(String,i64)>,
+    headers: HeaderMap, Json(body): Json<crate::project_execution::intake_retry::Request>,
+) -> Response {
+    if !operator(&headers) { return error(StatusCode::FORBIDDEN,"intake retry requires operator scope"); }
+    let project=name.clone();
+    match state.store.write_async(move |c|crate::project_execution::intake_retry::grant(c,&project,id,&body,chrono::Utc::now().timestamp()).map_err(store::sql_error)).await {
+        Ok(out) => Json(json!({"ok":true,"applied":out.applied,"message_id":id})).into_response(),
+        Err(e) => {
+            tracing::warn!(project=name,message_id=id,error=%e,measured=true,n_considered=1,verdict="project_intake_retry_refused","intake retry preconditions did not hold");
+            error(StatusCode::CONFLICT,e)
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Preview {
@@ -487,6 +503,22 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use tower::ServiceExt;
+    #[tokio::test]
+    async fn project_intake_retry_requires_operator_and_current_receipt() {
+        let dir=tempfile::tempdir().unwrap();
+        let state=AppState{store:std::sync::Arc::new(crate::db::Store::open(&dir.path().join("db")).unwrap()),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        state.store.write(|c| {
+            c.execute("INSERT INTO cmd_history(id,text,type,session,ts,capture_pending,project_group,intake_attempts,intake_result) VALUES(42,'request','user','project:sample',1,1,'sample',2,?)",[json!({"state":"pending","error":"provider failed"}).to_string()])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let app=routes().with_state(state);
+        for (worker,project,key,expected) in [(true,"sample","click",StatusCode::FORBIDDEN),(false,"other","click",StatusCode::CONFLICT),(false,"sample","click",StatusCode::OK),(false,"sample","click",StatusCode::OK),(false,"sample","stale-click",StatusCode::CONFLICT)] {
+            let mut request=axum::http::Request::builder().method("POST").uri(format!("/{project}/commands/42/retry")).header("content-type","application/json");
+            if worker {request=request.header("x-amux-worker","executor");}
+            let response=app.clone().oneshot(request.body(Body::from(json!({"idempotency_key":key,"expect_attempts":2,"expect_revision":0}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(),expected,"worker={worker}, project={project}, key={key}");
+        }
+    }
     #[tokio::test]
     async fn project_coordinator_profiles_round_trip_and_refuse_unsupported() {
         let dir = tempfile::tempdir().unwrap();

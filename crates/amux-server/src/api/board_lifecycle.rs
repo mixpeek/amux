@@ -20,7 +20,6 @@ use std::{
 };
 
 const POLICY_KEY: &str = "AMUX_COMMAND_LIFECYCLE";
-const MAX_ATTEMPTS: i64 = 2;
 static MODEL_SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 fn setting(session: &str, key: &str) -> Option<String> {
@@ -697,9 +696,9 @@ pub(crate) async fn capture_inner(
     };
     if project.as_ref().is_some_and(|p|p.policy.paused) || (project.is_none() && session_verbs::lane_is_paused(session)) { return Ok(()); }
     let now = chrono::Utc::now().timestamp();
-    let (text, kind, attempts, retry, saved) = {
+    let (text, kind, attempts, retry, saved, attempt_limit) = {
         let c = state.store.read()?;
-        let row=c.query_row("SELECT text,type,intake_attempts,intake_retry_at,intake_result FROM cmd_history WHERE id=?1 AND capture_pending!=0",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,Option<String>>(4)?))).optional()?;
+        let row=c.query_row("SELECT text,type,intake_attempts,intake_retry_at,intake_result,2+CASE WHEN project_group IS NOT NULL THEN coalesce(json_array_length(client_meta,'$.intake_retries'),0) ELSE 0 END FROM cmd_history WHERE id=?1 AND capture_pending!=0",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,i64>(5)?))).optional()?;
         let Some(r) = row else { return Ok(()) };
         r
     };
@@ -740,7 +739,7 @@ pub(crate) async fn capture_inner(
             Ok(WriteOutcome{applied:true,events:vec![]})
         }).await?;
     }
-    if attempts >= MAX_ATTEMPTS {
+    if attempts >= attempt_limit {
         // Do not race a live second attempt; its lease lasts until retry.
         if retry <= now && project.is_none() { hand_intake_to_worker(state, id, session, &text, saved.as_deref()).await?; }
         return Ok(());
@@ -820,7 +819,7 @@ pub(crate) async fn capture_inner(
     state.store.write_async(move|c|{
         let calls:i64=c.query_row("SELECT COALESCE(SUM(intake_attempts),0) FROM cmd_history WHERE intake_called_at>?1",[now-3600],|r|r.get(0))?;
         if calls>=max_hour{return Ok(WriteOutcome{applied:false,events:vec![]});}
-        let n=c.execute("UPDATE cmd_history SET intake_attempts=intake_attempts+1,intake_retry_at=?2,intake_hash=?3,intake_called_at=?4 WHERE id=?1 AND capture_pending!=0 AND intake_attempts<2 AND intake_retry_at<=?4",rusqlite::params![id,now+300,hash,now])?;
+        let n=c.execute("UPDATE cmd_history SET intake_attempts=intake_attempts+1,intake_retry_at=?2,intake_hash=?3,intake_called_at=?4 WHERE id=?1 AND capture_pending!=0 AND intake_attempts<2+CASE WHEN project_group IS NOT NULL THEN coalesce(json_array_length(client_meta,'$.intake_retries'),0) ELSE 0 END AND intake_retry_at<=?4",rusqlite::params![id,now+300,hash,now])?;
         *acquired_w.lock().expect("intake claim")=n==1;Ok(WriteOutcome{applied:n==1,events:vec![]})
     }).await?;
     if !*acquired.lock().expect("intake claim") {
@@ -865,9 +864,25 @@ pub(crate) async fn capture_inner(
     let provider = project.as_ref().map(|p|p.policy.coordinator.provider.clone()).unwrap_or_else(||"claude".into());
     let m = model.clone();
     let p = provider.clone();
-    let completion = tokio::task::spawn_blocking(move || client.complete_for_provider(&p, &m, &prompt))
-        .await?
-        .map_err(anyhow::Error::msg)?;
+    let measured = tokio::task::spawn_blocking(move || client.complete_for_provider(&p, &m, &prompt)).await?;
+    let completion=match measured {
+        Ok(value)=>value,
+        Err(error)=>{
+            let mut previous:Value=saved.as_deref().and_then(|s|serde_json::from_str(s).ok()).filter(Value::is_object).unwrap_or(json!({}));
+            let mut usage=previous.pointer("/telemetry/attempt_usage").and_then(Value::as_array).cloned().unwrap_or_default();
+            usage.push(error.usage.clone().unwrap_or(Value::Null));
+            previous["state"]=json!("pending");previous["error"]=json!(error.message);
+            let mut failures=previous["attempt_errors"].as_array().cloned().unwrap_or_default();
+            failures.push(json!({"attempt":attempts+1,"error":error.message,"usage":error.usage}));
+            previous["attempt_errors"]=json!(failures);
+            previous["telemetry"]=json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"attempt_usage":usage,"usage":error.usage,"token_usage_measured":error.usage.is_some()});
+            state.store.write_async(move |c| {
+                c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,previous.to_string()])?;
+                Ok(WriteOutcome{applied:true,events:vec![]})
+            }).await?;
+            return Err(anyhow::Error::msg(error.message));
+        }
+    };
     let raw = completion.text
         .trim()
         .trim_start_matches("```json")
@@ -881,7 +896,7 @@ pub(crate) async fn capture_inner(
         .and_then(|v|v.get("attempt_responses").and_then(Value::as_array).cloned()).unwrap_or_default();
     attempt_responses.push(json!(raw));
     let telemetry = json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"prompt_chars":prompt_chars,"response_chars":raw.chars().count(),"token_usage_measured":completion.usage.is_some(),"usage":completion.usage,"attempt_usage":attempt_usage,"model_ms":started.elapsed().as_millis() as u64,"n_considered":rows.len(),"n_available":available});
-    let received = json!({"state":"received","response":raw,"attempt_responses":attempt_responses,"candidates":rows,"telemetry":telemetry}).to_string();
+    let received = json!({"state":"received","response":raw,"attempt_responses":attempt_responses,"attempt_errors":saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok()).and_then(|v|v.get("attempt_errors").cloned()),"candidates":rows,"telemetry":telemetry}).to_string();
     state.store.write_async(move |c| {
         c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,received])?;
         Ok(WriteOutcome{applied:true,events:vec![]})

@@ -11597,7 +11597,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1007';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1008';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44860,7 +44860,7 @@ function _projectStorage(key, value) {
 function _projectError(error) { const el=document.getElementById('project-error'); if(el) el.textContent=String(error.message || error); console.warn('project_operation_failed',error); }
 async function _projectRequest(path, method='GET', body) {
   const r=await fetch(API+'/api/projects'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
-  const result=await r.json(); if(!r.ok) throw new Error(result.error || ('Request failed: '+r.status)); return result;
+  const result=await r.json(); if(!r.ok) {const error=new Error(result.error || ('Request failed: '+r.status));error.status=r.status;throw error;} return result;
 }
 function _projectDraft() { _projectStorage('draft_'+_projectsName, document.getElementById('project-command').value); }
 function _projectChoose(name) { _projectsName=name;_projectsData=null;_projectStorage('selected',name);document.getElementById('project-detail').innerHTML='';_projectsLoad(); }
@@ -44941,13 +44941,32 @@ async function _projectSend() {
     if(name===_projectsName) document.getElementById('project-receipt').textContent='Request '+receipt.id+' accepted';await _projectsLoad();
   } catch(e){_projectError(e);} finally {button.disabled=false;}
 }
+const _projectIntakeRetries = new Set();
+async function _projectRetryIntake(id) {
+  const name=_projectsName,key='retry_'+name+'_'+id;
+  const receipt=_projectsData?.commands.find(c=>c.id===id);
+  if(!receipt?.retry_available || _projectIntakeRetries.has(key)) return;
+  let pending;try{pending=JSON.parse(_projectStorage(key));}catch(e){}
+  if(!pending) pending={idempotency_key:crypto.randomUUID(),expect_attempts:receipt.attempts,expect_revision:receipt.retry_revision};
+  _projectStorage(key,JSON.stringify(pending));_projectIntakeRetries.add(key);_projectRender(_projectsData);
+  try {
+    await _projectRequest('/'+encodeURIComponent(name)+'/commands/'+id+'/retry','POST',pending);
+    _projectStorage(key,'');
+    if(name===_projectsName) document.getElementById('project-receipt').textContent='Request '+id+' authorized for one additional intake attempt'+(_projectsData.project.policy.paused?' when resumed':'');
+  } catch(e) {
+    // An uncertain response retains the key; a definite refusal requires a
+    // refreshed receipt and another explicit click, never an automatic retry.
+    if(e.status===409) _projectStorage(key,'');
+    _projectError(e);
+  } finally {_projectIntakeRetries.delete(key);await _projectsLoad();}
+}
 function _projectRender(data) {
   const p=data.project,u=data.usage;
   document.getElementById('project-state').textContent=p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):p.policy.enabled?'Driving project outcomes':'Disabled';
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   document.getElementById('project-usage').textContent=u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake · '+u.execution_attempts+' execution attempts · '+u.intake_calls+' intake calls · '+(u.measured?u.tokens.toLocaleString()+' observed tokens':'Token usage not yet observed')+' · Coverage: '+u.intake_calls_measured+'/'+u.intake_calls+' intake calls; '+u.execution_turns_measured+' execution turns measured';
-  document.getElementById('project-commands').innerHTML=data.commands.filter(c=>c.pending).map(c=>'<div class="project-intake"><strong>Request '+c.id+' · '+(c.waiting_reason?(c.waiting_reason==='intake_attempts_exhausted'?'Intake needs clarification':esc(c.waiting_reason.replaceAll('_',' '))):'Interpreting')+'</strong><p>'+esc(c.text)+'</p>'+(c.result?.error?'<p>'+esc(c.result.error)+'</p>':'')+'</div>').join('');
+  document.getElementById('project-commands').innerHTML=data.commands.filter(c=>c.pending).map(c=>'<div class="project-intake"><strong>Request '+c.id+' · '+(c.waiting_reason?(c.waiting_reason==='intake_attempts_exhausted'?'Intake attempt limit reached':esc(c.waiting_reason.replaceAll('_',' '))):'Interpreting')+'</strong><p>'+esc(c.text)+'</p>'+(c.result?.error?'<p>'+esc(c.result.error)+'</p>':'')+(c.retry_available?'<button class="btn" '+(_projectIntakeRetries.has('retry_'+p.name+'_'+c.id)?'disabled ':'')+'onclick="_projectRetryIntake('+Number(c.id)+')">Retry intake</button><p>Authorize one additional attempt on this request'+(p.policy.paused?' when the project resumes':'')+'. Previous attempts remain recorded.</p>':'')+'</div>').join('');
   const migrations=data.migrations || [];
   document.getElementById('project-migration-history').innerHTML=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
   const migrationInput=document.getElementById('project-migration-id');

@@ -3749,3 +3749,36 @@ CARD: AAB-1
 SYMPTOM: Parent review found the Codex launcher only adds root/.git when it is a directory. A linked worktree has a .git pointer file, leaving its common object database and per-worktree index outside workspace-write.
 COST: Live project executor acceptance requires an additional launcher fix and real linked-worktree regression before executors can commit their artifacts.
 FIX: AAB-1 resolves only the launched repository's git-common-dir and git-dir, adds those metadata directories, and logs codex_git_write_paths. The private parent runtime will independently validate real provider execution.
+
+## Codex diagnostic items rejected successful project interpretation
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-2
+SYMPTOM: The private live project intake exhausted receipt 6 on unexpected item: error. Exact parent reproduction exited 0 with two configuration diagnostic items, valid final JSON and usage. The helper treated every diagnostic as execution and discarded paid usage on rejection.
+COST: Two failed live interpretations, a paused acceptance project and one parent diagnostic call; nested sandbox reproduction could not initialize the app server.
+FIX: Recognize completed diagnostic items while requiring a successful data-only final; retain fatal/quota/execution refusals, bounded codex_helper_diagnostics logs and observed usage on rejected responses. Parent live acceptance remains pending.
+
+## Exhausted project intake had no supported retry of the original receipt
+AREA: ui
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-2
+SYMPTOM: A preserved provider failure was labeled Intake needs clarification and could not be retried after its two-attempt budget without rewriting database state or replacing the request.
+COST: Live acceptance could not resume after repairing the provider boundary.
+FIX: Explicit operator Retry intake grants one attempt with idempotency and attempt/revision checks; retains prior result, receipt and cumulative attempts, preserves pause/budgets, logs grants and refusals, and labels exhaustion accurately. No live receipt mutation by this worker.
+
+## Unstyled Codex footer blocked idle-boundary delivery
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-2
+SYMPTOM: Codex 0.153.4 displayed a dim empty prompt followed by an unstyled model/path footer. Composer parsing labeled the footer typed input and steering held MSG-7 at not-at-turn-boundary.
+COST: Parent manually delivered the bootstrap repair assignment and disabled bootstrap lifecycle; actual project executor delivery still needs live proof.
+FIX: Recognize the final unstyled path-bearing footer only beside a dim empty Codex placeholder. Busy and draft controls remain blocked. Log codex_plain_footer_recognized on first observed frame; regression covers actual layout and negative cases.

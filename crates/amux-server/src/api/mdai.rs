@@ -658,8 +658,8 @@ pub trait ModelClient: Send + Sync {
     /// Run `model` over `prompt`, returning the completion or an error string.
     fn complete(&self, model: &str, prompt: &str) -> Result<String, String>;
     /// Explicit durable provider selection; ordinary helper clients retain their transport.
-    fn complete_for_provider(&self, _provider: &str, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
-        self.complete_measured(model, prompt)
+    fn complete_for_provider(&self, _provider: &str, model: &str, prompt: &str) -> Result<ModelCompletion, ModelFailure> {
+        self.complete_measured(model, prompt).map_err(ModelFailure::from)
     }
     /// Provider usage, when the transport measured it. Missing is not zero.
     fn complete_measured(&self, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
@@ -672,6 +672,21 @@ pub struct ModelCompletion {
     pub text: String,
     pub usage: Option<Value>,
 }
+
+/// Rejection and measurement are independent: a paid invalid response still
+/// consumed provider tokens. Keep observed usage beside its actionable error.
+#[derive(Debug)]
+pub struct ModelFailure {
+    pub message: String,
+    pub usage: Option<Value>,
+}
+impl From<String> for ModelFailure {
+    fn from(message:String)->Self {Self {message,usage:None}}
+}
+impl std::fmt::Display for ModelFailure {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {self.message.fmt(f)}
+}
+impl std::error::Error for ModelFailure {}
 
 /// The one HTTP call a `fetch:` node makes. Injected exactly like
 /// [`ModelClient`], so DAG ordering, caching and refusals are all testable
@@ -904,11 +919,11 @@ impl ModelClient for ReadOnlyCliModel {
 /// Project intake is on demand: no speculative warm subprocess after a receipt.
 pub(crate) struct ProjectIntakeModel;
 impl ModelClient for ProjectIntakeModel {
-    fn complete_for_provider(&self, provider: &str, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
+    fn complete_for_provider(&self, provider: &str, model: &str, prompt: &str) -> Result<ModelCompletion, ModelFailure> {
         let result = match provider {
-            "claude" => self.complete_measured(model, prompt),
+            "claude" => self.complete_measured(model, prompt).map_err(ModelFailure::from),
             "codex" => codex_helper::complete(model, prompt),
-            _ => Err(format!("unsupported project coordinator provider: {provider}")),
+            _ => Err(ModelFailure::from(format!("unsupported project coordinator provider: {provider}"))),
         };
         if let Err(error) = &result {
             tracing::warn!(target: "amux::model_helper", provider, model, %error,
