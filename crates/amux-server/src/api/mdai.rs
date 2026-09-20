@@ -897,6 +897,21 @@ impl ModelClient for ReadOnlyCliModel {
     }
 }
 
+/// Project intake is on demand: no speculative warm subprocess after a receipt.
+pub(crate) struct ProjectIntakeModel;
+impl ModelClient for ProjectIntakeModel {
+    fn complete(&self,model:&str,prompt:&str)->Result<String,String> {self.complete_measured(model,prompt).map(|r|r.text)}
+    fn complete_measured(&self,model:&str,prompt:&str)->Result<ModelCompletion,String> {
+        let cli=helper_cli();
+        let mut cmd=std::process::Command::new(&cli);
+        cmd.args(["--print","--output-format","json"]);
+        read_only_helper_options(&mut cmd);
+        cmd.arg("--model").arg(model);
+        let transcript=run_cli_command(cmd,&cli,prompt,std::time::Duration::from_secs(MODEL_TIMEOUT_S))?;
+        warm_helper::parse_completion(&transcript)
+    }
+}
+
 /// A data-only helper needs no coding-agent system prompt. Keep OAuth available:
 /// --bare would switch subscription users to API-only authentication.
 fn read_only_helper_options(cmd: &mut std::process::Command) {

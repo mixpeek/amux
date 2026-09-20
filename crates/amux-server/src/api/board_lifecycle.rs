@@ -110,11 +110,28 @@ fn refresh_prepared(conn: &Connection, p: &mut Prepared) -> rusqlite::Result<boo
         let criteria: Vec<String> = now.acceptance_criteria.as_deref().and_then(|s|serde_json::from_str(s).ok()).unwrap_or_default();
         let desc = session_verbs::redact_prompt_secrets(&now.desc.chars().take(700).collect::<String>());
         if now.archived != 0 || now.title != before.title || now.status != before.status
-            || now.session.as_deref().unwrap_or("") != before.session || desc != before.description
+            || intake_owner(&now) != before.session || desc != before.description
             || criteria != before.acceptance_criteria { return Ok(false); }
         before.rev = now.rev;
     }
     Ok(true)
+}
+fn intake_owner(row: &bs::IssueRow) -> String {
+    row.project_group.as_ref().map(|p|format!("project:{p}")).unwrap_or_else(||row.session.clone().unwrap_or_default())
+}
+fn project_for_message(conn: &Connection, id: i64) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT project_group FROM cmd_history WHERE id=?1",[id],|r|r.get(0))
+}
+fn own_project_issue(conn: &Connection, row: &mut bs::IssueRow, project: Option<&str>) -> rusqlite::Result<()> {
+    if let Some(project)=project {
+        if row.project_group.as_deref().is_some_and(|p|p!=project) {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        conn.execute("UPDATE issues SET project_group=?2,session=NULL WHERE id=?1 AND project_group IS NULL",rusqlite::params![row.id,project])?;
+        if row.project_group.is_none() {row.session=None;}
+        row.project_group=Some(project.into());
+    }
+    Ok(())
 }
 fn words(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
@@ -136,10 +153,10 @@ fn candidates(
 ) -> rusqlite::Result<(Vec<Candidate>, usize)> {
     // Search the whole non-archived corpus cheaply; send only relevant compact
     // candidates to the semantic pass. Recency is a tie breaker, not the search scope.
-    let mut stmt = conn.prepare("SELECT id,COALESCE(session,''),title,substr(desc,1,700),status,COALESCE(type,'code'),rev,evidence,updated,acceptance_criteria FROM issues WHERE deleted IS NULL AND archived=0 AND owner_type='agent' AND COALESCE(type,'')!='epic' AND status NOT IN ('discarded','quarantined','cancelled')")?;
+    let mut stmt = conn.prepare("SELECT id,CASE WHEN project_group IS NOT NULL THEN 'project:'||project_group ELSE COALESCE(session,'') END,title,substr(desc,1,700),status,COALESCE(type,'code'),rev,evidence,updated,acceptance_criteria FROM issues WHERE deleted IS NULL AND archived=0 AND owner_type='agent' AND COALESCE(type,'')!='epic' AND status NOT IN ('discarded','quarantined','cancelled') AND ((?1 IS NULL AND project_group IS NULL) OR project_group=?1)")?;
     let tokens = words(text);
     let mut rows = stmt
-        .query_map([], |r| {
+        .query_map([session.strip_prefix("project:")], |r| {
             Ok((
                 Candidate {
                     id: r.get(0)?,
@@ -181,7 +198,9 @@ fn candidates(
             })
             .take(limit)
             .map(|(mut c, _)| {
-                c.workspace = session_verbs::parse_env(&c.session).get("CC_DIR").unwrap_or("").to_string();
+                c.workspace = if let Some(name)=session.strip_prefix("project:") {
+                    crate::project_execution::store::get(conn,name).ok().flatten().map(|p|p.policy.repository).unwrap_or_default()
+                } else {session_verbs::parse_env(&c.session).get("CC_DIR").unwrap_or("").to_string()};
                 c.description = session_verbs::redact_prompt_secrets(&c.description);
                 c
             })
@@ -355,6 +374,7 @@ fn apply(
     rows: &[Candidate],
     telemetry: &Value,
 ) -> rusqlite::Result<WriteOutcome> {
+    let project = project_for_message(conn, message_id)?;
     let pending: bool = conn.query_row(
         "SELECT capture_pending!=0 FROM cmd_history WHERE id=?1",
         [message_id],
@@ -373,7 +393,8 @@ fn apply(
                 .iter()
                 .find(|c| &c.id == id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            if current.rev != expected.rev || current.archived != 0 {
+            let project_active = project.is_some() && matches!(crate::project_execution::planner::execution(conn,id).map_err(crate::project_execution::store::sql_error)?.stage.as_str(), "reserved"|"working"|"reported"|"verifying");
+            if current.rev != expected.rev || current.archived != 0 || (project.is_some() && current.project_group != project) || (project.is_some() && current.status == "doing") || project_active {
                 return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
                     std::io::Error::other(
                         "canonical task changed during interpretation; replan required",
@@ -392,7 +413,7 @@ fn apply(
         .iter()
         .filter_map(|t| t.existing_id.as_deref())
         .filter_map(|id| bs::get_issue(conn, id).ok().flatten())
-        .filter(|r| r.session.as_deref() == Some(session))
+        .filter(|r| intake_owner(r) == session)
         .filter_map(|r| r.epic)
         .collect();
     let reusable_parent = if parent_ids.len() == 1 {
@@ -427,6 +448,7 @@ fn apply(
             ),
             now,
         )?;
+        own_project_issue(conn, &mut p, project.as_deref())?;
         p.next_action =
             Some("Complete every required outcome through its effective board gates".into());
         bs::save_patched(conn, &mut p)?;
@@ -443,7 +465,7 @@ fn apply(
             .flatten();
         let foreign = existing
             .as_ref()
-            .is_some_and(|c| c.session.as_deref() != Some(session));
+            .is_some_and(|c| intake_owner(c) != session);
         let created = existing.is_none() || foreign;
         let mut row = if let Some(row) = existing.filter(|_| !foreign) {
             row
@@ -459,6 +481,8 @@ fn apply(
                 now,
             )?
         };
+        own_project_issue(conn, &mut row, project.as_deref())?;
+        let original_hash = crate::project_execution::planner::input_hash(&row);
         if !created && matches!(task.action.as_str(), "update" | "verify") {
             row.title = task.title.clone();
             row.log = Some(bs::append_log(row.log.as_deref(), &stamp,
@@ -534,10 +558,18 @@ fn apply(
                 }
             }
         }
+        if project.is_some() && !created && (original_hash != crate::project_execution::planner::input_hash(&row) || task.action == "verify") {
+            // New requirements invalidate prior verification, not task identity.
+            let mut execution = crate::project_execution::planner::execution(conn,&row.id).map_err(crate::project_execution::store::sql_error)?;
+            execution.stage.clear(); execution.input_hash.clear(); execution.attempt=0;
+            execution.last_failure=execution.waiting.take().or(execution.last_failure);
+            execution.report=None;
+            conn.execute("UPDATE issues SET status='backlog',execution_state=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",rusqlite::params![row.id,serde_json::to_string(&execution).expect("execution checkpoint")])?;
+        }
         // Publish the independent frontier together, within the existing To Do
         // ceiling. The dispatcher still owns execution leases and pause gates.
         // Dependent work stays in backlog until its required outputs succeed.
-        if created && row.status == "backlog"
+        if project.is_none() && created && row.status == "backlog"
             && row.depends_on.iter().all(|id|bs::dependency_resolved(conn,id).unwrap_or(false))
         {
             let cap=bs::todo_wip_limit(Some(session));
@@ -653,13 +685,17 @@ async fn hand_intake_to_worker(
     Ok(())
 }
 
-async fn capture_inner(
+pub(crate) async fn capture_inner(
     state: &AppState,
     id: i64,
     session: &str,
     client: Arc<dyn mdai::ModelClient>,
 ) -> anyhow::Result<()> {
-    if session_verbs::lane_is_paused(session) { return Ok(()); }
+    let project = {
+        let c=state.store.read()?;
+        project_for_message(&c,id)?.map(|name|crate::project_execution::store::get(&c,&name)).transpose()?.flatten()
+    };
+    if project.as_ref().is_some_and(|p|p.policy.paused) || (project.is_none() && session_verbs::lane_is_paused(session)) { return Ok(()); }
     let now = chrono::Utc::now().timestamp();
     let (text, kind, attempts, retry, saved) = {
         let c = state.store.read()?;
@@ -706,7 +742,7 @@ async fn capture_inner(
     }
     if attempts >= MAX_ATTEMPTS {
         // Do not race a live second attempt; its lease lasts until retry.
-        if retry <= now { hand_intake_to_worker(state, id, session, &text, saved.as_deref()).await?; }
+        if retry <= now && project.is_none() { hand_intake_to_worker(state, id, session, &text, saved.as_deref()).await?; }
         return Ok(());
     }
     if retry > now { return Ok(()); }
@@ -763,6 +799,12 @@ async fn capture_inner(
         }).await?;
         return Ok(());
     }
+    if let Some(project) = &project {
+        let c=state.store.read()?;
+        if let Some(reason)=crate::project_execution::usage::waiting(&c,project)? {
+            anyhow::bail!("{reason}");
+        }
+    }
     // try_acquire avoids holding a recovery task (or a paid subprocess) while
     // capacity is full. The durable receipt will be reconsidered without a call.
     let Ok(_slot) = MODEL_SLOTS
@@ -815,7 +857,10 @@ async fn capture_inner(
         }
     }
     let prompt_chars = prompt.chars().count();
-    let model = mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref());
+    if let Some(project)=&project {
+        prompt.push_str(&format!("\nProject repository: {}. All outcomes belong to this project, never to an executor. Do not modify a working task; defer such refinements with a clear reason. No outside dependency edges.",project.policy.repository));
+    }
+    let model = project.as_ref().map(|p|p.policy.coordinator.model.clone()).unwrap_or_else(||mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref()));
     let started = std::time::Instant::now();
     let m = model.clone();
     let completion = tokio::task::spawn_blocking(move || client.complete_measured(&m, &prompt))
@@ -869,7 +914,7 @@ async fn capture_inner(
 }
 
 async fn commit_plan(state: &AppState, id: i64, session: &str, text: &str, plan: Prepared) -> anyhow::Result<()> {
-    let board_conversation = plan.decision.kind != "tasks" && {
+    let board_conversation = !session.starts_with("project:") && plan.decision.kind != "tasks" && {
         let c=state.store.read()?;
         c.query_row("SELECT delivery='board' FROM cmd_history WHERE id=?1",[id],|r|r.get::<_,bool>(0)).unwrap_or(false)
     };

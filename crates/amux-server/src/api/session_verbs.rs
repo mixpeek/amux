@@ -6480,6 +6480,10 @@ async fn steer_enqueue_precond_with_id(
     // Owner peek/send stay working, which is the documented boundary. This
     // REFUSES rather than silently dropping: a producer that thinks it
     // delivered is how a board card gets claimed for a lane nobody is driving.
+    if parse_env(name).get("CC_PROJECT").is_some() && !guard.is_empty() && guard != "project-execution" {
+        tracing::info!(session=name,guard,verdict="project_legacy_prompt_suppressed",measured=true,n_considered=1,"project controller owns executor prompts");
+        return Err("project controller owns executor prompts");
+    }
     if !guard.is_empty() && session_is_isolated(name) {
         return Err("target is an isolated (raw-agent) worker: amux automation is not \
                     delivered into it. The owner's own send still works.");
@@ -10690,7 +10694,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // Startup profiles and scoped environment files may change directory.
     // Pin the actual provider invocation to the resolved workspace, even when
     // an earlier shell setup line was delayed by interactive initialization.
-    let cmd = format!("cd {} && {cmd}", sh_quote(&work_dir));
+    let cmd = provider_command_in_workspace(&work_dir, &cmd);
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -10814,7 +10818,10 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             send_key(name, "C-u").await;
             sleep_ms(100).await;
             let fresh_flag = format!("--name {}", sh_quote(name));
-            let cmd_fresh = build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags);
+            let cmd_fresh = provider_command_in_workspace(
+                &work_dir,
+                &build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags),
+            );
             let _ = send_literal(name, &cmd_fresh).await;
             sleep_ms(150).await;
             send_key(name, "Enter").await;
@@ -10953,7 +10960,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             "session.started was not committed; resume remains pending and was not consumed");
         return (false, "started, but durable resume context is unresolved".into());
     };
-    if let Some(context) = context {
+    if let Some(context) = context.filter(|_|parse_env(name).get("CC_PROJECT").is_none()) {
         if let Err(error) = enqueue_generation_resume(state, &context, generation, &reason).await {
             tracing::warn!(session = name, %error, generation, verdict = "swap_resume_enqueue_failed",
                 "worker started; recovery remains pending for the next board-drive retry");
@@ -10961,12 +10968,16 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     }
     // Standing instruction re-send (py:24833). Board digest briefing: gap.
     let instr = meta_str(&load_meta(name), "instructions").trim().to_string();
-    if !instr.is_empty() {
+    if !instr.is_empty() && parse_env(name).get("CC_PROJECT").is_none() {
         let st2 = state.clone();
         let n = name.to_string();
         crate::db::interactions::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
     }
     (true, "started".into())
+}
+
+fn provider_command_in_workspace(work_dir: &str, command: &str) -> String {
+    format!("cd {} && {command}", sh_quote(work_dir))
 }
 
 /// Start the exact provider configured for a board-driven worker, and do not
@@ -10986,8 +10997,18 @@ pub(crate) async fn start_for_board_dispatch(state: &AppState, name: &str) -> Re
     if !started {
         return Err(detail);
     }
-    if !is_running(name).await {
-        return Err(format!("start reported '{detail}', but no live provider process remains"));
+    // Process creation and the provider reaching the PTY are separate events.
+    // Slow shell/profile startup must not strand an already reserved board task.
+    let deadline=tokio::time::Instant::now()+Duration::from_secs(30);
+    while !is_running(name).await {
+        if lane_is_paused(name) || session_is_isolated(name) {
+            return Err("worker protected during provider startup".into());
+        }
+        if tokio::time::Instant::now()>=deadline {
+            tracing::warn!(session=name,verdict="board_provider_start_timeout",measured=true,n_considered=1,"provider did not become live after process startup");
+            return Err(format!("start reported '{detail}', but no live provider process remains after 30s"));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
 }
@@ -14452,7 +14473,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, session, text, queued_at, COALESCE(guard,''), COALESCE(sender,''), \
                     COALESCE(precond_card,''), COALESCE(precond_rev,-1) \
-             FROM steering_queue ORDER BY queued_at ASC",
+             FROM steering_queue WHERE delivering_since IS NULL ORDER BY queued_at ASC",
         ) else {
             return 0;
         };
@@ -14876,7 +14897,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         // from_steering=true is still passed: it makes the callee REFUSE rather
         // than re-queue if the lane starts generating between this check and the
         // send, so a lost race leaves the row where it is instead of duplicating.
-        let (ok, msg) = send_text_inner(state, &session, &text, SendMode::drained(mid_turn, false)).await;
+        let Some((ok, msg)) = send_claimed_steering(state, &id, &session, &text, SendMode::drained(mid_turn, false)).await else { continue };
         if !ok {
             skip(&session, &id, &format!("send-refused: {msg}"));
             continue; // NEXT ROW for this lane, not the next lane
@@ -15482,9 +15503,20 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
 /// someone else is already delivering it (or already has), which is
 /// contention, not a delivery refusal.
 async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
+    use rusqlite::OptionalExtension;
     let id = id.to_string();
     store
         .write_async(move |conn| {
+            let session: Option<String> = conn.query_row("SELECT session FROM steering_queue WHERE id=?1", [&id], |r|r.get(0)).optional()?;
+            if let Some(session) = session {
+                let env = parse_env(&session);
+                if let Some(project) = env.get("CC_PROJECT") {
+                    if !crate::project_execution::planner::delivery_current(conn, project, &session, &id).map_err(crate::project_execution::store::sql_error)? {
+                        tracing::info!(session,delivery_id=id,verdict="project_stale_delivery_refused",measured=true,n_considered=1,"project paused or execution superseded");
+                        return Ok(crate::db::WriteOutcome{applied:false,events:vec![]});
+                    }
+                }
+            }
             let n = conn.execute(
                 "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL",
                 rusqlite::params![now_f64(), id],
@@ -15494,6 +15526,20 @@ async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
         .await
         .map(|r| r.applied)
         .unwrap_or(false)
+}
+
+/// Both the timer and the idle hook use this delivery boundary. Serializing
+/// keystrokes alone does not deduplicate two snapshots of the same queued row.
+async fn send_claimed_steering(state: &AppState, id: &str, session: &str, text: &str, mode: SendMode) -> Option<(bool, String)> {
+    if !claim_steering_row(&state.store, id).await {
+        tracing::debug!(session, delivery_id=id, verdict="steering_claim_not_acquired", "concurrent or obsolete delivery did not type into the provider");
+        return None;
+    }
+    let result = send_text_inner(state, session, text, mode).await;
+    if !result.0 {
+        unclaim_steering_row(&state.store, id).await;
+    }
+    Some(result)
 }
 
 /// Release a claim so the row stays eligible for retry (AMUX-2629): a
@@ -15528,7 +15574,7 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
         .ok()
         .and_then(|conn| {
             conn.prepare(
-                "SELECT id, text, queued_at FROM steering_queue WHERE session=?1 ORDER BY queued_at ASC",
+                "SELECT id, text, queued_at FROM steering_queue WHERE session=?1 AND delivering_since IS NULL ORDER BY queued_at ASC",
             )
             .and_then(|mut st| {
                 st.query_map([&session_s], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -15562,23 +15608,6 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
     let mut sent = None;
     let mut was_mid_turn = false;
     for (rid, rtext, queued_at) in rows {
-        // AF-678: CLAIM before delivering, mirroring AF-515's scheduler fix.
-        // `send_text_inner` below can leave keystrokes irreversibly typed into
-        // the pane, and the row used to stay in `steering_queue` until a
-        // SEPARATE, later write_async deleted it — so a crash, restart, or a
-        // write failure under normal DB contention between those two steps
-        // left the row undeleted, and the NEXT call for this session (which
-        // happens routinely, on every idle report) delivered it again.
-        // Claiming first means a crash after this point leaves a reconcilable
-        // row (see reconcile_orphaned_steering_claims) instead of a
-        // guaranteed duplicate.
-        if !claim_steering_row(&state.store, &rid).await {
-            // Already claimed (a concurrent caller is mid-delivery on this
-            // exact row) or the claim write itself failed. Either way, this
-            // is not a delivery refusal — do not skip() it, just leave it for
-            // whoever holds the claim (or the next tick) and try the next row.
-            continue;
-        }
         // This function is called BECAUSE the lane just reported idle, so the
         // boundary is not in question; the age still decides whether a lane
         // that flickers idle-then-busy gets an overdue delivery.
@@ -15587,7 +15616,7 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
         // hook_confirmed_idle=true: the Stop hook just reported idle — trust
         // it over the pane scrape. The pane may still show "esc to interrupt"
         // from background agents, which is NOT generation.
-        let (ok, msg) = send_text_inner(state, session, &rtext, SendMode::drained(mid, true)).await;
+        let Some((ok, msg)) = send_claimed_steering(state, &rid, session, &rtext, SendMode::drained(mid, true)).await else { continue };
         if ok {
             id = rid;
             text = rtext;
@@ -15595,10 +15624,6 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
             sent = Some((msg, age));
             break;
         }
-        // REFUSED: release the claim so the row stays eligible for retry
-        // (AMUX-2629's head-of-line fix depends on a refused row remaining in
-        // the queue, not being lost because it happened to get claimed).
-        unclaim_steering_row(&state.store, &rid).await;
         skip(session, &rid, &format!("send-refused: {msg}"));
     }
     let Some((msg, age)) = sent else { return false };
@@ -23586,6 +23611,20 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_launch_and_recovery_pin_workspace_even_after_shell_profile_changes_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("worker's checkout");
+        std::fs::create_dir(&workspace).unwrap();
+        let command = super::provider_command_in_workspace(workspace.to_str().unwrap(), "pwd -P");
+        let output = std::process::Command::new("sh").args(["-c", &command]).current_dir("/").output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()), workspace.canonicalize().unwrap());
+        let absent = super::provider_command_in_workspace("/nonexistent-amux-fixture-workspace", "printf provider-started");
+        let output = std::process::Command::new("sh").args(["-c", &absent]).output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
     #[derive(Clone)]
     struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -27560,10 +27599,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            claim_steering_row(&st.store, "c1").await,
-            "the first claim on an unclaimed row must win"
-        );
+        let (timer, hook) = tokio::join!(claim_steering_row(&st.store,"c1"),claim_steering_row(&st.store,"c1"));
+        assert_ne!(timer, hook, "exactly one concurrent delivery source acquires the row");
         let stamp_after_first: f64 = st
             .store
             .read()
@@ -27591,6 +27628,16 @@ mod tests {
             claim_steering_row(&st.store, "c1").await,
             "unclaiming (a refused send) must leave the row eligible for a fresh claim (AMUX-2629)"
         );
+    }
+
+    #[tokio::test]
+    async fn steering_restart_reconciliation_works_before_any_fleet_request() {
+        let (st, _dir) = state();
+        st.store.write_async(|conn| {
+            // No ensure_fleet_tables: this is the scheduler's fresh-boot path.
+            assert_eq!(reconcile_orphaned_steering_claims(conn)?, 0);
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        }).await.unwrap();
     }
 
     /// AF-678. A row left claimed (delivering_since set) means a previous

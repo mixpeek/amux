@@ -201,7 +201,7 @@ async fn output_tail(mut pipe: impl tokio::io::AsyncRead + Unpin) -> std::io::Re
         }
     }
 }
-async fn checked_command<F: Fn() -> Result<(), String>>(
+pub(crate) async fn checked_command<F: Fn() -> Result<(), String>>(
     mut cmd: tokio::process::Command,
     permit: &F,
     timeout: Duration,
@@ -463,7 +463,7 @@ pub(crate) async fn record_integrated_head(store: &crate::db::SharedStore, name:
     }
 }
 
-fn write_integration_status(home: &Path, name: &str, record: &serde_json::Value) {
+pub(crate) fn write_integration_status(home: &Path, name: &str, record: &serde_json::Value) {
     let path = home
         .join("workspaces")
         .join(format!("{name}.integration.json"));

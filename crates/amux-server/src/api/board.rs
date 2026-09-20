@@ -8708,6 +8708,8 @@ fn ensure_owner_doing_claim(
     source: &str,
     from: &str,
 ) -> rusqlite::Result<bool> {
+    if row.project_group.is_some() {return Ok(false);}
+
     if row.status != "doing" || row.session.as_deref() != Some(actor) {
         return Ok(false);
     }
@@ -10088,6 +10090,10 @@ pub async fn patch_item(
             let Some(row) = bs::get_issue(conn, &id_w)? else {
                 return finish(&slot_w, PatchOut::NotFound, no_write());
             };
+            if let Some(project)=row.project_group.as_deref() {
+                return finish(&slot_w,PatchOut::Refused(StatusCode::CONFLICT,json!({"error":"project-owned tasks use the project lifecycle","project":project,"how_to_fix":"submit a project command to refine requirements; executors use the claim-bound report endpoint"})),no_write());
+            }
+
 
             // Optimistic concurrency: expect_rev checks the PYTHON counter.
             // Conflict outranks everything — a stale caller must learn their

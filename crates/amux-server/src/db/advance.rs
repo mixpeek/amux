@@ -95,6 +95,9 @@ pub fn advance(
         return Ok(Err(AdvanceRefusal::ArchivedImmutable));
     }
 
+    if row.project_group.is_some() && actor != "command-lifecycle" {
+        return Ok(Err(AdvanceRefusal::InvalidTransition {from:row.status.clone(),to:destination.to_string(),reason:"project planner owns this task lifecycle".into()}));
+    }
     let from_raw = row.status.clone();
     let prev_holder = row.lease_owner.clone();
     let workflow = workflow_store::load_workflow(conn);

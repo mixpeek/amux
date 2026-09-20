@@ -2632,7 +2632,7 @@ pub fn planning_tasks(
 ) -> rusqlite::Result<Vec<PlanningRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {PLANNING_COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
-         WHERE i.deleted IS NULL GROUP BY i.id"
+         WHERE i.deleted IS NULL AND i.project_group IS NULL GROUP BY i.id"
     ))?;
     let mut rows: Vec<(i64, f64, i64, PlanningRow)> = Vec::new();
     let mapped = stmt.query_map([], |r| {

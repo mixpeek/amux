@@ -428,6 +428,9 @@ pub async fn enforce(State(state): State<AppState>, mut req: Request, next: Next
     if req.uri().path() == "/api/policy/approvals" {
         return next.run(req).await;
     }
+    if let Some(response)=super::projects::executor_mutation_guard(req.method(),req.uri().path(),req.headers()) {
+        return response;
+    }
     let (action, reversible) = classify(req.method(), req.uri().path());
     if action == ActionClass::Read {
         return next.run(req).await;

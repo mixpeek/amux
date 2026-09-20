@@ -1,0 +1,665 @@
+//! One read model and claim predicate for project execution and the dashboard.
+use super::store;
+use crate::db::{board_store as bs, PendingEvent, WriteOutcome};
+use amux_core::{
+    project::{phase, Phase},
+    revision::{EntityType, MutationKind},
+};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Check {
+    pub criterion: String,
+    pub command: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Report {
+    pub head: String,
+    pub checks: Vec<Check>,
+    pub summary: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Execution {
+    pub stage: String,
+    pub attempt: u32,
+    pub generation: i64,
+    pub input_hash: String,
+    pub worker: String,
+    pub delivery_id: String,
+    pub waiting: Option<String>,
+    #[serde(default)]
+    pub last_failure: Option<String>,
+    pub report: Option<Report>,
+    pub usage: Option<Value>,
+    pub observed_at: i64,
+    #[serde(default)]
+    pub suspended: bool,
+}
+pub fn execution(conn: &Connection, id: &str) -> anyhow::Result<Execution> {
+    let raw: Option<String> = conn.query_row(
+        "SELECT execution_state FROM issues WHERE id=?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    raw.map(|s| serde_json::from_str(&s))
+        .transpose()
+        .map(|v| v.unwrap_or_default())
+        .map_err(Into::into)
+}
+/// A terminal delivery record permits bounded recovery only once the provider
+/// is independently observed idle. An unclaimed/unknown delivery is not proof.
+pub fn delivery_attempt_ended(conn: &Connection, state: &Execution) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM steering_history WHERE id=?1 AND session=?2 AND (outcome LIKE 'sent%' OR outcome LIKE 'interrupted:%'))",
+        params![state.delivery_id, state.worker], |r| r.get(0),
+    )
+}
+
+pub fn input_hash(row: &bs::IssueRow) -> String {
+    hex::encode(Sha256::digest(
+        json!([
+            row.project_group,
+            row.title,
+            row.desc,
+            row.acceptance_criteria,
+            row.depends_on,
+            row.next_action
+        ])
+        .to_string()
+        .as_bytes(),
+    ))
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct CardPlan {
+    pub id: String,
+    pub phase: Phase,
+    pub action: String,
+    pub waiting_reason: Option<String>,
+    pub execution: Execution,
+}
+
+pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<CardPlan>> {
+    let rows = bs::project_issues(conn, &project.name)?;
+    let budget_wait = super::usage::waiting(conn, project)?;
+    let states = rows
+        .iter()
+        .map(|r| execution(conn, &r.id))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let used = states
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.stage.as_str(),
+                "reserved" | "working" | "reported" | "verifying"
+            )
+        })
+        .count();
+    let mut available = project.policy.max_executors.saturating_sub(used);
+    let mut result = Vec::new();
+    for (row, state) in rows.iter().zip(states) {
+        let phase =
+            if row.item_type == "epic" && !row.depends_on.is_empty() && row.status != "verified" {
+                if rows.iter().any(|r| {
+                    row.depends_on.contains(&r.id)
+                        && matches!(r.status.as_str(), "doing" | "review" | "done")
+                }) {
+                    Phase::Working
+                } else {
+                    Phase::Ready
+                }
+            } else {
+                phase(&row.status, bs::has_execution_details(row))
+            };
+        let mut action = "wait";
+        let waiting = if phase == Phase::Verified || phase == Phase::Closed {
+            None
+        } else if !project.policy.enabled {
+            Some("project_disabled".into())
+        } else if project.policy.paused {
+            Some("project_paused".into())
+        } else if state.waiting.is_some() && state.stage != "repair" {
+            state.waiting.clone()
+        } else if !bs::has_execution_details(row) && row.item_type != "epic" {
+            Some("intake_required".into())
+        } else if row
+            .ask_type
+            .as_deref()
+            .is_some_and(|v| matches!(v, "spend" | "budget" | "customer_outbound"))
+            && row.status == "needsyou"
+        {
+            Some("authorization_required".into())
+        } else if !state.stage.is_empty() && state.input_hash != input_hash(row) {
+            Some("requirements_changed".into())
+        } else if let Some(dep) = row
+            .depends_on
+            .iter()
+            .find(|id| !rows.iter().any(|r| &r.id == *id && r.status == "verified"))
+        {
+            Some(format!("required_output:{dep}"))
+        } else if row.item_type == "epic" {
+            if !row.depends_on.is_empty() {
+                action = "complete_epic";
+                None
+            } else {
+                Some("intake_required".into())
+            }
+        } else if matches!(state.stage.as_str(), "reported" | "verifying") {
+            action = "verify";
+            None
+        } else if state.stage == "reserved" {
+            action = "deliver";
+            None
+        } else if state.stage == "working" {
+            action = "observe";
+            None
+        } else if state.attempt >= project.policy.max_attempts {
+            Some("attempts_exhausted".into())
+        } else if phase == Phase::Unrecognized {
+            Some("unrecognized_status".into())
+        } else if budget_wait.is_some() {
+            budget_wait.clone()
+        } else if available == 0 {
+            Some("executor_capacity".into())
+        } else {
+            available -= 1;
+            action = "claim";
+            None
+        };
+        result.push(CardPlan {
+            id: row.id.clone(),
+            phase,
+            action: action.into(),
+            waiting_reason: waiting,
+            execution: state,
+        });
+    }
+    Ok(result)
+}
+
+pub fn save_execution(
+    conn: &Connection,
+    row: &bs::IssueRow,
+    state: &Execution,
+    event: &str,
+) -> anyhow::Result<WriteOutcome> {
+    conn.execute(
+        "UPDATE issues SET execution_state=?2,updated=?3,rev=rev+1,version=version+1 WHERE id=?1",
+        params![
+            row.id,
+            serde_json::to_string(state)?,
+            chrono::Utc::now().timestamp()
+        ],
+    )?;
+    let terminal_attempt_status = match state.stage.as_str() {
+        "reported" => Some("review"),
+        "verified" => Some("verified"),
+        "waiting" | "repair" => Some("blocked"),
+        _ => None,
+    };
+    if event == "project.claimed" {
+        crate::db::attempts::record_lease_change(
+            conn,
+            &row.id,
+            row.lease_owner.as_deref(),
+            Some(&state.worker),
+            state.generation,
+            "doing",
+            "project-driver",
+            None,
+            chrono::Utc::now().timestamp(),
+        )?;
+    } else if let Some(status) = terminal_attempt_status {
+        crate::db::attempts::record_lease_change(
+            conn,
+            &row.id,
+            row.lease_owner.as_deref(),
+            None,
+            state.generation,
+            status,
+            "project-driver",
+            state.waiting.as_deref(),
+            chrono::Utc::now().timestamp(),
+        )?;
+        conn.execute(
+            "UPDATE issues SET lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",
+            [&row.id],
+        )?;
+    }
+    // Session/terminal projections use this existing causal identity. The project
+    // transition alone is not consumed by them and would show active-without-card.
+    if event == "project.claimed" {
+        conn.execute(
+            "INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,'task.claimed',?3,'project-driver')",
+            params![crate::config::now_f64(), state.worker,
+                json!({"issue":row.id,"status":"doing","from":row.status}).to_string()],
+        )?;
+    }
+    // A valid structured response is positive receipt evidence, even if the
+    // transport died after typing but before moving its claim to history.
+    if matches!(event, "project.reported" | "project.waiting") {
+        let text: Option<String> = conn.query_row(
+            "SELECT text FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution'",
+            params![state.delivery_id, state.worker], |r| r.get(0),
+        ).optional()?;
+        let acknowledged=conn.execute(
+            "INSERT OR IGNORE INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) SELECT id,session,?4,queued_at,?1,'sent:project-result',guard,sender FROM steering_queue WHERE id=?2 AND session=?3 AND guard='project-execution'",
+            params![crate::config::now_f64(), state.delivery_id, state.worker,
+                text.as_deref().map(crate::api::session_verbs::redact_secrets)],
+        )?;
+        conn.execute(
+            "DELETE FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution'",
+            params![state.delivery_id, state.worker],
+        )?;
+        if acknowledged > 0 {
+            tracing::info!(session=%state.worker,delivery_id=%state.delivery_id,verdict="project_delivery_acknowledged",measured=true,n_considered=acknowledged,"structured result settled its exact execution delivery");
+        }
+    }
+    let payload = json!({"project_group":row.project_group,"task":row.id,"execution":state});
+    conn.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,?3,?4,'project-driver')",params![crate::config::now_f64(),state.worker,event,payload.to_string()])?;
+    tracing::info!(project=?row.project_group,task=%row.id,stage=%state.stage,waiting=?state.waiting,verdict=event,measured=true,n_considered=1,"project execution transition");
+    Ok(WriteOutcome {
+        applied: true,
+        events: vec![PendingEvent {
+            entity_type: EntityType::Task,
+            entity_id: row.id.clone(),
+            mutation: MutationKind::Updated,
+            payload: None,
+        }],
+    })
+}
+
+/// Reservation and concurrency check share the SQLite writer transaction. Only
+/// this function may claim project work; the legacy dispatchers exclude it.
+pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<WriteOutcome> {
+    let project = store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
+    let item = plan(conn, &project)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow::anyhow!("task not in project"))?;
+    if item.action != "claim" {
+        return Ok(WriteOutcome {
+            applied: false,
+            events: vec![],
+        });
+    }
+    let row = bs::get_issue(conn, id)?.ok_or_else(|| anyhow::anyhow!("task missing"))?;
+    let mut state = item.execution;
+    state.attempt += 1;
+    state.generation += 1;
+    state.input_hash = input_hash(&row);
+    state.stage = "reserved".into();
+    state.suspended = false;
+    state.observed_at = chrono::Utc::now().timestamp();
+    if state.worker.is_empty() {
+        state.worker = format!(
+            "px-{}-{}",
+            project.name.chars().take(24).collect::<String>(),
+            &hex::encode(Sha256::digest(id.as_bytes()))[..10]
+        );
+    }
+    state.delivery_id = format!("project:{}:{}:{}", project.name, id, state.generation);
+    state.last_failure = state.waiting.take().or(state.last_failure);
+    state.report = None;
+    conn.execute("UPDATE issues SET status='doing',session=?2,lease_owner=?2,lease_generation=?3,lease_acquired_at=?4,lease_heartbeat_at=?4,lease_expires_at=?5 WHERE id=?1 AND project_group=?6",params![id,state.worker,state.generation,chrono::Utc::now().timestamp(),chrono::Utc::now().timestamp()+300,project.name])?;
+    save_execution(conn, &row, &state, "project.claimed")
+}
+
+pub fn record_report(
+    conn: &Connection,
+    project: &str,
+    id: &str,
+    worker: &str,
+    generation: i64,
+    hash: &str,
+    report: &Report,
+) -> anyhow::Result<WriteOutcome> {
+    let row = bs::get_issue(conn, id)?.ok_or_else(|| anyhow::anyhow!("task missing"))?;
+    anyhow::ensure!(
+        row.project_group.as_deref() == Some(project),
+        "outside project"
+    );
+    let mut state = execution(conn, id)?;
+    anyhow::ensure!(
+        state.worker == worker
+            && state.generation == generation
+            && state.input_hash == hash
+            && input_hash(&row) == hash,
+        "stale or foreign execution report"
+    );
+    if state.report.as_ref() == Some(report) {
+        return Ok(WriteOutcome {
+            applied: false,
+            events: vec![],
+        });
+    }
+    anyhow::ensure!(
+        matches!(state.stage.as_str(), "reserved" | "working"),
+        "claim no longer accepts reports"
+    );
+    let criteria: Vec<String> =
+        serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    anyhow::ensure!(
+        !report.head.is_empty()
+            && report.head.bytes().all(|c| c.is_ascii_hexdigit())
+            && report.head.len() == 40,
+        "report needs exact commit SHA"
+    );
+    anyhow::ensure!(
+        !criteria.is_empty()
+            && report.checks.len() == criteria.len()
+            && criteria.iter().all(|c| report
+                .checks
+                .iter()
+                .filter(|check| &check.criterion == c && !check.command.trim().is_empty())
+                .count()
+                == 1),
+        "each current criterion needs exactly one executable check"
+    );
+    state.stage = "reported".into();
+    state.report = Some(report.clone());
+    state.waiting = None;
+    conn.execute("UPDATE issues SET status='review' WHERE id=?1", [id])?;
+    save_execution(conn, &row, &state, "project.reported")
+}
+
+/// Rechecked in the steering writer immediately before any provider delivery.
+pub fn delivery_current(
+    conn: &Connection,
+    project: &str,
+    worker: &str,
+    delivery: &str,
+) -> anyhow::Result<bool> {
+    let Some(p) = store::get(conn, project)? else {
+        return Ok(false);
+    };
+    if p.policy.paused || !p.policy.enabled {
+        return Ok(false);
+    }
+    for row in bs::project_issues(conn, project)? {
+        let e = execution(conn, &row.id)?;
+        if e.worker == worker
+            && e.delivery_id == delivery
+            && matches!(e.stage.as_str(), "reserved" | "working")
+            && e.input_hash == input_hash(&row)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture() -> (tempfile::TempDir, crate::db::Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            let policy=serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"claude","model":"haiku"},"executor":{"provider":"codex","model":"gpt-configured"},"verify_command":"./verify.sh","enabled":true,"max_executors":2})).unwrap();
+            store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
+            for (id,deps) in [("A","[]"),("B","[]"),("C","[\"A\"]")] {
+                c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria,depends_on) VALUES(?1,'Specific output','Implement a concrete output','todo','code','sample',1,1,'Implement and test output','[\"Output passes its test\"]',?2)",params![id,deps])?;
+            }
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        (dir, db)
+    }
+    #[test]
+    fn project_claims_are_atomic_bounded_and_excluded_from_both_legacy_planners() {
+        let (_dir, db) = fixture();
+        for id in ["A", "B", "A", "C"] {
+            db.write(move |c| claim(c, "sample", id).map_err(store::sql_error))
+                .unwrap();
+        }
+        let c = db.read().unwrap();
+        let p = store::get(&c, "sample").unwrap().unwrap();
+        let plans = plan(&c, &p).unwrap();
+        assert_eq!(plans.iter().filter(|p| p.action == "deliver").count(), 2);
+        assert_eq!(execution(&c, "A").unwrap().attempt, 1);
+        let claims: Vec<(String, String)> = c.prepare(
+            "SELECT session,json_extract(data,'$.issue') FROM session_events WHERE type='task.claimed' ORDER BY id"
+        ).unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(
+            claims,
+            vec![
+                (execution(&c, "A").unwrap().worker, "A".into()),
+                (execution(&c, "B").unwrap().worker, "B".into())
+            ]
+        );
+
+        assert_eq!(
+            plans[2].waiting_reason.as_deref(),
+            Some("required_output:A")
+        );
+        assert!(bs::planning_tasks(&c, bs::ArchivedFilter::ActiveOnly)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM legacy_execution_issues", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn project_result_settles_only_its_exact_delivery_even_after_sender_restart() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            claim(c,"sample","A").map_err(store::sql_error)?;
+            let e=execution(c,"A").unwrap();
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES(?1,?2,'Task packet API_KEY=fixture-secret',1,'project-execution',2)",params![e.delivery_id,e.worker])?;
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('unrelated',?1,'Owner input',1,'')",[&e.worker])?;
+            let report=Report{head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
+            assert!(record_report(c,"sample","A",&e.worker,e.generation+1,&e.input_hash,&report).is_err());
+            assert_eq!(c.query_row("SELECT count(*) FROM steering_queue",[],|r|r.get::<_,i64>(0))?,2);
+            record_report(c,"sample","A",&e.worker,e.generation,&e.input_hash,&report).map_err(store::sql_error)?;
+            assert_eq!(c.query_row("SELECT outcome FROM steering_history WHERE id=?1",[&e.delivery_id],|r|r.get::<_,String>(0))?,"sent:project-result");
+            assert_eq!(c.query_row("SELECT text FROM steering_history WHERE id=?1",[&e.delivery_id],|r|r.get::<_,String>(0))?,"Task packet API_KEY=REDACTED");
+            assert_eq!(c.query_row("SELECT id FROM steering_queue",[],|r|r.get::<_,String>(0))?,"unrelated");
+            assert!(!record_report(c,"sample","A",&e.worker,e.generation,&e.input_hash,&report).unwrap().applied);
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
+    #[test]
+    fn project_interrupted_delivery_can_recover_without_treating_pending_input_as_delivered() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            claim(c, "sample", "A").map_err(store::sql_error)?;
+            let state = execution(c, "A").unwrap();
+            assert!(!delivery_attempt_ended(c, &state)?);
+            c.execute("INSERT INTO steering_history(id,session,text,delivered_at,outcome) VALUES(?1,?2,'task packet',1,'interrupted: server restart')", params![state.delivery_id, state.worker])?;
+            assert!(delivery_attempt_ended(c, &state)?);
+            let wrong_worker = Execution { worker: "another-executor".into(), ..state.clone() };
+            assert!(!delivery_attempt_ended(c, &wrong_worker)?);
+            c.execute("UPDATE steering_history SET outcome='void:stale'", [])?;
+            assert!(!delivery_attempt_ended(c, &state)?);
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_attempts_feed_existing_provider_usage_attribution() {
+        let (_dir, db) = fixture();
+        let db = std::sync::Arc::new(db);
+        db.write(|c| {
+            claim(c,"sample","A").map_err(store::sql_error)?;
+            let e=execution(c,"A").unwrap();
+            assert_eq!(crate::db::attempts::list_for_card(c,"A")?.len(),1);
+            c.execute("INSERT INTO token_ledger(ts,session,conversation,input,output) VALUES(?1,?2,'fixture',40,80)",params![chrono::Utc::now().timestamp(),e.worker])?;
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        crate::runtime_jobs::token_ledger::attribute_tasks(&db)
+            .await
+            .unwrap();
+        let c = db.read().unwrap();
+        let usage = super::super::usage::summary(&c, "sample").unwrap();
+        assert_eq!(usage["tokens"], 120);
+        assert_eq!(usage["execution_turns_measured"], 1);
+        assert_eq!(
+            c.query_row(
+                "SELECT task FROM token_ledger WHERE conversation='fixture'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "A"
+        );
+    }
+    #[test]
+    fn project_delivery_rechecks_generation_pause_and_policy_identity() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            claim(c, "sample", "A").map_err(store::sql_error)?;
+            let e = execution(c, "A").unwrap();
+            assert!(delivery_current(c, "sample", &e.worker, &e.delivery_id).unwrap());
+            assert!(!delivery_current(c, "sample", "foreign", &e.delivery_id).unwrap());
+            assert!(!delivery_current(c, "sample", &e.worker, "old-generation").unwrap());
+            let mut p = store::get(c, "sample").unwrap().unwrap();
+            p.policy.repository = "/different".into();
+            assert!(store::save(c, "sample", p.revision, &p.policy, "test").is_err());
+            p.policy.repository = "/repo".into();
+            p.policy.paused = true;
+            store::save(c, "sample", p.revision, &p.policy, "test").map_err(store::sql_error)?;
+            assert!(!delivery_current(c, "sample", &e.worker, &e.delivery_id).unwrap());
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    }
+    #[test]
+    fn project_reports_bind_identity_generation_requirements_and_criteria() {
+        let (_dir, db) = fixture();
+        db.write(|c| claim(c, "sample", "A").map_err(store::sql_error))
+            .unwrap();
+        let e = execution(&db.read().unwrap(), "A").unwrap();
+        let report = Report {
+            head: "a".repeat(40),
+            summary: "implemented".into(),
+            checks: vec![Check {
+                criterion: "Output passes its test".into(),
+                command: "./verify.sh".into(),
+            }],
+        };
+        db.write(move |c| {
+            assert!(record_report(
+                c,
+                "sample",
+                "A",
+                "foreign",
+                e.generation,
+                &e.input_hash,
+                &report
+            )
+            .is_err());
+            assert!(record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation + 1,
+                &e.input_hash,
+                &report
+            )
+            .is_err());
+            assert!(record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                "wrong-hash",
+                &report
+            )
+            .is_err());
+            assert!(record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                &e.input_hash,
+                &Report {
+                    checks: vec![],
+                    ..report.clone()
+                }
+            )
+            .is_err());
+            let out = record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                &e.input_hash,
+                &report,
+            )
+            .map_err(store::sql_error)?;
+            assert!(
+                !record_report(
+                    c,
+                    "sample",
+                    "A",
+                    &e.worker,
+                    e.generation,
+                    &e.input_hash,
+                    &report
+                )
+                .unwrap()
+                .applied
+            );
+            assert_eq!(bs::get_issue(c, "A")?.unwrap().status, "review");
+            c.execute(
+                "UPDATE issues SET title='Changed requirement' WHERE id='A'",
+                [],
+            )?;
+            assert!(record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                &e.input_hash,
+                &report
+            )
+            .is_err());
+            Ok(out)
+        })
+        .unwrap();
+    }
+    #[test]
+    fn project_read_model_explains_pause_capacity_and_never_spins_after_failure() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            let mut p = store::get(c, "sample").unwrap().unwrap();
+            p.policy.paused = true;
+            store::save(c, "sample", p.revision, &p.policy, "test").map_err(store::sql_error)?;
+            assert!(!claim(c, "sample", "A").unwrap().applied);
+            assert!(plan(c, &store::get(c, "sample").unwrap().unwrap())
+                .unwrap()
+                .iter()
+                .all(|p| p.waiting_reason.as_deref() == Some("project_paused")));
+            p.policy.paused = false;
+            store::save(c, "sample", 2, &p.policy, "test").map_err(store::sql_error)?;
+            claim(c, "sample", "A").map_err(store::sql_error)?;
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = execution(c, "A").unwrap();
+            e.stage = "waiting".into();
+            e.waiting = Some("access unavailable".into());
+            save_execution(c, &row, &e, "project.waiting").map_err(store::sql_error)?;
+            for _ in 0..100 {
+                assert!(!claim(c, "sample", "A").unwrap().applied);
+            }
+            assert_eq!(execution(c, "A").unwrap().attempt, 1);
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    }
+}

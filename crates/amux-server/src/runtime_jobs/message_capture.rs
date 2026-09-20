@@ -15,7 +15,7 @@ async fn tick_after(state: &AppState, after: i64) -> i64 {
     let pending = (|| -> anyhow::Result<Vec<i64>> {
         let conn = state.store.read()?;
         let mut stmt = conn.prepare(
-            "SELECT id FROM cmd_history WHERE capture_pending!=0 ORDER BY (id>?1) DESC,id LIMIT 16",
+            "SELECT id FROM cmd_history WHERE capture_pending!=0 AND project_group IS NULL ORDER BY (id>?1) DESC,id LIMIT 16",
         )?;
         let ids = stmt
             .query_map([after], |r| r.get(0))?
