@@ -5176,6 +5176,21 @@ pub(crate) mod tests {
         assert_eq!(cflags, "--model qwen3.8:27b");
         assert!(cmodel.is_empty(), "agent CLIs have no CC_MODEL");
         assert_eq!(cresolved, "qwen3.8:27b");
+        // Grok is an agent CLI too: model rides in CC_FLAGS, never CC_MODEL.
+        let (gflags, gmodel, gresolved) = worker_model_env("grok", "grok-4.6", "", "opus");
+        assert_eq!(gflags, "--model grok-4.6");
+        assert!(gmodel.is_empty(), "grok must not use the ollama CC_MODEL path");
+        assert_eq!(gresolved, "grok-4.6");
+        // Empty model at create (the SPA path): CC_FLAGS stays empty so grok's own
+        // CLI decides, exactly like every other non-claude, non-ollama provider
+        // (worker_model_env only special-cases claude and ollama by name); the
+        // Claude default ("opus") must not leak in either.
+        // `default_model_for_provider("grok")` supplies grok-4.6 at launch instead.
+        let (gflags2, gmodel2, gresolved2) = worker_model_env("grok", "", "", "opus");
+        assert!(gflags2.is_empty(), "empty grok model must not become --model opus: {gflags2}");
+        assert!(!gflags2.contains("opus"));
+        assert!(gmodel2.is_empty());
+        assert!(gresolved2.is_empty());
         // Muse: an agent CLI, so the model rides in CC_FLAGS and CC_MODEL stays
         // empty (the ollama CC_MODEL path is ollama-only).
         let (mflags, mmodel, mresolved) = worker_model_env("muse", "muse-spark-1.2", "", "opus");

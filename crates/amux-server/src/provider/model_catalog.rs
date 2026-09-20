@@ -553,6 +553,11 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         ],
     );
 
+    // xAI / Grok Build. Ids match `GrokAdapter::models()` in
+    // static_providers.rs; kept in sync by hand until Grok Build ships its own
+    // catalog endpoint the way Muse does.
+    add(&mut out, "xai", "grok", "grok", true, &["grok-4.6", "grok-4.5"]);
+
     out
 }
 

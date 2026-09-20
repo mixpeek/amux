@@ -569,6 +569,16 @@ fn shape_all_providers(
             "summary": "Muse Code exposes no usage API; consumption is unknown",
             "windows": [],
         }),
+        // Grok Build ships no usage/quota API either (Invariant 20) — same
+        // usage_unknown shape as Muse, for the same reason: an absent number
+        // stays absent instead of resolving to a flattering default.
+        json!({
+            "id": "grok", "label": "Grok", "available": true,
+            "measured": false, "n_considered": 0, "metered": true,
+            "local": false, "usage_unknown": true,
+            "summary": "Grok Build exposes no usage API; consumption is unknown",
+            "windows": [],
+        }),
     ];
     if let Some(obj) = body.as_object_mut() {
         let measured = providers.iter()
@@ -1814,7 +1824,7 @@ mod tests {
             },
         );
         let providers = body["providers"].as_array().unwrap();
-        assert_eq!(providers.len(), 5);
+        assert_eq!(providers.len(), 6);
         assert_eq!(providers.iter().filter(|p| p["available"] == false).count(), 3);
         assert_eq!(
             providers.iter().find(|p| p["id"] == "ollama").unwrap()["available"],

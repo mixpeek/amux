@@ -1,4 +1,4 @@
-//! Minimal adapters for gemini, codex, ollama, and muse (RR-0043).
+//! Minimal adapters for gemini, codex, ollama, grok, and muse (RR-0043).
 //!
 //! "Minimal" is a statement about USAGE, not a placeholder: none of the three
 //! exposes a usage/quota API amux can read on this host today
@@ -280,6 +280,52 @@ impl ProviderAdapter for OllamaAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// Grok Build
+// ---------------------------------------------------------------------------
+
+/// Grok Build CLI (`grok`). Interactive TUI; headless structured events via
+/// `--output-format streaming-json`. No usage/quota API today — `usage()`
+/// returns unknown (Invariant 20). Hooks are not advertised until a hook
+/// surface exists on the CLI.
+pub struct GrokAdapter;
+
+#[async_trait]
+impl ProviderAdapter for GrokAdapter {
+    fn id(&self) -> ProviderId {
+        ProviderId::new("grok")
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            hot_model_switch: false,
+            reports_usage: false,
+            // `--output-format streaming-json` emits NDJSON ACP session updates.
+            structured_events: true,
+            hooks: false,
+        }
+    }
+
+    async fn usage(&self) -> ProviderUsage {
+        ProviderUsage::unknown(self.id())
+    }
+
+    async fn models(&self) -> Vec<String> {
+        vec!["grok-4.6".into(), "grok-4.5".into()]
+    }
+
+    fn build_command(&self, prompt_mode: PromptMode) -> Vec<String> {
+        match prompt_mode {
+            PromptMode::Interactive => vec!["grok".into()],
+            PromptMode::HeadlessStructured => vec![
+                "grok".into(),
+                "--output-format".into(),
+                "streaming-json".into(),
+            ],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Muse Code
 // ---------------------------------------------------------------------------
 
@@ -371,6 +417,7 @@ mod tests {
             &GeminiAdapter as &dyn ProviderAdapter,
             &CodexAdapter,
             &OllamaAdapter::default(),
+            &GrokAdapter,
             &MuseAdapter,
         ] {
             let usage = adapter.usage().await;
@@ -397,6 +444,11 @@ mod tests {
         assert!(ollama.hooks);
         assert!(!ollama.reports_usage);
         assert!(!ollama.hot_model_switch);
+        let grok = GrokAdapter.capabilities();
+        assert!(grok.structured_events);
+        assert!(!grok.hooks);
+        assert!(!grok.reports_usage);
+        assert!(!grok.hot_model_switch);
         // Muse is the ONLY non-Claude adapter claiming hooks. If this assert is
         // ever "fixed" by flipping it to false, docs/provider-parity.md row 11
         // silently regresses from MET to a scrape fallback for muse lanes.
@@ -405,6 +457,18 @@ mod tests {
         assert!(muse.structured_events);
         assert!(!muse.reports_usage);
         assert!(!muse.hot_model_switch);
+    }
+
+    #[test]
+    fn grok_builds_grok_command() {
+        assert_eq!(
+            GrokAdapter.build_command(PromptMode::Interactive),
+            vec!["grok"]
+        );
+        assert_eq!(
+            GrokAdapter.build_command(PromptMode::HeadlessStructured),
+            vec!["grok", "--output-format", "streaming-json"]
+        );
     }
 
     #[test]

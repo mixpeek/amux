@@ -152,6 +152,7 @@ pub fn default_registry() -> ProviderRegistry {
     reg.register(Arc::new(static_providers::GeminiAdapter));
     reg.register(Arc::new(static_providers::CodexAdapter));
     reg.register(Arc::new(static_providers::OllamaAdapter::default()));
+    reg.register(Arc::new(static_providers::GrokAdapter));
     reg.register(Arc::new(static_providers::MuseAdapter));
     reg
 }
@@ -261,8 +262,8 @@ mod tests {
     #[test]
     fn default_registry_registers_all_known() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 5);
-        for id in ["claude-code", "gemini", "codex", "ollama", "muse"] {
+        assert_eq!(reg.len(), 6);
+        for id in ["claude-code", "gemini", "codex", "ollama", "grok", "muse"] {
             assert!(
                 reg.get(&ProviderId::new(id)).is_some(),
                 "default registry missing {id}"
@@ -296,7 +297,7 @@ mod tests {
 
         let mut reg = default_registry();
         reg.register(Arc::new(FutureAdapter));
-        assert_eq!(reg.len(), 6);
+        assert_eq!(reg.len(), 7);
         let got = reg.get(&ProviderId::new("a-provider-from-2031")).unwrap();
         assert_eq!(got.id().as_str(), "a-provider-from-2031");
     }
@@ -307,6 +308,7 @@ mod tests {
         // The exact ids all resolve...
         assert_eq!(reg.resolve("claude-code").unwrap().id().as_str(), "claude-code");
         assert_eq!(reg.resolve("gemini").unwrap().id().as_str(), "gemini");
+        assert_eq!(reg.resolve("grok").unwrap().id().as_str(), "grok");
         assert_eq!(reg.resolve("muse").unwrap().id().as_str(), "muse");
         // ...and the schema-default legacy spelling lands on claude-code.
         assert_eq!(reg.resolve("claude").unwrap().id().as_str(), "claude-code");
@@ -341,6 +343,11 @@ mod tests {
     #[tokio::test]
     async fn conformance_ollama() {
         conformance(&static_providers::OllamaAdapter::default()).await;
+    }
+
+    #[tokio::test]
+    async fn conformance_grok() {
+        conformance(&static_providers::GrokAdapter).await;
     }
 
     #[tokio::test]

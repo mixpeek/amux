@@ -3634,8 +3634,8 @@ fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
 // contract).
 // ---------------------------------------------------------------------------
 
-pub const SESSION_PROVIDERS: [&str; 6] =
-    ["claude", "codex", "gemini", "iterm2", "ollama", "muse"];
+pub const SESSION_PROVIDERS: [&str; 7] =
+    ["claude", "codex", "gemini", "iterm2", "ollama", "grok", "muse"];
 const PROVIDER_YOLO_FLAGS: [&str; 3] = [
     "--dangerously-skip-permissions",
     "--dangerously-bypass-approvals-and-sandbox",
@@ -4000,12 +4000,8 @@ fn default_model_for_provider(provider: &str) -> String {
         "codex" => "gpt-5.5".into(),
         "gemini" => "auto".into(),
         // Ollama runs via `codex --oss --local-provider ollama --model <model>`.
-        // Read from the ONE source rather than repeating the literal: this arm
-        // and `OllamaAdapter::default` were two spellings of the same fact, and
-        // the comment that used to sit here ("this box has qwen3.8:27b pulled")
-        // was a fact about one machine compiled into a public server. See
-        // `static_providers::ollama_default_model` (DESKT-6).
         "ollama" => crate::provider::static_providers::ollama_default_model(),
+        "grok" => "grok-4.6".into(),
         // The catalog default (is_default/is_current) as of 1.0.3.
         "muse" => "muse-spark-1.3-contributor".into(),
         _ => get_default_model(),
@@ -4145,6 +4141,7 @@ pub fn launch_base_binary(provider: &str) -> &'static str {
         "codex" | "ollama" => "codex",
         "muse" => "muse",
         "gemini" => "gemini",
+        "grok" => "grok",
         // claude, iterm2, and anything unknown launch via build_claude_cmd,
         // whose default binary is `claude` (overridable by AMUX_CLAUDE_CMD).
         _ => "claude",
@@ -4171,6 +4168,49 @@ pub fn launch_base_binary(provider: &str) -> &'static str {
 /// it never had any relationship to.
 fn writes_claude_transcript(provider: &str) -> bool {
     launch_base_binary(provider) == "claude"
+}
+
+/// Grok Build (`grok`) names a NEW conversation with `--session-id <uuid>`
+/// and resumes with `--resume <id>`. `--session-id` is UUID-only — a ULID
+/// is rejected — so generated ids are 8-4-4-4-12 hex, not Crockford.
+///
+/// `existing_session_id` is the stored `grok_session_id` (empty = first start).
+/// `new_session_id` is used only on first start and must already be a UUID.
+pub(crate) fn grok_launch_command(
+    existing_session_id: &str,
+    flags: &str,
+    extra_flags: &str,
+    default_model: &str,
+    new_session_id: &str,
+) -> String {
+    let mut opts = String::new();
+    if !flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(flags));
+    }
+    if !extra_flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(extra_flags));
+    }
+    if !opts.contains("--model") && !opts.contains("-m ") && !default_model.is_empty() {
+        opts += &format!(" --model {}", shell_quote_flags(default_model));
+    }
+    if !existing_session_id.is_empty() {
+        format!("grok --resume {}{opts}", sh_quote(existing_session_id))
+    } else {
+        format!("grok --session-id {}{opts}", sh_quote(new_session_id))
+    }
+}
+
+/// Format 128 random bits (from ULID entropy) as a UUID string. The Grok
+/// CLI accepts this shape for `--session-id` and rejects a raw ULID.
+pub(crate) fn grok_new_session_id() -> String {
+    let bytes = ulid::Ulid::new().to_bytes();
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]
+    )
 }
 
 /// Muse Code (`muse`) is the one provider whose session id amux CANNOT mint.
@@ -4394,6 +4434,59 @@ pub(crate) fn muse_pick_session(
 }
 
 #[cfg(test)]
+mod grok_launch_tests {
+    use super::{grok_launch_command, grok_new_session_id, launch_base_binary, SESSION_PROVIDERS};
+
+    #[test]
+    fn grok_is_a_session_provider_and_launches_grok() {
+        assert!(SESSION_PROVIDERS.contains(&"grok"));
+        assert_eq!(launch_base_binary("grok"), "grok");
+        assert_ne!(launch_base_binary("grok"), "claude");
+    }
+
+    #[test]
+    fn grok_new_session_id_is_uuid_shaped() {
+        let id = grok_new_session_id();
+        let re = regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+            .unwrap();
+        assert!(re.is_match(&id), "not UUID-shaped: {id}");
+        assert!(!id.contains('_'), "ULID slipped through: {id}");
+    }
+
+    #[test]
+    fn grok_first_start_uses_session_id_and_default_model() {
+        let cmd = grok_launch_command(
+            "",
+            "",
+            "",
+            "grok-4.6",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        );
+        assert_eq!(
+            cmd,
+            "grok --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --model grok-4.6"
+        );
+    }
+
+    #[test]
+    fn grok_resume_uses_resume_not_session_id() {
+        let cmd = grok_launch_command(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "--model grok-4.5",
+            "",
+            "grok-4.6",
+            "should-not-appear",
+        );
+        assert_eq!(
+            cmd,
+            "grok --resume aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --model grok-4.5"
+        );
+        assert!(!cmd.contains("--session-id"));
+        assert!(!cmd.contains("should-not-appear"));
+    }
+}
+
+#[cfg(test)]
 mod muse_launch_tests {
     use super::{
         launch_base_binary, muse_launch_command, muse_pick_session, provider_yolo_flag,
@@ -4525,6 +4618,7 @@ fn provider_label(provider: &str) -> &str {
         "gemini" => "Gemini",
         "iterm2" => "iTerm2",
         "ollama" => "Ollama",
+        "grok" => "Grok",
         "muse" => "Muse Code",
         other => {
             if other.is_empty() {
@@ -9968,6 +10062,26 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 &default_model_for_provider("muse"),
             )
         }
+        "grok" => {
+            // Grok Build: new conversations take `--session-id <uuid>`;
+            // resume is `--resume <id>`. Do not fall through to
+            // `build_claude_cmd` — that would launch `claude`.
+            let existing = meta_str(&meta, "grok_session_id");
+            let new_id = if existing.is_empty() {
+                let id = grok_new_session_id();
+                meta.insert("grok_session_id".into(), json!(id.clone()));
+                id
+            } else {
+                String::new()
+            };
+            grok_launch_command(
+                &existing,
+                &flags,
+                extra_flags,
+                &default_model_for_provider("grok"),
+                &new_id,
+            )
+        }
         "ollama" => {
             // Ollama workers run through `codex --oss --local-provider ollama`
             // so they get a full coding agent (file editing, hooks, structured
@@ -10092,7 +10206,12 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // cd, source the global agent credentials.
     let mut has_oauth = false;
     let mut shell_rc = String::new();
-    if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "muse" {
+    if provider != "codex"
+        && provider != "gemini"
+        && provider != "ollama"
+        && provider != "grok"
+        && provider != "muse"
+    {
         shell_rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
         if let Ok(t) = std::fs::read_to_string(PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json")) {
             if let Ok(v) = serde_json::from_str::<Value>(&t) {
@@ -10160,7 +10279,13 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             sh_quote(&f.to_string_lossy())
         ));
     }
-    if provider != "codex" && provider != "gemini" && provider != "ollama" && provider != "muse" && has_oauth {
+    if provider != "codex"
+        && provider != "gemini"
+        && provider != "ollama"
+        && provider != "grok"
+        && provider != "muse"
+        && has_oauth
+    {
         shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
     }
     // Settings writes provider keys to server.env at runtime. Reading that file
@@ -10430,7 +10555,12 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         type_line(name, &shell_rc).await;
         poll_shell_prompt(name, 3000).await;
     }
-    if has_oauth && provider != "codex" && provider != "gemini" && provider != "muse" {
+    if has_oauth
+        && provider != "codex"
+        && provider != "gemini"
+        && provider != "grok"
+        && provider != "muse"
+    {
         type_line(name, "unset ANTHROPIC_API_KEY").await;
         poll_shell_prompt(name, 3000).await;
     }
