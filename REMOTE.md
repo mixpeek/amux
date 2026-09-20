@@ -29,7 +29,7 @@ On your **laptop** (the client), create `~/.amux/remote.env`:
 AMUX_URL=https://desktop.tail5ce8f5.ts.net:8824   # server: HTTPS, port 8824
 AMUX_TOKEN=<contents of the server's ~/.amux/auth_token>
 AMUX_SSH_HOST=desktop.tail5ce8f5.ts.net            # SSH target for `attach`
-# AMUX_SSH_USER=ethan                              # default: $USER
+# AMUX_SSH_USER=youruser                          # default: $USER
 # AMUX_CC=1                                         # force native attach everywhere
 ```
 
@@ -126,8 +126,8 @@ Tip: add a host alias so you don't type the full name:
 ```
 # ~/.ssh/config
 Host desktop
-    HostName desktop.tail5ce8f5.ts.net
-    User ethan
+    HostName desktop.your-tailnet.ts.net
+    User youruser
 ```
 
 ---

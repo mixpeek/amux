@@ -1,8 +1,8 @@
 <img src="site/github-header.svg" alt="amux — The Agent Control Plane" width="1280"/>
 
 <p align="center">
-  <a href="https://github.com/mixpeek/amux/stargazers"><img src="https://img.shields.io/github/stars/mixpeek/amux?style=flat-square&color=f5c518" alt="GitHub stars"/></a>
-  <a href="https://github.com/mixpeek/amux/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue?style=flat-square" alt="License"/></a>
+  <a href="https://github.com/njhughes-01/amux/stargazers"><img src="https://img.shields.io/github/stars/njhughes-01/amux?style=flat-square&color=f5c518" alt="GitHub stars"/></a>
+  <a href="https://github.com/njhughes-01/amux/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue?style=flat-square" alt="License"/></a>
   <a href="https://amux.io"><img src="https://img.shields.io/badge/site-amux.io-orange?style=flat-square" alt="Website"/></a>
   <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"><img src="https://img.shields.io/badge/iOS-App%20Store-black?style=flat-square&logo=apple" alt="iOS App"/></a>
   <a href="https://amux.io/changelog/"><img src="https://img.shields.io/badge/changelog-amux.io%2Fchangelog-green?style=flat-square" alt="Changelog"/></a>
@@ -57,7 +57,9 @@ make test       # clippy + cargo test
 
 `make run` is the command after `git pull` — it rebuilds release, installs the binary, and the launchd-managed server picks it up automatically. `make dev` is for working on migrations or features you don't want touching the live DB.
 
-**Requirements:** tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
+**New here?** [docs/first-run.md](docs/first-run.md) walks through starting the server, the dashboard, setting your owner name, signing in to an agent CLI and creating your first worker.
+
+**Requirements:** tmux 3.2+, python3, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
 
 ### Linux: systemd user services
 

@@ -770,4 +770,7 @@ echo "  Dashboard   https://localhost:$PORT   (self-signed cert — your browser
 echo "  Auth token  $AMUX_HOME/auth_token    (the dashboard + amux-rs read this automatically on this machine)"
 echo "  CLI         amux-rs --url https://localhost:$PORT health"
 echo "  Logs        $AMUX_HOME/logs/server-rs.log"
-echo "  Uninstall   ./uninstall.sh   (removes binaries + agents; never touches $AMUX_HOME data)"
+echo "  Uninstall   ./uninstall.sh   (removes binaries + services; never touches $AMUX_HOME data)"
+echo ""
+echo "  Next steps  docs/first-run.md — start the services (Linux), set AMUX_OWNER_NAME,"
+echo "              sign in to an agent CLI, then create your first worker."

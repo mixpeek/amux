@@ -8,38 +8,13 @@
         "@anthropic-ai/claude-code-mcp-server-chrome"
       ]
     },
-    "mixpeek": {
-      "type": "http",
-      "url": "https://mcp.mixpeek.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MIXPEEK_API_KEY}"
-      }
-    },
-    "mixpeek-ingestion": {
-      "type": "http",
-      "url": "https://mcp.mixpeek.com/ingestion/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MIXPEEK_API_KEY}"
-      }
-    },
-    "mixpeek-retrieval": {
-      "type": "http",
-      "url": "https://mcp.mixpeek.com/retrieval/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MIXPEEK_API_KEY}"
-      }
-    },
-    "mixpeek-admin": {
-      "type": "http",
-      "url": "https://mcp.mixpeek.com/admin/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MIXPEEK_API_KEY}"
-      }
-    },
     "gdocs": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-gdrive"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-gdrive"
+      ],
       "env": {
         "GDRIVE_CLIENT_ID": "${GDRIVE_CLIENT_ID}",
         "GDRIVE_CLIENT_SECRET": "${GDRIVE_CLIENT_SECRET}",
