@@ -931,12 +931,21 @@ impl Fleet for LiveFleet {
         Ok(disposition)
     }
     async fn deliver_blocker_recovery(&self, lane: &str, text: &str, card: &str, rev: i64, identity: &str) -> Result<bool, String> {
+        if !self.nudge_budget_admits(lane, card, "blocker-recovery").await? {
+            return Ok(false);
+        }
         let queued = crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store, lane, text, GUARD, card, rev, identity).await?;
-        if queued { self.record_prompt(lane, text).await; }
+        if queued {
+            self.record_prompt(lane, text).await;
+            self.nudge_budget_spend(lane, card, "blocker-recovery").await;
+        }
         Ok(queued)
     }
     async fn deliver_about(&self, lane: &str, text: &str, card: &str, rev: i64) -> Result<bool, String> {
+        if !self.nudge_budget_admits(lane, card, "idle-with-card").await? {
+            return Ok(false);
+        }
         let identity={
             let c=self.state.store.read().map_err(|e|e.to_string())?;
             let row=bs::get_issue(&c,card).map_err(|e|e.to_string())?.ok_or("reminder card disappeared")?;
@@ -945,10 +954,131 @@ impl Fleet for LiveFleet {
         };
         let result=crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store,lane,text,GUARD,card,rev,&identity).await?;
-        if result { self.record_prompt(lane,text).await; }
+        if result {
+            self.record_prompt(lane,text).await;
+            self.nudge_budget_spend(lane, card, "idle-with-card").await;
+        }
         Ok(result)
     }
+}
 
+impl LiveFleet {
+    /// The MB-55 budget, read under the card's CURRENT status. Held and spent
+    /// both answer false and log why, so a lane that stops hearing about a
+    /// card is explained in the same log the delivery would have been.
+    async fn nudge_budget_admits(&self, lane: &str, card: &str, kind: &str) -> Result<bool, String> {
+        let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
+        let now = now_f64();
+        let verdict = self.state.store.read_async(move |conn| {
+            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
+            Ok(nudge_budget_check(conn, &l, &c, &k, &status, now)?)
+        }).await.map_err(|e| e.to_string())?;
+        match verdict {
+            NudgeBudget::Admit { .. } => Ok(true),
+            NudgeBudget::Held { n, next_at } => {
+                tracing::info!(target: "amux::board_drive", session = lane, card, kind, n,
+                    admitted_in_s = (next_at - now) as i64, measured = true, n_considered = 1,
+                    verdict = "nudge_budget_held", "board_drive: {kind} for {card} held by its per-card budget (MB-55)");
+                Ok(false)
+            }
+            NudgeBudget::Spent { n } => {
+                tracing::warn!(target: "amux::board_drive", session = lane, card, kind, n,
+                    measured = true, n_considered = 1, verdict = "nudge_budget_spent",
+                    "board_drive: {kind} for {card} spent its budget ({n} deliveries, no status change); silent until the card's status moves (MB-55)");
+                Ok(false)
+            }
+        }
+    }
+
+    async fn nudge_budget_spend(&self, lane: &str, card: &str, kind: &str) {
+        let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
+        let now = now_f64();
+        let _ = self.state.store.write_async(move |conn| {
+            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
+            // Best-effort: a budget row that fails to write must never stop a
+            // delivery that already happened from being reported.
+            let _ = nudge_budget_record(conn, &l, &c, &k, &status, now);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await;
+    }
+}
+
+/// A PER-CARD BUDGET FOR THE NUDGES THAT RE-ARM ON THEIR OWN DEMANDS (MB-55).
+///
+/// `reminder_identity` and the blocker-recovery signature both hash the
+/// fields their prompts tell the worker to write (next_action,
+/// acceptance_criteria, evidence, gate, desc), so compliance rotates the key
+/// and the same nudge re-delivers. That is by design for a CHANGED card. What
+/// was missing since the 09-17 flattening (7a56d2d4, 15b72193, e00fca78
+/// deleted the 3-per-24h budget) is any bound on how often a changed card may
+/// be nudged. Measured on the live db: board-drive nudges went from 91 a day
+/// on 09-16 to 649 on 09-19; MI-585x took 39 blocker reviews, MF-1238 13 plus
+/// 34 idle reminders.
+///
+/// Backoff 1h, 4h, 24h after each delivery, then SPENT after
+/// `NUDGE_BUDGET_SPENT_AT` deliveries: the lane is not told again until the
+/// card changes STATUS, which is the one write the prompt cannot ask for and a
+/// worker cannot make by accident. A status change resets the budget.
+pub(crate) const NUDGE_BUDGET_BACKOFF_S: [f64; 3] = [3600.0, 4.0 * 3600.0, 24.0 * 3600.0];
+pub(crate) const NUDGE_BUDGET_SPENT_AT: i64 = 4;
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum NudgeBudget {
+    /// Deliver; `n` deliveries have gone before under this status.
+    Admit { n: i64 },
+    /// Inside the backoff window after delivery `n`.
+    Held { n: i64, next_at: f64 },
+    /// `NUDGE_BUDGET_SPENT_AT` deliveries without a status change.
+    Spent { n: i64 },
+}
+
+pub(crate) fn nudge_budget_check(
+    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+) -> rusqlite::Result<NudgeBudget> {
+    let row: Option<(i64, f64, String)> = conn
+        .query_row(
+            "SELECT n, next_at, status_at_last FROM board_drive_nudge_budget \
+             WHERE session=?1 AND card=?2 AND kind=?3",
+            rusqlite::params![session, card, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => NudgeBudget::Admit { n: 0 },
+        Some((_, _, at_last)) if at_last != status => NudgeBudget::Admit { n: 0 },
+        Some((n, _, _)) if n >= NUDGE_BUDGET_SPENT_AT => NudgeBudget::Spent { n },
+        Some((n, next_at, _)) if now < next_at => NudgeBudget::Held { n, next_at },
+        Some((n, _, _)) => NudgeBudget::Admit { n },
+    })
+}
+
+/// Record a delivery. Returns the delivery count under the current status.
+pub(crate) fn nudge_budget_record(
+    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+) -> rusqlite::Result<i64> {
+    let prior: Option<(i64, String, f64)> = conn
+        .query_row(
+            "SELECT n, status_at_last, first_at FROM board_drive_nudge_budget \
+             WHERE session=?1 AND card=?2 AND kind=?3",
+            rusqlite::params![session, card, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (n_before, first_at) = match prior {
+        Some((n, ref at_last, first)) if at_last == status => (n, first),
+        _ => (0, now),
+    };
+    let n = n_before + 1;
+    let step = NUDGE_BUDGET_BACKOFF_S[(n_before as usize).min(NUDGE_BUDGET_BACKOFF_S.len() - 1)];
+    conn.execute(
+        "INSERT INTO board_drive_nudge_budget (session, card, kind, n, first_at, last_at, next_at, status_at_last) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+         ON CONFLICT(session, card, kind) DO UPDATE SET \
+           n=excluded.n, first_at=excluded.first_at, last_at=excluded.last_at, \
+           next_at=excluded.next_at, status_at_last=excluded.status_at_last",
+        rusqlite::params![session, card, kind, n, first_at, now, now + step, status],
+    )?;
+    Ok(n)
 }
 
 /// A reminder is a reaction to meaningful card state, not to a timer, log
@@ -12439,6 +12569,33 @@ mod tests {
     ///
     /// A test that mints its own input can only ever pin ITSELF. This one runs
     /// the real producer into the real parser.
+    /// MB-55: the budget is keyed on (session, card, kind) and resets only on
+    /// a STATUS change, the one write the nudge cannot ask for.
+    #[test]
+    fn nudge_budget_backs_off_then_spends_and_a_status_change_resets_it() {
+        let conn = board_db();
+        let (s, c, k) = ("lane", "CARD-1", "blocker-recovery");
+        let t0 = 1_000_000.0;
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0).unwrap(), 1);
+        // 1h backoff after the first delivery.
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 10.0).unwrap(), NudgeBudget::Held { n: 1, .. }));
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), NudgeBudget::Admit { n: 1 });
+        // 4h after the second, 24h after the third.
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), 2);
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0 + 3.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 2, .. }));
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 20_000.0).unwrap(), 3);
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 20_000.0 + 23.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 3, .. }));
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 200_000.0).unwrap(), 4);
+        // Four deliveries with no status change: spent, whatever the clock says.
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 9_000_000.0).unwrap(), NudgeBudget::Spent { n: 4 });
+        // Another kind on the same card has its own budget.
+        assert_eq!(nudge_budget_check(&conn, s, c, "idle-with-card", "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        // A status change resets it.
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), 1);
+    }
+
     #[test]
     fn reminder_identity_ignores_heartbeat_but_tracks_requirements_and_worker_lifetime() {
         let conn=board_db();add_card(&conn,"STATE-1","lane","doing","Report","Current report requirements");
