@@ -4,6 +4,56 @@ Date: 2026-09-20. Branch: `codex/amux-project-lifecycle`.
 
 This validates the project execution path on a disposable server, not a production fleet migration. The existing group, issue, command, attempt, delivery, token and Git integration primitives remain authoritative. Projects own outcomes; temporary workers execute finite claims.
 
+## AAB-3 validated runtime revision: 7ee3eb6f313b
+
+Runtime commit: `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`; normal commit
+hooks passed. The following parent checks supersede pending validation for this
+revision only; earlier runs and their limits below remain historical evidence.
+
+| Command | Parent result |
+| --- | --- |
+| `scripts/safe-cargo.sh test -p amux-server --lib project_` | 50 passed, 0 failed; includes retired-executor ownership/reverify, cadence/pause/cancellation, report admission and complete command preflight. |
+| `scripts/safe-cargo.sh test -p amux-server --lib verification_cannot_pass_against_original_checkout_or_fallback_to_it` | 1 passed, 0 failed. |
+| `scripts/safe-cargo.sh check --workspace` | Exit 0. |
+| `scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings` | Exit 0. |
+
+Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`
+and its four referenced logs. These are focused source gates, not a new full
+server-suite run. Parent mutation controls separately restored the old serial
+cadence and late per-command validation: `slow_failing_legacy_sweep_preserves_project_report_progress_and_pause`
+and `project_verification_preflights_all_commands_before_any_execution` each
+failed its expected assertion (exit 101). Exact source was restored; the restored
+`project_ --lib` run passed all 50 tests. Evidence:
+`/private/tmp/amux-astra-20260920/logs/aab3-cadence-preflight-negative-results.json`
+and its cadence, preflight and restored-test logs.
+
+Full isolated UI command:
+
+```bash
+python3 e2e/project-lifecycle/run.py --binary ../extractor-case-run/amux-server-astra-7ee3eb6f313b --out ../extractor-case-run/lifecycle-ui-7ee3eb6f313b --port 18973
+```
+
+Result: **11 PASS, 0 uncaught browser errors**, with 13 fixture intake calls and
+11 fixture execution calls. This includes the canonical recheck after executor
+retirement, unchanged seven card IDs before later work, migration rollback and
+the dirty-checkout refusal/retention scenario. Both health snapshots identify
+commit `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b` and build
+`0322f12d3fa342f7` across restart (different PIDs). Binary SHA256:
+`0322f12d3fa342f76249dd6c80272d9532a108de378d8f5d431189e1b396e4e6`.
+Evidence: `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/results.json` and
+`completion-proof.json`; the latter independently records fixture process and
+socket stopped. Desktop/mobile screenshots are retained; current screenshot
+inspection remains with the parent, not claimed here.
+
+Providers were deterministic, fake and nonbillable; UI, database, processes,
+Git, worktrees, verification and retirement were real. This validates the
+shared harness, not completion of the actual extractor project: at this handoff
+PAA-2 generation 6 is still verifying, and that project is **not complete or
+Verified**. No production rollout or paid-provider outcome is implied. Earlier
+failed fixtures, including `lifecycle-ui-b559-settled` and
+`lifecycle-ui-f1277e53bf18`, and the generation-5 late candidate-command rejection
+remain retained; successful later evidence does not relabel those failures.
+
 ## Automated checks
 
 | Command | Observed result |

@@ -387,8 +387,10 @@ retain worker isolation; negative controls cover foreign projects, legacy scope,
 missing/deleted edges and incoming ownership changes, including rollback.
 Logs use `project_dependency_owner_validated` for accepted project edges and the
 existing `cross_board_dependency_refused` marker for rejected owner crossings.
-Parent Rust/mutation/browser/exact-build checks remain required. The prior full
-fixture and live failure evidence remain untouched.
+For runtime `7ee3eb6f313b`, parent project tests and the full isolated UI now pass;
+see [revision validation](project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b)
+for exact commands, evidence and limits. The prior full fixture and live failure
+evidence remain untouched.
 
 
 ### AAB-3: legacy sweep cadence and complete command admission
@@ -429,7 +431,10 @@ verification eligibility, then accepts a corrected report in the same attempt
 through an aliased repository policy. A real temporary Git candidate regression
 puts a sentinel command before an invalid later check (and separately an invalid
 project gate): neither may execute. Existing source-path, home-spelling and
-symlink controls remain unchanged. Rust, mutation and full browser execution are
-pending parent checks on the frozen bytes; local parsing/syntax/diff checks are
-not a claim of those passes. Original failed runs and live project state remain
-untouched.
+symlink controls remain unchanged. Parent checks on runtime `7ee3eb6f313b` passed
+50 project tests, the existing source-path guard, workspace check and strict
+all-target Clippy. Both mutation controls failed as expected; exact restoration
+passed all 50 project tests, and the new-server UI passed all 11 scenarios. See
+[revision validation](project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b)
+for evidence and limits. Original failed runs and live project state remain
+untouched; the actual extractor project is not complete or Verified.

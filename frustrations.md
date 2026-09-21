@@ -3874,7 +3874,7 @@ FIX: Shared packet previous_result uses existing UTF-8-safe head/tail preview ab
 ## Project executor assignment mistaken for dependency ownership (AAB-3)
 AREA: board storage / project intake
 SEVERITY: blocks
-STATUS: open
+STATUS: fixed
 DATE: 2026-09-20
 SESSION: amux-astra-bootstrap
 CARD: AAB-3
@@ -3882,11 +3882,13 @@ SYMPTOM: Distinct Recheck alpha request failed cross_board_dependency_forbidden 
 COST: Valid canonical re-verification consumed an intake attempt without progressing despite every required output belonging to the project.
 FIX: One BoardOwner representation distinguishes durable project ownership from legacy worker boards. Shared outgoing/incoming checks, API validation and atomic migration/rollback ownership validation reuse it. Same-project assignment changes preserve edges; cross-project/project-legacy/missing/deleted references remain refused. Logs project_dependency_owner_validated and cross_board_dependency_refused. Real-DB actual-intake fanout/reverify and ownership negative controls added; parent execution pending. No live row rewrites, provider retries, build or deployment.
 
+Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. The 50 passing project tests include actual intake reverify after executor retirement and dependency-owner negative controls; the 11-scenario full UI includes the canonical recheck and migration rollback. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
+
 
 ## Slow legacy starts stretched project progression (AAB-3)
 AREA: runtime scheduling
 SEVERITY: blocks
-STATUS: open
+STATUS: fixed
 DATE: 2026-09-20
 SESSION: amux-astra-bootstrap
 CARD: AAB-3
@@ -3894,13 +3896,18 @@ SYMPTOM: The full lifecycle fixture passed ten scenarios then exhausted its dirt
 COST: A 90-second acceptance timeout despite successful delivery, plus diagnosis of a misleading reserved-state snapshot.
 FIX: One cancellable legacy sweep with independent configured project cadence, retaining project runner exclusion and pause gates; signal project_tick_during_legacy_wait. Migration-only fixture disables pickup/standing orders via supported config and checks rollback retention without bypassing protected-source refusal. Nonbillable progress/pause/cancellation/serial-negative tests added; parent execution pending.
 
+Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. The project cadence/pause/cancellation tests pass; restoring serial cadence failed the named progress assertion (exit 101), and exact restoration passed all 50 project tests. The full UI now passes dirty-checkout retention as scenario 11. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
+
+
 ## Source-checkout command refused after expensive earlier checks (AAB-3)
 AREA: project verification
 SEVERITY: friction
-STATUS: open
+STATUS: fixed
 DATE: 2026-09-20
 SESSION: amux-astra-bootstrap
 CARD: AAB-3
 SYMPTOM: Backend generation 5 reached criterion 6 before rejecting its original-checkout venv command. This was late candidate-command validation, not a generation-5 Git push failure.
 COST: Earlier expensive verification commands ran before a deterministic configuration refusal that admission could already detect.
 FIX: Reuse the same source-path validator at report admission and preflight all distinct checks plus the project gate before executing any. Invalid admission leaves report/status/attempt unchanged for corrected same-generation resubmission. Canonical repository identity accepts policy aliases without weakening source-path guards. Signals project.report_commands_refused and fanout_verification_source_path; API/DB and real-Git no-execution regressions added, parent Rust run pending.
+
+Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. Report admission and complete-set preflight tests plus the existing source-path guard pass; restoring late validation failed the sentinel assertion (exit 101), and exact restoration passed all 50 project tests. The full UI passes all 11 scenarios. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
