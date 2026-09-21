@@ -4030,3 +4030,14 @@ CARD: AAB-10
 SYMPTOM: New project leaf reports could move into review with exact commit/checks but no retained human-reviewable artifact, and successfully retired project executors named `px-*` disappeared from the existing Expired accordion because the UI only recognized missing workers whose names contained `-eph-`.
 COST: A project could look complete without a durable report/screenshot/video for human review, and historical executor attempt evidence became harder to inspect after safe retirement. No live PAA/Mixpeek state was changed by this fix.
 FIX: New project report admission now requires at least one explicit retained Markdown/JSON/PNG/WebM asset and logs `project.report_contract_refused` before state mutation when the contract is missing or malformed. The Expired accordion now measures the existing orchestration inventory for `lifecycle=expired`, projects retired `px-*` workers without a Start affordance, and logs measured inventory refreshes. Parent validation pending; historical reports remain readable.
+
+## Project cards re-rendered every 2s, collapsing open evidence, beside three launch surfaces (AAB-11)
+AREA: dashboard
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-11
+SYMPTOM: Opening a task's Criteria and evidence in Projects closed it again within 2 seconds, because `_projectRender` replaced `#project-cards` innerHTML on every fetch. Project work also had three competing entry points (Projects, global Orchestrations with its own launch, Board Launch priorities), and cards carried raw JSON and exception text of tens of kilobytes.
+COST: Evidence could not be read while a project was running, focus and drafts were at risk on every tick, and users had to understand orchestrator/fan-out topology to start work the project harness already schedules with disposable executors.
+FIX: Native AAB-11 source renders the board with a keyed, signature-checked patch that leaves unchanged nodes alone, adds one task inspector whose open state, scroll, focus and selection persist per project, aborts and ignores stale cross-project reads, and keeps unsaved settings until Save or Cancel. The Orchestrations tab and Board launch form are removed as creation paths (history and APIs kept; Board labelled Legacy; retired tab ids cannot be recreated by saved tab state). Refresh failures log `project_refresh_failed` with `measured:false` and stop polling after 3 consecutive failures until the visible Retry is used. Parent browser validation and screenshots pending; no retirement claimed.

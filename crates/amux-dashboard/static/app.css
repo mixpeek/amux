@@ -6951,3 +6951,22 @@ select.input { height:var(--control-height); }
 #orch-projects ul{padding-left:20px;overflow-wrap:anywhere}
 
 [data-worker-action][aria-disabled="true"] { opacity: .55; cursor: wait; }
+
+/* Project-first workspace: concise board cards, one task inspector (AAB-11) */
+.project-summary{margin:0 0 16px}.project-progress{font-size:15px;font-weight:600}.project-acceptance{margin-top:4px;font-size:14px}.project-muted{color:var(--muted);font-size:13px}
+.project-workspace{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);gap:20px;align-items:start}
+.project-workspace .project-columns{flex-wrap:wrap}.project-workspace .project-column{min-width:200px}
+.project-card-select{display:block;width:100%;min-height:44px;text-align:left;background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer}.project-card-select strong{display:block;margin-top:6px;font-size:15px;line-height:1.4}
+.project-card-select:focus-visible,.project-inspector:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.project-selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.project-inspector{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--bg)}
+.project-inspector h3{margin:0 0 6px;font-size:16px;line-height:1.4;overflow-wrap:anywhere}.project-inspector pre,.project-report{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5;max-width:100%}
+.project-section{margin:12px 0;border-top:1px solid var(--border);padding-top:10px}.project-section summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:center}
+.project-criteria{padding-left:20px}.project-criteria li{margin-bottom:10px}.project-criteria small{display:block;overflow-wrap:anywhere}
+.project-facts{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px}.project-facts dt{color:var(--muted)}.project-facts dd{margin:0;overflow-wrap:anywhere}
+.project-failure{border-left:3px solid var(--error);padding:8px 12px;margin:8px 0;background:var(--card-bg)}.project-actions .btn{margin-top:8px;min-height:44px}
+.project-error-box{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.project-legacy{margin-left:auto}#project-settings-state{color:var(--muted);font-size:13px}
+.launch-legacy-note{font-size:.8rem;color:var(--dim);margin:0 0 8px}
+@media(max-width:600px){.project-workspace{grid-template-columns:1fr}.project-inspector{position:static;max-height:none}.project-card-select,.project-legacy{min-height:44px}.project-facts{grid-template-columns:1fr}}
+.board-legacy-badge{font-size:.6em;font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:999px;color:var(--muted);vertical-align:middle}
+.project-diagnostic{max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px}.project-cause{overflow-wrap:anywhere}

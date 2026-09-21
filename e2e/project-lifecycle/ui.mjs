@@ -20,7 +20,7 @@ const beat=name=>path.join(config.home,'heartbeat-'+name);
 const main=name=>execFileSync('git',['--git-dir',config.remote,'show','main:'+name+'.txt'],{encoding:'utf8'}).trim();
 const submit=async text=>{await page.locator('#project-command').fill(text);await page.getByRole('button',{name:'Submit outcome',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#project-command')?.value==='');};
 const saveSettings=async()=>{await page.getByRole('button',{name:'Save settings',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.project-settings') && !document.querySelector('.project-settings').open);};
-const verified=async n=>page.waitForFunction(n=>document.querySelector('#project-usage')?.textContent.includes(n+' / '+n+' structured outcomes verified'),n,{timeout:180000});
+const verified=async n=>page.waitForFunction(n=>document.querySelector('#project-progress')?.textContent.includes(n+' / '+n+' structured outcomes verified'),n,{timeout:180000});
 const retired=async()=>wait(()=>!fs.readdirSync(path.join(config.home,'sessions')).some(n=>n.startsWith('px-')&&n.endsWith('.env')),'verified executors did not retire');
 const record=(scenario,extra={})=>{const result={verdict:'PASS',scenario,...extra};results.push(result);console.log(JSON.stringify(result));};
 async function create(name,capacity='1'){
@@ -48,16 +48,36 @@ try {
   await submit(command);
   await wait(async()=>await page.locator('.project-card').count()===3,'duplicate board cards');
   assert.equal(calls().filter(c=>c.phase==='intake').length,1);
-  await page.locator('#tab-orchestrations').click();
-  await wait(async()=>await page.locator('#orch-projects li').filter({hasText:'working'}).count()===2,'global orchestrations omitted active fan-out executors');
-  await wait(async()=>await page.locator('#orch-list .orch-node').count()===0 && (await page.locator('#orch-filters [data-filter=all] .orch-filter-count').innerText())==='1','project executors were rendered as duplicate orchestrations');
-  await page.screenshot({path:path.join(out,'02-active-orchestration.png'),fullPage:true});
-  await page.locator('#orch-projects').getByRole('button',{name:'Open project board',exact:true}).click();
-  await page.getByRole('button',{name:'Executor details',exact:true}).first().click();
-  await page.locator('#peek-overlay').waitFor({state:'visible'});
-  await page.waitForFunction(()=>/alpha|beta/.test(document.getElementById('peek-task-label')?.textContent||''));
-  await page.screenshot({path:path.join(out,'02-executor-terminal.png'),fullPage:true});
-  await page.locator('#peek-close-btn').click();
+  // Projects are the only navigation entry for project work; orchestrations are legacy history.
+  assert.equal(await page.locator('#tab-orchestrations').count(),0,'global Orchestrations tab must be gone');
+  assert.equal(await page.locator('#project-legacy').count(),1,'legacy history stays discoverable from Projects');
+  await page.screenshot({path:path.join(out,'02-project-board.png'),fullPage:true});
+  // Task inspector: open it, expand a disclosure, and prove a fresh refresh keeps everything as the user left it.
+  await page.locator('#project-cards .project-card-select').first().click();
+  const inspector=page.locator('#project-inspector');await inspector.getByText('Criteria and evidence',{exact:true}).waitFor();
+  const selectedTask=await page.locator('#project-cards .project-selected').getAttribute('data-task');
+  const history=inspector.locator('details.project-section').filter({hasText:'Task verification history'});
+  await history.locator('summary').click();await history.locator('summary').click();
+  assert.equal(await history.evaluate(d=>d.open),false);
+  await history.locator('summary').click();assert.equal(await history.evaluate(d=>d.open),true);
+  const loadsBefore=await page.evaluate(()=>_projectsToken);
+  await page.waitForFunction(t=>_projectsToken>=t+2,loadsBefore,{timeout:15000});
+  assert.equal(await history.evaluate(d=>d.open),true,'expanded task details must survive a refresh');
+  assert.equal(await page.locator('#project-cards .project-selected').getAttribute('data-task'),selectedTask,'selected task must survive a refresh');
+  await page.setViewportSize({width:390,height:844});
+  const phaseLoads=await page.evaluate(()=>_projectsToken);await page.waitForFunction(t=>_projectsToken>=t+2,phaseLoads,{timeout:15000});
+  assert.equal(await history.evaluate(d=>d.open),true,'expanded task details must survive a refresh on a phone');
+  await page.screenshot({path:path.join(out,'02-inspector-phone.png'),fullPage:true});
+  await page.setViewportSize({width:1440,height:1000});
+  await page.locator('#project-cards .project-card:has(.project-working) .project-card-select, #project-cards .project-card-select').first().click();
+  const terminal=inspector.getByRole('button',{name:'Executor terminal',exact:true});
+  if(await terminal.count()){
+    await terminal.click();
+    await page.locator('#peek-overlay').waitFor({state:'visible'});
+    await page.waitForFunction(()=>/alpha|beta/.test(document.getElementById('peek-task-label')?.textContent||''));
+    await page.screenshot({path:path.join(out,'02-executor-terminal.png'),fullPage:true});
+    await page.locator('#peek-close-btn').click();
+  }
   fault('alpha',false);fault('beta',false);await verified(1);await retired();
   assert.equal(main('alpha'),'alpha');assert.equal(main('beta'),'beta');
   assert.equal(calls().filter(c=>c.phase==='execution').length,2,'duplicate provider execution');
@@ -102,7 +122,7 @@ try {
   const budgetRow=page.locator('#project-commands .project-intake').filter({has:page.getByText(budgetRequest,{exact:true})});
   await budgetRow.getByText('Request '+budgetReceipt[1]+' · token budget reached',{exact:true}).waitFor({timeout:45000});
   await budgetRow.getByText('token_budget_reached',{exact:true}).waitFor();
-  assert.equal(await page.locator('.project-card').filter({has:page.getByRole('heading',{name:'Create budget report',exact:true})}).count(),0,'budget must hold intake before creating a card');
+  assert.equal(await page.locator('.project-card').filter({hasText:'Create budget report'}).count(),0,'budget must hold intake before creating a card');
   const boundedCalls=calls().filter(c=>c.phase==='execution').length;
   await new Promise(r=>setTimeout(r,2200));assert.equal(calls().filter(c=>c.phase==='execution').length,boundedCalls);
   assert.equal(calls().length,beforeBudgetCalls,'held budget request must not call intake or execution');
@@ -175,9 +195,10 @@ try {
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'mobile page overflow');
   assert.ok(await page.locator('.project-card').evaluateAll(cards=>cards.every(c=>{const r=c.getBoundingClientRect();return r.left>=0 && r.right<=innerWidth;})),'mobile cards are clipped');
   await page.setViewportSize({width:1440,height:1000});
-  await page.locator('#tab-orchestrations').click();await page.locator('#orch-projects').getByText('lifecycle-ui',{exact:true}).waitFor();
-  await page.screenshot({path:path.join(out,'07-orchestrations.png'),fullPage:true});
-  record('Desktop/mobile project view and global Orchestrations reflect the same project');
+  await page.locator('#project-legacy').click();await page.locator('#orchestrations-view h2').filter({hasText:'Legacy orchestration history'}).waitFor();
+  assert.equal(await page.locator('#orch-projects').count(),0,'legacy history must not re-project project work as a second authority');
+  await page.screenshot({path:path.join(out,'07-legacy-history.png'),fullPage:true});
+  record('Desktop/mobile project board fits; old orchestration records stay reachable as explicit legacy history');
 
   await page.locator('#tab-projects').click();await create('migration-ui');await page.locator('#project-pause').click();
   await page.waitForFunction(()=>document.querySelector('#project-state')?.textContent==='Paused');
@@ -230,7 +251,7 @@ try {
   await page.reload({waitUntil:'domcontentloaded'});await page.locator('#tab-projects').click();
   await page.waitForFunction(()=>document.getElementById('project-verification-timeout')?.value==='2');
   fault('verification-gate',false);
-  await page.locator('[data-task="'+retained.id+'"]').getByRole('button',{name:'Rerun checks',exact:true}).click();
+  await page.locator('[data-task="'+retained.id+'"] .project-card-select').click();await page.locator('#project-inspector').getByRole('button',{name:'Rerun checks',exact:true}).click();
   await wait(async()=>{const c=(await reverifyRead()).cards.find(c=>c.id===retained.id);return c?.phase==='verified';},'retained report did not verify after explicit rerun');
   const reverified=(await reverifyRead()).cards.find(c=>c.id===retained.id).execution_plan.execution;
   assert.equal(reverified.generation,retainedExecution.generation);assert.equal(reverified.attempt,retainedExecution.attempt);
@@ -242,7 +263,7 @@ try {
 
   await page.locator('#project-selector').selectOption('lifecycle-ui');
   await submit('Create dirty report and verify it.');
-  await page.locator('.project-card details pre').filter({hasText:'worktree has uncommitted changes'}).first().waitFor({state:'attached',timeout:90000});
+  await wait(async()=>(await projectRead()).cards.some(c=>c.title==='Create dirty report'&&/worktree has uncommitted changes/.test(c.execution_plan.waiting_reason||'')),'dirty diagnostics did not appear',90000);
   // UI may show two matching instances in expanded details; inspect worktree directly.
   const dirtyCard=(await projectRead()).cards.find(c=>c.title==='Create dirty report');
   assert.ok(dirtyCard);assert.ok(calls().some(c=>c.phase==='execution'&&c.task===dirtyCard.id),'dirty scenario must execute its provider');
@@ -260,7 +281,11 @@ try {
   let noteId,wireNote;
   const ownPackets=()=>packets().filter(p=>p.worker===failed.execution_plan.execution.worker&&p.packet===wireNote);
   const queue=async()=>{const r=await context.request.get(config.url+'/api/sessions/'+encodeURIComponent(failed.execution_plan.execution.worker)+'/steer',{headers:auth});assert.ok(r.ok());return r.json();};
-  await page.locator('[data-task="'+dirtyCard.id+'"]').getByRole('button',{name:'Executor details',exact:true}).click();
+  await page.locator('[data-task="'+dirtyCard.id+'"] .project-card-select').click();
+  await page.locator('#project-inspector').getByText(/^Full diagnostics \(/).waitFor();
+  assert.match(await page.locator('#project-inspector pre').filter({hasText:'worktree has uncommitted changes'}).first().innerText(),/worktree has uncommitted changes/);
+  assert.ok((await page.locator('#project-inspector .project-failure, #project-inspector .project-muted').count())>0);
+  await page.locator('#project-inspector').getByRole('button',{name:'Executor terminal',exact:true}).click();
   await page.locator('#peek-cmd-input').fill(note);
   const noteResponse=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/sessions/'+encodeURIComponent(failed.execution_plan.execution.worker)+'/send'&&r.request().method()==='POST');
   await page.locator('#peek-overlay .send-split-main').click();
@@ -285,7 +310,7 @@ try {
   assert.deepEqual((await projectRead()).cards.map(c=>c.id).sort(),idsBefore,'owner input created a board task');
   assert.equal((await projectRead()).cards.find(c=>c.id===dirtyCard.id).execution_plan.execution.attempt,2);
   await page.locator('#peek-close-btn').click();fault('dirty',true);
-  await page.locator('[data-task="'+dirtyCard.id+'"]').getByRole('button',{name:'Authorize one retry',exact:true}).click();
+  await page.locator('[data-task="'+dirtyCard.id+'"] .project-card-select').click();await page.locator('#project-inspector').getByRole('button',{name:'Authorize one retry',exact:true}).click();
   await wait(async()=>{const r=await context.request.get(config.url+'/api/sessions/'+encodeURIComponent(failed.execution_plan.execution.worker)+'/steer?history=1',{headers:auth});assert.ok(r.ok());const delivered=(await r.json()).filter(m=>m.id===noteId);if(!delivered.length)return false;assert.equal(delivered.length,1);assert.equal(delivered[0].text,wireNote);return String(delivered[0].outcome).startsWith('sent');},'authorized retry did not deliver the retained note');
   fault('dirty',false);
   await wait(()=>ownPackets().length===1,'retained owner note not received exactly once');
@@ -295,6 +320,45 @@ try {
   assert.equal((await queue()).filter(m=>m.id===noteId).length,0);
   assert.equal(ownPackets().length,1,'same enveloped body must be received exactly once');
   record('Failed task retains owner steering without work; explicit one-retry grant delivers it once within the same task');
+  // AAB-11 consolidated workflow: acceptance wording, retired evidence, drafts, settings, empty and error states.
+  await page.locator('#project-selector').selectOption('lifecycle-ui');
+  await page.locator('#project-acceptance').getByText('Not configured').first().waitFor();
+  const retiredCard=(await projectRead()).cards.find(c=>c.phase==='verified'&&(c.execution_plan.execution.retained_assets||[]).length>0);
+  assert.ok(retiredCard,'a verified task with retained assets must exist');
+  await page.locator('[data-task="'+retiredCard.id+'"] .project-card-select').click();
+  await page.locator('#project-inspector').getByText('retired (Expired)').waitFor({timeout:30000});
+  await page.locator('#project-inspector .project-report-asset').first().waitFor();
+  await page.locator('#project-inspector').getByText('Historical, per task. Not project acceptance.').waitFor();
+  assert.equal(await page.locator('#project-inspector').getByRole('button',{name:'Executor terminal',exact:true}).count(),0,'retired executor must not offer a live terminal');
+  await page.screenshot({path:path.join(out,'08-retired-assets.png'),fullPage:true});
+  // Per-project drafts survive switching.
+  await page.locator('#project-command').fill('Draft for lifecycle-ui');
+  await page.locator('#project-selector').selectOption('migration-ui');await page.locator('#project-command').waitFor();
+  assert.equal(await page.locator('#project-command').inputValue(),'');
+  await page.locator('#project-command').fill('Draft for migration-ui');
+  await page.locator('#project-selector').selectOption('lifecycle-ui');await page.waitForFunction(()=>document.getElementById('project-command')?.value==='Draft for lifecycle-ui');
+  await page.locator('#project-selector').selectOption('migration-ui');await page.waitForFunction(()=>document.getElementById('project-command')?.value==='Draft for migration-ui');
+  await page.locator('#project-command').fill('');await page.locator('#project-selector').selectOption('lifecycle-ui');await page.locator('#project-command').fill('');
+  // Settings edits persist through refresh until Cancel or Save.
+  await page.getByText('Execution settings',{exact:true}).click();
+  await page.locator('#project-attempts').fill('4');
+  const settingsLoads=await page.evaluate(()=>_projectsToken);await page.waitForFunction(t=>_projectsToken>=t+2,settingsLoads,{timeout:15000});
+  assert.equal(await page.locator('#project-attempts').inputValue(),'4','unsaved settings must survive refresh');
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  assert.notEqual(await page.locator('#project-attempts').inputValue(),'4','Cancel restores saved settings');
+  // Empty project and a failed-then-retried read.
+  await create('empty-ui');
+  await page.locator('#project-cards').getByText('No tasks yet',{exact:false}).waitFor();
+  await page.locator('#project-inspector').getByText('Task details appear here',{exact:false}).waitFor();
+  await page.screenshot({path:path.join(out,'09-empty-project.png'),fullPage:true});
+  await page.route('**/api/projects/empty-ui',route=>route.abort());
+  await page.locator('#project-error-retry').waitFor({state:'visible',timeout:90000});
+  assert.ok(await page.locator('#project-error').innerText());
+  await page.unroute('**/api/projects/empty-ui');
+  await page.locator('#project-error-retry').click();
+  await page.waitForFunction(()=>!document.getElementById('project-error')?.textContent);
+  await page.screenshot({path:path.join(out,'10-error-retry.png'),fullPage:true});
+  record('Consolidated project workflow: acceptance Not configured, retired evidence, per-project drafts, settings save/cancel, empty and retry states');
   await page.locator('#project-pause').click();
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({results,errors,calls:calls(),fixture:config},null,2));

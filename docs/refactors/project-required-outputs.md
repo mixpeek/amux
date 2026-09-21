@@ -661,3 +661,15 @@ verification-only retry completed with the original report and attempt intact.
 The later 424 and fb31 startup failures, followed by the ab2 isolated UI pass
 and read-only post-deploy audit, remain separate in the current validation
 evidence linked above. The full server suite was not rerun on ab2.
+
+## Project-first workflow (AAB-11)
+
+Projects is the one place for project work. Pick or create a project, describe the outcome, and follow it on the project board.
+
+- **Progress and acceptance.** The header shows outcomes and tasks verified. Project acceptance reads "Not configured" until the server reports an acceptance state. Task Verified is historical and per task, never a whole-project pass.
+- **Board and inspector.** Board cards stay short. Selecting one opens the task inspector: criteria with their verifier, current attempt (stage, attempt, generation, executor setting, worker, reported commit), task verification history (integrated commit, gate), retained assets and full diagnostics. A worker shows "retired (Expired)" only when the existing Expired inventory says so, and then offers no live terminal.
+- **Stable while it refreshes.** Open sections, the selected task, focus, scroll, per-project outcome drafts and unsaved settings persist across the 2 second refresh, project switches and reloads. Unchanged content is not re-rendered. Responses for a project you left are ignored.
+- **Settings.** Execution settings, usage and telemetry, and migration are secondary disclosures. Settings have Save and Cancel. The bounded intake model is called the Planning model; the stored `coordinator` policy key is unchanged.
+- **Legacy.** The global Orchestrations tab and the Board's Launch priorities form are removed; no UI creates new orchestrator or fan-out sets. The Board is labelled Legacy and keeps normal board maintenance, with an Open Projects action. Saved tab order or visibility cannot recreate an Orchestrations button. Older orchestration records and history open from Projects → Legacy boards and history, and the server APIs are unchanged.
+
+Verify with `node e2e/project-lifecycle/ui.mjs <config> <out>` through `e2e/project-lifecycle/run.py` (real server, deterministic provider fixture, desktop and 390px).

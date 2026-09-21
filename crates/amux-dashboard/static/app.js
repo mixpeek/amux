@@ -6687,6 +6687,10 @@ document.addEventListener('click', e => {
 // customizer button lives OUTSIDE .tab-bar, so it is never picked up; 'sessions'
 // is the one required (always-visible) tab. The .tab-bar markup precedes this
 // script, so the DOM is ready here; the fallback covers the impossible-empty case.
+// Retired top-level views: orchestration is legacy history reached from Projects. Neither markup nor
+// saved tab order/visibility may recreate a nav button for them.
+const RETIRED_TABS = new Set(['orchestrations']);
+document.querySelectorAll('.tab-bar button[id^="tab-"]').forEach(b => { if (RETIRED_TABS.has(b.id.slice(4))) b.remove(); });
 const ALL_TABS = (function _discoverNavTabs() {
   const REQUIRED = new Set(['sessions']);
   const out = [];
@@ -6754,6 +6758,8 @@ function _applyTabVisibility() {
   const bar = document.querySelector('.tab-bar');
   if (!bar) return;
   // Reorder buttons in DOM to match tabOrder
+  RETIRED_TABS.forEach(id => document.getElementById('tab-' + id)?.remove());
+  tabOrder = tabOrder.filter(id => !RETIRED_TABS.has(id));
   tabOrder.forEach(id => {
     const el = document.getElementById('tab-' + id);
     if (el) bar.appendChild(el); // moves to end in order
@@ -11716,7 +11722,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1017';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1021';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -32475,178 +32481,8 @@ async function deleteBoardItem(id) {
   }
 }
 
-// ── Launch bar: auto fan-out from typed priorities ──
-// Launch configuration is a durable draft. A retry uses the exact accepted
-// request, so a network timeout cannot silently create a second coordinator.
-let _launchRestored = false;
-let _launchPending = null;
-let _launchBusy = false;
-let _launchOverrides = {};
-const _launchProviders = {claude:'Claude',codex:'Codex',gemini:'Gemini',ollama:'Ollama',muse:'Muse'};
-
-function _toggleLaunchBar() {
-  const body = document.getElementById('launch-body');
-  const caret = document.getElementById('launch-caret');
-  if (!body) return;
-  const open = body.style.display !== 'none';
-  body.style.display = open ? 'none' : '';
-  if (caret) caret.classList.toggle('open', !open);
-  if (!open) {
-    _restoreLaunchDraft();
-    _populateLaunchSessions();
-    // Reuse the inventory request already in flight on a cold page load.
-    if (!sessions.length) fetchSessions().then(() => { if (body.style.display !== 'none') _populateLaunchSessions(); });
-    ['orchestrator','worker'].forEach(_launchLoadModels);
-    _renderLaunchOverrides();
-    _launchControlsState();
-  }
-}
-
-function _populateLaunchSessions() {
-  const sel = document.getElementById('launch-session');
-  if (!sel) return;
-  const current = sel.value || sel.dataset.saved || '';
-  const eligible = (typeof sessions !== 'undefined' ? sessions : []).filter(s => !s.ephemeral && !s.orchestrator && !s.archived && !s.isolated && s.lifecycle !== 'paused' && s.lifecycle !== 'archived');
-  sel.innerHTML = '<option value="">Choose a worker workspace…</option>' + eligible.map(s => '<option value="'+esc(s.name)+'">'+esc(s.name)+(s.dir ? ' · '+esc(s.dir) : '')+'</option>').join('');
-  if (_launchPending && current && !eligible.some(s=>s.name===current)) sel.add(new Option(current+' (saved launch workspace)',current));
-  sel.value = eligible.some(s=>s.name===current) || _launchPending ? current : '';
-}
-
-function _parsePriorities(text) {
-  return text.split('\n').map(line => line.replace(/^\s*[\d]+[.):\-]\s*/, '').replace(/^\s*[-*+]\s*/, '').trim()).filter(Boolean);
-}
-
-function _launchLines() {
-  const occurrences = new Map();
-  return _parsePriorities(document.getElementById('launch-input').value).map(text => {
-    const n = occurrences.get(text) || 0; occurrences.set(text,n+1);
-    return {text,key:JSON.stringify([text,n])};
-  });
-}
-
-function _saveLaunchDraft() {
-  const fields = {};
-  ['input','session','orchestrator-provider','orchestrator-model','worker-provider','worker-model'].forEach(id => { fields[id] = document.getElementById('launch-'+id)?.value || ''; });
-  try { localStorage.setItem('amux_launch_roles_v1',JSON.stringify({fields,overrides:_launchOverrides,pending:_launchPending})); } catch (_) {}
-}
-
-function _restoreLaunchDraft() {
-  if (_launchRestored) return;
-  _launchRestored = true;
-  try {
-    const d = JSON.parse(localStorage.getItem('amux_launch_roles_v1') || '{}');
-    for (const id of ['input','session','orchestrator-provider','orchestrator-model','worker-provider','worker-model']) {
-      const el = document.getElementById('launch-'+id);
-      if (el && typeof d.fields?.[id] === 'string') { el.value=d.fields[id]; if (id==='session') el.dataset.saved=d.fields[id]; }
-    }
-    _launchOverrides = d.overrides && typeof d.overrides==='object' ? d.overrides : {};
-    _launchPending = d.pending && Array.isArray(d.pending.priorities) && d.pending.orchestrator ? d.pending : null;
-  } catch (_) {}
-}
-
-async function _launchLoadModels(role) {
-  const provider = document.getElementById('launch-'+role+'-provider').value;
-  const list = document.getElementById('launch-'+role+'-models');
-  try {
-    const models = await _workerModelsFor(provider);
-    if (document.getElementById('launch-'+role+'-provider').value !== provider) return;
-    list.innerHTML = models.map(m=>'<option value="'+esc(m.id)+'"></option>').join('');
-  } catch (_) { list.innerHTML=''; } // An open model ID remains usable if discovery is down.
-}
-function _launchProviderChanged(role) {
-  document.getElementById('launch-'+role+'-model').value='';
-  _launchLoadModels(role); _saveLaunchDraft();
-}
-function _launchInputChanged() { _renderLaunchOverrides(); _saveLaunchDraft(); }
-function _renderLaunchOverrides() {
-  const host=document.getElementById('launch-worker-profiles');
-  if (!host) return;
-  host.innerHTML=_launchLines().slice(0,20).map((line,i)=>{
-    const profile=_launchOverrides[line.key] || {};
-    return '<div class="launch-worker-profile" data-key="'+esc(line.key)+'"><p>'+esc(line.text)+'</p><div class="launch-profile-fields">'
-      +'<label>Provider<select class="input" id="launch-override-provider-'+i+'" onchange="_launchOverrideChanged('+i+',true)"><option value="">Default</option>'
-      +Object.entries(_launchProviders).map(([key,label])=>'<option value="'+key+'"'+(profile.provider===key?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'
-      +'<label>Model<input class="input" id="launch-override-model-'+i+'" value="'+esc(profile.model || '')+'" placeholder="Fan-out / provider default" oninput="_launchOverrideChanged('+i+')" spellcheck="false"></label></div></div>';
-  }).join('') || '<p>Add priorities above to configure individual workers.</p>';
-  _launchControlsState();
-}
-function _launchOverrideChanged(index, providerChanged=false) {
-  const provider=document.getElementById('launch-override-provider-'+index);
-  const model=document.getElementById('launch-override-model-'+index);
-  if (providerChanged) model.value='';
-  const key=provider.closest('.launch-worker-profile').dataset.key;
-  _launchOverrides[key]={...(provider.value ? {provider:provider.value} : {}),...(model.value.trim() ? {model:model.value.trim()} : {})};
-  _saveLaunchDraft();
-}
-function _launchControlsState() {
-  const locked=_launchBusy || !!_launchPending;
-  document.querySelectorAll('#launch-body input,#launch-body select,#launch-body textarea').forEach(el=>{el.disabled=locked;});
-  const btn=document.getElementById('launch-btn');
-  btn.disabled=_launchBusy;
-  btn.textContent=_launchBusy ? 'Launching…' : (_launchPending ? 'Retry launch' : 'Launch orchestration');
-  const reset=document.getElementById('launch-new');
-  reset.hidden=!_launchPending; reset.disabled=_launchBusy;
-}
-function _resetLaunchRequest() {
-  _launchPending=null; _launchOverrides={};
-  document.getElementById('launch-input').value='';
-  _renderLaunchOverrides(); _saveLaunchDraft(); _launchControlsState();
-}
-
-async function _launchFanOut() {
-  if (_launchBusy) return;
-  const statusEl=document.getElementById('launch-status');
-  if (!_launchPending) {
-    const lines=_launchLines();
-    if (!lines.length || lines.length>20) { showToast('Enter 1 to 20 priorities'); return; }
-    const source=document.getElementById('launch-session').value;
-    if (!source) { showToast('Choose the workspace for this orchestration'); return; }
-    const readProfile=role=>({provider:document.getElementById('launch-'+role+'-provider').value,model:document.getElementById('launch-'+role+'-model').value.trim()});
-    const workers=readProfile('worker');
-    _launchPending={launch_id:crypto.randomUUID(),title:lines.length===1 ? lines[0].text : 'Fan-out: '+lines[0].text+' (+'+(lines.length-1)+' more)',
-      priorities:lines.map(line=>Object.keys(_launchOverrides[line.key] || {}).length ? {text:line.text,profile:_launchOverrides[line.key]} : line.text),
-      parent_session:source,orchestrator:readProfile('orchestrator'),...workers};
-    _saveLaunchDraft();
-  }
-  const request=_launchPending;
-  _launchBusy=true; _launchControlsState();
-  statusEl.style.display=''; statusEl.className='launch-status';
-  statusEl.textContent='Creating one orchestrator and '+request.priorities.length+' fan-out workers…';
-  try {
-    const r=await fetch(API+'/api/board/launch',{method:'POST',headers:_authHeaders({'Content-Type':'application/json','X-Amux-Session':request.parent_session}),body:JSON.stringify(request),signal:AbortSignal.timeout(120000)});
-    const result=await r.json();
-    if (!r.ok) {
-      // Validation refusals created no launch; edits can be corrected. Ambiguous
-      // network/server failures retain the exact request for an idempotent retry.
-      if ([400,401,403,404].includes(r.status)) _launchPending=null;
-      throw new Error(result.error || 'Launch request failed');
-    }
-    const started=result.workers_started || 0;
-    const failures=result.failed || [];
-    const ready=result.complete === true || (result.orchestrator?.started === true && failures.length===0);
-    statusEl.className='launch-status'+(ready?'':' error');
-    statusEl.textContent=result.complete ? 'Orchestration already completed. Epic: '+result.epic : (ready?'Orchestrator ready. ':'Orchestrator: '+(result.orchestrator?.error || 'ready')+'. ')+started+'/'+request.priorities.length+' fan-out workers started. Epic: '+result.epic+(failures.length?' · '+failures.map(x=>x.name+': '+x.error).join('; '):'');
-    if (ready) { _launchPending=null; document.getElementById('launch-input').value=''; _launchOverrides={}; }
-    showToast(result.complete?'Orchestration completed: '+result.epic:ready?'Orchestration launched: '+result.epic:'Orchestration created; retry the unfinished starts');
-    fetchBoard(); fetchSessions();
-  } catch (e) {
-    statusEl.className='launch-status error'; statusEl.textContent='Launch needs attention: '+e.message;
-  } finally { _launchBusy=false; _saveLaunchDraft(); _launchControlsState(); }
-}
-
-function _peekFanOut() {
-  const sess = typeof peekSession !== 'undefined' ? peekSession : '';
-  switchView('board');
-  setTimeout(() => {
-    const body = document.getElementById('launch-body');
-    if (body && body.style.display === 'none') _toggleLaunchBar();
-    _populateLaunchSessions();
-    const sel = document.getElementById('launch-session');
-    if (sel && sess && !_launchPending) { sel.value = sess; _saveLaunchDraft(); }
-    const input = document.getElementById('launch-input');
-    if (input) input.focus();
-  }, 200);
-}
+// The Board launch UI (typed priorities that created orchestrator and fan-out worker sets) is removed.
+// New work starts in Projects; existing orchestration records stay readable as legacy history.
 
 // ── Peek fan-out tab: show ephemeral children of peeked session ──
 let _fanoutRefreshTimer = null;
@@ -32888,7 +32724,7 @@ function _orchRender(data) {
   const filtered = orchEpics.filter(g => _orchFilter === 'all' || g._orchGroup === _orchFilter);
   if (!filtered.length) {
     if (_orchProjects.some(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter)) {el.innerHTML='';return;}
-    el.innerHTML = '<div role="status" class="orch-empty">'+(_orchFilter === 'all' ? 'No orchestrations or fan-out workers yet. Use + Launch to create one.' : 'No '+esc(_orchFilter)+' orchestrations.')+'</div>';
+    el.innerHTML = '<div role="status" class="orch-empty">'+(_orchFilter === 'all' ? 'No orchestrations or fan-out workers yet. Start new work from Projects; this view is legacy history.' : 'No '+esc(_orchFilter)+' orchestrations.')+'</div>';
     return;
   }
   const order = {active:0,paused:1,archived:2,expired:3};
@@ -44981,39 +44817,85 @@ function _projectStorage(key, value) {
   return '';
 }
 function _projectError(error) { const el=document.getElementById('project-error'); if(el) el.textContent=String(error.message || error); console.warn('project_operation_failed',error); }
-async function _projectRequest(path, method='GET', body) {
-  const r=await fetch(API+'/api/projects'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+async function _projectRequest(path, method='GET', body, signal) {
+  const timeout=AbortSignal.timeout(20000);
+  const r=await fetch(API+'/api/projects'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:signal?AbortSignal.any([signal,timeout]):timeout});
   const result=await r.json(); if(!r.ok) {const error=new Error(result.error || ('Request failed: '+r.status));error.status=r.status;throw error;} return result;
 }
 function _projectDraft() { _projectStorage('draft_'+_projectsName, document.getElementById('project-command').value); }
-function _projectChoose(name) { _projectsName=name;_projectsData=null;_projectStorage('selected',name);document.getElementById('project-detail').innerHTML='';_projectsLoad(); }
+function _projectChoose(name) {
+  // Abort the previous project's in-flight reads; the token makes any response
+  // that still arrives ignorable, so it can never paint into this project.
+  if(_projectsAbort) _projectsAbort.abort();
+  _projectsToken++;_projectsLoading=false;_projectsName=name;_projectsData=null;_projectsSig='';
+  _projectsFailures=0;_projectClearRefreshError();
+  _projectStorage('selected',name);document.getElementById('project-detail').innerHTML='';_projectsLoad();
+}
+let _projectsAbort = null;
+let _projectsToken = 0;
+let _projectsSig = '';
+let _projectsFailures = 0;
+let _projectsRefreshErr = false;
+// One refresh loop. Failures back off (capped) but never stop it, so a transient outage recovers by itself.
+function _projectRefreshDelay() {
+  const base=window._PROJECT_REFRESH_MS||2000,cap=window._PROJECT_REFRESH_CAP_MS||30000;
+  return _projectsFailures?Math.min(cap,base*2**Math.min(_projectsFailures,6)):base;
+}
+function _projectRetryNow() {
+  _projectsFailures=0;_projectsStop();_projectsLoad();
+}
+function _projectClearRefreshError() {
+  if(!_projectsRefreshErr) return;
+  _projectsRefreshErr=false;
+  const err=document.getElementById('project-error');if(err) err.textContent='';
+  const retry=document.getElementById('project-error-retry');if(retry) retry.hidden=true;
+}
 async function _projectsLoad() {
-  _projectsStop(); if(_projectsLoading || activeView!=='projects') return;
+  // Never cancel a scheduled refresh when bailing out: an in-flight load reschedules itself, a hidden view must stop.
+  if(activeView!=='projects') {_projectsStop();return;}
+  if(_projectsLoading) return;
+  _projectsStop();
   _projectsLoading=true;
+  const token=++_projectsToken,abort=new AbortController();_projectsAbort=abort;
+  const current=()=>token===_projectsToken && activeView==='projects';
   const root=document.getElementById('projects-view');
   if(!document.getElementById('project-selector')) {
-    root.innerHTML='<div class="project-heading"><div><h2>Projects</h2><p>Describe an outcome. Follow its progress and evidence.</p></div><label>Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn" onclick="_projectChoose(\'\')">+ New project</button></div><p id="project-error" role="alert"></p><div id="project-detail"></div>';
+    root.innerHTML='<div class="project-heading"><div><h2>Projects</h2><p>Describe an outcome. Follow its progress and evidence.</p></div><label>Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy boards and history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div id="project-detail"></div>';
     _projectsName=_projectStorage('selected');
   }
   try {
-    const inventory=await _projectRequest('');
+    const inventory=await _projectRequest('','GET',undefined,abort.signal);
+    if(!current()) return;
     const select=document.getElementById('project-selector');
     const options='<option value="">New project</option>'+inventory.projects.map(p=>'<option value="'+esc(p.name)+'">'+esc(p.name)+'</option>').join('');
     if(select.innerHTML!==options) select.innerHTML=options;select.value=_projectsName;
     if(!_projectsName) {
-      if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=_projectConfig(null);
+      if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=(inventory.projects.length?'':'<p class="project-empty" role="status">No projects yet. Create one to describe an outcome and follow its tasks and evidence.</p>')+_projectConfig(null)
+      if(document.getElementById('project-config') && !document.getElementById('project-config').dataset.restored) {document.getElementById('project-config').dataset.restored='1';_projectSettingsRestore();}
     } else {
-      const expected=_projectsName;const data=await _projectRequest('/'+encodeURIComponent(expected));
-      if(expected!==_projectsName) return;
+      const expected=_projectsName;const data=await _projectRequest('/'+encodeURIComponent(expected),'GET',undefined,abort.signal);
+      if(!current() || expected!==_projectsName) return;
       if(!_projectsData) {
-        document.getElementById('project-detail').innerHTML='<div class="project-status"><strong id="project-state"></strong><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div id="project-usage" class="project-usage"></div><label class="project-composer-label" for="project-command">What outcome do you want?</label><textarea id="project-command" rows="3" placeholder="Describe the result and how to verify it" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div><div id="project-cards" class="project-columns"></div><details class="project-settings"><summary>Execution settings</summary>'+_projectConfig(data.project)+'</details><details class="project-settings"><summary>Migrate existing boards</summary><p>Preview explicit worker boards. Existing tasks and evidence keep their IDs. Pause this project before applying or rolling back.</p><label>Worker names, comma separated<input id="project-migration-workers"></label><button class="btn" onclick="_projectMigrationPreview()">Preview migration</button><pre id="project-migration-preview"></pre><button class="btn" id="project-migration-apply" hidden onclick="_projectMigrationApply()">Apply reviewed migration</button><div id="project-migration-history"></div><label>Migration ID<input id="project-migration-id"></label><button class="btn" onclick="_projectMigrationRollback()">Roll back unchanged rows</button></details>';
+        document.getElementById('project-detail').innerHTML='<div class="project-status"><strong id="project-state"></strong><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><label class="project-composer-label" for="project-command">What outcome do you want?</label><textarea id="project-command" rows="3" placeholder="Describe the result and how to verify it" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div><div class="project-workspace"><div id="project-cards" class="project-columns"></div><aside id="project-inspector" class="project-inspector" tabindex="-1" aria-label="Task inspector"></aside></div><details class="project-settings" data-open-key="telemetry"><summary>Usage and telemetry</summary><div id="project-usage" class="project-usage"></div></details><details class="project-settings"><summary>Execution settings</summary>'+_projectConfig(data.project)+'</details><details class="project-settings"><summary>Migrate existing boards</summary><p>Preview explicit worker boards. Existing tasks and evidence keep their IDs. Pause this project before applying or rolling back.</p><label>Worker names, comma separated<input id="project-migration-workers"></label><button class="btn" onclick="_projectMigrationPreview()">Preview migration</button><pre id="project-migration-preview"></pre><button class="btn" id="project-migration-apply" hidden onclick="_projectMigrationApply()">Apply reviewed migration</button><div id="project-migration-history"></div><label>Migration ID<input id="project-migration-id"></label><button class="btn" onclick="_projectMigrationRollback()">Roll back unchanged rows</button></details>';
         document.getElementById('project-command').value=_projectStorage('draft_'+expected);
+        _projectBindUi();
       }
       _projectsData=data;_projectRender(data);
     }
-  } catch(e) {_projectError(e);} finally {
-    _projectsLoading=false;
-    if(activeView==='projects') _projectsTimer=setTimeout(_projectsLoad,2000);
+    _projectsFailures=0;_projectClearRefreshError();
+  } catch(e) {
+    if(current()) {
+      _projectsFailures++;_projectsRefreshErr=true;_projectError(e);
+      console.warn('project_refresh_failed',{measured:false,project:_projectsName,failures:_projectsFailures,ver:APP_VER});
+      const retry=document.getElementById('project-error-retry');if(retry&&_projectsFailures>=3) retry.hidden=false;
+      // Keep the last measured board on screen, labelled stale, rather than blanking it.
+      const stale=document.getElementById('project-progress');if(stale&&_projectsData&&!stale.dataset.stale){stale.dataset.stale='1';stale.textContent+=' · Stale: last refresh failed';}
+    }
+  } finally {
+    if(token===_projectsToken) {
+      _projectsLoading=false;
+      if(activeView==='projects') _projectsTimer=setTimeout(_projectsLoad,_projectRefreshDelay());
+    }
   }
 }
 function _projectModelSuggestions(provider) {
@@ -45026,11 +44908,11 @@ function _projectModelOptions(role,provider) {
 }
 function _projectConfig(project) {
   const p=project?.policy || {repository:'',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2};
-  return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()"><div class="project-form-grid">'+
+  return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()" oninput="_projectSettingsDirty()" onchange="_projectSettingsDirty()"><div class="project-form-grid">'+
     '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
     '<label>Repository<input id="project-repository" required placeholder="/absolute/path/to/repository" value="'+esc(p.repository)+'"></label>'+
-    '<label>Coordinator provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
-    '<label>Coordinator model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label>'+
+    '<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
+    '<label>Planning model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label>'+
     '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
     '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
     '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
@@ -45038,13 +44920,34 @@ function _projectConfig(project) {
     '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
     '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
-    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div><p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button></form>';
+    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div><p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
+}
+
+// Unsaved settings edits belong to the project they were typed in and survive
+// refresh, project switches and reloads until Save or Cancel.
+const _projectSettingIds=['name','repository','coordinator-provider','coordinator','provider','executor','capacity','verify','verification-timeout','attempts','token-budget','cost-budget'];
+function _projectSettingsKey() { return 'settings_'+(_projectsName||''); }
+function _projectSettingsDirty() {
+  const draft={};_projectSettingIds.forEach(id=>{const el=document.getElementById('project-'+id);if(el) draft[id]=el.value;});
+  _projectStorage(_projectSettingsKey(),JSON.stringify(draft));
+  const state=document.getElementById('project-settings-state');if(state) state.textContent='Unsaved changes';
+}
+function _projectSettingsRestore() {
+  let draft;try{draft=JSON.parse(_projectStorage(_projectSettingsKey()));}catch(e){}
+  if(!draft) return;
+  _projectSettingIds.forEach(id=>{const el=document.getElementById('project-'+id);if(el&&draft[id]!==undefined&&!el.readOnly) el.value=draft[id];});
+  const state=document.getElementById('project-settings-state');if(state) state.textContent='Unsaved changes restored';
+}
+function _projectSettingsCancel() {
+  _projectStorage(_projectSettingsKey(),'');
+  const form=document.getElementById('project-config');if(form) form.reset();
+  const state=document.getElementById('project-settings-state');if(state) state.textContent='Changes discarded';
 }
 async function _projectSave() {
   const value=id=>document.getElementById('project-'+id).value.trim();
   const name=value('name'); const current=_projectsData?.project;
   const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
-  try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectChoose(name);} catch(e){_projectError(e);}
+  try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectStorage(_projectSettingsKey(),'');_projectChoose(name);} catch(e){_projectError(e);}
 }
 async function _projectPause() {
   if(!_projectsData) return;
@@ -45084,25 +44987,182 @@ async function _projectRetryIntake(id) {
     _projectError(e);
   } finally {_projectIntakeRetries.delete(key);await _projectsLoad();}
 }
+// Project rendering is keyed and signature-checked: unchanged subtrees are left
+// alone, so open disclosures, focus, scroll and selection survive the 2s refresh.
+const _projectOpenState = new Map();
+const _projectPhaseList = [['intake','Intake'],['ready','Ready'],['working','Working'],['waiting','Waiting'],['verifying','Verifying'],['verified','Verified'],['closed','Closed'],['unrecognized','Needs classification']];
+function _projectClip(text, n) {
+  text=String(text ?? '');
+  return text.length>n ? text.slice(0,n)+'… (showing first '+n+' of '+text.length+' characters)' : text;
+}
+function _projectBindUi() {
+  const detail=document.getElementById('project-detail');
+  if(detail && !detail.dataset.toggleBound) {
+    detail.dataset.toggleBound='1';
+    // `toggle` does not bubble, so listen in the capture phase.
+    detail.addEventListener('toggle',e=>{const k=e.target?.dataset?.openKey;if(k) _projectOpenState.set(k,e.target.open);},true);
+  }
+  document.querySelectorAll('#project-detail details[data-open-key]').forEach(d=>{
+    const v=_projectOpenState.get(_projectsName+':'+d.dataset.openKey);if(v!==undefined) d.open=v;
+    d.dataset.openKey=_projectsName+':'+d.dataset.openKey;
+  });
+  _projectSettingsRestore();
+}
+function _projectPatch(parent, items) {
+  const active=document.activeElement,focusKey=parent.contains(active)?active.dataset?.focus:null;
+  const existing=new Map([...parent.children].map(n=>[n.dataset.key,n]));
+  let prev=null;
+  items.forEach(it=>{
+    let node=existing.get(it.key);existing.delete(it.key);
+    if(!node || node.dataset.sig!==it.sig) {
+      const t=document.createElement('template');t.innerHTML=it.html.trim();
+      const fresh=t.content.firstElementChild;fresh.dataset.key=it.key;fresh.dataset.sig=it.sig;
+      if(node) node.replaceWith(fresh);
+      node=fresh;
+    }
+    const want=prev?prev.nextElementSibling:parent.firstElementChild;
+    if(node!==want) parent.insertBefore(node,want);
+    prev=node;
+  });
+  existing.forEach(n=>n.remove());
+  if(focusKey && document.activeElement!==active) parent.querySelector('[data-focus="'+focusKey+'"]')?.focus({preventScroll:true});
+}
 function _projectRender(data) {
   const p=data.project,u=data.usage;
   document.getElementById('project-state').textContent=p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):p.policy.enabled?'Driving project outcomes':'Disabled';
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
-  document.getElementById('project-usage').textContent=u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake · '+u.execution_attempts+' execution attempts · '+u.intake_calls+' intake calls · '+(u.measured?u.tokens.toLocaleString()+' observed tokens':'Token usage not yet observed')+' · Coverage: '+u.intake_calls_measured+'/'+u.intake_calls+' intake calls; '+u.execution_turns_measured+' execution turns measured';
-  document.getElementById('project-usage').textContent+=' · '+(u.cost_measured && Number.isFinite(u.estimated_cost_usd)?'$'+u.estimated_cost_usd.toFixed(4)+' estimated cost':'Cost unknown'+(u.cost_reason?' ('+u.cost_reason+')':''))+' · '+(u.execution_cost_turns_measured || 0)+'/'+(u.execution_turns_measured || 0)+' execution turns priced · '+(u.executor_unattributed_turns_measured || 0)+' executor turns outside attempt windows ('+(u.executor_unattributed_tokens || 0)+' tokens)';
-  document.getElementById('project-commands').innerHTML=data.commands.filter(c=>c.pending).map(c=>'<div class="project-intake"><strong>Request '+c.id+' · '+(c.waiting_reason?(c.waiting_reason==='intake_attempts_exhausted'?'Intake attempt limit reached':esc(c.waiting_reason.replaceAll('_',' '))):'Interpreting')+'</strong><p>'+esc(c.text)+'</p>'+(c.result?.error?'<p>'+esc(c.result.error)+'</p>':'')+(c.retry_available?'<button class="btn" '+(_projectIntakeRetries.has('retry_'+p.name+'_'+c.id)?'disabled ':'')+'onclick="_projectRetryIntake('+Number(c.id)+')">Retry intake</button><p>Authorize one additional attempt on this request'+(p.policy.paused?' when the project resumes':'')+'. Previous attempts remain recorded.</p>':'')+'</div>').join('');
+  const setText=(id,text)=>{const el=document.getElementById(id);if(el && el.textContent!==text) el.textContent=text;};
+  const progress=document.getElementById('project-progress');
+  if(progress) {delete progress.dataset.stale;}
+  const verifiedTasks=data.cards.filter(c=>c.phase==='verified').length,closedTasks=data.cards.filter(c=>c.phase==='closed').length;
+  setText('project-progress',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+verifiedTasks+' of '+data.cards.length+' tasks verified'+(closedTasks?' · '+closedTasks+' closed (not verified)':'')+' · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake');
+  const acc=data.acceptance,accEl=document.getElementById('project-acceptance');
+  const accHtml=acc && typeof acc.state==='string'
+    ? 'Project acceptance: <strong>'+esc(acc.state)+'</strong>'
+    : 'Project acceptance: <strong>Not configured</strong> <span class="project-muted">Task verification below is per task and historical. It is not an independent check of the whole project.</span>';
+  if(accEl && accEl.dataset.sig!==accHtml) {accEl.dataset.sig=accHtml;accEl.innerHTML=accHtml;}
+  setText('project-usage',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+u.execution_attempts+' execution attempts · '+u.intake_calls+' intake calls · '+(u.measured?u.tokens.toLocaleString()+' observed tokens':'Token usage not yet observed')+' · Coverage: '+u.intake_calls_measured+'/'+u.intake_calls+' intake calls; '+u.execution_turns_measured+' execution turns measured · '+(u.cost_measured && Number.isFinite(u.estimated_cost_usd)?'$'+u.estimated_cost_usd.toFixed(4)+' estimated cost':'Cost unknown'+(u.cost_reason?' ('+u.cost_reason+')':''))+' · '+(u.execution_cost_turns_measured || 0)+'/'+(u.execution_turns_measured || 0)+' execution turns priced · '+(u.executor_unattributed_turns_measured || 0)+' executor turns outside attempt windows ('+(u.executor_unattributed_tokens || 0)+' tokens)');
+  const commands=document.getElementById('project-commands');
+  const cmdHtml=data.commands.filter(c=>c.pending).map(c=>'<div class="project-intake"><strong>Request '+c.id+' · '+(c.waiting_reason?(c.waiting_reason==='intake_attempts_exhausted'?'Intake attempt limit reached':esc(c.waiting_reason.replaceAll('_',' '))):'Interpreting')+'</strong><p>'+esc(_projectClip(c.text,600))+'</p>'+(c.result?.error?'<details><summary>Failure details</summary><pre>'+esc(_projectClip(c.result.error,4000))+'</pre></details>':'')+(c.retry_available?'<button class="btn" '+(_projectIntakeRetries.has('retry_'+p.name+'_'+c.id)?'disabled ':'')+'onclick="_projectRetryIntake('+Number(c.id)+')">Retry intake</button><p>Authorize one additional attempt on this request'+(p.policy.paused?' when the project resumes':'')+'. Previous attempts remain recorded.</p>':'')+'</div>').join('');
+  if(commands.dataset.sig!==cmdHtml) {commands.dataset.sig=cmdHtml;commands.innerHTML=cmdHtml;}
   const migrations=data.migrations || [];
-  document.getElementById('project-migration-history').innerHTML=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
+  const history=document.getElementById('project-migration-history');
+  const historyHtml=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
+  if(history.dataset.sig!==historyHtml) {history.dataset.sig=historyHtml;history.innerHTML=historyHtml;}
   const migrationInput=document.getElementById('project-migration-id');
   if(!migrationInput.value) migrationInput.value=migrations.find(m=>m.event==='project.migrated')?.id || '';
-  const phases=[['intake','Intake'],['ready','Ready'],['working','Working'],['waiting','Waiting'],['verifying','Verifying'],['verified','Verified'],['closed','Closed'],['unrecognized','Needs classification']];
-  document.getElementById('project-cards').innerHTML=phases.map(([phase,label])=>{
-    const rows=data.cards.filter(c=>c.phase===phase);if(!rows.length) return '';return '<section class="project-column"><h3>'+label+' <span>'+rows.length+'</span></h3>'+rows.map(c=>{
-      const plan=c.execution_plan,e=plan.execution,working=phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
-      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_label || 'Execution held')+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+_projectAssetLinks(c)+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((c.verification_retry_available === true)?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button><p>Verify the retained report again; no model execution.</p>':'')+((c.retry_available === true)?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button><p>Worker repair: authorizes one additional model attempt.</p>':'')+'</article>';
-    }).join('')+(rows.length?'':'<p class="project-empty">No tasks</p>')+'</section>';
+  if(typeof _refreshExpiredWorkerInventory==='function') _refreshExpiredWorkerInventory();
+  const board=document.getElementById('project-cards');
+  const selected=_projectStorage('task_'+p.name);
+  if(!data.cards.length) {
+    const empty='<p class="project-empty" role="status">No tasks yet. Submit an outcome and the planning model will break it into tasks.</p>';
+    if(board.dataset.sig!==empty) {board.dataset.sig=empty;board.innerHTML=empty;}
+  } else {
+    if(board.dataset.sig && board.dataset.sig.startsWith('<p')) {board.innerHTML='';board.dataset.sig='';}
+    const columns=_projectPhaseList.map(([phase,label])=>({phase,label,rows:data.cards.filter(c=>c.phase===phase)})).filter(col=>col.rows.length);
+    _projectPatch(board,columns.map(col=>({key:col.phase,sig:col.label+col.rows.length,html:'<section class="project-column" role="group" aria-label="'+esc(col.label)+' tasks"><h3>'+esc(col.label)+' <span>'+col.rows.length+'</span></h3><div class="project-column-cards"></div></section>'})));
+    columns.forEach(col=>{
+      const holder=board.querySelector(':scope > [data-key="'+col.phase+'"] .project-column-cards');
+      _projectPatch(holder,col.rows.map(c=>{
+        const plan=c.execution_plan,e=plan.execution,working=col.phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
+        const sig=JSON.stringify([c.id,c.title,c.phase,c.next_action,plan.waiting_label,!!plan.waiting_reason,working,(e.retained_assets||[]).length,c.verification_retry_available===true,c.retry_available===true]);
+        return {key:c.id,sig,html:'<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><button type="button" class="project-card-select" data-focus="card:'+esc(c.id)+'" aria-pressed="false" onclick="_projectSelectTask(\''+escJs(c.id)+'\')"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><strong>'+esc(c.title)+'</strong></button>'+(plan.waiting_reason?'<p class="project-wait">'+esc(_projectClip(plan.waiting_label || 'Execution held',120))+'</p>':'')+'<p>'+esc(_projectClip(c.next_action || '',160))+'</p>'+((e.retained_assets||[]).length?'<p class="project-muted">'+(e.retained_assets||[]).length+' retained asset'+((e.retained_assets||[]).length===1?'':'s')+'</p>':'')+'</article>'};
+      }));
+    });
+    board.dataset.sig='cards';
+    board.querySelectorAll('.project-card').forEach(a=>{
+      const on=a.dataset.task===selected;a.classList.toggle('project-selected',on);
+      a.querySelector('.project-card-select').setAttribute('aria-pressed',on?'true':'false');
+    });
+  }
+  _projectInspectorRender(data);
+}
+function _projectSelectTask(id) {
+  if(!_projectsData) return;
+  _projectStorage('task_'+_projectsName,id);
+  document.querySelectorAll('#project-cards .project-card').forEach(a=>{
+    const on=a.dataset.task===id;a.classList.toggle('project-selected',on);
+    a.querySelector('.project-card-select')?.setAttribute('aria-pressed',on?'true':'false');
+  });
+  _projectInspectorRender(_projectsData);
+  const box=document.getElementById('project-inspector');
+  if(box) {box.scrollIntoView({block:'nearest'});box.focus({preventScroll:true});}
+}
+function _projectCriteria(c) {
+  let raw=c.acceptance_criteria;
+  if(typeof raw==='string') {try{raw=JSON.parse(raw);}catch(e){raw=[raw];}}
+  if(!Array.isArray(raw)) raw=raw?[raw]:[];
+  return raw.map(x=>typeof x==='string'?{text:x}:{text:x.text||x.criterion||x.description||x.name||JSON.stringify(x),verifier:x.verifier||x.command||x.check||''});
+}
+function _projectEvidence(c) {
+  const raw=c.evidence;if(!raw) return null;
+  try {const parsed=JSON.parse(raw);if(parsed && typeof parsed==='object') return parsed;} catch(e) {}
+  return {text:String(raw)};
+}
+// The cause of a long diagnostic is at its end: last non-empty lines, bounded for the summary only.
+function _projectCause(text) {
+  const lines=String(text||'').split('\n').map(l=>l.trim()).filter(Boolean);
+  const tail=lines.slice(-3).join(' | ');
+  return tail.length>400?'…'+tail.slice(-400):tail;
+}
+function _projectSha(sha) {
+  sha=String(sha||'');return sha?'<code title="'+esc(sha)+'">'+esc(sha.slice(0,12))+'</code>':'<span class="project-muted">none recorded</span>';
+}
+function _projectSection(key,title,open,body) {
+  const stored=_projectOpenState.get(key);
+  return '<details class="project-section" data-open-key="'+esc(key)+'"'+((stored===undefined?open:stored)?' open':'')+'><summary>'+esc(title)+'</summary>'+body+'</details>';
+}
+function _projectInspectorRender(data) {
+  const box=document.getElementById('project-inspector');if(!box) return;
+  const name=data.project.name,id=_projectStorage('task_'+name),c=data.cards.find(x=>x.id===id);
+  if(!c) {
+    const html='<p class="project-empty" role="status">'+(data.cards.length?'Select a task to see its criteria, evidence, attempts and assets.':'Task details appear here once the project has tasks.')+'</p>';
+    if(box.dataset.sig!==html) {box.dataset.sig=html;box.dataset.task='';box.innerHTML=html;}
+    return;
+  }
+  const plan=c.execution_plan,e=plan.execution,worker=e.worker||'';
+  // Live registered identity outranks an older retirement record. A registered session is not proof it is running.
+  const reg=worker&&typeof sessions!=='undefined'?sessions.find(x=>x.name===worker):null;
+  const invError=typeof _expiredWorkerInventoryError!=='undefined'?_expiredWorkerInventoryError:null;
+  const inInventory=!!worker && typeof _expiredWorkerInventory!=='undefined' && _expiredWorkerInventory.has(worker);
+  const retired=!reg && inInventory;
+  const running=!!reg && reg.running!==false && reg.status!=='stopped';
+  const live=running;
+  const inventoryState=(invError?'stale:'+invError:'ok')+(reg?':reg':'')+(inInventory?':inv':'');
+  const sig=JSON.stringify([c,retired,live,!!reg,inventoryState,data.project.policy.executor]);
+  if(box.dataset.sig===sig) return;
+  const scroll=box.dataset.task===c.id?box.scrollTop:0;
+  const active=document.activeElement,focusKey=box.contains(active)?active.dataset?.focus:null;
+  const ev=_projectEvidence(c),report=e.report||ev?.report||null,merged=ev?.merged;
+  const criteria=_projectCriteria(c),checks=Array.isArray(report?.checks)?report.checks:[];
+  const key=part=>name+':'+c.id+':'+part;
+  const rows=criteria.map(cr=>{
+    const check=checks.find(k=>k.criterion===cr.text);
+    return '<li><span>'+esc(cr.text)+'</span><small>Verifier: '+(cr.verifier?'<code>'+esc(cr.verifier)+'</code>':check?'reported check <code>'+esc(check.command)+'</code>':'<span class="project-muted">no verifier recorded</span>')+'</small></li>';
   }).join('');
+  // Current trouble comes from the current waiting state only. `last_failure` is recorded history and may predate the current attempt.
+  const currentIssue=plan.waiting_reason?'<div class="project-failure" role="alert"><strong>Current issue: '+esc(_projectClip(plan.waiting_label||'Execution held',120))+'</strong><p class="project-cause">'+esc(_projectCause(plan.waiting_reason))+'</p></div>':'';
+  const lastFailure=e.last_failure?'<p class="project-muted">Last recorded failure (historical, may predate the current attempt): '+esc(_projectClip(typeof e.last_failure==='string'?e.last_failure:(e.last_failure.message||JSON.stringify(e.last_failure)),400))+'</p>':'';
+  const historical=ev?(ev.text!==undefined
+      ? '<pre>'+esc(_projectClip(ev.text,4000))+'</pre>'
+      : '<p>Integrated commit: '+_projectSha(typeof merged==='string'?merged:merged?.head||merged?.sha||merged?.commit)+'</p><p>Gate at integration: '+(ev.gate?'<code>'+esc(ev.gate)+'</code>':'<span class="project-muted">not recorded</span>')+'</p>')
+    :'<p class="project-muted">No verification evidence yet.</p>';
+  const assets=_projectAssetLinks(c);
+  const diag=plan.waiting_reason?_projectSection(key('diagnostics'),'Full diagnostics ('+String(plan.waiting_reason).length.toLocaleString()+' characters)',false,'<p class="project-muted">Cause (end of diagnostic): '+esc(_projectCause(plan.waiting_reason))+'</p><pre class="project-diagnostic" tabindex="0">'+esc(plan.waiting_reason)+'</pre>'):'';
+  const workerLine=worker?(esc(worker)+' · '+(reg?(running?'registered, running':'registered, not running'):inInventory?'<strong>retired (Expired)</strong>'+(invError?' <span class="project-muted">(inventory stale: '+esc(invError)+')</span>':''):invError?'<span class="project-muted">retirement unknown (inventory unavailable: '+esc(invError)+')</span>':'<span class="project-muted">not registered, retirement not confirmed</span>')):'<span class="project-muted">no executor assigned</span>';
+  const action=(live?'<button class="btn" data-focus="insp:peek" onclick="openPeek(\''+escJs(worker)+'\')">Executor terminal</button>':(retired?'<p class="project-muted">The executor has retired. Retained evidence and assets stay above.</p>':''))+
+    ((c.verification_retry_available===true)?'<button class="btn" data-focus="insp:verify" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button><p>Verify the retained report again; no model execution.</p>':'')+
+    ((c.retry_available===true)?'<button class="btn" data-focus="insp:retry" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button><p>Worker repair: authorizes one additional model attempt.</p>':'');
+  const html='<h3 tabindex="-1">'+esc(c.id)+' · '+esc(c.title)+'</h3><p class="project-muted">Phase: '+esc(c.phase)+(plan.waiting_label?' · '+esc(_projectClip(plan.waiting_label,120)):'')+'</p>'+currentIssue+
+    '<p>'+esc(_projectClip(c.next_action||'',600))+'</p>'+
+    _projectSection(key('criteria'),'Criteria and evidence',true,'<ol class="project-criteria">'+(rows||'<li class="project-muted">No acceptance criteria recorded.</li>')+'</ol><p class="project-muted">Independent project acceptance: Not configured.</p>')+
+    _projectSection(key('attempt'),'Current attempt',true,'<dl class="project-facts"><dt>Stage</dt><dd>'+esc(e.stage||'')+'</dd><dt>Attempt / generation</dt><dd>'+esc(String(e.attempt ?? ''))+' / '+esc(String(e.generation ?? ''))+'</dd><dt>Executor setting</dt><dd>'+esc(data.project.policy.executor.provider)+' · '+esc(data.project.policy.executor.model)+'</dd><dt>Worker</dt><dd>'+workerLine+'</dd><dt>Reported candidate</dt><dd>'+_projectSha(report?.head)+'</dd></dl>'+(report?.summary?'<p class="project-report">'+esc(_projectClip(report.summary,1500))+'</p>':''))+
+    _projectSection(key('history'),'Task verification history',true,'<p class="project-muted">Historical, per task. Not project acceptance.</p>'+lastFailure+historical)+
+    _projectSection(key('assets'),'Retained assets',true,assets||'<p class="project-muted">No retained assets.</p>')+
+    diag+'<div class="project-actions">'+action+'</div>';
+  box.dataset.sig=sig;box.dataset.task=c.id;box.innerHTML=html;box.scrollTop=scroll;
+  if(focusKey) box.querySelector('[data-focus="'+focusKey+'"]')?.focus({preventScroll:true});
 }
 function _projectAssetLinks(card) {
   const assets=card.execution_plan.execution.retained_assets || [];
@@ -45147,7 +45207,7 @@ function _projectOrchestrationState(data) {
 }
 function _projectOrchestrationsRender() {
   const el=document.getElementById('orch-projects');if(!el) return;
-  el.innerHTML=_orchProjects.filter(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter).map(data=>'<article class="project-card"><h4>'+esc(data.project.name)+'</h4><p>Coordinator: '+esc(data.project.policy.coordinator.model)+' · on demand. Executor: '+esc(data.project.policy.executor.model)+' · capacity '+data.project.policy.max_executors+'.</p><p>'+data.usage.verified_outcomes+' / '+data.usage.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake</p><ul>'+data.cards.filter(c=>c.execution_plan.execution.worker).map(c=>'<li>'+esc(c.title)+' · '+esc(c.phase)+' · '+esc(c.execution_plan.execution.worker)+'</li>').join('')+'</ul><button class="btn" onclick="switchView(\'projects\');_projectChoose(\''+escJs(data.project.name)+'\')">Open project board</button></article>').join('');
+  el.innerHTML=_orchProjects.filter(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter).map(data=>'<article class="project-card"><h4>'+esc(data.project.name)+'</h4><p>Planning model: '+esc(data.project.policy.coordinator.model)+' · on demand. Executor: '+esc(data.project.policy.executor.model)+' · capacity '+data.project.policy.max_executors+'.</p><p>'+data.usage.verified_outcomes+' / '+data.usage.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake</p><ul>'+data.cards.filter(c=>c.execution_plan.execution.worker).map(c=>'<li>'+esc(c.title)+' · '+esc(c.phase)+' · '+esc(c.execution_plan.execution.worker)+'</li>').join('')+'</ul><button class="btn" onclick="switchView(\'projects\');_projectChoose(\''+escJs(data.project.name)+'\')">Open project board</button></article>').join('');
 }
 async function _projectOrchestrations() {
   const el=document.getElementById('orch-projects');if(!el) return;

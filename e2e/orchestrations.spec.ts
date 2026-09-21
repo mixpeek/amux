@@ -169,7 +169,7 @@ test.describe('global orchestration groups',()=>{
     await page.route('**/api/board/orchestrations',r=>r.fulfill({json:snapshot}));
     const fullHistory:string[]=[];
     page.on('request',r=>{if(r.url().includes('/api/board?all=1&slim=0')) fullHistory.push(r.url());});
-    await page.goto('/');await page.locator('#tab-orchestrations').click();
+    await page.goto('/');await page.evaluate(()=>switchView('orchestrations'));
     await expect(page.locator('#orch-list .orch-node')).toHaveCount(6);
     const group=page.locator('[data-orch-id="orchestrator:parent"]');
     await expect(group.locator('[data-orch-worker]')).toHaveCount(3);
@@ -197,7 +197,7 @@ test.describe('global orchestration groups',()=>{
   test('filters use real worker lifecycle and keep unassigned and empty workers',async({page})=>{
     await page.route('**/api/sessions',r=>r.fulfill({json:workers}));
     await page.route('**/api/board/orchestrations',r=>r.fulfill({json:snapshot}));
-    await page.goto('/');await page.locator('#tab-orchestrations').click();
+    await page.goto('/');await page.evaluate(()=>switchView('orchestrations'));
     await expect(page.locator('[data-orch-id="worker:orphan"]')).toContainText('No board tasks yet');
     await expect(page.locator('[data-orch-id="orchestrator:pending-coordinator"]')).toContainText('No fan-out workers provisioned yet');
     for(const [filter,name] of [['paused','paused-child'],['archived','archived'],['expired','retired']]){
@@ -212,7 +212,7 @@ test.describe('global orchestration groups',()=>{
     let currentWorkers:any[]=workers;
     await page.route('**/api/sessions',r=>r.fulfill({json:currentWorkers}));
     await page.route('**/api/board/orchestrations',r=>r.fulfill({json:{...snapshot,workers:currentWorkers}}));
-    await page.goto('/');await page.locator('#tab-orchestrations').click();
+    await page.goto('/');await page.evaluate(()=>switchView('orchestrations'));
     const child=page.locator('[data-orch-id="orchestrator:parent"] [data-orch-worker="child"]');
     await child.locator('.orch-tasks-toggle').click();
     const cases=[
@@ -237,7 +237,7 @@ test.describe('global orchestration groups',()=>{
   test('ordinary epics alone do not turn into orchestrations',async({page})=>{
     await page.route('**/api/sessions',r=>r.fulfill({json:[]}));
     await page.route('**/api/board/orchestrations',r=>r.fulfill({json:{measured:true,n_considered:1,cards:[cards[6]],workers:[]}}));
-    await page.goto('/');await page.locator('#tab-orchestrations').click();
+    await page.goto('/');await page.evaluate(()=>switchView('orchestrations'));
     await expect(page.locator('#orch-list')).toContainText('No orchestrations or fan-out workers yet');
     await expect(page.locator('#orch-list .orch-node')).toHaveCount(0);
   });
@@ -246,7 +246,7 @@ test.describe('global orchestration groups',()=>{
     await page.route('**/api/sessions',async r=>{await gate;await r.fulfill({json:workers.map(w=>({...w,status:'idle'}))});});
     await page.route('**/api/board/orchestrations',r=>r.fulfill({json:{...snapshot,workers:workers.map(w=>({...w,running:null,status:undefined}))}}));
     try {
-      await page.goto('/');await page.locator('#tab-orchestrations').click();
+      await page.goto('/');await page.evaluate(()=>switchView('orchestrations'));
       const child=page.locator('[data-orch-id="orchestrator:parent"] [data-orch-worker="child"]');
       await expect(child).toContainText('status pending',{timeout:2500});
       await child.locator('.orch-tasks-toggle').click();await expect(child).toContainText('Assignment implementation');
@@ -256,13 +256,23 @@ test.describe('global orchestration groups',()=>{
     } finally { release(); }
   });
   test('failed measurement stays explicit and retry recovers',async({page})=>{
-    let attempts=0;
+    // The Expired inventory reads this endpoint too, so the outage is stable until the explicit Retry
+    // rather than tied to a request count. Every response is classified by what it returned.
+    let failing=true,failed=0,measured=0;
     await page.route('**/api/sessions',r=>r.fulfill({json:[]}));
-    await page.route('**/api/board/orchestrations',r=>++attempts===1?r.fulfill({status:503,json:{measured:false}}):r.fulfill({json:{measured:true,n_considered:0,cards:[],workers:[]}}));
-    await page.goto('/');await page.locator('#tab-orchestrations').click();
+    await page.route('**/api/board/orchestrations',r=>{
+      if(failing){failed++;return r.fulfill({status:503,json:{measured:false}});}
+      measured++;return r.fulfill({json:{measured:true,n_considered:0,cards:[],workers:[]}});
+    });
+    await page.goto('/');await page.evaluate(()=>switchView('orchestrations'));
     await expect(page.locator('#orch-list [role="alert"]')).toContainText('Could not load');
+    expect(failed).toBeGreaterThanOrEqual(1);expect(measured).toBe(0);
+    await new Promise(r=>setTimeout(r,500));
+    await expect(page.locator('#orch-list [role="alert"]')).toContainText('Could not load'); // still explicit, not silently emptied
+    failing=false;
     await page.locator('#orch-list').getByRole('button',{name:'Retry'}).click();
     await expect(page.locator('#orch-list')).toContainText('No orchestrations or fan-out workers yet');
-    expect(attempts).toBe(2);
+    await expect(page.locator('#orch-list [role="alert"]')).toHaveCount(0);
+    expect(measured).toBeGreaterThanOrEqual(1);
   });
 });
