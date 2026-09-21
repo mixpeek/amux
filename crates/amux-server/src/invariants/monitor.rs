@@ -2094,8 +2094,8 @@ fn frustration_ledger_check(state: &AppState) -> Vec<InvariantResult> {
         .unwrap_or_default();
     let mut rows: Vec<checks::LedgerRow> = Vec::new();
     let mut cardless: Vec<(usize, String)> = Vec::new();
-    for (line, title, file_status, session, cards) in entries {
-        if cards.is_empty() {
+    for (line, title, file_status, session, cards, has_card_field) in entries {
+        if cards.is_empty() && !has_card_field {
             cardless.push((line, title.clone()));
         }
         for card in cards {

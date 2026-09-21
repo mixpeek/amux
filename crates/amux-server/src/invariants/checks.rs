@@ -3904,10 +3904,12 @@ pub struct LedgerRow {
 /// exists to record). Field lines are column-0 `NAME: value`; the FIRST
 /// occurrence wins, so a superseding `NOTE:` paragraph cannot silently rewrite
 /// the entry's class.
-pub fn parse_frustration_entries(md: &str) -> Vec<(usize, String, String, String, Vec<String>)> {
+pub fn parse_frustration_entries(
+    md: &str,
+) -> Vec<(usize, String, String, String, Vec<String>, bool)> {
     let mut out = Vec::new();
     let mut started = false;
-    let mut cur: Option<(usize, String, String, String, Vec<String>)> = None;
+    let mut cur: Option<(usize, String, String, String, Vec<String>, bool)> = None;
     for (i, line) in md.lines().enumerate() {
         if !started {
             if line.trim() == "---" {
@@ -3919,7 +3921,14 @@ pub fn parse_frustration_entries(md: &str) -> Vec<(usize, String, String, String
             if let Some(e) = cur.take() {
                 out.push(e);
             }
-            cur = Some((i + 1, t.trim().to_string(), String::new(), String::new(), Vec::new()));
+            cur = Some((
+                i + 1,
+                t.trim().to_string(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+                false,
+            ));
             continue;
         }
         let Some(e) = cur.as_mut() else { continue };
@@ -3934,6 +3943,7 @@ pub fn parse_frustration_entries(md: &str) -> Vec<(usize, String, String, String
         } else if let Some(v) = line.strip_prefix("CARD:") {
             if e.4.is_empty() {
                 e.4 = extract_card_ids(v);
+                e.5 = true;
             }
         }
     }
@@ -4706,6 +4716,19 @@ mod negative_controls {
         // point of separating them.
         let agree = frustration_ledger_agrees_with_board(&[], "worktree");
         assert_eq!(agree[0].status, Status::Pass);
+
+        // An explicit CARD: none is an intentional id-less entry, not the
+        // same malformed shape as an entry that omitted CARD entirely.
+        let explicit_none = parse_frustration_entries(
+            "---\n## explicit none\nSTATUS: open\nSESSION: amux\nCARD: none\n",
+        );
+        assert!(explicit_none[0].4.is_empty());
+        assert!(explicit_none[0].5, "CARD: none must remain distinguishable");
+        assert_eq!(
+            frustration_cards_are_reachable(&[], &[], &local, "worktree")[0].status,
+            Status::Pass,
+            "an explicit id-less CARD: none entry is not a dangling local reference"
+        );
     }
 
     /// The parser is the load-bearing half: if it silently reads zero entries
