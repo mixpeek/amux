@@ -3730,7 +3730,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         };
         let env = crate::config::parse_env_file(&path);
         let tmux = format!("amux-{name}");
-        let is_running = signals.agent_running(&tmux);
+        // A review-held executor keeps its tmux pane as human-verifiable
+        // evidence after its provider has stopped. Bulk tmux discovery sees
+        // the retained shell; the durable lifecycle marker supplies the
+        // authoritative worker-liveness boundary.
+        let review_held = env.get("CC_REVIEW_HELD").is_some_and(|v| v == "1");
+        let is_running = signals.agent_running(&tmux) && !review_held;
         // CC_ARCHIVED=1 is Python's session-archive marker (amux-server.py
         // :20346) — blocked-sessions.txt is QUARANTINE, a different thing;
         // conflating them reported 0 archived against a fleet with dozens.
@@ -3860,6 +3865,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "worktree_path": home.join("worktrees").join(&name).to_string_lossy(),
             "worktree_integration": crate::fanout_workspace::integration_status(&home, &name),
             "ephemeral": env.get("CC_EPHEMERAL").map(|v| v == "1").unwrap_or(false),
+            "review_held": review_held,
             "ephemeral_parent": env.get("CC_PARENT").cloned().unwrap_or_default(),
             "orchestrator": env.get("CC_ORCHESTRATOR").is_some_and(|v| v == "1"),
             "mcp": env.get("CC_MCP").cloned().unwrap_or_default(),

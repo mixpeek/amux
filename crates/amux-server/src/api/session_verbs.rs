@@ -7099,6 +7099,13 @@ async fn pane_has_live_child(name: &str) -> Option<bool> {
 
 pub(crate) async fn is_running(name: &str) -> bool {
     let cfg = parse_env(name);
+    // A completed project executor may deliberately retain its tmux pane so a
+    // person can inspect the exact terminal that produced the acceptance
+    // artifacts. The pane is evidence, not a live worker. Retirement writes
+    // this marker only after the provider process is confirmed stopped.
+    if cfg.get("CC_REVIEW_HELD") == Some("1") {
+        return false;
+    }
     if !iterm2_id(&cfg).is_empty() {
         return false;
     }
@@ -7818,6 +7825,10 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
         ("target is paused", "resume the worker first (amux resume); the owner's own send still works"),
         ("worker is paused", "resume the worker first (amux resume)"),
         ("session is paused", "resume the worker first (amux resume)"),
+        (
+            "worker is held for human artifact review",
+            "inspect the retained terminal and artifacts in Projects, then approve or reject the current review",
+        ),
         ("terminal client attached", "a terminal client owns the size — detach it, or resize there"),
         ("no agents panel on screen", "open the agents panel in the pane (left arrow) first"),
         ("could not enter agent select mode", "the pane did not enter select mode — retry"),
@@ -8425,7 +8436,12 @@ pub(crate) fn all_lane_names() -> Vec<String> {
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
         .collect();
     names.sort();
-    names.retain(|n| { let cfg = parse_env(n); cfg.get("CC_ARCHIVED") != Some("1") && cfg.get("CC_PAUSED") != Some("1") });
+    names.retain(|n| {
+        let cfg = parse_env(n);
+        cfg.get("CC_ARCHIVED") != Some("1")
+            && cfg.get("CC_PAUSED") != Some("1")
+            && cfg.get("CC_REVIEW_HELD") != Some("1")
+    });
     names
 }
 
@@ -10036,6 +10052,12 @@ pub(crate) fn start_block_reason(name: &str, cfg: &EnvFile) -> Option<String> {
     if cfg.get("CC_PAUSED") == Some("1") {
         return Some("session is paused; resume it first (amux resume)".into());
     }
+    if cfg.get("CC_REVIEW_HELD") == Some("1") {
+        return Some(
+            "worker is held for human artifact review; approve or reject the current project review first"
+                .into(),
+        );
+    }
     None
 }
 
@@ -10077,6 +10099,13 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     let cfg = parse_env(name);
     if cfg.get("CC_PAUSED") == Some("1") {
         return (false, "worker is paused; resume it first".into());
+    }
+    if cfg.get("CC_REVIEW_HELD") == Some("1") {
+        return (
+            false,
+            "worker is held for human artifact review; approve or reject the current project review first"
+                .into(),
+        );
     }
     // ISOLATED (AMUX-3232): computed once here from the worker's own env so the
     // spawn path can strip the harness (env injection below, --mcp-config in
@@ -11140,6 +11169,9 @@ pub(crate) async fn start_for_board_dispatch(state: &AppState, name: &str) -> Re
     if parse_env(name).get("CC_PAUSED") == Some("1") {
         return Err("paused workers are excluded from board automation".into());
     }
+    if parse_env(name).get("CC_REVIEW_HELD") == Some("1") {
+        return Err("review-held workers are excluded from board automation".into());
+    }
     let (started, detail) = start_session(state, name, "", false).await;
     if !started {
         return Err(detail);
@@ -11573,8 +11605,39 @@ pub(crate) async fn stop_verified_worker(state: &AppState, name: &str) -> Result
     let (ok, detail) = stop_session_process(name).await;
     if !ok || is_running(name).await { return Err(detail); }
     clear_stopped_report(state, name).await.map_err(|e| e.to_string())?;
-    kill_tmux_session(name).await;
     Ok(())
+}
+
+/// Persist the boundary between completed execution and human review. The
+/// marker makes worker-control paths treat the retained terminal as evidence
+/// rather than as an agent that can be started or driven again.
+pub(crate) fn set_review_hold_at(path: &Path, held: bool) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!(
+            "session env '{}' not found while setting review hold",
+            path.display()
+        ));
+    }
+    let mut cfg = EnvFile::load(path);
+    let already = cfg.get("CC_REVIEW_HELD") == Some("1");
+    if already == held {
+        return Ok(());
+    }
+    if held {
+        cfg.set("CC_REVIEW_HELD", "1");
+    } else {
+        cfg.remove("CC_REVIEW_HELD");
+    }
+    cfg.write(path).map_err(|e| env_write_error(path, &e))?;
+    crate::api::sessions_legacy::invalidate_sessions_cache();
+    Ok(())
+}
+
+/// Final disposal is deliberately separate from the review hold. Human
+/// acceptance retires the durable worker record/worktree first; only a
+/// successful finalization removes the terminal that was available for review.
+pub(crate) async fn dispose_verified_worker_terminal(name: &str) {
+    kill_tmux_session(name).await;
 }
 
 /// py:25055 archive_session — scrollback→log, stop, kill tmux, CC_ARCHIVED=1,
@@ -24528,6 +24591,17 @@ mod tests {
         let r = start_block_reason("hello-world", &parse_env("hello-world"))
             .expect("an archived session must block");
         assert!(r.contains("archived"), "{r}");
+
+        // A completed executor's terminal is evidence during human review. It
+        // must stay registered and inspectable without becoming startable.
+        write("reviewed", "CC_DIR=\"/tmp\"\nCC_REVIEW_HELD=\"1\"\n");
+        let r = start_block_reason("reviewed", &parse_env("reviewed"))
+            .expect("a review-held executor must block");
+        assert!(r.contains("human artifact review"), "{r}");
+        assert!(
+            !all_lane_names().iter().any(|name| name == "reviewed"),
+            "review-held evidence must not re-enter board automation"
+        );
 
         // herdr start is not ported to the rust origin — refuse now, do not 202
         // and then fail invisibly.

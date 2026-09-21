@@ -105,6 +105,10 @@ test('a stopped verified executor remains inspectable while human review is pend
   const box=page.locator('#project-inspector');
   await expect(box).toContainText('stopped and retained for human review');
   await expect(box.getByRole('button',{name:'Review executor terminal'})).toBeVisible();
+  world.acceptance={...world.acceptance,state:'rejected'};
+  await refreshed(page);
+  await expect(box).toContainText('stopped and retained for human review');
+  await expect(box.getByRole('button',{name:'Review executor terminal'})).toBeVisible();
 });
 
 test('a transient outage recovers by itself without navigation or reload',async ({page})=>{

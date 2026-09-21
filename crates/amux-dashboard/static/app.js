@@ -45239,7 +45239,7 @@ function _projectInspectorRender(data) {
   const retired=!reg && inInventory;
   const running=!!reg && reg.running!==false && reg.status!=='stopped';
   const live=running;
-  const reviewHeld=!!reg && !running && c.phase==='verified' && _projectsData?.acceptance?.state==='awaiting_human' && (_projectsData.acceptance.criteria||[]).some(x=>x.verifier?.type==='human');
+  const reviewHeld=!!reg && !running && c.phase==='verified' && ['awaiting_human','rejected'].includes(_projectsData?.acceptance?.state) && (_projectsData.acceptance.criteria||[]).some(x=>x.verifier?.type==='human');
   const inventoryState=(invError?'stale:'+invError:'ok')+(reg?':reg':'')+(inInventory?':inv':'');
   const sig=JSON.stringify([c,retired,live,reviewHeld,!!reg,inventoryState,data.project.policy.executor]);
   if(box.dataset.sig===sig) return;

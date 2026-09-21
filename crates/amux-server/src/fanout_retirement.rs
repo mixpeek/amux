@@ -160,6 +160,7 @@ pub(crate) async fn retire<F: Fleet>(
             crate::project_execution::acceptance::retirement_allowed(&conn, project).map_err(|e| e.to_string())?
         };
         if gate["allowed"] != true {
+            crate::api::session_verbs::set_review_hold_at(&source, true)?;
             tracing::info!(session=name,project,state=%gate["state"],fingerprint=%gate["fingerprint"],verdict="project_executor_review_held",measured=true,n_considered=1,
                 "verified executor stopped; worktree and worker retained until human artifact review accepts the current project");
             return Ok(Outcome::ReviewHeld);
@@ -200,6 +201,7 @@ pub(crate) async fn retire<F: Fleet>(
     }).await;
     match finalized {
         Ok(outcome) if outcome.applied => {
+            crate::api::session_verbs::dispose_verified_worker_terminal(name).await;
             crate::api::sessions_legacy::invalidate_sessions_cache();
             tracing::info!(session=name,verdict="fanout_decommissioned",measured=true,worktree_removed=true,
                 "fully verified worker expired after confirming remote main and removing its worktree");
@@ -510,6 +512,12 @@ mod tests {
         let fleet = TestFleet::default();
         assert_eq!(f.retire(&fleet).await.unwrap(), Outcome::ReviewHeld);
         assert_eq!(fleet.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            crate::config::parse_env_file(&f.env())
+                .get("CC_REVIEW_HELD")
+                .map(String::as_str),
+            Some("1")
+        );
         f.kept();
         assert!(Path::new(&f.w.path).exists(), "review retains the exact executor checkout");
         let head=f.head.clone();
