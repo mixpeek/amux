@@ -126,6 +126,9 @@ fn own_project_issue(conn: &Connection, row: &mut bs::IssueRow, project: Option<
         if row.project_group.as_deref().is_some_and(|p|p!=project) {
             return Err(rusqlite::Error::InvalidQuery);
         }
+        if row.project_group.is_none() {
+            bs::validate_owner_changes(conn,&[(row.id.clone(),bs::BoardOwner::new(Some(project),None))])?;
+        }
         conn.execute("UPDATE issues SET project_group=?2,session=NULL WHERE id=?1 AND project_group IS NULL",rusqlite::params![row.id,project])?;
         if row.project_group.is_none() {row.session=None;}
         row.project_group=Some(project.into());

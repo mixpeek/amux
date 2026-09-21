@@ -111,15 +111,56 @@ try {
   const beforeQuotaIdle=calls().length;await new Promise(r=>setTimeout(r,2400));assert.equal(calls().length,beforeQuotaIdle);
   record('Provider quota is shown with its reset time, retains the command, and makes no unbounded retries');
 
-  await submit('Create malformed report and verify it.');
-  await page.getByText(/Intake needs clarification/).waitFor({timeout:60000});
-  await submit('Create another malformed report and verify it.');
-  await wait(async()=>await page.getByText(/Intake needs clarification/).count()===2,'second malformed request did not settle');
-  await submit('Create malformed report and verify it.');
-  await wait(async()=>await page.getByText(/Intake needs clarification/).count()===3,'duplicate malformed request did not inherit its waiting reason');
+  const auth={Authorization:'Bearer '+await page.evaluate(()=>window._AMUX_AUTH_TOKEN)};
+  const projectRead=async()=>{const r=await context.request.get(config.url+'/api/projects/lifecycle-ui',{headers:auth});assert.ok(r.ok());return r.json();};
+  const malformed='Create malformed report and verify it.';
+  const distinct='Create another malformed report and verify it.';
+  const parserError='interpretation returned no JSON object';
+  const intakeCount=text=>calls().filter(c=>c.phase==='intake'&&c.command===text).length;
+  const exhausted=async(text,count)=>{
+    await wait(async()=>{
+      const receipts=(await projectRead()).commands.filter(c=>c.text===text);
+      return receipts.length===count && receipts.every(c=>c.waiting_reason==='intake_attempts_exhausted');
+    },'specific request did not exhaust: '+text,60000);
+    const receipts=(await projectRead()).commands.filter(c=>c.text===text);
+    for(const receipt of receipts){assert.equal(receipt.attempts,receipt.result.waiting_on ? 0 : 2);assert.equal(receipt.attempt_limit,2);assert.equal(receipt.result.error,parserError);assert.equal(receipt.pending,true);}
+    const visible=page.locator('#project-commands .project-intake').filter({has:page.locator('p').filter({hasText:new RegExp('^'+text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$')})});
+    const exhaustedLabel=/^Request \d+ · Intake attempt limit reached$/;
+    await wait(async()=>{
+      if(await visible.count()!==count)return false;
+      for(const row of await visible.all()) {
+        if(!await row.isVisible() || !exhaustedLabel.test(await row.locator('strong').innerText()))return false;
+        if(!(await row.locator('p').allInnerTexts()).includes(parserError))return false;
+      }
+      return true;
+    },'exhausted receipts did not render exact label and parser error: '+text,60000);
+    for(const row of await visible.all()) {assert.match(await row.locator('strong').innerText(),exhaustedLabel);assert.ok((await row.locator('p').allInnerTexts()).includes(parserError));}
+    return receipts;
+  };
+  await submit(malformed);await exhausted(malformed,1);assert.equal(intakeCount(malformed),2);
+  await submit(distinct);await exhausted(distinct,1);assert.equal(intakeCount(distinct),2);
+  const beforeDuplicate=calls().length;
+  await submit(malformed);const inherited=await exhausted(malformed,2);
+  assert.equal(calls().length,beforeDuplicate,'duplicate failure must not call provider');
+  const original=inherited.find(c=>!c.result.waiting_on),duplicate=inherited.find(c=>c.result.waiting_on);
+  assert.ok(original&&duplicate);assert.equal(duplicate.result.waiting_on,original.id);assert.equal(duplicate.result.error,original.result.error,'duplicate retains exact parser failure');
+  const beforeRecheckIds=(await projectRead()).cards.map(c=>c.id).sort();
+  assert.equal(beforeRecheckIds.length,7);
+  const later='Recheck alpha report and verify it.';
+  await submit(later);
+  await wait(async()=>(await projectRead()).commands.some(c=>c.text===later&&!c.pending),'exhausted requests starved later distinct work');
+  assert.equal(intakeCount(later),1);
+  await wait(async()=>{
+    const cards=(await projectRead()).cards;
+    assert.deepEqual(cards.map(c=>c.id).sort(),beforeRecheckIds,'recheck must preserve exact card identities');
+    return cards.every(c=>c.phase==='verified');
+  },'same seven rechecked project cards did not all become Verified',180000);
+  await retired();
+  assert.deepEqual((await projectRead()).cards.map(c=>c.id).sort(),beforeRecheckIds);
+  assert.equal(intakeCount(later),1);
   const beforeIdle=calls().length;await new Promise(r=>setTimeout(r,2400));assert.equal(calls().length,beforeIdle);
   assert.equal(await page.locator('.project-card').count(),7);
-  record('Malformed intake is bounded, duplicates inherit the reason, idle makes zero calls, and exhausted requests cannot starve later work');
+  record('Malformed intake retains exact parser errors and finite calls; duplicates inherit failure without calls; later distinct work proceeds',{malformedCalls:intakeCount(malformed),distinctMalformedCalls:intakeCount(distinct),laterCalls:intakeCount(later),duplicateCalls:0});
 
   await page.screenshot({path:path.join(out,'05-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'06-mobile.png'),fullPage:true});
@@ -144,15 +185,17 @@ try {
     await page.waitForFunction(provider=>document.getElementById('project-provider')?.value===provider,provider);
   }
   record('Independent coordinator/executor profiles persist through UI edits and reload for all four offered executor providers');
-  // Seed a legacy fixture before exercising its migration exclusively via UI.
-  execFileSync('python3',['-c',`import sqlite3,sys,pathlib\nhome=pathlib.Path(sys.argv[1]);(home/'sessions'/'fixture-source.env').write_text('CC_DIR='+str(home/'repository')+'\\nCC_AUTO_PICKUP=0\\n')\nc=sqlite3.connect(home/'amux.db');c.execute("INSERT INTO issues(id,title,status,session,evidence,created,updated) VALUES('FIX-1','Legacy raw request','backlog','fixture-source','retained fixture evidence',1,1)");c.commit()`,config.home]);
+  // Seed only the isolated legacy fixture via supported APIs; migration is UI-driven.
+  const seededWorker=await context.request.post(config.url+'/api/sessions',{headers:auth,data:{name:'fixture-source',dir:config.repo}});assert.equal(seededWorker.status(),201);
+  const seededCard=await context.request.post(config.url+'/api/board',{headers:auth,data:{title:'Legacy raw request',status:'backlog',session:'fixture-source',evidence:'retained fixture evidence'}});assert.ok(seededCard.ok());
+  const legacyId=(await seededCard.json()).id;assert.ok(legacyId);
   await page.getByText('Migrate existing boards',{exact:true}).click();await page.locator('#project-migration-workers').fill('fixture-source');
   await page.getByRole('button',{name:'Preview migration',exact:true}).click();await page.locator('#project-migration-apply').waitFor({state:'visible'});
   await page.getByRole('button',{name:'Apply reviewed migration',exact:true}).click();
-  await page.locator('[data-task="FIX-1"]').waitFor();
+  await page.locator('[data-task="'+legacyId+'"]').waitFor();
   await page.waitForFunction(()=>document.querySelector('#project-migration-id')?.value.startsWith('project-migration:'));
   await page.getByRole('button',{name:'Roll back unchanged rows',exact:true}).click();
-  await page.locator('[data-task="FIX-1"]').waitFor({state:'detached'});
+  await page.locator('[data-task="'+legacyId+'"]').waitFor({state:'detached'});
   record('UI migration preview/apply/rollback preserves legacy identity and evidence');
 
   await page.locator('#project-selector').selectOption('lifecycle-ui');

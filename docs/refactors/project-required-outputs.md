@@ -360,3 +360,32 @@ criteria, and output handoffs are not capped. The packet logs
 `project.retry_diagnostic_preview` without duplicating the diagnostic body.
 The focused test checks Unicode boundaries, short errors, complete read-model
 retrieval, preserved criteria and no mutation. Parent Rust execution is pending.
+
+### Durable dependency ownership (AAB-3 live re-verification correction)
+
+The strengthened full lifecycle fixture found an exhausted recheck whose failure
+was `cross_board_dependency_forbidden`: a completed project epic still depended
+on two Verified tasks assigned to different retired executors. The dependency
+validator treated `session` as ownership even though projects retain ownership
+in `project_group` and use session only for assignment.
+
+`board_store::BoardOwner` now represents Project or legacy Worker ownership
+(including the unassigned legacy board). Dependency and incoming-dependent checks
+use that identity in shared storage and board API paths. New/reopened edges must
+remain within that owner; missing/deleted targets and project/legacy boundaries
+remain refused. Executor reassignment within a project preserves the graph.
+Ownership migration and rollback validate connected changes against their final
+owners before writing, so an outside incoming dependent cannot be stranded.
+Project intake adoption uses the same batch predicate. Existing IDs, assignment,
+criteria, evidence and edges are not rewritten by this correction.
+
+Regression coverage uses actual project intake over a real temporary database:
+two created outcomes and their epic are marked Verified with retained evidence
+and distinct retired executor records, then a distinct recheck reopens the same
+canonical task/epic with one interpretation and no retry. DB/API legacy tests
+retain worker isolation; negative controls cover foreign projects, legacy scope,
+missing/deleted edges and incoming ownership changes, including rollback.
+Logs use `project_dependency_owner_validated` for accepted project edges and the
+existing `cross_board_dependency_refused` marker for rejected owner crossings.
+Parent Rust/mutation/browser/exact-build checks remain required. The prior full
+fixture and live failure evidence remain untouched.

@@ -3870,3 +3870,14 @@ CARD: AAB-3
 SYMPTOM: Measured failed-integration waiting evidence contained 25,045 characters of hook output; claim retained it as last_failure and every repair packet repeated it verbatim.
 COST: Repeated prompt tokens for diagnostics already retained durably.
 FIX: Shared packet previous_result uses existing UTF-8-safe head/tail preview above2,048 characters, explicit original sizes/truncation and exact existing project GET/field retrieval instructions. Full state and requirements remain unchanged. Log verdict project.retry_diagnostic_preview records original size without body. Unicode/short/full-read/no-mutation regression added; parent Rust run pending.
+
+## Project executor assignment mistaken for dependency ownership (AAB-3)
+AREA: board storage / project intake
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Distinct Recheck alpha request failed cross_board_dependency_forbidden when a completed epic referenced two same-project Verified tasks assigned to retired px executors. Evidence: extractor-case-run/project-reverify-owner-failure.json and lifecycle-ui-b559-settled.
+COST: Valid canonical re-verification consumed an intake attempt without progressing despite every required output belonging to the project.
+FIX: One BoardOwner representation distinguishes durable project ownership from legacy worker boards. Shared outgoing/incoming checks, API validation and atomic migration/rollback ownership validation reuse it. Same-project assignment changes preserve edges; cross-project/project-legacy/missing/deleted references remain refused. Logs project_dependency_owner_validated and cross_board_dependency_refused. Real-DB actual-intake fanout/reverify and ownership negative controls added; parent execution pending. No live row rewrites, provider retries, build or deployment.

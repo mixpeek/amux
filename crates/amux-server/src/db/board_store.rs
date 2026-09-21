@@ -440,40 +440,87 @@ pub fn board_delegation_allowed(session: Option<&str>) -> bool {
     value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
 }
 
-/// References to other boards are evidence, not scheduler dependencies.
-/// This invariant is unconditional: delegation may authorize assignment, never
-/// an execution edge across owners. Unassigned cards form their own board.
-pub fn foreign_dependencies(conn: &Connection, session: Option<&str>, deps: &[String]) -> rusqlite::Result<Vec<(String, String)>> {
-    let session = session.filter(|s| !s.is_empty());
+/// A project's durable owner is independent of executor assignment or retirement.
+/// Legacy worker boards (including the unassigned board) remain self-contained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardOwner {
+    Project(String),
+    Worker(Option<String>),
+}
+impl BoardOwner {
+    pub fn new(project: Option<&str>, session: Option<&str>) -> Self {
+        match project {
+            Some(project) => Self::Project(project.into()),
+            None => Self::Worker(session.filter(|s| !s.is_empty()).map(str::to_owned)),
+        }
+    }
+    pub fn of(row: &IssueRow) -> Self {
+        Self::new(row.project_group.as_deref(), row.session.as_deref())
+    }
+    fn label(&self) -> String {
+        match self {
+            Self::Project(project) => format!("project:{project}"),
+            Self::Worker(worker) => worker.clone().unwrap_or_else(|| "unassigned".into()),
+        }
+    }
+}
+
+/// Dependencies must share durable ownership; assignment is not ownership.
+pub fn foreign_dependencies(conn: &Connection, owner: &BoardOwner, deps: &[String]) -> rusqlite::Result<Vec<(String, String)>> {
     let mut foreign = Vec::new();
     for id in deps {
-        let owner = conn.query_row("SELECT session FROM issues WHERE id=?1 AND deleted IS NULL", [id],
-            |r| r.get::<_, Option<String>>(0)).optional()?;
-        match owner {
-            Some(owner) if owner.as_deref().filter(|s| !s.is_empty()) == session => {},
-            Some(owner) => foreign.push((id.clone(), owner.filter(|s| !s.is_empty()).unwrap_or_else(|| "unassigned".into()))),
+        let target = conn.query_row("SELECT project_group,session FROM issues WHERE id=?1 AND deleted IS NULL", [id],
+            |r| Ok(BoardOwner::new(r.get::<_,Option<String>>(0)?.as_deref(),r.get::<_,Option<String>>(1)?.as_deref()))).optional()?;
+        match target {
+            Some(target) if &target == owner => {},
+            Some(target) => foreign.push((id.clone(), target.label())),
             None => foreign.push((id.clone(), "missing".into())),
         }
+    }
+    if foreign.is_empty() && !deps.is_empty() && matches!(owner,BoardOwner::Project(_)) {
+        tracing::info!(owner=?owner,measured=true,n_considered=deps.len(),verdict="project_dependency_owner_validated","same-project edges validated independently of executor assignment");
     }
     Ok(foreign)
 }
 
-/// Reassignment must also preserve the board of every task that waits on this
-/// card. Keep connected work together; silently dropping these edges would
-/// turn an unfinished prerequisite into runnable work.
-pub fn foreign_dependents(conn: &Connection, id: &str, session: Option<&str>) -> rusqlite::Result<Vec<(String, String)>> {
+/// Ownership changes must preserve incoming edges as well as outgoing ones.
+pub fn foreign_dependents(conn: &Connection, id: &str, owner: &BoardOwner) -> rusqlite::Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT i.id, COALESCE(NULLIF(i.session,''),'unassigned') FROM issues i, \
+        "SELECT DISTINCT i.id,i.project_group,i.session FROM issues i, \
          json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d \
-         WHERE i.deleted IS NULL AND d.value=?1 AND COALESCE(i.session,'') != ?2 ORDER BY i.id")?;
-    let rows = stmt.query_map(params![id, session.unwrap_or("")], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    rows.collect()
+         WHERE i.deleted IS NULL AND d.value=?1 ORDER BY i.id")?;
+    let rows = stmt.query_map([id], |r| Ok((r.get::<_,String>(0)?, BoardOwner::new(r.get::<_,Option<String>>(1)?.as_deref(),r.get::<_,Option<String>>(2)?.as_deref()))))?;
+    let mut foreign=Vec::new();
+    for row in rows { let (id,target)=row?; if &target != owner {foreign.push((id,target.label()));} }
+    Ok(foreign)
+}
+
+/// Validate a batch against its final ownership, so connected migrations are
+/// atomic while outside incoming dependents cannot be stranded by reassignment.
+pub fn validate_owner_changes(conn: &Connection, changes: &[(String, BoardOwner)]) -> rusqlite::Result<()> {
+    if changes.is_empty() { return Ok(()); }
+    let owners: std::collections::HashMap<_,_> = changes.iter().map(|(id,owner)|(id.as_str(),owner)).collect();
+    let ids=serde_json::to_string(&owners.keys().collect::<Vec<_>>()).unwrap();
+    let mut q=conn.prepare("SELECT i.id,d.value FROM issues i,json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d WHERE i.deleted IS NULL AND (i.id IN (SELECT value FROM json_each(?1)) OR d.value IN (SELECT value FROM json_each(?1)))")?;
+    for edge in q.query_map([ids],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
+        let (source,target)=edge?;
+        let read_owner=|id:&str| -> rusqlite::Result<Option<BoardOwner>> {
+            let stored=conn.query_row("SELECT project_group,session FROM issues WHERE id=?1 AND deleted IS NULL",[id],|r|Ok(BoardOwner::new(r.get::<_,Option<String>>(0)?.as_deref(),r.get::<_,Option<String>>(1)?.as_deref()))).optional()?;
+            Ok(stored.map(|old| owners.get(id).map(|v|(*v).clone()).unwrap_or(old)))
+        };
+        let left=read_owner(&source)?;
+        let right=read_owner(&target)?;
+        if left.is_none() || right.is_none() || left!=right {
+            refuse_dependency_write(&source,&[(target,right.map(|v|v.label()).unwrap_or_else(||"missing".into()))])?;
+        }
+    }
+    Ok(())
 }
 
 fn refuse_dependency_write(card: &str, edges: &[(String, String)]) -> rusqlite::Result<()> {
     if edges.is_empty() { return Ok(()) }
     tracing::warn!(marker="cross_board_dependency_refused", card, dependencies=?edges,
-        measured=true, n_considered=edges.len(), "storage refused a dependency graph crossing worker boards");
+        measured=true, n_considered=edges.len(), "storage refused a dependency graph crossing durable project/worker ownership");
     Err(rusqlite::Error::InvalidParameterName(format!("cross_board_dependency_forbidden: {card}: {edges:?}")))
 }
 
@@ -481,17 +528,17 @@ fn refuse_dependency_write(card: &str, edges: &[(String, String)]) -> rusqlite::
 /// Legacy bad edges may still receive evidence and be removed incrementally;
 /// new edges, ownership changes and reopening a terminal card are checked.
 fn validate_dependency_update(conn: &Connection, row: &IssueRow) -> rusqlite::Result<()> {
-    let previous: Option<(Option<String>, Option<String>, String, String)> = conn.query_row(
-        "SELECT session, depends_on, status, type FROM issues WHERE id=?1", [&row.id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
-    let Some((owner, deps, status, item_type)) = previous else { return Ok(()) };
-    let owner_changed = owner.as_deref().filter(|s| !s.is_empty()) != row.session.as_deref().filter(|s| !s.is_empty());
-    let old_deps: Vec<String> = serde_json::from_str(deps.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let Some(previous) = get_issue(conn, &row.id)? else { return Ok(()) };
+    let owner = BoardOwner::of(row);
+    let owner_changed = BoardOwner::of(&previous) != owner;
+    let status = previous.status;
+    let item_type = previous.item_type;
+    let old_deps = previous.depends_on;
     let reopened = execution_is_terminal(&status, &item_type) && !execution_is_terminal(&row.status, &row.item_type);
     let added: Vec<String> = row.depends_on.iter().filter(|d| owner_changed || reopened || !old_deps.contains(d)).cloned().collect();
-    refuse_dependency_write(&row.id, &foreign_dependencies(conn, row.session.as_deref(), &added)?)?;
+    refuse_dependency_write(&row.id, &foreign_dependencies(conn, &owner, &added)?)?;
     if owner_changed {
-        refuse_dependency_write(&row.id, &foreign_dependents(conn, &row.id, row.session.as_deref())?)?;
+        refuse_dependency_write(&row.id, &foreign_dependents(conn, &row.id, &owner)?)?;
     }
     Ok(())
 }
@@ -3305,7 +3352,7 @@ pub fn open_capture_with_desc(
 /// card at the top of its lane), int timestamps, `notified` 0. Returns the
 /// row as stored.
 pub fn create_issue(conn: &Connection, new: &NewIssue, now: i64) -> rusqlite::Result<IssueRow> {
-    refuse_dependency_write("new card", &foreign_dependencies(conn, new.session.as_deref(), &new.depends_on)?)?;
+    refuse_dependency_write("new card", &foreign_dependencies(conn, &BoardOwner::new(None, new.session.as_deref()), &new.depends_on)?)?;
     let prefix = prefix_from_session(new.session.as_deref().unwrap_or(""));
     let id = next_issue_id(conn, &prefix)?;
     let min_pos: f64 = conn.query_row(
@@ -7558,5 +7605,46 @@ everything to a clean machine.";
         let c = rusqlite::Connection::open_in_memory().unwrap();
         let got = effective_gate_configured(&c, &row("code", None), TaskStatus::Done);
         assert_eq!(got, default_gates_for("code", TaskStatus::Done));
+    }
+}
+
+#[cfg(test)]
+mod dependency_owner_tests {
+    use super::*;
+    #[test]
+    fn project_dependency_owner_preserves_assignments_and_refuses_foreign_edges_both_directions() {
+        let dir=tempfile::tempdir().unwrap();
+        let db=crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            for (id,project,worker) in [("P",Some("one"),None),("A",Some("one"),Some("retired-a")),("B",Some("one"),Some("retired-b")),("X",Some("two"),Some("retired-a")),("L",None,Some("retired-a")),("L2",None,Some("other")),("U",None,None)] {
+                c.execute("INSERT INTO issues(id,title,status,type,project_group,session,created,updated) VALUES(?1,'Outcome','backlog','code',?2,?3,1,1)",params![id,project,worker])?;
+            }
+            c.execute("INSERT INTO issues(id,title,status,project_group,deleted,created,updated) VALUES('D','Deleted','backlog','one',1,1,1)",[])?;
+            let mut parent=get_issue(c,"P")?.unwrap();parent.depends_on=vec!["A".into(),"B".into()];
+            save_patched(c,&mut parent)?;
+            let owner=BoardOwner::of(&parent);
+            assert!(foreign_dependencies(c,&owner,&parent.depends_on)?.is_empty());
+            for id in ["X","L","U","D","missing"] {
+                let mut bad=parent.clone();bad.depends_on.push(id.into());
+                assert!(save_patched(c,&mut bad).is_err(),"outgoing {id}");
+            }
+            let mut child=get_issue(c,"A")?.unwrap();child.session=Some("replacement".into());
+            save_patched(c,&mut child)?;
+            assert_eq!(get_issue(c,"A")?.unwrap().session.as_deref(),Some("replacement"));
+            for project in [None,Some("two")] {
+                let mut moved=child.clone();moved.project_group=project.map(str::to_owned);
+                assert!(save_patched(c,&mut moved).is_err(),"incoming edge must reject ownership change");
+                assert!(validate_owner_changes(c,&[("A".into(),BoardOwner::of(&moved))]).is_err());
+            }
+            let mut legacy=get_issue(c,"L")?.unwrap();legacy.session=Some("replacement".into());legacy.depends_on=vec!["A".into()];
+            assert!(save_patched(c,&mut legacy).is_err(),"legacy cannot depend on project even with matching assignment");
+            legacy.depends_on=vec!["L2".into()];assert!(save_patched(c,&mut legacy).is_err(),"worker boards remain isolated");
+            c.execute("INSERT INTO issues(id,title,status,session,created,updated,depends_on) VALUES('LC','Dependent','backlog','retired-a',1,1,'[\"L\"]')",[])?;
+            assert!(validate_owner_changes(c,&[("L".into(),BoardOwner::new(Some("one"),None))]).is_err(),"incoming legacy edge cannot be stranded");
+            assert!(validate_owner_changes(c,&[("L".into(),BoardOwner::new(Some("one"),None)),("LC".into(),BoardOwner::new(Some("one"),None))]).is_ok(),"connected batch migration is allowed");
+            assert!(validate_owner_changes(c,&[("A".into(),BoardOwner::new(None,Some("retired-a"))),("P".into(),BoardOwner::new(None,Some("retired-a")))]).is_err(),"partial rollback strands B");
+            assert_eq!(get_issue(c,"P")?.unwrap().depends_on,vec!["A","B"]);
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
     }
 }

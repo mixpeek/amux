@@ -4191,7 +4191,7 @@ fn body_str_list(v: &Value) -> Result<Vec<String>, String> {
 fn foreign_dependency_refusal(deps: &[(String, String)]) -> Value {
     tracing::warn!(marker="cross_board_dependency_refused", dependencies=?deps,
         measured=true, n_considered=deps.len(), "foreign task cannot gate a self-contained board");
-    json!({"code":"cross_board_dependency_forbidden", "error":"dependencies must belong to the same worker board",
+    json!({"code":"cross_board_dependency_forbidden", "error":"dependencies must share the same project or legacy worker board",
         "dependencies":deps.iter().map(|(id,session)|json!({"id":id,"session":session})).collect::<Vec<_>>(),
         "how_to_fix":"keep the required outcome on your own board and own its missing components; reference existing peer artifacts in the description or evidence instead of depends_on. Do not relocate a peer wait into source_ref, blocked_on, next_action or gate text: keep the actual prerequisite on this board and implement it here. Preserve real access, spend and customer-outbound restrictions."})
 }
@@ -5283,7 +5283,7 @@ pub async fn create_item(
     let write = state
         .store
         .write_async(move |conn| {
-            let foreign = bs::foreign_dependencies(conn, new.session.as_deref(), &new.depends_on)?;
+            let foreign = bs::foreign_dependencies(conn, &bs::BoardOwner::new(None, new.session.as_deref()), &new.depends_on)?;
             if !foreign.is_empty() {
                 return finish(&slot_w, Out::ForeignDependencies(foreign), no_write());
             }
@@ -6673,7 +6673,7 @@ async fn fan_out_item(
                     continue;
                 }
                 let eph_name = format!("{}-eph-{}", slugify_name(&actor_w, 30), cid);
-                let dependents = bs::foreign_dependents(conn, cid, Some(&eph_name))?;
+                let dependents = bs::foreign_dependents(conn, cid, &bs::BoardOwner::new(child.project_group.as_deref(), Some(&eph_name)))?;
                 if !dependents.is_empty() {
                     tracing::info!(card = %child.id, dependents = ?dependents, measured = true,
                         n_considered = dependents.len(), verdict = "fan_out_connected_work_retained",
@@ -11134,15 +11134,15 @@ pub async fn patch_item(
                 .map(|status| bs::status_to_db(status, &next.status)).unwrap_or(requested);
             let reopened = bs::execution_is_terminal(&row.status, &row.item_type)
                 && !bs::execution_is_terminal(&requested, &next.item_type);
-            if map.contains_key("depends_on") || map.contains_key("session") || reopened {
-                let foreign = bs::foreign_dependencies(conn, next.session.as_deref(), &next.depends_on)?;
+            if map.contains_key("depends_on") || bs::BoardOwner::of(&next) != bs::BoardOwner::of(&row) || reopened {
+                let foreign = bs::foreign_dependencies(conn, &bs::BoardOwner::of(&next), &next.depends_on)?;
                 if !foreign.is_empty() {
                     return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT,
                         foreign_dependency_refusal(&foreign)), no_write());
                 }
             }
-            if next.session != row.session {
-                let dependents = bs::foreign_dependents(conn, &row.id, next.session.as_deref())?;
+            if bs::BoardOwner::of(&next) != bs::BoardOwner::of(&row) {
+                let dependents = bs::foreign_dependents(conn, &row.id, &bs::BoardOwner::of(&next))?;
                 if !dependents.is_empty() {
                     let mut refusal = foreign_dependency_refusal(&dependents);
                     refusal["relation"] = json!("incoming_dependents");

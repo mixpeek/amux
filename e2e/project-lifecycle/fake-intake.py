@@ -6,7 +6,7 @@ prompt=sys.stdin.read()
 records=[line for line in prompt.splitlines() if line.startswith('{"') and '"command"' in line]
 data=json.loads(records[-1]);text=data['command'].lower()
 with open(Path(os.environ['AMUX_HOME'])/'fixture-calls.jsonl','a') as out:
-    out.write(json.dumps({'phase':'intake','model':sys.argv[sys.argv.index('--model')+1] if '--model' in sys.argv else None})+'\n')
+    out.write(json.dumps({'phase':'intake','command':data['command'],'model':sys.argv[sys.argv.index('--model')+1] if '--model' in sys.argv else None})+'\n')
 if 'provider quota' in text:
     # Captured shape of the real weekly-limit response; no billable call.
     print(json.dumps({'metadata':'x'*1000,'is_error':True,'result':"You've hit your weekly limit · resets Sep 23 at 11am (America/New_York)"}))

@@ -130,10 +130,10 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
         // Missing and ownerless references are not an exemption. Ownerless cards
         // may depend on other ownerless cards, but cannot cross into a worker board.
         conn.execute("UPDATE issues SET session=NULL WHERE id=?1", [peer_id]).unwrap();
-        assert_eq!(bs::foreign_dependencies(conn, Some("owner"), &[peer_id.into()]).unwrap().len(), 1);
-        assert_eq!(bs::foreign_dependencies(conn, None, &[local_id.into()]).unwrap().len(), 1);
-        assert!(bs::foreign_dependencies(conn, None, &[peer_id.into()]).unwrap().is_empty());
-        assert_eq!(bs::foreign_dependencies(conn, None, &["MISSING-999".into()]).unwrap().len(), 1);
+        assert_eq!(bs::foreign_dependencies(conn, &bs::BoardOwner::new(None, Some("owner")), &[peer_id.into()]).unwrap().len(), 1);
+        assert_eq!(bs::foreign_dependencies(conn, &bs::BoardOwner::new(None, None), &[local_id.into()]).unwrap().len(), 1);
+        assert!(bs::foreign_dependencies(conn, &bs::BoardOwner::new(None, None), &[peer_id.into()]).unwrap().is_empty());
+        assert_eq!(bs::foreign_dependencies(conn, &bs::BoardOwner::new(None, None), &["MISSING-999".into()]).unwrap().len(), 1);
         Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
     }).unwrap();
 }

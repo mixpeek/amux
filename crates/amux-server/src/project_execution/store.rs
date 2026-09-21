@@ -228,26 +228,9 @@ pub fn preview(
             }
         }
     }
-    let selected: std::collections::HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
-    let mut q=conn.prepare("SELECT i.id,d.value FROM issues i,json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d WHERE i.deleted IS NULL AND i.session IN (SELECT value FROM json_each(?1))")?;
-    for pair in q.query_map([serde_json::to_string(&workers)?], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })? {
-        let (card, dependency) = pair?;
-        if selected.contains(dependency.as_str()) {
-            continue;
-        }
-        let owning_project: Option<String> = conn
-            .query_row(
-                "SELECT project_group FROM issues WHERE id=?1 AND deleted IS NULL",
-                [&dependency],
-                |r| r.get(0),
-            )
-            .optional()?
-            .flatten();
-        if owning_project.as_deref() != Some(name) {
-            conflicts.push(format!("{card} references outside prerequisite {dependency}; retain its required artifact and resolve the edge before migration"));
-        }
+    let changes:Vec<_>=rows.iter().map(|r|(r.id.clone(),bs::BoardOwner::new(Some(name),None))).collect();
+    if let Err(error)=bs::validate_owner_changes(conn,&changes) {
+        conflicts.push(format!("dependency ownership conflict: {error}"));
     }
     let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&(
         name,
@@ -476,6 +459,8 @@ pub fn rollback_migration(conn: &Connection, name: &str, id: &str) -> anyhow::Re
             old.id
         );
     }
+    let changes:Vec<_>=before.rows.iter().map(|r|(r.id.clone(),bs::BoardOwner::new(None,r.session.as_deref()))).collect();
+    bs::validate_owner_changes(conn,&changes)?;
     for old in &before.rows {
         conn.execute("UPDATE issues SET project_group=NULL,session=?2,rev=rev+1,version=version+1 WHERE id=?1",params![old.id,old.session])?;
     }
@@ -516,6 +501,10 @@ mod migration_tests {
             c.execute("UPDATE issues SET rev=rev+1 WHERE id='M-1'",[])?;
             assert!(rollback_migration(c,"migration",&id).is_err());
             c.execute("UPDATE issues SET rev=rev-1 WHERE id='M-1'",[])?;
+            c.execute("INSERT INTO issues(id,title,status,project_group,created,updated,depends_on) VALUES('M-IN','New dependent','backlog','migration',1,1,'[\"M-1\"]')",[])?;
+            assert!(rollback_migration(c,"migration",&id).is_err(),"incoming project dependent prevents ownership rollback even when migrated row revision is unchanged");
+            assert_eq!(bs::get_issue(c,"M-1")?.unwrap().project_group.as_deref(),Some("migration"));
+            c.execute("DELETE FROM issues WHERE id='M-IN'",[])?;
             rollback_migration(c,"migration",&id).map_err(sql_error)?;
             assert!(!rollback_migration(c,"migration",&id).unwrap().applied);
             let row=bs::get_issue(c,"M-1")?.unwrap();
