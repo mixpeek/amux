@@ -289,10 +289,39 @@ pub(crate) fn executor_task(c:&rusqlite::Connection,worker:&str)->anyhow::Result
     anyhow::ensure!(row.project_group.as_deref()==Some(project) && e.worker==worker && row.session.as_deref()==Some(worker) && row.archived==0 && !crate::db::board_store::is_terminal_status(&row.status),"project worker task identity changed");
     Ok(Some((project.into(),id.into())))
 }
+/// Owner input is durable intent, never an authorization to start an attempt.
+pub(crate) fn executor_steering_hold(c:&rusqlite::Connection,worker:&str)->anyhow::Result<Option<String>> {
+    let Some((name,id))=executor_task(c,worker).ok().flatten() else {return Ok(Some("project_task_identity_changed".into()))};
+    let Some(project)=store::get(c,&name)? else {return Ok(Some("project_missing".into()))};
+    if !project.policy.enabled {return Ok(Some("project_disabled".into()))}
+    if project.policy.paused {return Ok(Some("project_paused".into()))}
+    if let Some(reason)=crate::project_execution::usage::waiting(c,&project)? {return Ok(Some(reason))}
+    let row=crate::db::board_store::get_issue(c,&id)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
+    let e=crate::project_execution::planner::execution(c,&id)?;
+    if e.input_hash!=crate::project_execution::planner::input_hash(&row) {return Ok(Some("project_requirements_changed".into()))}
+    if crate::project_execution::outputs::authorization_hold(c,&row)? || matches!(e.wait_category.as_deref(),Some("spend"|"customer_outbound")) {return Ok(Some("project_authorization_required".into()))}
+    if e.wait_category.as_deref()==Some("required_outputs") || !crate::project_execution::outputs::ready(c,&row)? || e.output_wait.as_ref().is_some_and(|w|w.continued_generation.is_none()) {return Ok(Some("project_required_outputs".into()))}
+    if e.suspended || e.stage!="working" || row.status!="doing" || e.waiting.is_some() || e.attempt==0 || e.generation<=0 {
+        return Ok(Some(format!("project_active_claim_required:{}",e.stage)));
+    }
+    let packet_pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE id=?1)",[&e.delivery_id],|r|r.get(0))?;
+    if packet_pending {return Ok(Some("project_claim_packet_pending".into()))}
+    Ok(None)
+}
+#[cfg(test)]
 pub(crate) fn executor_steering_allowed(c:&rusqlite::Connection,worker:&str)->anyhow::Result<bool> {
-    let Some((name,_))=executor_task(c,worker)? else {return Ok(false)};
-    let Some(project)=store::get(c,&name)? else {return Ok(false)};
-    Ok(project.policy.enabled && !project.policy.paused && crate::project_execution::usage::waiting(c,&project)?.is_none())
+    Ok(executor_steering_hold(c,worker)?.is_none())
+}
+/// Bind queued owner notes to their original task; unbound historical rows fail closed.
+pub(crate) fn steering_delivery_hold(c:&rusqlite::Connection,worker:&str,id:&str)->anyhow::Result<Option<String>> {
+    let (guard,card):(String,Option<String>)=c.query_row("SELECT COALESCE(guard,''),precond_card FROM steering_queue WHERE id=?1 AND session=?2",rusqlite::params![id,worker],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let env=super::session_verbs::parse_env(worker);
+    let Some(project)=env.get("CC_PROJECT") else {return Ok(if guard=="project-steering" {Some("project_task_identity_changed".into())} else {None})};
+    if guard=="project-execution" {
+        return Ok((!crate::project_execution::planner::delivery_current(c,project,worker,id)?).then(||"project_claim_delivery_stale".into()));
+    }
+    if guard!="project-steering" || card.as_deref()!=env.get("CC_BOARD_CARD") || card.is_none() {return Ok(Some("project_steering_task_binding_changed".into()))}
+    executor_steering_hold(c,worker)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

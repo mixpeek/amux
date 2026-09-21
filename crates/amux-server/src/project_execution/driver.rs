@@ -144,6 +144,9 @@ async fn transition(
                     events: vec![],
                 });
             }
+            if waiting.is_some() && e.report.is_some() && matches!(stage.as_str(),"repair"|"waiting") {
+                tracing::warn!(task=%id,action="verify",measured=true,n_considered=1,verdict="project_verification_failed","verification failed; exact diagnostic remains in execution waiting details");
+            }
             e.stage = stage;
             e.waiting = waiting;
             e.observed_at = chrono::Utc::now().timestamp();

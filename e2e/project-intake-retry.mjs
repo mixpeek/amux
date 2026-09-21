@@ -46,12 +46,19 @@ try {
   assert.equal(await page.getByRole('button',{name:'Retry intake',exact:true}).count(),0);
   assert.match(await page.locator('#project-receipt').innerText(),/when resumed/);
   await page.evaluate(()=>{
-    data.cards=[{id:'A',title:'Studio output',phase:'waiting',next_action:'Continue after backend verification',acceptance_criteria:[],execution_plan:{waiting_reason:'required_output:B',execution:{stage:'waiting',worker:'executor'}}}];
+    data.cards=[{id:'A',title:'Studio output',phase:'waiting',next_action:'Continue after backend verification',acceptance_criteria:[],execution_plan:{waiting_reason:'required_output:B',waiting_label:'Required output',execution:{stage:'waiting',worker:'executor'}}}];
     _projectRender(data);
   });
   assert.match(await page.locator('#project-cards .project-column h3').innerText(),/^Waiting/);
-  assert.match(await page.locator('#project-cards').innerText(),/required output/);
+  assert.match(await page.locator('#project-cards').innerText(),/Required output/);
   assert.doesNotMatch(await page.locator('#project-cards').innerText(),/Working now/);
+  await page.evaluate(()=>{
+    const failure='tree-revert: OK\nrepository guard: refused invalid source';
+    data.cards[0].execution_plan={waiting_reason:failure,waiting_label:'Verification failed',execution:{stage:'waiting',report:{},waiting:failure}};
+    _projectRender(data);
+  });
+  assert.equal(await page.locator('.project-wait').innerText(),'Verification failed');
+  assert.equal(await page.locator('.project-card details').first().locator('pre').textContent(),'tree-revert: OK\nrepository guard: refused invalid source');
   await page.evaluate(()=>{
     requests=[];loseResponse=true;grants=0;data.project.policy.paused=false;
     Object.assign(data.cards[0],{retry_available:true,rev:7,execution_plan:{waiting_reason:'attempts_exhausted',execution:{stage:'waiting',worker:'executor',generation:2,input_hash:'requirements',attempt:2}}});

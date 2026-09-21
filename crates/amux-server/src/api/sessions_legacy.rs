@@ -4002,8 +4002,9 @@ fn steering_with_transport(conn: &rusqlite::Connection) -> rusqlite::Result<BTre
     for row in rows {
         let (id,session,text,queued_at,guard,transport_id)=row?;
         let system=crate::api::session_verbs::steer_guard_is_system(&guard);
+        let held=crate::api::projects::steering_delivery_hold(conn,&session,&id).unwrap_or_else(|_|Some("project_delivery_identity_unavailable".into()));
         steering.entry(session).or_default().push(json!({"id":id,"text":text,"queued_at":queued_at,
-            "guard":guard,"system":system,"transport_id":transport_id}));
+            "guard":guard,"system":system,"transport_id":transport_id,"blocked_reason":held}));
     }
     Ok(steering)
 }

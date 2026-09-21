@@ -6501,6 +6501,7 @@ async fn steer_enqueue_precond_with_id(
     // Owner peek/send stay working, which is the documented boundary. This
     // REFUSES rather than silently dropping: a producer that thinks it
     // delivered is how a board card gets claimed for a lane nobody is driving.
+    let guard=if guard.is_empty() && parse_env(name).get("CC_PROJECT").is_some() {"project-steering"} else {guard};
     if parse_env(name).get("CC_PROJECT").is_some() && !guard.is_empty() && !matches!(guard,"project-execution"|"project-steering") {
         tracing::info!(session=name,guard,verdict="project_legacy_prompt_suppressed",measured=true,n_considered=1,"project controller owns executor prompts");
         return Err("project controller owns executor prompts");
@@ -6588,9 +6589,10 @@ async fn steer_enqueue_precond_with_id(
     let persisted = store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
-            if guard_s=="project-steering" && super::projects::executor_task(conn,&session).map_err(crate::project_execution::store::sql_error)?.is_none() {
-                return Err(rusqlite::Error::InvalidQuery);
-            }
+            let precond_w=if guard_s=="project-steering" {
+                let (_,task)=super::projects::executor_task(conn,&session).map_err(crate::project_execution::store::sql_error)?.ok_or(rusqlite::Error::InvalidQuery)?;
+                Some((task,-1)) // Task binding survives revisions/retries; never expires a retained owner note.
+            } else {precond_w};
             if let Some(ref fixed) = stable_w {
                 if fixed.starts_with("board-drive-resume:") {
                     if !resume_id_is_current(conn, &session, fixed) {
@@ -6646,6 +6648,10 @@ async fn steer_enqueue_precond_with_id(
                     )
                     .unwrap_or(false);
                 if queued {
+                    if guard_s=="project-steering" {
+                        let (old_session,old_text,old_card):(String,String,Option<String>)=conn.query_row("SELECT session,text,precond_card FROM steering_queue WHERE id=?1",[fixed],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+                        if old_session!=session || old_text!=text_s || old_card.as_deref()!=precond_w.as_ref().map(|(c,_)|c.as_str()) {return Err(rusqlite::Error::InvalidQuery);}
+                    }
                     should_emit_w.store(false, std::sync::atomic::Ordering::SeqCst);
                     if let Ok(mut value) = disposition_w.lock() {
                         *value = StableEnqueueDisposition::AlreadyQueued;
@@ -6680,7 +6686,7 @@ async fn steer_enqueue_precond_with_id(
             // been waiting since it was first queued. The newest TEXT wins
             // because that is the guard's purpose (one pending answer, current
             // content); the age is not part of the content.
-            let existing: Option<String> = if stable_w.is_some() || guard_s.is_empty() || non_coalescing(&guard_s) {
+            let existing: Option<String> = if stable_w.is_some() || guard_s.is_empty() || guard_s=="project-steering" || non_coalescing(&guard_s) {
                 None
             } else {
                 conn.query_row(
@@ -6699,7 +6705,7 @@ async fn steer_enqueue_precond_with_id(
                     *g = prior;
                 }
             } else {
-                if stable_w.is_none() {
+                if stable_w.is_none() && guard_s!="project-steering" {
                     conn.execute(
                         "DELETE FROM steering_queue WHERE session=?1 AND text=?2",
                         rusqlite::params![session, text_s],
@@ -7712,6 +7718,9 @@ fn bg_view_refusal(generating: bool) -> String {
 /// added later cannot silently land in the 500 bucket.
 pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str>) {
     let m = msg.trim();
+    if msg.contains("durable owner input remains queued") {
+        return (StatusCode::CONFLICT,Some("Owner input is held for the current authorized working claim; inspect the project hold and use explicit retry/resume when permitted."));
+    }
     // THE WRAPPER CARRIES THE REAL OUTCOME. A send to a stopped lane auto-wakes
     // it, and a wake that legitimately declines comes back as
     // "auto-wake failed: session is archived; wake it first" — a refusal with an
@@ -8844,12 +8853,32 @@ fn lane_send_lock(name: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     guard.entry(name.to_string()).or_default().clone()
 }
 
+fn project_delivery_claim(state:&AppState,name:&str,delivery:Option<&str>)->Option<(String,i64,String)> {
+    let id=delivery?;let c=state.store.read().ok()?;
+    let task:Option<String>=c.query_row("SELECT precond_card FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-steering'",rusqlite::params![id,name],|r|r.get(0)).ok()?;
+    let task=task?;let e=crate::project_execution::planner::execution(&c,&task).ok()?;
+    Some((task,e.generation,e.input_hash))
+}
+
+fn project_send_hold(state:&AppState,name:&str,delivery:Option<&str>)->Option<String> {
+    if delivery.is_none() && parse_env(name).get("CC_PROJECT").is_none() {return None}
+    let result=state.store.read().map_err(|e|e.to_string()).and_then(|c| {
+        if let Some(id)=delivery {super::projects::steering_delivery_hold(&c,name,id).map_err(|e|e.to_string())}
+        else {super::projects::executor_steering_hold(&c,name).map_err(|e|e.to_string())}
+    });
+    result.unwrap_or_else(|_|Some("project_delivery_identity_unavailable".into())).map(|r|format!("{r}; durable owner input remains queued"))
+}
+
 async fn send_text_inner(
     state: &AppState,
     name: &str,
     text: &str,
     mode: SendMode,
 ) -> (bool, String) {
+    send_text_inner_bound(state,name,text,mode,None).await
+}
+
+async fn send_text_inner_bound(state:&AppState,name:&str,text:&str,mode:SendMode,delivery:Option<&str>)->(bool,String) {
     // Serialise per lane. Taken before any pane state is read, because the
     // decisions below (is it generating? is a picker up?) are read-then-act on
     // the same composer this is about to clear.
@@ -8887,10 +8916,10 @@ async fn send_text_inner(
                         The owner's own send still works."
             .into());
     }
+    let admitted_claim=project_delivery_claim(state,name,delivery);
     let cfg = parse_env(name);
-    if from_steering && cfg.get("CC_PROJECT").is_some() {
-        let allowed=state.store.read().ok().and_then(|c|super::projects::executor_steering_allowed(&c,name).ok()).unwrap_or(false);
-        if !allowed {return (false,"project pause, identity or budget holds automatic delivery".into());}
+    if from_steering || cfg.get("CC_PROJECT").is_some() {
+        if let Some(reason)=project_send_hold(state,name,delivery) {return (false,reason); }
     }
     if !iterm2_id(&cfg).is_empty() {
         return (false, "iTerm2-backed sessions are not supported by the rust origin yet".into());
@@ -9233,6 +9262,8 @@ async fn send_text_inner(
     let _send_guard = send_lock.lock().await;
     // `sent_at` bounds the JSONL evidence window: an OLDER identical message
     // (a second "continue" minutes later) must not count as this send.
+    if let Some(reason)=project_send_hold(state,name,delivery) {return (false,reason);}
+    if admitted_claim!=project_delivery_claim(state,name,delivery) {return (false,"project_claim_changed; durable owner input remains queued".into());}
     let sent_at = now_f64();
     // A Stop hook authorizes draining the queue, not pressing Escape forever.
     // Another turn/tool can start between that hook and this send lock. Preserve
@@ -9298,6 +9329,8 @@ async fn send_text_inner(
     // owns — amux's job is to hand the text over in the form the harness
     // accepts, not to build a second queue in front of it. Idle lanes are
     // untouched: they still type, with no added latency.
+    if let Some(reason)=project_send_hold(state,name,delivery) {return (false,reason);}
+    if admitted_claim!=project_delivery_claim(state,name,delivery) {return (false,"project_claim_changed; durable owner input remains queued".into());}
     let use_paste = must_paste(generating, text.chars().count(), at_picker_text(&text));
     if generating {
         // Mid-turn delivery is the risky case, so make every instance
@@ -14636,6 +14669,13 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         std::collections::HashMap::new();
     let mut delivered = 0usize;
     for (id, session, text, queued_at, guard, sender) in queued {
+        if guard=="project-steering" && project_send_hold(state,&session,Some(&id)).is_some() {
+            // Recheck in the writer; if the hold lifted in between, release our
+            // claim so the next pass delivers it rather than stranding it.
+            if claim_steering_row(&state.store,&id).await {unclaim_steering_row(&state.store,&id).await;}
+            continue;
+        }
+
         if id.starts_with("board-drive-resume:") {
             let current = state.store.read().ok().map(|conn| resume_id_is_current(&conn, &session, &id));
             if current != Some(true) {
@@ -15565,15 +15605,11 @@ async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
         .write_async(move |conn| {
             let session: Option<String> = conn.query_row("SELECT session FROM steering_queue WHERE id=?1", [&id], |r|r.get(0)).optional()?;
             if let Some(session) = session {
-                let env = parse_env(&session);
-                if let Some(project) = env.get("CC_PROJECT") {
-                    let guard:String=conn.query_row("SELECT COALESCE(guard,'') FROM steering_queue WHERE id=?1",[&id],|r|r.get(0))?;
-                    let current=if guard=="project-execution" {crate::project_execution::planner::delivery_current(conn, project, &session, &id).map_err(crate::project_execution::store::sql_error)?}
-                        else {super::projects::executor_steering_allowed(conn,&session).map_err(crate::project_execution::store::sql_error)?};
-                    if !current {
-                        tracing::info!(session,delivery_id=id,verdict="project_stale_delivery_refused",measured=true,n_considered=1,"project paused or execution superseded");
-                        return Ok(crate::db::WriteOutcome{applied:false,events:vec![]});
-                    }
+                if let Some(reason)=super::projects::steering_delivery_hold(conn,&session,&id).map_err(crate::project_execution::store::sql_error)? {
+                    let key=format!("project-steering-held:{id}:{reason}");
+                    let n=conn.execute("INSERT OR IGNORE INTO session_events(ts,session,type,data,idem,source) VALUES(?1,?2,'message.held',?3,?4,'steering')",rusqlite::params![now_f64(),session,json!({"id":id,"reason":reason,"measured":true,"n_considered":1}).to_string(),key])?;
+                    if n>0 {skip(&session,&id,&reason);tracing::info!(session,delivery_id=id,%reason,measured=true,n_considered=1,verdict="project_steering_held","owner input retained; only an authorized active claim can consume it");}
+                    return Ok(crate::db::WriteOutcome{applied:false,events:vec![]});
                 }
             }
             let n = conn.execute(
@@ -15595,7 +15631,7 @@ async fn send_claimed_steering(state: &AppState, id: &str, session: &str, text: 
         return None;
     }
     let mode=if id.starts_with("boot-delivery:"){SendMode::drained(false,false)}else{mode};
-    let result = send_text_inner(state, session, text, mode).await;
+    let result = send_text_inner_bound(state, session, text, mode,Some(id)).await;
     if !result.0 {
         unclaim_steering_row(&state.store, id).await;
     }
@@ -15645,6 +15681,10 @@ pub async fn steer_deliver_for_session(state: &AppState, session: &str) -> bool 
         .unwrap_or_default();
     if rows.is_empty() {
         return false;
+    }
+    if parse_env(session).get("CC_PROJECT").is_some() {
+        let any=rows.iter().any(|(id,_,_)|project_send_hold(state,session,Some(id)).is_none());
+        if !any {for (id,_,_) in &rows {if claim_steering_row(&state.store,id).await {unclaim_steering_row(&state.store,id).await;}} return false;}
     }
     if !env_path(session).exists() {
         return false;
@@ -17769,7 +17809,7 @@ pub(crate) fn tracked_files_mutate(name: &str, method: &Method, body: &Value) ->
 /// INTENT (their answer to a picker) wearing a dedupe guard. The SQL
 /// predicate in the clear-all below must stay the mirror of this.
 pub(crate) fn steer_guard_is_system(guard: &str) -> bool {
-    !guard.is_empty() && guard != "selector-answer"
+    !guard.is_empty() && guard != "selector-answer" && guard != "project-steering"
 }
 
 pub(crate) async fn steer_mutate(
@@ -17816,7 +17856,7 @@ pub(crate) async fn steer_mutate(
                     // include_system:true asks for the full sweep explicitly.
                     removed = conn.execute(
                         "DELETE FROM steering_queue WHERE session=? \
-                         AND (COALESCE(guard,'')='' OR guard='selector-answer')",
+                         AND (COALESCE(guard,'')='' OR guard IN ('selector-answer','project-steering'))",
                         [&session],
                     )? as i64;
                 }
@@ -19725,6 +19765,10 @@ pub(crate) async fn steer_history_verb(
             out = rows.flatten().collect();
         }
     }
+    for row in &mut out {
+        let hold=super::projects::steering_delivery_hold(&conn,name,row["id"].as_str().unwrap_or("")).unwrap_or_else(|_|Some("project_delivery_identity_unavailable".into()));
+        row["blocked_reason"]=json!(hold);
+    }
     drop(conn);
     // AGE AND REACHABILITY PER ROW (AMUX-2785). A queue listing that
     // shows only text and a timestamp cannot answer the one question a
@@ -19739,8 +19783,9 @@ pub(crate) async fn steer_history_verb(
         let age = now - row["queued_at"].as_f64().unwrap_or(now);
         row["age_s"] = json!(age as i64);
         row["overdue"] = json!(age >= max_age);
-        row["deliverable"] = json!(blocked.is_none());
-        row["blocked_reason"] = json!(blocked);
+        let reason=row["blocked_reason"].as_str().map(str::to_owned).or_else(||blocked.map(str::to_owned));
+        row["deliverable"] = json!(reason.is_none());
+        row["blocked_reason"] = json!(reason);
     }
     j200(json!(out))
 }
@@ -36134,6 +36179,69 @@ mod spawn_argv_secret_tests {
 mod project_steering_tests {
     use super::*;
     #[test]
+    fn project_owner_note_waits_for_explicit_retry_and_current_working_claim() {
+        use crate::project_execution::{planner,store,task_retry};
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        let e=planner::execution(&db.read().unwrap(),"A").unwrap();let worker=e.worker.clone();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(env_path(&worker),"CC_PROJECT=sample\nCC_BOARD_CARD=A\n").unwrap();
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let response=send_post(&state,&worker,&HeaderMap::new(),&json!({"text":"Retained owner note","msg_id":"held-owner","force":true})).await;
+            assert_eq!(response.status(),StatusCode::OK);
+            let id:String=state.store.read().unwrap().query_row("SELECT id FROM steering_queue WHERE guard='project-steering'",[],|r|r.get(0)).unwrap();
+            for _ in 0..2 {
+                // Fail a policy-only negative control here, before any native send/wake.
+                assert!(!claim_steering_row(&state.store,&id).await,"exhausted owner note cannot claim delivery");
+                assert!(send_claimed_steering(&state,&id,&worker,"Retained owner note",SendMode::drained(true,true)).await.is_none());
+            }
+            {let c=state.store.read().unwrap();assert_eq!(planner::execution(&c,"A").unwrap().attempt,e.attempt);
+             assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+             assert_eq!(c.query_row("SELECT COUNT(*) FROM session_events WHERE type='message.held'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"hold signal is durable and idempotent");
+             assert_eq!(c.query_row("SELECT text FROM steering_queue WHERE id=?1",[&id],|r|r.get::<_,String>(0)).unwrap(),"Retained owner note");
+             assert_eq!(c.query_row("SELECT COUNT(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+             assert!(crate::api::projects::steering_delivery_hold(&c,&worker,&id).unwrap().unwrap().contains("active_claim"));}
+            state.store.write(|c| {
+                let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let e=planner::execution(c,"A").unwrap();
+                let request=task_retry::Request{idempotency_key:"one-explicit-retry".into(),expect_generation:e.generation,expect_revision:row.rev,input_hash:e.input_hash.clone()};
+                assert!(task_retry::grant(c,"sample","A",&request).unwrap().applied);
+                assert!(!task_retry::grant(c,"sample","A",&request).unwrap().applied);
+                assert!(planner::claim(c,"sample","A").unwrap().applied);
+                Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+            }).unwrap();
+            assert!(!claim_steering_row(&state.store,&id).await,"reserved is not a working claim");
+            state.store.write(|c| {let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)}).unwrap();
+            assert!(claim_steering_row(&state.store,&id).await);
+            assert!(!claim_steering_row(&state.store,&id).await,"only one sender can claim");
+            assert!(project_send_hold(&state,&worker,Some(&id)).is_none());
+            let before_race=project_delivery_claim(&state,&worker,Some(&id));
+            state.store.write(|c| {let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="reported".into();planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)}).unwrap();
+            assert!(project_send_hold(&state,&worker,Some(&id)).is_some(),"report arriving after queue claim must hold before typing");
+            assert_eq!(project_delivery_claim(&state,&worker,Some(&id)),before_race,"stage transition alone need not change generation to revoke delivery");
+            unclaim_steering_row(&state.store,&id).await;
+            // The real writer authority and final typing gate must both reject each hold,
+            // even when a caller says Send now and the provider reports idle.
+            for (stage,category) in [("waiting",None),("repair",None),("reported",None),("verified",None),("working",Some("spend")),("working",Some("customer_outbound")),("working",Some("required_outputs"))] {
+                let stage=stage.to_string();let category=category.map(str::to_string);
+                state.store.write(move|c| {let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage=stage;e.wait_category=category;e.waiting=if e.stage=="working" {None} else {Some("held".into())};planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)}).unwrap();
+                assert!(!claim_steering_row(&state.store,&id).await);
+                assert!(project_send_hold(&state,&worker,Some(&id)).is_some());
+            }
+            state.store.write(|c| {let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.wait_category=None;e.waiting=None;e.input_hash="stale".into();planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)}).unwrap();
+            assert!(!claim_steering_row(&state.store,&id).await,"stale requirements hold");
+            std::fs::write(env_path(&worker),"CC_PROJECT=sample\nCC_BOARD_CARD=B\n").unwrap();
+            assert!(!claim_steering_row(&state.store,&id).await,"retargeted worker cannot consume A's input");
+            assert!(steer_enqueue_idempotent_report(&state,&worker,"Retained owner note","project-steering","",&id).await.is_err());
+            let c=state.store.read().unwrap();let after=planner::execution(&c,"A").unwrap();
+            assert_eq!(after.attempt,e.attempt+1);assert_eq!(after.retry_grants.len(),1);
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1",[&id],|r|r.get::<_,i64>(0)).unwrap(),1);
+            assert!(crate::project_execution::intake::receipts(&c,"sample").unwrap().is_empty());
+        });
+    }
+
+    #[test]
     fn project_send_route_has_one_execution_authority_and_durable_idempotent_steering() {
         let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
         let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
@@ -36156,6 +36264,7 @@ mod project_steering_tests {
         std::fs::write(env_path("normal-fixture"),"CC_COMMAND_LIFECYCLE=1\n").unwrap();
         assert!(super::super::board_lifecycle::enabled("normal-fixture"));
         let id:String=c.query_row("SELECT id FROM steering_queue WHERE session=?1 LIMIT 1",[&worker],|r|r.get(0)).unwrap();drop(c);
+        state.store.write(|c| {let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=crate::project_execution::planner::execution(c,"A").unwrap();e.stage="working".into();e.waiting=None;crate::project_execution::planner::save_execution(c,&row,&e,"project.execution").map_err(crate::project_execution::store::sql_error)}).unwrap();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             for (budget,paused,expected) in [(Some(1.0),false,false),(None,false,true),(None,true,false)] {
                 state.store.write(move|c| {let mut p=crate::project_execution::store::get(c,"sample").unwrap().unwrap();p.policy.cost_budget_usd=budget;p.policy.paused=paused;crate::project_execution::store::save(c,"sample",p.revision,&p.policy,"test").map_err(crate::project_execution::store::sql_error)}).unwrap();

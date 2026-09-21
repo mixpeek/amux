@@ -3911,3 +3911,26 @@ COST: Earlier expensive verification commands ran before a deterministic configu
 FIX: Reuse the same source-path validator at report admission and preflight all distinct checks plus the project gate before executing any. Invalid admission leaves report/status/attempt unchanged for corrected same-generation resubmission. Canonical repository identity accepts policy aliases without weakening source-path guards. Signals project.report_commands_refused and fanout_verification_source_path; API/DB and real-Git no-execution regressions added, parent Rust run pending.
 
 Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. Report admission and complete-set preflight tests plus the existing source-path guard pass; restoring late validation failed the sentinel assertion (exit 101), and exact restoration passed all 50 project tests. The full UI passes all 11 scenarios. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
+
+
+## Owner steering could execute outside a project attempt (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent observed owner /send input execute on PAA-2 generation 6 while execution.stage was waiting; the steering gate checked policy/budget but not the active working claim.
+COST: Model/tool work occurred outside the authorized attempt boundary during real acceptance.
+FIX: One shared hold predicate at queue claim and typing, original-task queue binding, current requirements/generation and policy/hold checks; retained notes wait for a sanctioned working claim. Existing queue/UI show reasons; idempotent message.held and measured project_steering_held signal once per message/reason. Real queue tests and isolated UI retry scenario added; parent validation pending. No live state or retry grants changed.
+
+## Passing stdout prefix displayed as a failed task status (AAB-3)
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: PAA-2 failure summary showed tree-revert because the UI split retained hook output beginning tree-revert: OK at its first colon.
+COST: The short status concealed the actual failed verification behind an unrelated passing check.
+FIX: Harness-owned waiting_label derived from execution state and exact known reason tokens; full failure output remains unchanged in details, including exact budget labels. New transitions log project_verification_failed. Rust and browser regression cover a passing prefix before refusal; parent validation pending, no historical record rewrite.

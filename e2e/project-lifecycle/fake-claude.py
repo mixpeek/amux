@@ -37,6 +37,9 @@ with terminal_input() as packets:
             status('working','prompt-hook')
             with open(home/'fixture-calls.jsonl','a') as out:out.write(json.dumps({'phase':'execution','worker':worker,'task':task['id'],'attempt':task['attempt']})+'\n')
             name=task['criteria'][0].split('.')[0]
+            # Fault boundary: keep the authorized retry working with an idle composer
+            # while the harness delivers retained owner input, before reporting.
+            if name=='dirty' and task['attempt']==3: idle()
             while (home/('hold-'+name)).exists():
                 (home/('heartbeat-'+name)).write_text(str(time.time()));time.sleep(.2)
             content='wrong' if name=='repair' and task['attempt']==1 else name

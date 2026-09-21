@@ -438,3 +438,55 @@ passed all 50 project tests, and the new-server UI passed all 11 scenarios. See
 [revision validation](project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b)
 for evidence and limits. Original failed runs and live project state remain
 untouched; the actual extractor project is not complete or Verified.
+
+
+### AAB-3: owner input requires an active claim (pending parent validation)
+
+The parent observed generation-6 owner steering execute while the task was
+waiting after failure. The shared steering predicate previously checked project
+policy/budget but not execution authorization. Queuing input must not grant an
+attempt. New owner notes use the existing steering queue's task precondition
+without a revision expiry; changing the assigned task cannot redirect them.
+Unbound historical project notes fail closed and stay retained, rather than
+silently acquiring a task identity. An explicit cancel/re-submit is needed for
+those old unbound notes. Stable-ID replay cannot change a note's task or text.
+
+The queue writer and final typing path now use one hold predicate: current task
+identity and requirements, an active working claim, unchanged generation during
+awaited pane preparation, existing policy/budget, and no suspension, required
+output or authorization hold. Reserved, repair, reported, waiting and terminal
+states cannot consume owner input. The finite claim packet must settle before
+its queued notes can follow. Queued input survives legitimate holds and becomes
+eligible only after a sanctioned retry/resume reaches a working claim. There is
+no automatic grant, attempt reset, new scheduler or model poll. Project execution
+packets retain their existing delivery-current authority.
+
+Existing queue/session reads expose `blocked_reason`; the Steering panel shows
+it beside retained owner input. `message.held` records a stable message/reason
+idempotency key; `project_steering_held` logs measured refusal only on its first
+recording. Current claim state is rechecked after queue claim and awaited pane
+preparation; a revoked claim returns to the queue. Nonproject delivery retains
+its existing policy. Owner notes are human queue entries, not system prompts.
+
+Projects now uses a harness-owned `waiting_label` instead of splitting arbitrary
+stdout at a colon. A retained report with failed verification displays
+**Verification failed**, while the exact multi-line diagnostic remains in
+Waiting details. The exact harness tokens `token_budget_reached`,
+`cost_budget_reached`, `budget_usage_unmeasured`, and `budget_cost_unmeasured`
+retain specific budget labels. Unknown output receives a generic hold label;
+no prose parser or model classifier is involved. New failed-verification
+transitions log `project_verification_failed`; old records are not rewritten.
+
+New regressions exercise actual send/enqueue, delivery claim, final gate,
+idempotent hold signals, explicit retry/claim, identity and hold negatives. The
+existing full isolated UI adds a retained owner note after the dirty task
+exhausts attempts: zero deliveries/work/new cards while held, then one explicit
+retry and exactly one note delivery, still bounded at the new attempt limit.
+The fake provider exposes an idle composer during that active fixture retry;
+all runtime/queue/Git paths remain real. A separate UI case preserves a detailed
+failure starting `tree-revert: OK` while rendering Verification failed. The
+dirty scenario waits for attached detail text plus the visible stable label,
+not visibility inside collapsed details. Parent Rust, mutation and browser
+checks are pending for these bytes; previous green revision evidence is not
+reused as a pass. No live project state, historical attempts or provider retries
+were changed by this implementation.

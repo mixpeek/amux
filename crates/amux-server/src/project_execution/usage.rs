@@ -293,6 +293,9 @@ mod tests {
             super::super::store::save(c,"coverage",0,&policy,"test").unwrap();
             let execution=super::super::planner::Execution{worker:"executor".into(),stage:"working".into(),..Default::default()};
             c.execute("INSERT INTO issues(id,title,status,session,project_group,created,updated,execution_state) VALUES('A','Outcome','doing','executor','coverage',1,1,?1)",[serde_json::to_string(&execution).unwrap()])?;
+            let row=crate::db::board_store::get_issue(c,"A")?.unwrap();
+            let mut execution=execution;execution.attempt=1;execution.generation=1;execution.input_hash=super::super::planner::input_hash(&row);
+            super::super::planner::save_execution(c,&row,&execution,"project.execution").unwrap();
             c.execute("INSERT INTO issues(id,title,status,project_group,created,updated) VALUES('F','Foreign','todo','other',1,1)",[])?;
             let (receipt,_)=super::super::intake::receive(c,"coverage","original","One outcome").unwrap();
             c.execute("UPDATE cmd_history SET capture_pending=0,card_id='A' WHERE id=?1",[receipt])?;

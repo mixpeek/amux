@@ -95,7 +95,28 @@ pub struct CardPlan {
     pub phase: Phase,
     pub action: String,
     pub waiting_reason: Option<String>,
+    pub waiting_label: Option<String>,
     pub execution: Execution,
+}
+
+/// Short presentation is harness-owned; arbitrary command output stays in details.
+fn waiting_label(reason:&str,e:&Execution)->String {
+    match reason {
+        "project_disabled"=>"Project disabled",
+        "project_paused"=>"Project paused",
+        "attempts_exhausted"=>"Attempt limit reached",
+        "authorization_required"=>"Authorization required",
+        "requirements_changed"=>"Requirements changed",
+        "intake_required"=>"Intake required",
+        "executor_capacity"=>"Waiting for executor capacity",
+        "token_budget_reached"=>"Token budget reached",
+        "cost_budget_reached"=>"Cost budget reached",
+        "budget_usage_unmeasured"=>"Token usage unmeasured",
+        "budget_cost_unmeasured"=>"Cost unmeasured",
+        _ if reason.starts_with("required_output:")=>"Required output",
+        _ if e.report.is_some() && e.waiting.as_deref()==Some(reason) && e.wait_category.is_none()=>"Verification failed",
+        _=>"Execution held",
+    }.into()
 }
 
 pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<CardPlan>> {
@@ -216,6 +237,7 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             id: row.id.clone(),
             phase,
             action: action.into(),
+            waiting_label: waiting.as_deref().map(|r|waiting_label(r,&state)),
             waiting_reason: waiting,
             execution: state,
         });
@@ -468,6 +490,19 @@ mod tests {
             Ok(WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         (dir, db)
+    }
+    #[test]
+    fn project_failure_label_never_uses_a_passing_stdout_prefix() {
+        let failure="tree-revert: OK\nrepository guard: refused invalid source";
+        let e=Execution{stage:"waiting".into(),waiting:Some(failure.into()),report:Some(Report{head:"a".repeat(40),summary:String::new(),assets:vec![],checks:vec![]}),..Default::default()};
+        assert_eq!(waiting_label(failure,&e),"Verification failed");
+        assert_eq!(e.waiting.as_deref(),Some(failure));
+        assert_eq!(waiting_label("untrusted: PASS",&Execution::default()),"Execution held");
+        assert_eq!(waiting_label("required_output:B",&e),"Required output");
+        for (reason,label) in [("token_budget_reached","Token budget reached"),("cost_budget_reached","Cost budget reached"),("budget_usage_unmeasured","Token usage unmeasured"),("budget_cost_unmeasured","Cost unmeasured")] {
+            assert_eq!(waiting_label(reason,&e),label);
+            assert_eq!(waiting_label(&format!("{reason}: unrelated stdout"),&Execution::default()),"Execution held");
+        }
     }
     #[test]
     fn project_claims_are_atomic_bounded_and_excluded_from_both_legacy_planners() {

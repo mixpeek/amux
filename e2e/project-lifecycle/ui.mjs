@@ -95,7 +95,7 @@ try {
   await page.getByText('Execution settings',{exact:true}).click();
   await page.locator('#project-token-budget').fill('100');await saveSettings();
   await submit('Create budget report and verify it.');
-  await page.getByText('token budget reached',{exact:false}).first().waitFor({timeout:45000});
+  await page.getByText('Token budget reached',{exact:true}).first().waitFor({timeout:45000});
   const boundedCalls=calls().filter(c=>c.phase==='execution').length;
   await new Promise(r=>setTimeout(r,2200));assert.equal(calls().filter(c=>c.phase==='execution').length,boundedCalls);
   await page.screenshot({path:path.join(out,'04-budget-wait.png'),fullPage:true});
@@ -206,7 +206,7 @@ try {
 
   await page.locator('#project-selector').selectOption('lifecycle-ui');
   await submit('Create dirty report and verify it.');
-  await page.locator('.project-wait').filter({hasText:'worktree has uncommitted changes'}).first().waitFor({timeout:90000});
+  await page.locator('.project-card details pre').filter({hasText:'worktree has uncommitted changes'}).first().waitFor({state:'attached',timeout:90000});
   // UI may show two matching instances in expanded details; inspect worktree directly.
   const dirtyCard=(await projectRead()).cards.find(c=>c.title==='Create dirty report');
   assert.ok(dirtyCard);assert.ok(calls().some(c=>c.phase==='execution'&&c.task===dirtyCard.id),'dirty scenario must execute its provider');
@@ -214,6 +214,35 @@ try {
   const workdirs=fs.readdirSync(path.join(config.home,'worktrees')).map(n=>path.join(config.home,'worktrees',n));
   assert.ok(workdirs.some(p=>fs.existsSync(path.join(p,'uncommitted-evidence.txt'))));
   assert.throws(()=>main('dirty'));record('Dirty checkout is retained and never falsely integrated or retired');
+  // Owner steering cannot grant itself another attempt, even with Send now.
+  let failed;
+  await wait(async()=>{failed=(await projectRead()).cards.find(c=>c.id===dirtyCard.id);return failed?.execution_plan.execution.stage==='waiting'&&failed.execution_plan.execution.attempt===2;},'dirty task did not exhaust its authorized attempts');
+  await wait(async()=>await page.locator('[data-task="'+dirtyCard.id+'"] .project-wait').innerText()==='Verification failed','failed card short label must be harness-owned');
+  const idsBefore=(await projectRead()).cards.map(c=>c.id).sort();
+  const callsBefore=calls().length, note='Retained owner note for the same dirty task';
+  const packets=()=>fs.readFileSync(path.join(config.home,'fixture-input.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+  const ownPackets=()=>packets().filter(p=>p.worker===failed.execution_plan.execution.worker&&p.packet.includes(note));
+  const queue=async()=>{const r=await context.request.get(config.url+'/api/sessions/'+encodeURIComponent(failed.execution_plan.execution.worker)+'/steer',{headers:auth});assert.ok(r.ok());return r.json();};
+  await page.locator('[data-task="'+dirtyCard.id+'"]').getByRole('button',{name:'Executor details',exact:true}).click();
+  await page.locator('#peek-cmd-input').fill(note);
+  await page.locator('#peek-overlay .send-split-main').click();
+  await wait(async()=>{const q=await queue();return q.some(m=>m.text===note&&m.deliverable===false&&m.blocked_reason.startsWith('project_active_claim_required:'));},'owner note was not visibly held');
+  await page.locator('#peek-tab-steering').click();
+  await page.locator('#peek-steering-list .steering-held').filter({hasText:'project_active_claim_required'}).first().waitFor();
+  await new Promise(r=>setTimeout(r,2400));
+  assert.equal(ownPackets().length,0,'failed worker consumed held owner input');assert.equal(calls().length,callsBefore,'held note started provider work');
+  assert.deepEqual((await projectRead()).cards.map(c=>c.id).sort(),idsBefore,'owner input created a board task');
+  assert.equal((await projectRead()).cards.find(c=>c.id===dirtyCard.id).execution_plan.execution.attempt,2);
+  await page.locator('#peek-close-btn').click();fault('dirty',true);
+  await page.locator('[data-task="'+dirtyCard.id+'"]').getByRole('button',{name:'Authorize one retry',exact:true}).click();
+  await wait(async()=>{const r=await context.request.get(config.url+'/api/sessions/'+encodeURIComponent(failed.execution_plan.execution.worker)+'/steer?history=1',{headers:auth});assert.ok(r.ok());return (await r.json()).some(m=>m.text===note&&String(m.outcome).startsWith('sent'));},'authorized retry did not deliver the retained note');
+  fault('dirty',false);
+  await wait(()=>ownPackets().length===1,'retained owner note not received exactly once');
+  await wait(async()=>{const e=(await projectRead()).cards.find(c=>c.id===dirtyCard.id).execution_plan.execution;return e.stage==='waiting'&&e.attempt===3;},'explicit retry did not stop at its new bound');
+  assert.equal(calls().length,callsBefore+1,'retry must cause exactly one additional execution and zero intake');
+  assert.deepEqual((await projectRead()).cards.map(c=>c.id).sort(),idsBefore);
+  assert.equal((await queue()).filter(m=>m.text===note).length,0);
+  record('Failed task retains owner steering without work; explicit one-retry grant delivers it once within the same task');
   await page.locator('#project-pause').click();
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({results,errors,calls:calls(),fixture:config},null,2));
