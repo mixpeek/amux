@@ -99,10 +99,16 @@ test('live registered identity outranks a stale retirement record; unknown inven
 
 test('a stopped verified executor remains inspectable while human review is pending',async ({page})=>{
   world.cards=[{id:'T-1',title:'review me',phase:'verified',stage:'verified',worker:'px-review'}];
-  world.sessions=[{name:'px-review',running:false,status:'stopped'}];
+  world.sessions=[{name:'px-review',running:true,status:'idle'}];
   world.acceptance={state:'awaiting_human',fingerprint:'f'.repeat(64),criteria:[{id:'owner',requirement:'Review output',verifier:{type:'human'},result:{state:'pending_human',evidence:[]}}]};
   await open(page);await pick(page,'T-1');
   const box=page.locator('#project-inspector');
+  await expect(box).toContainText('registered, running');
+  // The Projects poll itself must refresh the joined worker inventory. This
+  // is the real transition into review; requiring a Workers-tab visit or full
+  // page reload leaves two contradictory states on one screen.
+  world.sessions=[{name:'px-review',running:false,status:'stopped',review_held:true}];
+  await refreshed(page);
   await expect(box).toContainText('stopped and retained for human review');
   await expect(box.getByRole('button',{name:'Review executor terminal'})).toBeVisible();
   world.acceptance={...world.acceptance,state:'rejected'};
