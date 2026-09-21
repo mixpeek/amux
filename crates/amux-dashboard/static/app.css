@@ -2149,7 +2149,7 @@
      output box's top and height after content had already painted. That motion
      looked like streaming output was bouncing even when the DOM was stable. */
   #peek-overlay {
-    padding-bottom: 0 !important; bottom: 0 !important;
+    padding-bottom: 0 !important; bottom: var(--sw-fail-h, 0px) !important;
     transform: none;
     transition: opacity 0.12s;
   }
@@ -6908,3 +6908,5 @@ select.input { height:var(--control-height); }
 @media(max-width:600px){.projects-view{padding:16px}.project-heading{align-items:stretch}.project-heading>div{flex-basis:100%}.project-columns{flex-direction:column;overflow-x:visible}.project-column{min-width:0;max-width:none;width:100%}.project-form-grid{grid-template-columns:1fr}}
 
 #orch-projects ul{padding-left:20px;overflow-wrap:anywhere}
+
+[data-worker-action][aria-disabled="true"] { opacity: .55; cursor: wait; }

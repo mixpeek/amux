@@ -8955,7 +8955,7 @@ fn chars_truncate_log(s: &str, n: usize) -> String {
 /// than the tail, with `[N chars elided]` in the gap. A reader then knows they
 /// are holding an incomplete value instead of believing a prefix is all there
 /// was, which is the difference between a recoverable loss and a silent one.
-fn chars_elide_middle(s: &str, head: usize, tail: usize) -> String {
+pub(crate) fn chars_elide_middle(s: &str, head: usize, tail: usize) -> String {
     let n = s.chars().count();
     if n <= head + tail {
         return s.to_string();

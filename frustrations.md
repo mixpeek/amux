@@ -3848,3 +3848,25 @@ CARD: AAB-3
 SYMPTOM: Parent broad transport suite reported 332 pass, 2 fail, 2 ignored: five deliberate boot/draft/project-budget holds lacked send_failure_status arms; finished plain Codex background frame was classified as a typed composer.
 COST: Recoverable queued delivery looked like a server fault, and a completed background terminal could hold steering indefinitely.
 FIX: Shared failure classifier returns actionable 409 holds with retained-message/draft guidance; real hard failures remain 500. Shared composer parser recognizes the complete ANSI-free Codex exact placeholder/final-footer layout, retaining dim-proof requirements for styled captures. Draft, multiline input, paste, foreground/background work and partially styled negative controls remain. Log signal: codex_plain_capture_placeholder plus existing HTTP status and steering_draft_preserved/held delivery diagnostics. Parent rerun pending; no live project mutation.
+
+## Failed Review retry, canonical fixture input, and hidden pending Resume
+AREA: runtime / UI / test harness
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Failed integration in Review was excluded from explicit retry. Canonical fake CLI lost long executor instruction lines although queue history reported sent. Native Resume looked enabled during pause refresh, and the offline warning overlapped Send.
+COST: Genuine failed work lacked recovery, full lifecycle acceptance stopped at first delivery, and visible controls misrepresented pending/reachable actions.
+FIX: Shared server/UI retry eligibility for failed Doing/Review; immutable retry history and exact identity retained. Noncanonical bracketed-paste fixture with full receipt logs and real PTY positive/negative control. Shared worker action inventory exposes pending disabled state; terminal respects --sw-fail-h. Signals: existing project.retry_granted/refused, fixture-input.jsonl exact byte receipts, lifecycle API/status diagnostics and retained SW error diagnostics. Worker PTY/syntax/diff checks pass; parent Rust/Chromium/full lifecycle reruns pending. No live state changes.
+
+## Retry packets repeated full hook diagnostics
+AREA: project execution
+SEVERITY: friction
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Measured failed-integration waiting evidence contained 25,045 characters of hook output; claim retained it as last_failure and every repair packet repeated it verbatim.
+COST: Repeated prompt tokens for diagnostics already retained durably.
+FIX: Shared packet previous_result uses existing UTF-8-safe head/tail preview above2,048 characters, explicit original sizes/truncation and exact existing project GET/field retrieval instructions. Full state and requirements remain unchanged. Log verdict project.retry_diagnostic_preview records original size without body. Unicode/short/full-read/no-mutation regression added; parent Rust run pending.

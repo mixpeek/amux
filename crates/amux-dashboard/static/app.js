@@ -5444,6 +5444,7 @@ async function _grpSchedFetch(g) {
 // changes both surfaces in the same edit.
 function _workerActionDefinitions(s) {
   const name = escJs(s.name);
+  const pending = _workerLifecyclePending.get(s.name);
   const provider = sessionProvider(s);
   const model = sessionConfiguredModel(s);
   const effort = provider === 'claude' ? flagValue(s.flags || '', '--effort') : '';
@@ -5508,8 +5509,8 @@ function _workerActionDefinitions(s) {
     { key: 'share', icon: '&#x1F517;', label: 'Share link',
       run: "closeAllMenus();shareSession('" + name + "')" },
     s.lifecycle === 'paused' && !s.running
-      ? { key: 'resume', icon: '&#x25B6;', label: 'Resume', run: "resumeWorker('" + name + "')" }
-      : { key: 'pause', icon: '&#x23F8;', label: 'Pause', run: "pauseWorker('" + name + "')" },
+      ? { key: 'resume', icon: '&#x25B6;', label: pending ? pending + '…' : 'Resume', disabled: !!pending, run: "resumeWorker('" + name + "')" }
+      : { key: 'pause', icon: '&#x23F8;', label: pending ? pending + '…' : 'Pause', disabled: !!pending, run: "pauseWorker('" + name + "')" },
     { key: 'archive', icon: '&#x1F4E6;', label: 'Archive',
       run: "archiveSession('" + name + "')" },
     { separator: true },
@@ -5527,7 +5528,7 @@ function _renderWorkerActionMenu(s, surface) {
     const close = peek ? '_closePeekMore();' : '';
     const title = action.title ? ' title="' + esc(action.title) + '"' : '';
     return '<div class="' + classes + '" role="menuitem" data-worker-action="' + action.key
-      + '" onclick="event.stopPropagation();' + close + action.run + '"' + title + '>'
+      + '" aria-disabled="' + !!action.disabled + '" onclick="event.stopPropagation();' + (action.disabled ? '' : close + action.run) + '"' + title + '>'
       + '<span class="mi">' + action.icon + '</span>'
       + (action.labelHtml || esc(action.label)) + '</div>';
   }).join('');
@@ -8556,6 +8557,7 @@ async function _changeWorkerPaused(session, paused) {
         if (typeof body.running === 'boolean') worker.running = body.running;
         if (body.session === 'starting' || (!paused && body.session === 'started')) worker.status = 'starting';
       }
+      updatePeekStatus();
       showToast(session + (paused ? ' paused — work stopped' : ' resuming'));
     }
     await fetchSessions();
@@ -8563,6 +8565,7 @@ async function _changeWorkerPaused(session, paused) {
     _workerLifecyclePending.delete(session);
     done();
     render();
+    updatePeekStatus();
   }
 }
 
@@ -11597,7 +11600,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1010';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1011';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44984,7 +44987,7 @@ function _projectRender(data) {
   document.getElementById('project-cards').innerHTML=phases.map(([phase,label])=>{
     const rows=data.cards.filter(c=>c.phase===phase);if(!rows.length) return '';return '<section class="project-column"><h3>'+label+' <span>'+rows.length+'</span></h3>'+rows.map(c=>{
       const plan=c.execution_plan,e=plan.execution,working=phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
-      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_reason.split(':')[0].replaceAll('_',' '))+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+_projectAssetLinks(c)+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((e.stage==='waiting' && !p.policy.paused && !['spend','customer_outbound','required_outputs'].includes(e.wait_category))?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button>':'')+'</article>';
+      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_reason.split(':')[0].replaceAll('_',' '))+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+_projectAssetLinks(c)+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((c.retry_available === true)?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button>':'')+'</article>';
     }).join('')+(rows.length?'':'<p class="project-empty">No tasks</p>')+'</section>';
   }).join('');
 }

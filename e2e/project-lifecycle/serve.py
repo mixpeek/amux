@@ -14,7 +14,7 @@ if not repo.exists():
     git('-C',str(repo),'config','user.email','fixture@example.invalid');git('-C',str(repo),'config','user.name','Project fixture')
     (repo/'README.md').write_text('Isolated project lifecycle fixture. No production remote.\n')
     git('-C',str(repo),'add','.');git('-C',str(repo),'commit','-m','Fixture base');git('-C',str(repo),'push','origin','main')
-for src,name in [('fake-intake.py','fake-intake'),('fake-claude.py','claude')]:
+for src,name in [('fake-intake.py','fake-intake'),('fake-claude.py','claude'),('tty_input.py','tty_input.py')]:
     shutil.copy2(Path(__file__).with_name(src),bin_dir/name);(bin_dir/name).chmod(0o755)
 # tmux isolation does not depend on a shell preserving TMPDIR.
 tmux=shutil.which('tmux');assert tmux,'tmux is required for real provider transport'

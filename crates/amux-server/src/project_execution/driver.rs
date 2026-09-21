@@ -109,9 +109,18 @@ async fn prepare(
     Ok(())
 }
 
+// Only diagnostic history is previewed; requirements and criteria stay exact.
+fn previous_result(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> serde_json::Value {
+    let Some(failure) = e.last_failure.as_deref() else { return serde_json::Value::Null; };
+    let chars=failure.chars().count();
+    if chars<=2048 { return json!(failure); }
+    tracing::info!(project=%p.name,task=%row.id,generation=e.generation,measured=true,n_considered=chars,preview_chars=2048,verdict="project.retry_diagnostic_preview","retry packet elides diagnostic middle; full failure retained in project read");
+    json!({"preview":crate::api::board::chars_elide_middle(failure,1024,1024),"truncated":true,"original_chars":chars,"original_bytes":failure.len(),"full_diagnostic":{"method":"GET","path":format!("/api/projects/{}",p.name),"card_id":row.id,"field":"cards[id == card_id].execution_plan.execution.last_failure","instruction":"Read the matching card's last_failure for full exact diagnostics before inspecting omitted details."}})
+}
+
 pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
     let output_protocol=format!("For an unavailable concrete same-project output, POST /api/projects/{}/tasks/{}/required-outputs with generation, input_hash, idempotency_key, required_outputs (explicit task IDs), reason, and replaces_wait (null for a new wait; exact prior waiting string to replace an operational wait). Never turn spend/customer authorization into outputs. Stop after declaration. When outputs are Verified the harness continues the SAME attempt with a fresh generation and delivery ID. On continuation fetch the accepted local origin/main and compose required commits into your own candidate without resetting your existing work, then rerun/report every criterion; an output arriving is not verification of your task. Required output receipts below identify accepted reports and integration evidence.",p.name,row.id);
-    format!("{output_protocol}\nExecute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{\"generation\":{},\"input_hash\":\"{}\",\"report\":{{\"head\":\"40-character SHA\",\"summary\":\"output\",\"checks\":[{{\"criterion\":\"exact criterion\",\"command\":\"falsifiable check\"}}]}}}}. Optionally include report.assets as an array of objects with path (candidate-relative) and sha256 (lowercase hex). Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.\nTask packet:\n{}",p.name,row.id,e.generation,e.input_hash,p.name,row.id,json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":e.last_failure,"verification":p.policy.verify_command}))
+    format!("{output_protocol}\nExecute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{\"generation\":{},\"input_hash\":\"{}\",\"report\":{{\"head\":\"40-character SHA\",\"summary\":\"output\",\"checks\":[{{\"criterion\":\"exact criterion\",\"command\":\"falsifiable check\"}}]}}}}. Optionally include report.assets as an array of objects with path (candidate-relative) and sha256 (lowercase hex). Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.\nTask packet:\n{}",p.name,row.id,e.generation,e.input_hash,p.name,row.id,json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command}))
 }
 
 async fn transition(
@@ -486,6 +495,43 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 
 #[cfg(test)]
 mod command_tests {
+    #[test]
+    fn project_retry_packet_previews_only_long_diagnostics_and_preserves_full_read() {
+        use super::*;
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
+        db.write(|c| {
+            let p=store::get(c,"sample").unwrap().unwrap();
+            let row=bs::get_issue(c,"A")?.unwrap();
+            let mut e=planner::execution(c,"A").unwrap();
+            for failure in ["short exact error".to_string(),format!("HEAD{}TAIL","α🧪\n".repeat(9000))] {
+                e.last_failure=Some(failure.clone());
+                planner::save_execution(c,&row,&e,"project.execution").unwrap();
+                let original=serde_json::to_value(&e).unwrap();
+                let text=packet(&p,&row,&e);
+                let value:serde_json::Value=serde_json::from_str(text.split("Task packet:\n").nth(1).unwrap()).unwrap();
+                assert_eq!(serde_json::to_value(&e).unwrap(),original,"packet cannot mutate history");
+                assert_eq!(value["criteria"],json!(["Output passes"]));
+                if failure.chars().count()<=2048 {
+                    assert_eq!(value["previous_result"],failure);
+                } else {
+                    let preview=&value["previous_result"];
+                    assert_eq!(preview["truncated"],true);
+                    assert_eq!(preview["original_chars"],failure.chars().count());
+                    assert_eq!(preview["original_bytes"],failure.len());
+                    assert!(preview["preview"].as_str().unwrap().starts_with("HEAD"));
+                    assert!(preview["preview"].as_str().unwrap().ends_with("TAIL"));
+                    assert!(preview["preview"].as_str().unwrap().chars().count()<2100);
+                    assert_eq!(preview["full_diagnostic"]["path"],"/api/projects/sample");
+                }
+                // This is the exact read model served by existing GET /api/projects/{name}.
+                let board=store::board(c,"sample").unwrap();
+                let card=board["cards"].as_array().unwrap().iter().find(|v|v["id"]=="A").unwrap();
+                assert_eq!(card["execution_plan"]["execution"]["last_failure"],failure);
+                assert_eq!(planner::execution(c,"A").unwrap().last_failure,Some(failure));
+            }
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
     #[test]
     fn project_verification_deduplicates_only_identical_bytes() {
         use super::planner::{Check, Report};

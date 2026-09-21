@@ -320,3 +320,43 @@ string). Actual other drafts, extra lines and pasted text stay typed, and both
 foreground and background working frames still fail the shared boundary gate.
 The existing finished-background regression is retained with negative controls.
 The recognition emits `codex_plain_capture_placeholder` once per process.
+
+### Final shared acceptance correction (after 1b9c71ac)
+
+Failed integration may leave board status Review while execution is waiting.
+The shared retry eligibility predicate now admits Doing or Review with a real
+waiting reason, retaining pause, budget, requirements and authorization checks.
+Projects renders the server's `retry_available`; grant still requires exact
+revision/generation/hash and an idempotency key. New claim restores Doing with
+monotonic attempt/generation and keeps the prior report/failure in grant history.
+The lifecycle regression covers report → failed Review → grant → claim → new
+report; terminal/active/stale/budget/pause controls remain. This durable-state
+regression does not replace the parent's full integration UI scenario.
+
+The deterministic CLI fixture now disables canonical input and advertises
+bracketed paste before idle. It collects a complete submitted packet before
+interpreting task lines; raw receipts go to fixture-input.jsonl. Real dispatch,
+claims, Git and verification remain unchanged. `python3
+e2e/project-lifecycle/tty-input-test.py` received exactly 12,560 bytes through a
+real PTY with multiline Unicode; the old canonical contract failed to submit
+its oversized-line control within two seconds on macOS. The prior live fixture
+truncation evidence is retained by the parent.
+
+Worker action menus project lifecycle pending state as disabled, including the
+pause response → slow sessions refresh interval, and refresh after settling.
+Terminal overlays clear the existing measured service-worker warning height.
+Chromium regressions cover slow refresh and warning visibility/reachability at
+390px and 1280px. Parent must run these plus the full 11-scenario lifecycle UI
+against the next exact build. The earlier native acknowledgement proved one
+intact settled-resume delivery; it did not exercise boot deferral.
+
+Retry packets preview only `previous_result` when it exceeds 2,048 Unicode
+characters, reusing the existing head/tail elision helper. The preview includes
+1,024 characters from each end, explicit truncation, original character/byte
+counts, and GET `/api/projects/{name}` with the matching card's
+`execution_plan.execution.last_failure` field. Short errors remain exact strings;
+full failures remain unchanged in durable state/read responses. Requirements,
+criteria, and output handoffs are not capped. The packet logs
+`project.retry_diagnostic_preview` without duplicating the diagnostic body.
+The focused test checks Unicode boundaries, short errors, complete read-model
+retrieval, preserved criteria and no mutation. Parent Rust execution is pending.

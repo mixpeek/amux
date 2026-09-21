@@ -18,6 +18,44 @@ pub struct Grant {
     pub allowed_through: u32,
     pub previous_result: Value,
 }
+/// Shared UI/server admission; request identity is checked separately by grant.
+pub fn eligible(
+    c: &Connection,
+    p: &store::Project,
+    row: &bs::IssueRow,
+    e: &planner::Execution,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        p.policy.enabled && !p.policy.paused,
+        "project paused or disabled"
+    );
+    anyhow::ensure!(
+        e.input_hash == planner::input_hash(row),
+        "requirements changed"
+    );
+    anyhow::ensure!(
+        matches!(row.status.as_str(), "doing" | "review")
+            && row.archived == 0
+            && e.stage == "waiting"
+            && e.waiting.is_some(),
+        "only a failed waiting execution can be retried"
+    );
+    anyhow::ensure!(
+        !super::outputs::authorization_hold(c, row)?
+            && !matches!(
+                e.wait_category.as_deref(),
+                Some("spend" | "customer_outbound" | "required_outputs")
+            )
+            && row.ask_type.is_none(),
+        "resolve the declared hold rather than retrying it"
+    );
+    anyhow::ensure!(
+        super::usage::waiting(c, p)?.is_none(),
+        "project budget prevents retry"
+    );
+    Ok(())
+}
+
 pub fn grant(
     c: &Connection,
     project: &str,
@@ -58,23 +96,7 @@ pub fn grant(
         row.rev == body.expect_revision && e.generation == body.expect_generation,
         "stale retry revision or generation"
     );
-    anyhow::ensure!(
-        row.status == "doing" && row.archived == 0 && e.stage == "waiting" && e.waiting.is_some(),
-        "only a failed waiting execution can be retried"
-    );
-    anyhow::ensure!(
-        !super::outputs::authorization_hold(c, &row)?
-            && !matches!(
-                e.wait_category.as_deref(),
-                Some("spend" | "customer_outbound" | "required_outputs")
-            )
-            && row.ask_type.is_none(),
-        "resolve the declared hold rather than retrying it"
-    );
-    anyhow::ensure!(
-        super::usage::waiting(c, &p)?.is_none(),
-        "project budget prevents retry"
-    );
+    eligible(c, &p, &row, &e)?;
     let allowed = e
         .attempt
         .checked_add(1)
@@ -87,6 +109,99 @@ pub fn grant(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_failed_review_retry_preserves_report_and_reports_new_generation() {
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
+        db.write(|c| {
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = planner::execution(c, "A").unwrap();
+            e.stage = "working".into();
+            e.waiting = None;
+            planner::save_execution(c, &row, &e, "project.execution").unwrap();
+            let old = planner::Report {
+                head: "a".repeat(40),
+                summary: "candidate before integration failure".into(),
+                assets: vec![],
+                checks: vec![planner::Check {
+                    criterion: "Output passes".into(),
+                    command: "test -f output".into(),
+                }],
+            };
+            planner::record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                &e.input_hash,
+                &old,
+            )
+            .unwrap();
+            let row = bs::get_issue(c, "A")?.unwrap();
+            assert_eq!(row.status, "review");
+            e = planner::execution(c, "A").unwrap();
+            assert!(
+                eligible(c, &store::get(c, "sample").unwrap().unwrap(), &row, &e).is_err(),
+                "reported success cannot retry"
+            );
+            // Same durable failure transition used after an integration gate fails.
+            e.stage = "waiting".into();
+            e.waiting = Some("integration gate failed: exit 1".into());
+            planner::save_execution(c, &row, &e, "project.execution").unwrap();
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let request = Request {
+                idempotency_key: "review-retry".into(),
+                expect_revision: row.rev,
+                expect_generation: e.generation,
+                input_hash: e.input_hash.clone(),
+            };
+            assert!(eligible(c, &store::get(c, "sample").unwrap().unwrap(), &row, &e).is_ok());
+            assert!(grant(c, "sample", "A", &request).unwrap().applied);
+            assert!(!grant(c, "sample", "A", &request).unwrap().applied);
+            let repair = planner::execution(c, "A").unwrap();
+            assert_eq!(repair.stage, "repair");
+            assert_eq!(repair.report, Some(old.clone()));
+            assert!(planner::claim(c, "sample", "A").unwrap().applied);
+            let next = planner::execution(c, "A").unwrap();
+            assert_eq!(next.attempt, e.attempt + 1);
+            assert_eq!(next.generation, e.generation + 1);
+            assert_ne!(next.delivery_id, e.delivery_id);
+            assert_eq!(bs::get_issue(c, "A")?.unwrap().status, "doing");
+            assert_eq!(next.retry_grants[0].previous_result["report"], json!(old));
+            assert_eq!(next.last_failure, e.waiting);
+            assert!(planner::record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                &e.input_hash,
+                &old
+            )
+            .is_err());
+            let new = planner::Report {
+                head: "b".repeat(40),
+                ..old
+            };
+            planner::record_report(
+                c,
+                "sample",
+                "A",
+                &next.worker,
+                next.generation,
+                &next.input_hash,
+                &new,
+            )
+            .unwrap();
+            assert_eq!(bs::get_issue(c, "A")?.unwrap().status, "review");
+            assert_eq!(planner::execution(c, "A").unwrap().report, Some(new));
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    }
     #[test]
     fn project_task_retry_is_one_monotonic_attempt_and_idempotent() {
         let (_dir, db, _) = super::super::outputs::tests::fixture();
@@ -153,7 +268,7 @@ mod tests {
     }
     #[test]
     fn project_task_retry_refuses_pause_stale_and_nonwaiting_states() {
-        for variant in [
+        for (variant, status) in [
             "paused",
             "disabled",
             "reported",
@@ -161,10 +276,14 @@ mod tests {
             "verified",
             "requirements",
             "budget",
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|variant| ["doing", "review"].map(|status| (variant, status)))
+        {
             let (_dir, db, _) = super::super::outputs::tests::fixture();
             let variant = variant.to_string();
             db.write(move |c| {
+                c.execute("UPDATE issues SET status=?1 WHERE id='A'", [status])?;
                 let row = bs::get_issue(c, "A")?.unwrap();
                 let mut e = planner::execution(c, "A").unwrap();
                 let mut request = Request {

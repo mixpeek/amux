@@ -130,6 +130,7 @@ pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
             card["phase"] = json!(plans.iter().find(|p| p.id == row.id).map(|p| p.phase));
             card["assignee"] = json!(row.session);
             card["execution_plan"] = json!(plans.iter().find(|p| p.id == row.id));
+            card["retry_available"] = json!(plans.iter().find(|p| p.id == row.id).is_some_and(|plan| super::task_retry::eligible(conn, &project, row, &plan.execution).is_ok()));
             card
         })
         .collect();

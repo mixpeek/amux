@@ -54,7 +54,7 @@ try {
   assert.doesNotMatch(await page.locator('#project-cards').innerText(),/Working now/);
   await page.evaluate(()=>{
     requests=[];loseResponse=true;grants=0;data.project.policy.paused=false;
-    Object.assign(data.cards[0],{rev:7,execution_plan:{waiting_reason:'attempts_exhausted',execution:{stage:'waiting',worker:'executor',generation:2,input_hash:'requirements',attempt:2}}});
+    Object.assign(data.cards[0],{retry_available:true,rev:7,execution_plan:{waiting_reason:'attempts_exhausted',execution:{stage:'waiting',worker:'executor',generation:2,input_hash:'requirements',attempt:2}}});
     _projectRender(data);
   });
   await page.getByRole('button',{name:'Authorize one retry',exact:true}).click();
