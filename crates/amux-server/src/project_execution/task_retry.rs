@@ -159,13 +159,19 @@ pub fn grant_verification(c:&Connection,project:&str,id:&str,body:&VerificationR
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture_asset() -> super::super::assets::Asset {
+        super::super::assets::Asset {
+            path: "report.md".into(),
+            sha256: "0".repeat(64),
+        }
+    }
     #[test]
     fn project_verification_retry_preserves_report_attempt_history_and_delivery() {
         let (_dir,db,_)=super::super::outputs::tests::fixture();
         db.write(|c| {
             c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
             let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
-            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained candidate".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained candidate".into(),assets:vec![fixture_asset()],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
             e.waiting=Some("Command timed out after 600 seconds".into());
             planner::save_execution(c,&row,&e,"project.execution").unwrap();
             let row=bs::get_issue(c,"A")?.unwrap();
@@ -200,7 +206,7 @@ mod tests {
             db.write(move|c| {
                 c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
                 let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
-                e.report=Some(planner::Report{head:"a".repeat(40),summary:"candidate".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+                e.report=Some(planner::Report{head:"a".repeat(40),summary:"candidate".into(),assets:vec![fixture_asset()],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
                 match variant {
                     "paused"|"disabled"|"budget"=>{let mut p=store::get(c,"sample").unwrap().unwrap();match variant {"paused"=>p.policy.paused=true,"disabled"=>p.policy.enabled=false,_=>p.policy.token_budget=Some(1)};store::save(c,"sample",p.revision,&p.policy,"test").unwrap();},
                     "working"|"reported"|"verified"|"repair"=>e.stage=variant.into(),
@@ -235,7 +241,7 @@ mod tests {
             let old = planner::Report {
                 head: "a".repeat(40),
                 summary: "candidate before integration failure".into(),
-                assets: vec![],
+                assets: vec![fixture_asset()],
                 checks: vec![planner::Check {
                     criterion: "Output passes".into(),
                     command: "test -f output".into(),

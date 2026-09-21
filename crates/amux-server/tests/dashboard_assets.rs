@@ -754,8 +754,19 @@ fn a_shell_the_server_withheld_the_token_from_stops_reloading_and_says_so() {
     assert!(body.contains("_amuxAuthWithheldBanner"), "{body}");
     let banner = fn_body(&src, "_amuxAuthWithheldBanner");
     assert!(
-        banner.contains("?_token="),
-        "the banner must carry the ONE action that fixes this, not only the diagnosis"
+        !banner.contains("?_token="),
+        "the withheld-auth banner must not put the owner token in a URL"
+    );
+    assert!(
+        banner.contains("_openConnectionSecurity(event)")
+            && banner.contains("Connection &amp; security · Sign in"),
+        "the banner must open the secure Connect sign-in action, not only the diagnosis"
+    );
+    let open = fn_body(&src, "_openConnectionSecurity");
+    assert!(
+        open.contains("settings-menu") && open.contains("_settingsTab('integrations')")
+            && open.contains("connection-security") && open.contains("scrollIntoView"),
+        "clicking the withheld-auth action must take the user to the existing Connection security sign-in panel"
     );
     assert!(
         banner.contains("min-height:44px"),

@@ -128,12 +128,15 @@ extractor acceptance or upstream-main merge evidence.
 
 ## Explicit retained report assets
 
-Structured reports accept optional `assets: [{"path":"reports/result.md",
-"sha256":"64 lowercase hex characters"}]`. Paths are explicit, candidate-relative
+New completed project leaf reports must include at least one explicit
+human-reviewable asset: `assets: [{"path":"reports/result.md",
+"sha256":"64 lowercase hex characters"}]`. Historical completed reports without
+assets remain readable as history, but new report admission refuses an empty
+asset list before mutating task state. Paths are explicit, candidate-relative
 normal components. Traversal, absolute paths, symlink escapes and all formats
-except `.md`, `.json`, `.png`, `.webm` are refused. Markdown/JSON bytes must match
-the exact reported commit; JSON must parse. Captured media may be ignored files
-inside the candidate and must carry the expected hash and format signature.
+except `.md`, `.json`, `.png`, `.webm` are refused. Markdown/JSON bytes must
+match the exact reported commit; JSON must parse. Captured media may be ignored
+files inside the candidate and must carry the expected hash and format signature.
 There are limits of 16 assets, 64 MiB per asset and 256 MiB total.
 
 Before main integration/Verified, the driver retains copies in the existing
@@ -154,6 +157,9 @@ fallback. Missing files remain visibly unavailable. No `.mdai`, arbitrary-path
 allowlist widening or parsing of prose paths is introduced. Current legacy
 reports must be explicitly re-reported by their executor to add assets; this
 change does not guess or migrate paths from their summaries.
+`project.report_contract_refused` logs missing or malformed report contracts
+with the task, worker and generation so a sweep can find attempts that tried to
+complete without reviewable evidence.
 
 ## Bounded operator task retry
 

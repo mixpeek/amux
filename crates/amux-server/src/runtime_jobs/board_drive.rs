@@ -14077,7 +14077,7 @@ mod project_cadence_tests {
                     else if n==1 {
                         let e=planner::execution(c,"A").unwrap();
                         planner::register_test_workspace(&e.worker,"/fixture");
-                        let report=planner::Report{head:"a".repeat(40),summary:"nonbillable fixture report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Report exists".into(),command:"test -f report".into()}]};
+                        let report=planner::Report{head:"a".repeat(40),summary:"nonbillable fixture report".into(),assets:vec![crate::project_execution::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Report exists".into(),command:"test -f report".into()}]};
                         assert!(planner::record_report(c,"cadence","A",&e.worker,e.generation,&e.input_hash,&report).unwrap().applied);
                     } else {
                         assert_eq!(planner::execution(c,"A").unwrap().stage,"reported");

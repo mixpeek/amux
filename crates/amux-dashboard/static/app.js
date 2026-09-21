@@ -578,6 +578,11 @@ let sessions = [];
 let _sessionsSnapshotEpoch = 0;
 let pausedExpanded = false;
 let expiredExpanded = false;
+let _expiredWorkerInventory = new Map();
+let _expiredWorkerInventoryAt = 0;
+let _expiredWorkerInventoryAttemptAt = 0;
+let _expiredWorkerInventoryError = null;
+let _expiredWorkerInventoryLoading = false;
 let archivedExpanded = false;
 let gitInfo = {};  // {sessionName: {branch, repo, _conflict}}
 let _sessionLoadError = null; // Last failed worker read; a response is not necessarily data.
@@ -4697,7 +4702,7 @@ function _sessionReadNotice() {
 function _amuxAuthWithheldBanner() {
   if(!document.body || document.getElementById('amux-auth-withheld') || (document.getElementById('settings-menu')?.classList.contains('open') && document.getElementById('stab-integrations')?.classList.contains('active'))) return;
   const bar=document.createElement('div');bar.id='amux-auth-withheld';
-  bar.style.cssText='position:fixed;left:0;right:0;top:0;z-index:100000;padding:12px;background:#7c2d12;color:white;font:14px system-ui;';
+  bar.style.cssText='position:fixed;left:0;right:0;top:0;z-index:100000;min-height:44px;padding:calc(12px + env(safe-area-inset-top,0px)) 12px 12px;background:#7c2d12;color:white;font:14px system-ui;';
   bar.innerHTML='<b>Not signed in to this server.</b> Cached information may be stale. <button class="btn" onclick="_openConnectionSecurity(event)">Connection &amp; security · Sign in</button>';
   document.body.appendChild(bar);
 }
@@ -7401,18 +7406,58 @@ function toggleExpired() {
   _renderExpiredSection();
 }
 
+function _refreshExpiredWorkerInventory() {
+  const now = Date.now();
+  if (_expiredWorkerInventoryLoading || now - _expiredWorkerInventoryAttemptAt < 15000) return;
+  _expiredWorkerInventoryAttemptAt = now;
+  _expiredWorkerInventoryLoading = true;
+  fetch(API + '/api/board/orchestrations', { headers: _authHeaders ? _authHeaders() : {} })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('http_' + r.status)))
+    .then(d => {
+      if (!d || d.measured !== true || !Array.isArray(d.workers)) {
+        _expiredWorkerInventoryError = 'unmeasured';
+        console.warn('amux expired worker inventory unmeasured', {measured:false,n_considered:0,ver:APP_VER});
+        _renderExpiredSection();
+        return;
+      }
+      const next = new Map();
+      d.workers.forEach(w => {
+        if (w && w.lifecycle === 'expired' && w.name) next.set(w.name, w);
+      });
+      _expiredWorkerInventory = next;
+      _expiredWorkerInventoryAt = Date.now();
+      _expiredWorkerInventoryError = null;
+      _renderExpiredSection();
+      console.info('amux expired worker inventory measured', {measured:true,n_considered:d.workers.length,expired:next.size,ver:APP_VER});
+    })
+    .catch(e => {
+      _expiredWorkerInventoryError = e?.message || 'unavailable';
+      console.warn('amux expired worker inventory unavailable', {measured:false,n_considered:0,reason:_expiredWorkerInventoryError,ver:APP_VER});
+      _renderExpiredSection();
+    })
+    .finally(() => { _expiredWorkerInventoryLoading = false; });
+}
+
 function _renderExpiredSection() {
   const el = document.getElementById('expired-section');
   if (!el) return;
+  _refreshExpiredWorkerInventory();
   const sessNames = new Set(sessions.map(s => s.name));
-  const ephCards = boardItems.filter(c =>
-    (c.session || '').includes('-eph-') && !sessNames.has(c.session)
-  );
+  const ephCards = boardItems.filter(c => {
+    const worker = c.session || '';
+    return worker && !sessNames.has(worker) && _expiredWorkerInventory.has(worker);
+  });
   if (!ephCards.length) { el.innerHTML = ''; return; }
   const byWorker = {};
   ephCards.forEach(c => {
     const w = c.session;
-    if (!byWorker[w]) byWorker[w] = { name: w, cards: [], parent: '' };
+    const retired = _expiredWorkerInventory.get(w);
+    if (!byWorker[w]) byWorker[w] = {
+      name: w,
+      cards: [],
+      parent: retired?.ephemeral_parent || '',
+      lifecycle: retired?.lifecycle || 'expired'
+    };
     byWorker[w].cards.push(c);
     if (!byWorker[w].parent) {
       const m = w.match(/^(.+?)-eph-/);
@@ -7434,8 +7479,9 @@ function _renderExpiredSection() {
   const label = q && filtered.length !== workers.length
     ? `${filtered.length} of ${workers.length} expired`
     : `${workers.length} expired`;
+  const stale = _expiredWorkerInventoryError ? ` <span class="paused-card-chip" title="${esc(_expiredWorkerInventoryError)}">stale inventory</span>` : '';
   const chevron = `<span class="expired-chevron${expiredExpanded ? ' open' : ''}">&#x25B6;</span>`;
-  let html = `<div class="expired-footer" onclick="toggleExpired()">${chevron} ${label}</div>`;
+  let html = `<div class="expired-footer" onclick="toggleExpired()">${chevron} ${label}${stale}</div>`;
   if (expiredExpanded) {
     const TERMINAL = _CLOSED_STATUSES;
     const STATUS_DOT = { doing: 'var(--accent)', todo: 'var(--dim)', backlog: 'var(--dim)', done: '#4ade80', verified: '#4ade80', discarded: '#888', cancelled: '#888' };
@@ -11670,7 +11716,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1016';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1017';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -32672,16 +32718,10 @@ function _bdRenderFanoutChildren(item) {
     if (isEphemeral && workerStatus) {
       html += '<span class="bd-fanout-status ' + statusCls + '" title="Worker: ' + esc(childSession) + '">' + esc(workerStatus) + '</span>';
       html += '<span class="bd-fanout-worker" onclick="openPeek(\'' + escJs(childSession) + '\')">' + esc(childSession) + '</span>';
-      html += _fanoutStartBtn(childSession, !!(sess && sess.running));
+      html += _fanoutStartBtn(childSession, !!(sess && sess.running), sess?.lifecycle);
     } else if (childSession) {
-      // The card still names a worker, but it is not in the live sessions
-      // list at all -- a reaped/expired ephemeral worker (AMUX-4682, Ethan
-      // 2026-09-18: "the ephemeral worker was expired again"). Give it the
-      // SAME Start affordance rather than rendering a dead label: doStart's
-      // own /start call re-provisions it from the still-registered env file,
-      // or fails honestly (via showAlert) if that is gone too.
       html += '<span style="font-size:.72rem;color:var(--dim);">' + esc(childSession) + '</span>';
-      html += _fanoutStartBtn(childSession, false);
+      html += _fanoutStartBtn(childSession, false, _expiredWorkerInventory.has(childSession) ? 'expired' : '');
     }
     html += '</div>';
   });
@@ -32714,8 +32754,11 @@ function _orchSetFilter(f) {
 // than silently doing nothing, so a worker that is genuinely gone (no env
 // file left to start from, e.g. a reaped ephemeral worker) fails honestly
 // instead of the button looking broken.
-function _fanoutStartBtn(name, running) {
+function _fanoutStartBtn(name, running, lifecycle) {
   if (running !== false) return '';
+  if (lifecycle === 'expired') {
+    return '<span class="bd-fanout-status done" title="Retired project executor">expired</span>';
+  }
   return '<button class="bd-fanout-start-btn" onclick="event.stopPropagation();doStart(\'' + escJs(name) + '\');" title="Start ' + esc(name) + '">&#x25B6; Start</button>';
 }
 

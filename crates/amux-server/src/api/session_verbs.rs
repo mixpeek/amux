@@ -24196,8 +24196,9 @@ mod tests {
         // Wait for a subsequent acknowledged shell step, proving the old script
         // has finished, then inspect only this owned socket for receipt errors.
         super::shell_command_with("startup-proof","true",false,timeout,submit).await.unwrap();
+        let pt = super::pt("startup-proof");
         let pane=Command::new("tmux").arg("-S").arg(&socket)
-            .args(["capture-pane","-p","-t","=amux-startup-proof:","-S","-"])
+            .args(["capture-pane","-p","-t",pt.as_str(),"-S","-"])
             .output().unwrap();
         assert!(pane.status.success());
         assert!(!String::from_utf8_lossy(&pane.stdout).contains("No such file or directory"));

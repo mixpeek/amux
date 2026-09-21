@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Interactive fake CLI. Real tmux, HTTP claims, files, Git and gates remain real."""
-import json, os, re, ssl, subprocess, sys, time, urllib.request
+import hashlib, json, os, re, ssl, subprocess, sys, time, urllib.request
 from tty_input import terminal_input
 from pathlib import Path
 home=Path(os.environ['AMUX_HOME']);base=os.environ['AMUX_URL'].rstrip('/')
@@ -47,11 +47,15 @@ with terminal_input() as packets:
                 (home/('heartbeat-'+name)).write_text(str(time.time()));time.sleep(.2)
             content='wrong' if name=='repair' and task['attempt']==1 else name
             Path(name+'.txt').write_text(content+'\n')
-            subprocess.run(['git','add',name+'.txt'],check=True)
+            evidence=f"# Fixture report for {name}\n\nTask: {task['id']}\nAttempt: {task['attempt']}\nObserved output: {content}\n"
+            report_path=f"{name}-report.md"
+            Path(report_path).write_text(evidence)
+            asset_hash=hashlib.sha256(evidence.encode()).hexdigest()
+            subprocess.run(['git','add',name+'.txt',report_path],check=True)
             subprocess.run(['git','commit','-m','Create '+name+' report'],check=False,stdout=subprocess.DEVNULL)
             if name=='dirty': Path('uncommitted-evidence.txt').write_text('Preserve this work\n')
             head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-            report={'head':head,'summary':'Created '+name+' report','checks':[{'criterion':task['criteria'][0],'command':f'test "$(cat {name}.txt)" = "{name}"'}]}
+            report={'head':head,'summary':'Created '+name+' report','checks':[{'criterion':task['criteria'][0],'command':f'test "$(cat {name}.txt)" = "{name}"'}],'assets':[{'path':report_path,'sha256':asset_hash}]}
             try:print('Result',post('/api/projects/'+task['project']+'/tasks/'+task['id']+'/report',{'generation':generation,'input_hash':digest,'report':report}),flush=True)
             except Exception as e:print('Report failed:',str(e),flush=True)
             idle();status('done','stop-hook')

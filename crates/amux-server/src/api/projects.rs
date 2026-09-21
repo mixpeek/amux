@@ -601,7 +601,7 @@ mod tests {
         let state=AppState{store:db.clone(),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
         let app=routes().with_state(state);
         let marker=home.path().join("verification-must-not-run");
-        let body=json!({"generation":e.generation,"input_hash":e.input_hash,"report":{"head":"a".repeat(40),"summary":"candidate","checks":[{"criterion":"Output passes","command":format!("touch {}; {}/venv/bin/python tests/check.py",marker.display(),canonical.display())}]}});
+        let body=json!({"generation":e.generation,"input_hash":e.input_hash,"report":{"head":"a".repeat(40),"summary":"candidate","assets":[{"path":"report.md","sha256":"0".repeat(64)}],"checks":[{"criterion":"Output passes","command":format!("touch {}; {}/venv/bin/python tests/check.py",marker.display(),canonical.display())}]}});
         let before=crate::db::board_store::get_issue(&db.read().unwrap(),"A").unwrap().unwrap().snapshot_slim();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             for (generation,caller) in [(e.generation+1,e.worker.as_str()),(e.generation,"foreign"),(e.generation,e.worker.as_str())] {
@@ -692,7 +692,7 @@ mod tests {
         db.write(|c| {
             c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
             let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
-            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained report".into(),assets:vec![crate::project_execution::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
             planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
         }).unwrap();
         let body={let c=db.read().unwrap();let e=planner::execution(&c,"A").unwrap();let row=crate::db::board_store::get_issue(&c,"A").unwrap().unwrap();json!({"action":"verify","request":{"idempotency_key":"operator-checks","expect_generation":e.generation,"expect_revision":row.rev,"input_hash":e.input_hash},"report":e.report})};

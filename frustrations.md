@@ -4019,3 +4019,14 @@ CARD: AAB-9
 SYMPTOM: Parent's browser received ERR_CERT_AUTHORITY_INVALID at private localhost:18972 before the app loaded. offline_origin inferred trust from TLS filenames; the only withheld-auth action navigated with the owner token in the query string.
 COST: Parent could not reach the normal configuration UI for the isolated acceptance instance; existing status could not distinguish loaded certificate, saved certificate and browser trust.
 FIX: Native AAB-9 source adds shared Connect recovery via explicit-token POST/HttpOnly session, validated atomic certificate configuration, active resolver metadata and read-only localhost first-access guidance. Shared outbox excludes sensitive security mutations. Focused route/TLS and desktop/mobile regressions authored; parent compilation/browser/OS-trust validation pending. No runtime/trust-store changes by worker. No retirement or production success claimed.
+
+## Project completion could hide missing evidence and retired executors (AAB-10)
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-10
+SYMPTOM: New project leaf reports could move into review with exact commit/checks but no retained human-reviewable artifact, and successfully retired project executors named `px-*` disappeared from the existing Expired accordion because the UI only recognized missing workers whose names contained `-eph-`.
+COST: A project could look complete without a durable report/screenshot/video for human review, and historical executor attempt evidence became harder to inspect after safe retirement. No live PAA/Mixpeek state was changed by this fix.
+FIX: New project report admission now requires at least one explicit retained Markdown/JSON/PNG/WebM asset and logs `project.report_contract_refused` before state mutation when the contract is missing or malformed. The Expired accordion now measures the existing orchestration inventory for `lifecycle=expired`, projects retired `px-*` workers without a Start affordance, and logs measured inventory refreshes. Parent validation pending; historical reports remain readable.

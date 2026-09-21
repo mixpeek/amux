@@ -129,7 +129,19 @@ fn previous_result(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> ser
 
 pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
     let output_protocol=format!("For an unavailable concrete same-project output, POST /api/projects/{}/tasks/{}/required-outputs with generation, input_hash, idempotency_key, required_outputs (explicit task IDs), reason, and replaces_wait (null for a new wait; exact prior waiting string to replace an operational wait). Never turn spend/customer authorization into outputs. Stop after declaration. When outputs are Verified the harness continues the SAME attempt with a fresh generation and delivery ID. On continuation fetch the accepted local origin/main and compose required commits into your own candidate without resetting your existing work, then rerun/report every criterion; an output arriving is not verification of your task. Required output receipts below identify accepted reports and integration evidence.",p.name,row.id);
-    format!("{output_protocol}\nExecute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{\"generation\":{},\"input_hash\":\"{}\",\"report\":{{\"head\":\"40-character SHA\",\"summary\":\"output\",\"checks\":[{{\"criterion\":\"exact criterion\",\"command\":\"falsifiable check\"}}]}}}}. Optionally include report.assets as an array of objects with path (candidate-relative) and sha256 (lowercase hex). Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.\nTask packet:\n{}",p.name,row.id,e.generation,e.input_hash,p.name,row.id,json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command}))
+    format!(
+        r#"{output_protocol}
+Execute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. report.assets is required for new completed project tasks. Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.
+Task packet:
+{}"#,
+        p.name,
+        row.id,
+        e.generation,
+        e.input_hash,
+        p.name,
+        row.id,
+        json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command})
+    )
 }
 
 async fn transition(
@@ -606,7 +618,7 @@ mod observation_tests {
             let worker=e.worker.clone();state.store.write(move|c| {write_report(c,&worker,120.0);Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
             let store=state.store.clone();let report_e=e.clone();let ended=observation(&e.worker,120.0);
             observe_with(&state,"sample","A",&e,||async move {
-                store.write(move|c| planner::record_report(c,"sample","A",&report_e.worker,report_e.generation,&report_e.input_hash,&planner::Report{head:"a".repeat(40),summary:"valid concurrent report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]}).map_err(store::sql_error)).unwrap();Some(ended)
+                store.write(move|c| planner::record_report(c,"sample","A",&report_e.worker,report_e.generation,&report_e.input_hash,&planner::Report{head:"a".repeat(40),summary:"valid concurrent report".into(),assets:vec![super::super::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]}).map_err(store::sql_error)).unwrap();Some(ended)
             }).await.unwrap();
             let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(current.stage,"reported");assert_eq!(current.attempt,1);assert!(current.report.is_some());
         });
@@ -707,7 +719,7 @@ mod command_tests {
             c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
             let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
             e.stage="reported".into();e.waiting=None;e.attempt=1;e.verification_retry_pending=true;
-            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained".into(),assets:vec![super::super::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
             planner::save_execution(c,&row,&e,"project.verification_retry_granted").map_err(store::sql_error)
         }).unwrap();
         let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
@@ -775,7 +787,7 @@ mod command_tests {
                 let (state,p,mut e)=setup(if dirty {"dirty-head"}else{"stale-head"},&first);
                 e.stage="reported".into();e.waiting=None;
                 e.verification_retry_pending=true;
-                e.report=Some(planner::Report{head:if dirty{head.clone()}else{"b".repeat(40)},summary:"retained report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:first.clone()}]});
+                e.report=Some(planner::Report{head:if dirty{head.clone()}else{"b".repeat(40)},summary:"retained report".into(),assets:vec![super::super::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Output passes".into(),command:first.clone()}]});
                 let current=e.clone();state.store.write(move|c|{let row=bs::get_issue(c,"A")?.unwrap();planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)}).unwrap();
                 if dirty {std::fs::write(repo.join("dirty"),"uncommitted").unwrap();}
                 let error=verify(&state,&p,"A",&e).await.unwrap_err();
@@ -833,7 +845,7 @@ mod command_tests {
         let report = Report {
             head: "a".repeat(40),
             summary: String::new(),
-            assets: vec![],
+            assets: vec![super::super::assets::Asset { path: "report.md".into(), sha256: "0".repeat(64) }],
             checks: vec![
                 Check {
                     criterion: "one".into(),

@@ -269,12 +269,18 @@ mod tests {
             ("parent.env","CC_PROVIDER=codex\nCC_FLAGS='--model gpt-5'\nCC_PAUSED=1\n"),
             ("child.env","CC_EPHEMERAL=1\nCC_PARENT=parent\nCC_FLAGS='--model haiku'\n"),
             ("child.env.reaped","CC_EPHEMERAL=1\nCC_PARENT=wrong-parent\n"),
+            ("px-live.env","CC_EPHEMERAL=1\nCC_PARENT=project-coordinator\n"),
+            ("px-live.env.reaped","CC_EPHEMERAL=1\nCC_PARENT=old-project\n"),
+            ("px-retired.env.reaped","CC_EPHEMERAL=1\nCC_PARENT=project-coordinator\n"),
             ("retired.env.reaped","CC_EPHEMERAL=1\nCC_PARENT=parent\n"),
             ("new-coordinator.env","CC_ORCHESTRATOR=1\nCC_PROVIDER=gemini\n"),
             ("ordinary.env","CC_PROVIDER=claude\n"),
         ] { std::fs::write(dir.join(name),body).unwrap(); }
         let rows=inventory(home.path(),None).unwrap();
-        assert_eq!(rows.len(),4);
+        // Distinct identities: parent, child, px-live, px-retired, retired, new-coordinator.
+        // Live and .reaped files of one name collapse; the ordinary worker is excluded.
+        assert_eq!(rows.len(),6);
+        assert!(rows.iter().all(|w|w["name"]!="ordinary"));
         let find=|name:&str| rows.iter().find(|w|w["name"]==name).unwrap();
         assert_eq!(find("parent")["role"],"orchestrator");
         assert_eq!(find("parent")["orchestrator"],false); // ordinary parent's unrelated board stays out
@@ -282,11 +288,19 @@ mod tests {
         assert_eq!(find("parent")["lifecycle"],"paused");
         assert_eq!(find("child")["lifecycle"],"active");
         assert_eq!(find("child")["ephemeral_parent"],"parent");
+        assert_eq!(find("px-live")["lifecycle"],"active");
+        assert_eq!(find("px-live")["ephemeral_parent"],"project-coordinator");
+        assert_eq!(find("px-retired")["lifecycle"],"expired");
+        assert_eq!(find("px-retired")["ephemeral_parent"],"project-coordinator");
         assert_eq!(find("retired")["lifecycle"],"expired");
         assert_eq!(find("new-coordinator")["orchestrator"],true);
-        let scoped=inventory(home.path(),Some(&HashSet::from(["child".into()]))).unwrap();
-        assert_eq!(scoped.len(),1);
-        assert!(scoped[0]["ephemeral_parent"].is_null());
-        assert_eq!(scoped[0]["role"],"fan-out");
+        let scoped=inventory(home.path(),Some(&HashSet::from(["child".into(),"px-retired".into()]))).unwrap();
+        assert_eq!(scoped.len(),2);
+        let scoped_child=scoped.iter().find(|w|w["name"]=="child").unwrap();
+        assert!(scoped_child["ephemeral_parent"].is_null());
+        assert_eq!(scoped_child["role"],"fan-out");
+        let scoped_retired=scoped.iter().find(|w|w["name"]=="px-retired").unwrap();
+        assert_eq!(scoped_retired["lifecycle"],"expired");
+        assert!(scoped_retired["ephemeral_parent"].is_null());
     }
 }

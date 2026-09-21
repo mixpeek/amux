@@ -455,6 +455,7 @@ pub(crate) fn validate_report(row:&bs::IssueRow,report:&Report)->anyhow::Result<
             && report.head.len() == 40,
         "report needs exact commit SHA"
     );
+    super::assets::validate_manifest(&report.assets)?;
     anyhow::ensure!(
         !criteria.is_empty()
             && report.checks.len() == criteria.len()
@@ -501,7 +502,20 @@ pub fn record_report(
         matches!(state.stage.as_str(), "reserved" | "working"),
         "claim no longer accepts reports"
     );
-    validate_report(&row,report)?;
+    if let Err(error) = validate_report(&row, report) {
+        tracing::warn!(
+            project,
+            task = id,
+            worker,
+            generation,
+            measured = true,
+            n_considered = report.assets.len(),
+            verdict = "project.report_contract_refused",
+            %error,
+            "project report refused before state mutation; exact criteria, checks and retained assets are mandatory for new completions"
+        );
+        return Err(error);
+    }
     let policy=store::get(conn,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
     let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
         .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
@@ -553,6 +567,12 @@ pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture_asset() -> super::super::assets::Asset {
+        super::super::assets::Asset {
+            path: "report.md".into(),
+            sha256: "0".repeat(64),
+        }
+    }
     fn fixture() -> (tempfile::TempDir, crate::db::Store) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
@@ -678,7 +698,7 @@ mod tests {
             register_test_workspace(&e.worker,"/repo");
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES(?1,?2,'Task packet API_KEY=fixture-secret',1,'project-execution',2)",params![e.delivery_id,e.worker])?;
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('unrelated',?1,'Owner input',1,'')",[&e.worker])?;
-            let report=Report{assets:vec![],head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
+            let report=Report{assets:vec![fixture_asset()],head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
             assert!(record_report(c,"sample","A",&e.worker,e.generation+1,&e.input_hash,&report).is_err());
             assert_eq!(c.query_row("SELECT count(*) FROM steering_queue",[],|r|r.get::<_,i64>(0))?,2);
             record_report(c,"sample","A",&e.worker,e.generation,&e.input_hash,&report).map_err(store::sql_error)?;
@@ -766,7 +786,7 @@ mod tests {
         let e = execution(&db.read().unwrap(), "A").unwrap();
         register_test_workspace(&e.worker,"/repo");
         let report = Report {
-            assets: vec![],
+            assets: vec![fixture_asset()],
             head: "a".repeat(40),
             summary: "implemented".into(),
             checks: vec![Check {
@@ -803,6 +823,19 @@ mod tests {
                 e.generation,
                 "wrong-hash",
                 &report
+            )
+            .is_err());
+            assert!(record_report(
+                c,
+                "sample",
+                "A",
+                &e.worker,
+                e.generation,
+                &e.input_hash,
+                &Report {
+                    assets: vec![],
+                    ..report.clone()
+                }
             )
             .is_err());
             assert!(record_report(

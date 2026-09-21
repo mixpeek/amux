@@ -37,12 +37,24 @@ fn extension(asset: &Asset) -> anyhow::Result<&str> {
     );
     Ok(ext)
 }
+pub fn validate_manifest(assets: &[Asset]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !assets.is_empty(),
+        "report must include at least one retained Markdown, JSON, PNG or WebM asset"
+    );
+    anyhow::ensure!(assets.len() <= 16, "at most 16 assets");
+    for asset in assets {
+        extension(asset)?;
+    }
+    Ok(())
+}
+
 pub async fn retain(
     home: &Path,
     root: &Path,
     report: &super::planner::Report,
 ) -> anyhow::Result<Vec<Retained>> {
-    anyhow::ensure!(report.assets.len() <= 16, "at most 16 assets");
+    validate_manifest(&report.assets)?;
     let root = root.canonicalize()?;
     let target = home.join("artifacts/project-reports");
     std::fs::create_dir_all(&target)?;

@@ -59,6 +59,14 @@ server certificate/key bundle in the **correct private Amux home** and restart.
 Never upload/share the CA private key. No `ignoreSSL`, disabled TLS, silent trust-store
 change, remote plaintext owner access, or second authentication system is provided.
 
+Chromium-based clients may ignore a macOS trust entry constrained with
+`kSecTrustSettingsPolicyString` such as `-s localhost`, even when Safari-like
+system inspection appears to show a trusted leaf. The measured strict Codex
+in-app browser accepted the same uploaded localhost leaf after the operator
+corrected the macOS trust entry without a TLS bypass or CA trust. Treat browser
+acceptance as the proof, not the mere presence of a certificate file or saved
+trust metadata.
+
 ## Evidence and remaining validation
 
 This patch was authored through native worker `amux-astra-bootstrap`, task AAB-9
