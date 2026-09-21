@@ -246,6 +246,30 @@ fn img_inline_max() -> u64 {
     std::env::var("AMUX_IMG_INLINE_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000_000)
 }
 
+fn read_error_response(error: std::io::Error) -> Response {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        j(403, json!({"error": "access denied"}))
+    } else {
+        j(500, json!({"error": error.to_string()}))
+    }
+}
+
+#[cfg(test)]
+mod read_error_tests {
+    use super::read_error_response;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn permission_errors_are_access_denied() {
+        assert_eq!(read_error_response(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn unexpected_read_errors_remain_server_errors() {
+        assert_eq!(read_error_response(std::io::Error::from(std::io::ErrorKind::Other)).status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
+
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
@@ -301,7 +325,7 @@ async fn view(req: Request) -> Response {
         if sz <= img_inline_max() {
             let bytes = match std::fs::read(&p) {
                 Ok(b) => b,
-                Err(e) => return j(500, json!({"error": e.to_string()})),
+                Err(e) => return read_error_response(e),
             };
             out["data_url"] = json!(format!("data:{mime};base64,{}", B64.encode(&bytes)));
         } else {
@@ -313,7 +337,7 @@ async fn view(req: Request) -> Response {
     if ext == ".pdf" {
         let raw = match std::fs::read(&p) {
             Ok(b) => b,
-            Err(e) => return j(500, json!({"error": e.to_string()})),
+            Err(e) => return read_error_response(e),
         };
         if raw.len() > 10_000_000 {
             return j(400, json!({"error": "PDF too large (>10 MB)"}));
@@ -406,7 +430,7 @@ async fn view(req: Request) -> Response {
     // per-sequence — divergence only inside already-mangled bytes.
     let raw = match std::fs::read(&p) {
         Ok(b) => b,
-        Err(e) => return j(500, json!({"error": e.to_string()})),
+        Err(e) => return read_error_response(e),
     };
     let mut content = String::from_utf8_lossy(&raw).into_owned();
     let is_md = matches!(ext.as_str(), ".md" | ".markdown" | ".mdx");
