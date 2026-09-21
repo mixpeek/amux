@@ -55,7 +55,7 @@ New project workers receive the project model but do not inherit the bootstrap
 worker's flags. Real Codex executors need an explicitly authorized runtime
 configuration allowing loopback API requests for reports, such as
 `-c sandbox_workspace_write.network_access=true` under `workspace-write`.
-The parent is configuring the isolated test runtime for this; this change does
+The parent explicitly configured the isolated test runtime for this; the change does
 not silently enable network access globally or override an explicit sandbox.
 
 ## Verification scope
@@ -67,11 +67,26 @@ save/reload and drafts. Rust fixtures exercise real interpretation-to-CLI routin
 recorded attempt counts, provider failure/quota handling, usage, project policy
 round trips and linked-worktree Git metadata. They spend no live model calls.
 
-**Real provider acceptance remains pending.** Fixtures and offline config
-validation do not prove subscription access, runtime tool isolation or a live
-Astra interpretation/execution/integration cycle. After independent review and a
-separate test-server restart, the parent will submit the real extractor request
-through the UI. No worker server restart or deployment is performed by AAB-1.
+**Real supervised provider acceptance completed on runtime `182be3316eb4`.**
+The original AAB-1 fixtures/offline checks did not establish live acceptance;
+that was a later, separate run. Actual Amux Astra coordination and executors
+adopted/repaired the direct Codex prototype, verified source and merged output,
+ran hooks, merged disposable local main `dc483a023e74d9a35d7d99dd3607cf94c7c1f99b`,
+retained 26 outputs and retired three executors. PAA-1 through PAA-4 are Verified.
+Parent supervision included explicit bounded recovery; the final checks-only
+retry preserved attempt/generation/report without another model grant. Initial
+direct Codex service/provider tests are historical evidence, not Amux-produced.
+
+The [current validation record](project-lifecycle-validation.md) links the
+48-check audit and 11 source plus 11 merged browser checks, and names auth,
+service, pricing and production limits. This is not universal provider
+compatibility or an unsupervised-success claim. The later 424 full UI failed
+after ten scenarios due to launcher startup, and fb31 failed after two due to
+slow shell setup. Final ab2 passed all 13 isolated UI scenarios and its focused,
+mutation, restored-source, workspace and strict Clippy gates. After deployment
+to private 18972, a read-only 48/48 audit and four-Verified/report-preview UI
+check passed. The original real source/merged gates ran on 182 and were not
+rerun on ab2. No production rollout or all-green full suite is established.
 
 Parent-run focused evidence (2026-09-20), through `scripts/safe-cargo.sh` with
 `AMUX_SESSION=amux-astra-bootstrap`, the private amux home/endpoint and the shared
@@ -92,8 +107,9 @@ Cargo target:
 These are focused checks, not a claim that the entire server test suite ran.
 Strict `scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings`
 passed with exit 0 (parent-run, 42.60 seconds). The dedicated `codex_helper`
-test result and exact committed build remain tracked in the private handoff
-until their results arrive.
+test result and exact committed build were still pending in that original
+private handoff. Later live acceptance and revision-specific harness results
+are recorded in the current validation section linked above.
 
 ## Live intake repair (AAB-2)
 
@@ -139,7 +155,8 @@ beside that dim empty prompt, with a single final path-bearing footer row.
 `codex_plain_footer_recognized` announces recognition once per process. Busy
 indicators still block delivery, and real drafts remain typed input. The fixture
 uses the observed footer layout and busy/draft negative controls; actual
-unattended executor delivery remains part of the parent's acceptance run.
+unattended executor delivery remained pending at that repair checkpoint; the
+later supervised acceptance is recorded above.
 The bootstrap assignment was manually delivered with its lifecycle disabled;
 that intervention is not evidence of unattended success.
 
@@ -148,4 +165,5 @@ AAB-2 checks and exact commands are recorded in the private
 Chromium against shipped UI with fixture responses, checking original-receipt
 routing, key reuse after a lost response, one grant, and preserved pause.
 It makes no provider calls. Parent build/restart and retry of the preserved live
-receipt are separate acceptance steps; this worker does neither.
+receipt were separate acceptance steps, completed in the later supervised run.
+The original failed receipt and intervention history remain retained.

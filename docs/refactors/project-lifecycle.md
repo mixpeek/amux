@@ -2,7 +2,7 @@
 
 Branch: `codex/amux-project-lifecycle`  
 Baseline: `38262d01` (2026-09-20)  
-Status: all six branch stages implemented and validated; branch only. No production board migration or main deployment is part of this branch build.
+Status: six branch stages implemented; real supervised extractor acceptance completed on runtime `182be3316eb4`. Final launcher runtime `ab2b73576000` passed the 13-scenario isolated UI and focused/mutation/check/Clippy gates; the private post-deploy audit passed 48/48. The full 182 suite had three failures; route correction 424 resolved two. See [current evidence](project-lifecycle-validation.md#current-evidence--acceptance-and-final-private-image). No production board migration or upstream main deployment is claimed.
 
 ## Product contract
 
@@ -117,13 +117,13 @@ Full production rollout and migration of the user's active boards happens after 
 - [x] Stage 3: single execution authority. Atomic claims, shared delivery claims, scoped executors, independent fan-out, pause/resume and restart recovery connected to the existing adapters.
 - [x] Stage 4: verification/integration/retirement. Browser fixtures verify real commits on a disposable remote main, bounded failed-check repair, cleanup, and retention of dirty work.
 - [x] Stage 5: project UI and usage attribution. Ten isolated browser scenarios pass; mobile bounds and global orchestration membership were inspected and asserted.
-- [x] Stage 6: migration, consolidation and branch validation. Explicit migration/rollback pass through the UI; legacy dispatch is excluded at shared boundaries. Full server and core suites, JavaScript regression checks, and strict workspace Clippy pass. See [validation evidence](project-lifecycle-validation.md) for exact counts, build identity and the order of final regression checks.
+- [x] Stage 6: migration, consolidation and branch validation. Explicit migration/rollback pass through the UI; legacy dispatch is excluded at shared boundaries. Initial branch suites passed at the recorded historical revision. Later full server validation at 182 reported 3,281 passed / 3 failed / 36 ignored; two route failures were fixed at 424, while the live-host admission failure remains. Final ab2 launcher focused/mutation/check/Clippy gates and 13-scenario UI passed; this is not a full-server-suite rerun. See [validation evidence](project-lifecycle-validation.md) for exact counts, build identity and the order of final regression checks.
 
 ## Implemented adapter boundaries
 
 The branch reuses the existing provider launcher, durable steering queue, issue table, attempt ledger, token ledger, Git candidate verifier and retirement logic. New execution checkpoints live on the issue, and project settings live on the group. Legacy dispatch reads an explicit legacy-only issue view; protocol planning excludes project-owned issues. Temporary project executors reject legacy automatic prompts at the common enqueue boundary.
 
-The initial coordinator adapter uses Claude's read-only helper mode with tools/hooks disabled and low effort. Executor profiles use the existing Claude/Codex/Gemini/Ollama launch adapters. The UI labels the coordinator limitation explicitly. A provider's reasoning quality or every model's real CLI behavior is not established by fake-provider acceptance tests.
+Coordinator policy explicitly selects Claude or Codex and its model; executor provider/model remains independent through the existing Claude/Codex/Gemini/Ollama adapters. The original Claude-only helper was the initial stage, not the current restriction. Real native Astra adoption, repair, verification, disposable-main integration and retirement completed under parent supervision; initial direct Codex prototype/service tests retain separate provenance. Fake-provider acceptance does not establish every model's real CLI behavior. See [current evidence and limits](project-lifecycle-validation.md).
 
 Paused projects retain accepted commands and work. Pause kills the executor process tree; resume replaces the execution delivery generation without purchasing a new attempt. Delivery rechecks current ownership/generation and pause state. Verification pins the reported commit and requires a clean worktree before candidate integration. Requirements, repository identity and current gates cannot silently change underneath active verification.
 

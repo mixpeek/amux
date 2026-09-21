@@ -1,5 +1,27 @@
 # Required project outputs and continuation (AAB-3)
 
+## Current acceptance status — 2026-09-21
+
+The real extractor case is complete on Amux runtime `182be3316eb4`: PAA-1 through
+PAA-4 Verified, disposable main `dc483a023e74d9a35d7d99dd3607cf94c7c1f99b`, three
+executor worktrees retired and 26 retained outputs. Source and merged candidates
+each passed 11 fresh browser checks. After the retained 600-second failure,
+the parent's actual UI verification-only retry used the same attempt 3,
+generation 3 and `f303...` report with an 1800-second command bound and no new
+model grant. Initial direct Codex prototype/service testing is separate from
+Amux Astra adoption/repair/verification/integration under parent supervision.
+See [current validation, exact audit paths and limits](project-lifecycle-validation.md).
+
+The implementation notes below preserve historical failures and their original
+handoffs. Their pending statements describe earlier checkpoints. The 182 full
+UI passed 13 scenarios; the 424 full UI later failed after ten because of a
+shared launcher defect, and fb31 failed after two due to slow setup. Final ab2
+passed all 13 isolated UI scenarios, focused gates, both entry/late mutations,
+restoration, workspace check and strict Clippy. Its private post-deploy audit
+passed 48/48 and the UI retained four Verified cards/report preview. Original
+real source/merged acceptance remains the 182 execution, not an ab2 rerun. No
+blanket full-suite pass or production deployment is implied.
+
 The private live acceptance exposed a protocol gap: PAA-3's normal browser
 verification failed because its candidate lacked PAA-2's backend output.
 The second execution attempt explicitly reported an operational wait. That
@@ -84,12 +106,13 @@ Logs expose `project.outputs_declared`, `project.outputs_continued` and
 execution snapshots, so the original failed report, wait and continuation can
 be inspected without parsing prose.
 
-## Private follow-up and proof
+## Historical private follow-up and proof
 
 `logs/aab3-required-output-request.json` in the isolated test home is an
-unsubmitted example made from the observed PAA-3 generation/hash/wait. After
-parent review, build and restart, the **actual waiting PAA-3 executor** should
-re-read its current project state and POST that structure using its own identity.
+unsubmitted example made from the then-observed PAA-3 generation/hash/wait. The
+original follow-up required the **actual waiting PAA-3 executor** to re-read
+current project state and POST using its own identity after parent deployment.
+That example is historical, not a request to mutate the now-Verified task.
 If the snapshot changed, form a new explicit declaration from current state;
 do not force old generation/hash values or reset attempts. Reuse the same key
 for retransmission of the same body. This worker performs no live project write,
@@ -440,7 +463,7 @@ for evidence and limits. Original failed runs and live project state remain
 untouched; the actual extractor project is not complete or Verified.
 
 
-### AAB-3: owner input requires an active claim (pending parent validation)
+### AAB-3: owner input requires an active claim (historical implementation checkpoint)
 
 The parent observed generation-6 owner steering execute while the task was
 waiting after failure. The shared steering predicate previously checked project
@@ -621,11 +644,14 @@ across uncertain responses in the existing UI retry storage. The measured
 `project.verification_retry_granted` event/log distinguishes this action from a
 model repair grant; existing retry refusal logs retain admission errors.
 
-Snapshot-only tests cover timeout bounds, per-command source/merged consistency,
+The originally snapshot-only tests cover timeout bounds, per-command source/merged consistency,
 timeout descendant cleanup, preflight, stale/dirty candidates, real API replay
 and scope refusal, no model queue/attempt growth, and failed-rerun no-loop behavior.
 The full isolated UI adds a one-second timeout, configuration update, explicit
 rerun of the retained report, zero additional provider calls, Verified and normal
-retirement. These are new pending tests, not a claim of passing runtime/browser
-acceptance. Parent applies the reviewed patch and runs gates/negative controls;
-see `logs/aab3-verification-retry-handoff.json` in the private evidence directory.
+retirement. They were pending in `logs/aab3-verification-retry-handoff.json`;
+subsequently the 182 focused gates and 13-scenario UI passed, and the real
+verification-only retry completed with the original report and attempt intact.
+The later 424 and fb31 startup failures, followed by the ab2 isolated UI pass
+and read-only post-deploy audit, remain separate in the current validation
+evidence linked above. The full server suite was not rerun on ab2.

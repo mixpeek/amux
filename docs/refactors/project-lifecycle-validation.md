@@ -1,8 +1,157 @@
 # Project lifecycle branch validation
 
-Date: 2026-09-20. Branch: `codex/amux-project-lifecycle`.
+Evidence updated: 2026-09-21. Branch: `codex/amux-project-lifecycle`.
 
 This validates the project execution path on a disposable server, not a production fleet migration. The existing group, issue, command, attempt, delivery, token and Git integration primitives remain authoritative. Projects own outcomes; temporary workers execute finite claims.
+
+## Current evidence — acceptance and final private image
+
+Evidence root below: `BASE=../extractor-case-run` relative to this checkout.
+`BASE/final-evidence-brief.json` separates real acceptance executed on 182 from
+the final ab2 launcher-image validation and read-only post-deploy audit. No
+result below is a blanket all-tests-pass claim or a full-suite rerun on ab2.
+
+### Real extractor outcome
+
+On Amux runtime `182be3316eb490b7cc2e2b24811a0cb9a6223ed0` (build
+`2c54a375216d3c9c`), **PAA-1 through PAA-4 are Verified**: one accepted outcome
+and three tasks. Disposable local main is
+`dc483a023e74d9a35d7d99dd3607cf94c7c1f99b`. All three task commits are ancestors
+of that main; all three executor worktrees were removed and workers expired.
+The independent audit has **48 passing checks**, `complete: true`, and the
+export preserves **26 explicitly retained task outputs** with matching hashes.
+This is local acceptance and integration, not a production or upstream push.
+
+The original implementation prototype and historical service/provider tests
+were **direct Codex work**. Subsequently, actual Amux native Astra coordination
+and executors adopted and repaired that code, submitted structured reports,
+verified source and merged candidates, ran normal hooks, merged disposable
+main, retained evidence and retired executors **under parent supervision**.
+The parent supplied independent audit/export/browser observation, not product
+source. This was supervised recovery, not an uninterrupted autonomous run.
+
+PAA-4's first independent generation-3 gate timed out at 600 seconds. The parent
+used the actual Projects UI to set the command bound to 1800 seconds and request
+**Rerun checks** on the retained `f303abcd9ebda8e994e462111bee542412a3f603`
+report. The receipt says `model_attempt_granted: false`; attempt 3, generation 3,
+report identity and earlier failures were preserved. The retained executable
+check is `python3 acceptance/extractor/gate.py all`, alongside the project gate
+`git diff --check`, verified in each immutable candidate phase. No additional model attempt
+was granted by this verification-only recovery. Fresh browser gates then passed
+**11 checks each**, with zero browser errors, on both that source and merged
+`dc483a023e74...`. The committed report's earlier pending-browser text is immutable
+submission-time evidence; later gate receipts establish completion without
+rewriting it.
+
+Exact evidence under `BASE`:
+
+- [Retained output index](../../../extractor-case-run/verified-assets/dc483a023e74/INDEX.md),
+  `amux-acceptance-audit.json` and
+  `verified-assets/dc483a023e74/export-manifest.json`: report links, 48 audit
+  checks, retirement and 26 hashes.
+- `amux-produced-assets/paa4-7shfydo4/{report,sha256,execution}.json`: source
+  browser checks, source identity and isolated-process cleanup.
+- `amux-produced-assets/paa4-0rjnrbvd/{report,sha256,execution}.json`: merged
+  browser checks and identity. Screenshots and raw WebM remain beside the reports.
+- `astra-verification-ui-retry-proof.json`: actual UI action and exact retained
+  report bound to the verification grant.
+- `astra-final-ui-proof.json` and `astra-final-human-ui-review.json`: four
+  Verified cards and a read-only retained Markdown preview after retirement.
+
+### Harness results by exact revision
+
+| Revision / command | Recorded result and scope |
+| --- | --- |
+| `182be3316eb4`: `scripts/test-contended.sh -p amux-server --no-fail-fast` | **3,281 passed, 3 failed, 36 ignored**, 76 result targets, exit 101. Failures: live-host admission plus two route inventory checks. |
+| `182be3316eb4`: focused project/fanout tests, workspace check, strict all-target Clippy | 65 project tests and 14 fanout tests passed; check and Clippy exit 0. State 27 and outbox 14 passed; SPA lint 0 errors, 50 existing warnings. Targeted verification/cleanup mutations failed the expected assertions and source was restored. |
+| `182be3316eb4`: full isolated UI | **13 PASS**, zero uncaught browser errors, 14 fixture intake and 13 execution calls. Same build `2c54a375216d3c9c` before/after restart; private server/socket cleanup confirmed. Providers fake/nonbillable; UI, DB, Git, tmux, worktrees and retirement real. |
+| `424e4b9d9d5ded4f9805457fb008dcade58d5357`: `scripts/safe-cargo.sh test -p amux-server --test route_table --test route_table_completeness` | **4 passed** across the two targets. Three missing POST inventory entries corrected; workspace check and strict Clippy passed. This does not relabel the earlier full suite as green. |
+| `424e4b9d9d5d`: full isolated UI | **10 of 13 scenarios passed**, then verification-retry fixture failed before provider input. Unsent packet and stopped executor retained; no provider execution for that task. Not a 13-scenario pass. |
+| `fb31cbd536969e02ebd052e98882156b8e3f8693`: full isolated UI | **2 of 13 scenarios passed**, then PU-5 setup receipt timed out before provider input. Focused gates and long-input/stale-UI mutations had passed; this failure exposed healthy slow profile setup exceeding the acknowledgement window. |
+| `ab2b73576000cd5808e8b583269f9b2e144b65e5`: focused startup gates | 2 startup tests; 5 shell/cwd/env/pause checks; 65 project tests passed. Entry-as-completion and late-receipt mutations each failed as expected; restored startup tests passed. Workspace check and strict all-target Clippy passed. |
+| `ab2b73576000`: full isolated UI | **13 PASS**, zero uncaught browser errors, 14 fixture intake / 13 execution calls. Restart image identity and private fixture/server/socket cleanup verified; parent inspected four desktop/mobile screenshots. |
+
+Full 182 UI command:
+
+```bash
+python3 e2e/project-lifecycle/run.py --binary ../extractor-case-run/amux-server-astra-182be3316eb4 --out ../extractor-case-run/lifecycle-ui-182be3316eb4 --port 18973
+```
+
+Evidence: `BASE/lifecycle-ui-182be3316eb4/{results,completion-proof}.json`;
+`BASE/harness-validation/424e4b9d9d5d/` retains
+`astra-full-server-result-r2.json`, its full log,
+`astra-route-inventory-results.json`, focused logs and copy manifest.
+`BASE/lifecycle-ui-424e4b9d9d5d/` retains the failed UI run and
+`/private/tmp/amux-project-67b4uvwa` its fixture. The host-admission failure
+measured 32,396 MB swap; its guard remains unchanged and failing evidence is
+retained. Earlier failures below remain part of the chronology.
+
+### Final exact image and private deployment
+
+Final runtime is `ab2b73576000cd5808e8b583269f9b2e144b65e5`, binary SHA256
+`36c0148191d201f507e99a9d7d0a3edd7de0c4e921e81c8c0adb9f7b9fd81eb5`.
+Both UI health snapshots identify build `36c0148191d201f5` across restart.
+
+```bash
+python3 e2e/project-lifecycle/run.py --binary ../extractor-case-run/amux-server-astra-ab2b73576000 --out ../extractor-case-run/lifecycle-ui-ab2b73576000 --port 18973
+```
+
+Evidence: `BASE/lifecycle-ui-ab2b73576000/completion-proof.json` and
+`parent-visual-review.json`. `BASE/astra-slow-setup-results.json` records exact
+commands, expected mutation failures and restoration, including
+`scripts/safe-cargo.sh test -p amux-server --lib startup_shell_`, `project_`,
+`scripts/safe-cargo.sh check --workspace` and
+`scripts/safe-cargo.sh clippy --workspace --all-targets -- -D warnings`.
+
+The parent deployed this exact image only to **private port 18972**, PID 73659
+at observation. `BASE/astra-slow-setup-private-deploy.json` records the change.
+The read-only `BASE/amux-acceptance-audit-ab2b73576000.json` passed **48/48**;
+`BASE/astra-deployed-final-ui-proof.json` passed with all **four Verified** cards
+and the retained report preview accessible after executor retirement.
+**The real source and merged acceptance gates executed on 182; they were not
+rerun on ab2.** The ab2 observations establish retained state/assets and UI
+access after deployment, not fresh product verification. Documentation and
+feature-branch publication remain parent-owned; no upstream-main claim follows.
+
+The 424 and fb31 failures remain at `BASE/lifecycle-ui-424e4b9d9d5d/` and
+`BASE/lifecycle-ui-fb31cbd53696/`. Neither is relabelled green by the ab2 result.
+The full 182 server suite still has its recorded three failures; the later
+four route-test passes fix two, and the live-host admission failure is retained
+unchanged. No full-server-suite rerun on ab2 is asserted.
+
+### Shared architecture and limits
+
+KISS here means reusing groups, issues, claims, command receipts, delivery,
+usage, Git verification and retirement. Deterministic scheduling/readiness,
+same-project output continuation and current-turn delivery evidence need no
+model polling. Duplicate receipts reuse interpretation; owner steering stays
+on its active claim; byte-identical commands run once per immutable verification
+phase. Checks-only recovery reuses a retained report without buying a repair
+turn. Startup uses the same short-script transport and one bounded shell budget,
+with separate entry/completion receipts and measured stages; a slow profile does
+not fabricate another model attempt. These are token-conservative mechanisms, **not a measured token-saving
+percentage**. Unpriced Astra cost and observed outside-attempt usage remain
+visible; neither becomes zero or disappears from history.
+
+No production migration/deployment, GitHub main or upstream Mixpeek push is
+claimed. Current persistent DB, authentication, Ray and all live provider/service
+flows were not rerun by Amux. Historical direct service checks retain their
+HDBSCAN noise and clustered-counter limitations. Shared Serve reservations
+changed from 14 to 13 apps, 10.6 to 8.6 warm CPU and 26.5 to 22.5 GiB memory;
+these are configuration reductions, not realized dollar savings. Standalone
+package SDKs are unchanged; the Studio generated client was checked. Studio's
+1,095 known type errors remain under its baseline. The raw 18.52-second merged
+browser recording includes startup and is not a narrated production demo.
+Private self-signed TLS disables the offline service worker; no user-browser
+trust bypass is claimed. Explicit isolated Codex loopback authorization and
+subscription/transport limitations remain as described in
+[coordinator acceptance](project-codex-coordinator.md).
+
+## Historical evidence and failure chronology
+
+The following sections retain their original revision-specific results. Pending
+real-case statements describe those earlier checkpoints, superseded only by the
+current acceptance evidence above; they are not current work instructions.
 
 ## AAB-3 validated runtime revision: 7ee3eb6f313b
 
@@ -47,9 +196,9 @@ inspection remains with the parent, not claimed here.
 
 Providers were deterministic, fake and nonbillable; UI, database, processes,
 Git, worktrees, verification and retirement were real. This validates the
-shared harness, not completion of the actual extractor project: at this handoff
-PAA-2 generation 6 is still verifying, and that project is **not complete or
-Verified**. No production rollout or paid-provider outcome is implied. Earlier
+shared harness, not completion of the actual extractor project: at that handoff
+PAA-2 generation 6 was still verifying, and the project was **not complete or
+Verified**. The current evidence above records its later completion. No production rollout or paid-provider outcome is implied. Earlier
 failed fixtures, including `lifecycle-ui-b559-settled` and
 `lifecycle-ui-f1277e53bf18`, and the generation-5 late candidate-command rejection
 remain retained; successful later evidence does not relabel those failures.
@@ -109,7 +258,7 @@ The earlier isolated runs are retained as negative controls. Run `full6` detecte
 
 ## Limits and rollout
 
-No paid model trials were added. These tests establish harness behavior, not live model reasoning quality, real token savings or universal CLI compatibility. Coordinator intake currently uses Claude's read-only helper; executor profiles retain the existing Claude, Codex, Gemini and Ollama adapters. All four profile configurations are exercised through the UI; their live providers are not invoked.
+No paid model trials were added by those fake-provider fixtures. Those tests establish harness behavior, not live model reasoning quality, real token savings or universal CLI compatibility. The initial coordinator used Claude's read-only helper; AAB-1 subsequently added explicit Claude/Codex coordinator selection independently of the executor. Executor profiles retain the existing Claude, Codex, Gemini and Ollama adapters. All four profile configurations are exercised through the UI; their live providers are not invoked.
 
 Usage gaps remain visible. Observed budget stops prevent subsequent calls; they cannot impose a hard cap on an already running provider turn. An operational failure or real authorization boundary is a recorded waiting reason, not fabricated Verified work.
 
@@ -121,7 +270,7 @@ Submitted the user's full shared extractor consolidation request through the
 Projects UI on a separate server (`https://localhost:18972`), with a private
 Mixpeek clone and local bare remote. The configured coordinator was Claude
 Haiku; executor Sonnet, capacity 1, maximum 2 attempts. The command was retained
-and its draft cleared. **Real autonomous acceptance did not complete:** the
+and its draft cleared. **That initial real autonomous acceptance attempt did not complete:** the
 Claude CLI returned its account weekly limit before any model input/output
 tokens, with reset Sep 23 at 11am America/New_York. No paid overages were used.
 Implementation of the Mixpeek case proceeded separately and is not evidence of
