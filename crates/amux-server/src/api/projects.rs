@@ -547,6 +547,60 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use tower::ServiceExt;
     #[test]
+    fn project_report_rejects_source_commands_before_mutation_and_accepts_same_attempt_correction() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let repo=home.path().join("repository");std::fs::create_dir(&repo).unwrap();
+        let canonical=std::fs::canonicalize(&repo).unwrap();let alias=home.path().join("repo-alias");
+        std::os::unix::fs::symlink(&repo,&alias).unwrap();
+        let db=crate::db::Store::open(&home.path().join("db")).unwrap();
+        db.write(move |c| {
+            let policy=serde_json::from_value(json!({"repository":alias.to_string_lossy(),"enabled":true,"coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":"./verify.sh"})).unwrap();
+            store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
+            c.execute("INSERT INTO issues(id,title,status,type,project_group,next_action,acceptance_criteria,created,updated) VALUES('A','Output','todo','doc','sample','Write report','[\"Output passes\"]',1,1)",[])?;
+            crate::project_execution::planner::claim(c,"sample","A").map_err(store::sql_error)?;
+            let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=crate::project_execution::planner::execution(c,"A").unwrap();e.stage="working".into();
+            crate::project_execution::planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+        }).unwrap();
+        let e=crate::project_execution::planner::execution(&db.read().unwrap(),"A").unwrap();
+        crate::project_execution::planner::register_test_workspace(&e.worker,canonical.to_str().unwrap());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();std::fs::write(home.path().join("sessions").join(format!("{}.env",e.worker)),"CC_PROJECT=sample\nCC_TAGS=sample\n").unwrap();
+        let db=std::sync::Arc::new(db);
+        let state=AppState{store:db.clone(),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let app=routes().with_state(state);
+        let marker=home.path().join("verification-must-not-run");
+        let body=json!({"generation":e.generation,"input_hash":e.input_hash,"report":{"head":"a".repeat(40),"summary":"candidate","checks":[{"criterion":"Output passes","command":format!("touch {}; {}/venv/bin/python tests/check.py",marker.display(),canonical.display())}]}});
+        let before=crate::db::board_store::get_issue(&db.read().unwrap(),"A").unwrap().unwrap().snapshot_slim();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for (generation,caller) in [(e.generation+1,e.worker.as_str()),(e.generation,"foreign"),(e.generation,e.worker.as_str())] {
+                let mut rejected=body.clone();rejected["generation"]=json!(generation);
+                let response=app.clone().oneshot(axum::http::Request::builder().method("POST").uri("/sample/tasks/A/report").header("x-amux-session",caller).header("content-type","application/json").body(Body::from(rejected.to_string())).unwrap()).await.unwrap();
+                assert!(!response.status().is_success());
+                if generation==e.generation && caller==e.worker {
+                    let bytes=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+                    assert!(String::from_utf8_lossy(&bytes).contains("resubmit the same generation"));
+                }
+                let c=db.read().unwrap();assert_eq!(crate::db::board_store::get_issue(&c,"A").unwrap().unwrap().snapshot_slim(),before);
+                assert!(crate::project_execution::planner::execution(&c,"A").unwrap().report.is_none());
+                let p=store::get(&c,"sample").unwrap().unwrap();
+                assert_ne!(crate::project_execution::planner::plan(&c,&p).unwrap().into_iter().find(|p|p.id=="A").unwrap().action,"verify");
+                assert!(!marker.exists());
+            }
+            let mut corrected=body;corrected["report"]["checks"][0]["command"]=json!("test -f report.md");
+            let registered=crate::fanout_workspace::load(home.path(),&e.worker).unwrap();
+            for foreign_repo in [false,true] {
+                let mut wrong=registered.clone();
+                if foreign_repo {wrong.repo=home.path().to_string_lossy().into_owned();} else {wrong.branch="amux/fanout/foreign".into();}
+                crate::fanout_workspace::save(home.path(),&e.worker,&wrong).unwrap();
+                let response=app.clone().oneshot(axum::http::Request::builder().method("POST").uri("/sample/tasks/A/report").header("x-amux-session",&e.worker).header("content-type","application/json").body(Body::from(corrected.to_string())).unwrap()).await.unwrap();
+                assert_eq!(response.status(),StatusCode::CONFLICT);
+                assert_eq!(crate::db::board_store::get_issue(&db.read().unwrap(),"A").unwrap().unwrap().snapshot_slim(),before);
+            }
+            crate::fanout_workspace::save(home.path(),&e.worker,&registered).unwrap();
+            let response=app.oneshot(axum::http::Request::builder().method("POST").uri("/sample/tasks/A/report").header("x-amux-session",&e.worker).header("content-type","application/json").body(Body::from(corrected.to_string())).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::OK);
+        });
+        let after=crate::project_execution::planner::execution(&db.read().unwrap(),"A").unwrap();assert_eq!(after.stage,"reported");assert_eq!(after.generation,e.generation);assert_eq!(after.attempt,e.attempt);assert!(!marker.exists());
+    }
+    #[test]
     fn project_outputs_supported_api_is_scoped_strict_and_idempotent() {
         let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
         let (_dir,db,body)=crate::project_execution::outputs::tests::fixture();

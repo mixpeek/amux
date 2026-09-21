@@ -11,6 +11,13 @@ pub struct Workspace {
     pub base: String,
 }
 
+/// Configured repository aliases and Git's recorded canonical root share identity.
+/// Failed resolution never makes different paths equivalent.
+pub(crate) fn same_repository(left: &str, right: &str) -> bool {
+    left == right || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)),
+        (Ok(left), Ok(right)) if left == right)
+}
+
 pub(crate) async fn git(repo: &str, args: &[&str]) -> Result<String, String> {
     let mut argv = vec!["-C", repo];
     argv.extend_from_slice(args);

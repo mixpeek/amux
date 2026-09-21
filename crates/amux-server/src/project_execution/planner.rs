@@ -405,6 +405,14 @@ pub fn record_report(
                 == 1),
         "each current criterion needs exactly one executable check"
     );
+    let policy=store::get(conn,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
+    let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
+        .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
+    anyhow::ensure!(crate::fanout_workspace::same_repository(&workspace.repo,&policy.policy.repository) && workspace.branch==format!("amux/fanout/{worker}"),"registered workspace does not match project executor");
+    if let Err(error)=super::driver::validated_verification_commands(&workspace,&policy.policy.verify_command,report) {
+        tracing::warn!(project,task=id,worker,generation,measured=true,n_considered=report.checks.len()+1,verdict="project.report_commands_refused",%error,"report unchanged; correct candidate-relative commands and resubmit this generation");
+        anyhow::bail!("report command refused before verification; correct the command and resubmit the same generation: {error}");
+    }
     state.stage = "reported".into();
     state.report = Some(report.clone());
     state.waiting = None;
@@ -437,6 +445,12 @@ pub fn delivery_current(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
+    let home=crate::config::amux_home();
+    crate::fanout_workspace::save(&home,worker,&crate::fanout_workspace::Workspace{repo:repo.into(),path:home.join("worktrees").join(worker).to_string_lossy().into(),branch:format!("amux/fanout/{worker}"),base:"a".repeat(40)}).unwrap();
 }
 
 #[cfg(test)]
@@ -495,9 +509,11 @@ mod tests {
     #[test]
     fn project_result_settles_only_its_exact_delivery_even_after_sender_restart() {
         let (_dir, db) = fixture();
+        let _home=crate::api::settings::test_env::set_home(_dir.path());
         db.write(|c| {
             claim(c,"sample","A").map_err(store::sql_error)?;
             let e=execution(c,"A").unwrap();
+            register_test_workspace(&e.worker,"/repo");
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES(?1,?2,'Task packet API_KEY=fixture-secret',1,'project-execution',2)",params![e.delivery_id,e.worker])?;
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('unrelated',?1,'Owner input',1,'')",[&e.worker])?;
             let report=Report{assets:vec![],head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
@@ -582,9 +598,11 @@ mod tests {
     #[test]
     fn project_reports_bind_identity_generation_requirements_and_criteria() {
         let (_dir, db) = fixture();
+        let _home=crate::api::settings::test_env::set_home(_dir.path());
         db.write(|c| claim(c, "sample", "A").map_err(store::sql_error))
             .unwrap();
         let e = execution(&db.read().unwrap(), "A").unwrap();
+        register_test_workspace(&e.worker,"/repo");
         let report = Report {
             assets: vec![],
             head: "a".repeat(40),

@@ -3881,3 +3881,26 @@ CARD: AAB-3
 SYMPTOM: Distinct Recheck alpha request failed cross_board_dependency_forbidden when a completed epic referenced two same-project Verified tasks assigned to retired px executors. Evidence: extractor-case-run/project-reverify-owner-failure.json and lifecycle-ui-b559-settled.
 COST: Valid canonical re-verification consumed an intake attempt without progressing despite every required output belonging to the project.
 FIX: One BoardOwner representation distinguishes durable project ownership from legacy worker boards. Shared outgoing/incoming checks, API validation and atomic migration/rollback ownership validation reuse it. Same-project assignment changes preserve edges; cross-project/project-legacy/missing/deleted references remain refused. Logs project_dependency_owner_validated and cross_board_dependency_refused. Real-DB actual-intake fanout/reverify and ownership negative controls added; parent execution pending. No live row rewrites, provider retries, build or deployment.
+
+
+## Slow legacy starts stretched project progression (AAB-3)
+AREA: runtime scheduling
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: The full lifecycle fixture passed ten scenarios then exhausted its dirty-checkout observation while a rolled-back legacy source repeatedly failed provider startup. Both project packets and reports were retained; legacy sweeps stretched project ticks to roughly 14 seconds.
+COST: A 90-second acceptance timeout despite successful delivery, plus diagnosis of a misleading reserved-state snapshot.
+FIX: One cancellable legacy sweep with independent configured project cadence, retaining project runner exclusion and pause gates; signal project_tick_during_legacy_wait. Migration-only fixture disables pickup/standing orders via supported config and checks rollback retention without bypassing protected-source refusal. Nonbillable progress/pause/cancellation/serial-negative tests added; parent execution pending.
+
+## Source-checkout command refused after expensive earlier checks (AAB-3)
+AREA: project verification
+SEVERITY: friction
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Backend generation 5 reached criterion 6 before rejecting its original-checkout venv command. This was late candidate-command validation, not a generation-5 Git push failure.
+COST: Earlier expensive verification commands ran before a deterministic configuration refusal that admission could already detect.
+FIX: Reuse the same source-path validator at report admission and preflight all distinct checks plus the project gate before executing any. Invalid admission leaves report/status/attempt unchanged for corrected same-generation resubmission. Canonical repository identity accepts policy aliases without weakening source-path guards. Signals project.report_commands_refused and fanout_verification_source_path; API/DB and real-Git no-execution regressions added, parent Rust run pending.

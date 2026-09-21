@@ -389,3 +389,47 @@ Logs use `project_dependency_owner_validated` for accepted project edges and the
 existing `cross_board_dependency_refused` marker for rejected owner crossings.
 Parent Rust/mutation/browser/exact-build checks remain required. The prior full
 fixture and live failure evidence remain untouched.
+
+
+### AAB-3: legacy sweep cadence and complete command admission
+
+The retained `lifecycle-ui-f1277e53bf18` run passed ten scenarios before the
+90-second dirty-checkout observation expired. Read-only fixture evidence shows
+both PU-8 packets delivered and both reports received, with a dirty-checkout
+rejection between them. This was not lost boot delivery. The same periodic job
+awaited legacy provider starts that failed about every 14 seconds before it
+could tick projects again. One owned legacy sweep now runs alongside project
+ticks at the existing configured cadence, without another detached task or
+concurrent legacy sweep. Cancellation drops that sweep; existing project runner
+exclusion, claims and pause checks remain authoritative. The signal is
+`project_tick_during_legacy_wait`. Nonbillable regressions cover report progress,
+pause, failure, cancellation and the former serial-starvation negative control.
+
+The migration-only fixture now disables pickup and standing orders through the
+supported worker config API before seeding its card, and checks these settings
+survive rollback. It is deliberately NOT paused: migration continues refusing
+paused, archived and isolated sources. The dirty scenario must still execute
+its provider and retain its dirty checkout; its timeout was not increased.
+
+Backend generation 5 was a **late candidate-command rejection**, not a Git push
+failure: criterion 6 named the original checkout's venv after earlier expensive
+checks had already run. Report admission now uses the registered worker workspace
+and the existing source-path validator after caller/generation/requirements and
+criteria checks, before report or status mutation. Repository aliases compare
+canonical filesystem identity; the recorded worker branch remains bound.
+Invalid commands return a same-generation resubmission instruction and log
+`project.report_commands_refused`, alongside `fanout_verification_source_path`.
+The verifier preflights the whole distinct command set, including the project
+gate, before running any check, covering old persisted reports and changed
+configuration. Integration retains its existing validation. No new shell parser
+or path exception was added.
+
+API/DB coverage rejects stale/foreign/bad-command reports without mutation or
+verification eligibility, then accepts a corrected report in the same attempt
+through an aliased repository policy. A real temporary Git candidate regression
+puts a sentinel command before an invalid later check (and separately an invalid
+project gate): neither may execute. Existing source-path, home-spelling and
+symlink controls remain unchanged. Rust, mutation and full browser execution are
+pending parent checks on the frozen bytes; local parsing/syntax/diff checks are
+not a claim of those passes. Original failed runs and live project state remain
+untouched.

@@ -161,6 +161,13 @@ fn verification_commands<'a>(gate: &'a str, report: &'a planner::Report) -> Vec<
         .collect()
 }
 
+/// One source-path policy, applied to the entire set before any shell command.
+pub(crate) fn validated_verification_commands<'a>(w: &workspace::Workspace, gate: &'a str, report: &'a planner::Report) -> Result<Vec<&'a str>,String> {
+    let commands=verification_commands(gate,report);
+    for command in &commands { workspace::validate_verification_command(w,command)?; }
+    Ok(commands)
+}
+
 async fn verify(
     state: &AppState,
     p: &store::Project,
@@ -180,11 +187,10 @@ async fn verify(
     {
         return Err("worktree has uncommitted changes".into());
     }
-    let commands = verification_commands(&p.policy.verify_command, report);
+    let commands = validated_verification_commands(&w, &p.policy.verify_command, report)?;
     tracing::info!(task=id,measured=true,n_considered=report.checks.len()+1,distinct=commands.len(),verdict="project.verification_commands","byte-identical commands run once per immutable candidate phase; criterion mappings retained");
     // Each check runs independently; a later success cannot mask an earlier failure.
     for command in &commands {
-        workspace::validate_verification_command(&w, command)?;
         let mut cmd = tokio::process::Command::new("sh");
         cmd.args(["-c", command]).current_dir(&w.path);
         let (status, output) = workspace::checked_command(
@@ -495,6 +501,51 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 
 #[cfg(test)]
 mod command_tests {
+    #[test]
+    fn project_verification_preflights_all_commands_before_any_execution() {
+        use super::*;
+        let home=tempfile::tempdir().unwrap();
+        let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        let repo=home.path().join("candidate");std::fs::create_dir(&repo).unwrap();
+        let git=|args:&[&str]| {
+            let result=std::process::Command::new("git").current_dir(&repo)
+                .env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE")
+                .args(args).output().unwrap();
+            assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
+            String::from_utf8(result.stdout).unwrap().trim().to_string()
+        };
+        git(&["init","-q"]);
+        git(&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","core.hooksPath=/dev/null","commit","--allow-empty","-m","fixture"]);
+        let head=git(&["rev-parse","HEAD"]);
+        let marker=home.path().join("must-not-run");
+        let mut e=planner::execution(&db.read().unwrap(),"A").unwrap();
+        let w=workspace::Workspace{repo:"/original-checkout".into(),path:repo.to_string_lossy().into_owned(),branch:format!("amux/fanout/{}",e.worker),base:head.clone()};
+        workspace::save(home.path(),&e.worker,&w).unwrap();
+        let first=format!("touch {}",marker.display());
+        let mut p=store::get(&db.read().unwrap(),"sample").unwrap().unwrap();
+        p.policy.verify_command=first.clone();
+        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for bad_gate in [false,true] {
+                let mut report=planner::Report{head:head.clone(),summary:"old persisted report".into(),assets:vec![],checks:vec![planner::Check{criterion:"first".into(),command:first.clone()},planner::Check{criterion:"last".into(),command:"/original-checkout/venv/bin/python check.py".into()}]};
+                if bad_gate {p.policy.verify_command=report.checks.pop().unwrap().command;}
+                e.report=Some(report);e.stage="reported".into();e.waiting=None;
+                let current = e.clone();
+                state.store.write(move |c| {let row=bs::get_issue(c,"A")?.unwrap();planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)}).unwrap();
+                let error=verify(&state,&p,"A",&e).await.unwrap_err();
+                assert!(error.contains("source"),"{error}");
+                assert!(!marker.exists(),"even the first valid command must not execute");
+                assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().report,e.report);
+            }
+        });
+        // Path identity accepts aliases, never unrelated or unresolved paths.
+        let alias=home.path().join("alias");std::os::unix::fs::symlink(&repo,&alias).unwrap();
+        assert!(workspace::same_repository(repo.to_str().unwrap(),alias.to_str().unwrap()));
+        assert!(!workspace::same_repository(repo.to_str().unwrap(),home.path().to_str().unwrap()));
+        assert!(!workspace::same_repository("/missing-one","/missing-two"));
+    }
+
     #[test]
     fn project_retry_packet_previews_only_long_diagnostics_and_preserves_full_read() {
         use super::*;

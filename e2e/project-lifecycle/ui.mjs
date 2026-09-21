@@ -187,6 +187,11 @@ try {
   record('Independent coordinator/executor profiles persist through UI edits and reload for all four offered executor providers');
   // Seed only the isolated legacy fixture via supported APIs; migration is UI-driven.
   const seededWorker=await context.request.post(config.url+'/api/sessions',{headers:auth,data:{name:'fixture-source',dir:config.repo}});assert.equal(seededWorker.status(),201);
+  for(const key of ['board_auto_pickup','board_standing_orders']) {
+    const configured=await context.request.patch(config.url+'/api/sessions/fixture-source/config',{headers:auth,data:{[key]:false}});assert.ok(configured.ok());
+  }
+  const sourceMigrationOnly=async()=>{const r=await context.request.get(config.url+'/api/sessions',{headers:auth});assert.ok(r.ok());const source=(await r.json()).find(s=>s.name==='fixture-source');return source && !source.auto_pickup && !source.standing_orders && source.lifecycle!=='paused' && !source.running;};
+  await wait(sourceMigrationOnly,'migration-only source configuration did not settle',30000);
   const seededCard=await context.request.post(config.url+'/api/board',{headers:auth,data:{title:'Legacy raw request',status:'backlog',session:'fixture-source',evidence:'retained fixture evidence'}});assert.ok(seededCard.ok());
   const legacyId=(await seededCard.json()).id;assert.ok(legacyId);
   await page.getByText('Migrate existing boards',{exact:true}).click();await page.locator('#project-migration-workers').fill('fixture-source');
@@ -196,12 +201,16 @@ try {
   await page.waitForFunction(()=>document.querySelector('#project-migration-id')?.value.startsWith('project-migration:'));
   await page.getByRole('button',{name:'Roll back unchanged rows',exact:true}).click();
   await page.locator('[data-task="'+legacyId+'"]').waitFor({state:'detached'});
+  assert.ok(await sourceMigrationOnly(),'rollback must preserve migration-only automation settings');
   record('UI migration preview/apply/rollback preserves legacy identity and evidence');
 
   await page.locator('#project-selector').selectOption('lifecycle-ui');
   await submit('Create dirty report and verify it.');
   await page.locator('.project-wait').filter({hasText:'worktree has uncommitted changes'}).first().waitFor({timeout:90000});
   // UI may show two matching instances in expanded details; inspect worktree directly.
+  const dirtyCard=(await projectRead()).cards.find(c=>c.title==='Create dirty report');
+  assert.ok(dirtyCard);assert.ok(calls().some(c=>c.phase==='execution'&&c.task===dirtyCard.id),'dirty scenario must execute its provider');
+  assert.ok(await sourceMigrationOnly(),'migration source remains automation-disabled during dirty execution');
   const workdirs=fs.readdirSync(path.join(config.home,'worktrees')).map(n=>path.join(config.home,'worktrees',n));
   assert.ok(workdirs.some(p=>fs.existsSync(path.join(p,'uncommitted-evidence.txt'))));
   assert.throws(()=>main('dirty'));record('Dirty checkout is retained and never falsely integrated or retired');

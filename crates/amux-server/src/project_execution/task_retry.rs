@@ -112,9 +112,11 @@ mod tests {
     #[test]
     fn project_failed_review_retry_preserves_report_and_reports_new_generation() {
         let (_dir, db, _) = super::super::outputs::tests::fixture();
+        let _home=crate::api::settings::test_env::set_home(_dir.path());
         db.write(|c| {
             let row = bs::get_issue(c, "A")?.unwrap();
             let mut e = planner::execution(c, "A").unwrap();
+            planner::register_test_workspace(&e.worker,"/repo");
             e.stage = "working".into();
             e.waiting = None;
             planner::save_execution(c, &row, &e, "project.execution").unwrap();
