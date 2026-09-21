@@ -19,7 +19,18 @@ const fault=(name,on)=>{const p=path.join(config.home,'hold-'+name);if(on)fs.wri
 const beat=name=>path.join(config.home,'heartbeat-'+name);
 const main=name=>execFileSync('git',['--git-dir',config.remote,'show','main:'+name+'.txt'],{encoding:'utf8'}).trim();
 const submit=async text=>{await page.locator('#project-command').fill(text);await page.getByRole('button',{name:'Submit outcome',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#project-command')?.value==='');};
-const saveSettings=async()=>{await page.getByRole('button',{name:'Save settings',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.project-settings') && !document.querySelector('.project-settings').open);};
+const saveSettings=async()=>{
+  const revision=await page.evaluate(()=>_projectsData.project.revision);
+  await page.getByRole('button',{name:'Save settings',exact:true}).click();
+  await page.waitForFunction(rev=>_projectsData?.project.revision>rev && document.querySelector('#project-config')?.closest('details')?.open===false,revision);
+};
+const openFailure=async row=>{
+  const details=row.locator('details').filter({has:page.getByText('Failure details',{exact:true})});
+  await details.waitFor();
+  if(!await details.evaluate(d=>d.open)) await details.locator('summary').click();
+  await details.locator('pre').waitFor({state:'visible'});
+  return details.locator('pre');
+};
 const verified=async n=>page.waitForFunction(n=>document.querySelector('#project-progress')?.textContent.includes(n+' / '+n+' structured outcomes verified'),n,{timeout:180000});
 const retired=async()=>wait(()=>!fs.readdirSync(path.join(config.home,'sessions')).some(n=>n.startsWith('px-')&&n.endsWith('.env')),'verified executors did not retire');
 const record=(scenario,extra={})=>{const result={verdict:'PASS',scenario,...extra};results.push(result);console.log(JSON.stringify(result));};
@@ -57,9 +68,9 @@ try {
   const inspector=page.locator('#project-inspector');await inspector.getByText('Criteria and evidence',{exact:true}).waitFor();
   const selectedTask=await page.locator('#project-cards .project-selected').getAttribute('data-task');
   const history=inspector.locator('details.project-section').filter({hasText:'Task verification history'});
-  await history.locator('summary').click();await history.locator('summary').click();
-  assert.equal(await history.evaluate(d=>d.open),false);
-  await history.locator('summary').click();assert.equal(await history.evaluate(d=>d.open),true);
+  assert.equal(await history.evaluate(d=>d.open),true,'history is open by default');
+  await history.locator('summary').click();assert.equal(await history.evaluate(d=>d.open),false,'one click closes it');
+  await history.locator('summary').click();assert.equal(await history.evaluate(d=>d.open),true,'the next click reopens it');
   const loadsBefore=await page.evaluate(()=>_projectsToken);
   await page.waitForFunction(t=>_projectsToken>=t+2,loadsBefore,{timeout:15000});
   assert.equal(await history.evaluate(d=>d.open),true,'expanded task details must survive a refresh');
@@ -69,15 +80,19 @@ try {
   assert.equal(await history.evaluate(d=>d.open),true,'expanded task details must survive a refresh on a phone');
   await page.screenshot({path:path.join(out,'02-inspector-phone.png'),fullPage:true});
   await page.setViewportSize({width:1440,height:1000});
-  await page.locator('#project-cards .project-card:has(.project-working) .project-card-select, #project-cards .project-card-select').first().click();
+  // The two executors are running now, so a card marked working must exist and offer its live terminal.
+  const working=page.locator('#project-cards .project-card.project-working .project-card-select');
+  await working.first().waitFor({timeout:60000});
+  await working.first().click();
   const terminal=inspector.getByRole('button',{name:'Executor terminal',exact:true});
-  if(await terminal.count()){
-    await terminal.click();
-    await page.locator('#peek-overlay').waitFor({state:'visible'});
-    await page.waitForFunction(()=>/alpha|beta/.test(document.getElementById('peek-task-label')?.textContent||''));
-    await page.screenshot({path:path.join(out,'02-executor-terminal.png'),fullPage:true});
-    await page.locator('#peek-close-btn').click();
-  }
+  await terminal.waitFor({timeout:60000});
+  await terminal.click();
+  await page.locator('#peek-overlay').waitFor({state:'visible'});
+  await page.waitForFunction(()=>/alpha|beta/.test(document.getElementById('peek-task-label')?.textContent||''));
+  await page.locator('#peek-body .peek-loading').waitFor({state:'detached'});
+  await page.locator('#peek-body').getByText(/Create (alpha|beta) report/).waitFor();
+  await page.screenshot({path:path.join(out,'02-executor-terminal.png'),fullPage:true});
+  await page.locator('#peek-close-btn').click();
   fault('alpha',false);fault('beta',false);await verified(1);await retired();
   assert.equal(main('alpha'),'alpha');assert.equal(main('beta'),'beta');
   assert.equal(calls().filter(c=>c.phase==='execution').length,2,'duplicate provider execution');
@@ -121,7 +136,7 @@ try {
   assert.ok(budgetReceipt,'budget request must retain its accepted receipt');
   const budgetRow=page.locator('#project-commands .project-intake').filter({has:page.getByText(budgetRequest,{exact:true})});
   await budgetRow.getByText('Request '+budgetReceipt[1]+' · token budget reached',{exact:true}).waitFor({timeout:45000});
-  await budgetRow.getByText('token_budget_reached',{exact:true}).waitFor();
+  assert.equal(await (await openFailure(budgetRow)).innerText(),'token_budget_reached');
   assert.equal(await page.locator('.project-card').filter({hasText:'Create budget report'}).count(),0,'budget must hold intake before creating a card');
   const boundedCalls=calls().filter(c=>c.phase==='execution').length;
   await new Promise(r=>setTimeout(r,2200));assert.equal(calls().filter(c=>c.phase==='execution').length,boundedCalls);
@@ -133,8 +148,9 @@ try {
 
   const beforeQuotaCalls=calls().length;
   await submit('Handle provider quota wait and retain the command.');
-  await page.getByText(/provider quota wait/i).first().waitFor({timeout:60000});
-  await page.getByText(/resets Sep 23 at 11am/).first().waitFor();
+  const quotaRow=page.locator('#project-commands .project-intake').filter({has:page.getByText('Handle provider quota wait and retain the command.',{exact:true})});
+  await quotaRow.locator('strong').filter({hasText:/provider quota wait/i}).waitFor({timeout:60000});
+  assert.match(await (await openFailure(quotaRow)).innerText(),/resets Sep 23 at 11am/);
   await wait(()=>calls().length>=beforeQuotaCalls+2,'quota attempts did not settle');
   const beforeQuotaIdle=calls().length;await new Promise(r=>setTimeout(r,2400));assert.equal(calls().length,beforeQuotaIdle);
   record('Provider quota is shown with its reset time, retains the command, and makes no unbounded retries');
@@ -158,11 +174,13 @@ try {
       if(await visible.count()!==count)return false;
       for(const row of await visible.all()) {
         if(!await row.isVisible() || !exhaustedLabel.test(await row.locator('strong').innerText()))return false;
-        if(!(await row.locator('p').allInnerTexts()).includes(parserError))return false;
       }
       return true;
-    },'exhausted receipts did not render exact label and parser error: '+text,60000);
-    for(const row of await visible.all()) {assert.match(await row.locator('strong').innerText(),exhaustedLabel);assert.ok((await row.locator('p').allInnerTexts()).includes(parserError));}
+    },'exhausted receipts did not render exact label: '+text,60000);
+    for(const row of await visible.all()) {
+      assert.match(await row.locator('strong').innerText(),exhaustedLabel);
+      assert.equal(await (await openFailure(row)).innerText(),parserError);
+    }
     return receipts;
   };
   await submit(malformed);await exhausted(malformed,1);assert.equal(intakeCount(malformed),2);
@@ -282,8 +300,10 @@ try {
   const ownPackets=()=>packets().filter(p=>p.worker===failed.execution_plan.execution.worker&&p.packet===wireNote);
   const queue=async()=>{const r=await context.request.get(config.url+'/api/sessions/'+encodeURIComponent(failed.execution_plan.execution.worker)+'/steer',{headers:auth});assert.ok(r.ok());return r.json();};
   await page.locator('[data-task="'+dirtyCard.id+'"] .project-card-select').click();
-  await page.locator('#project-inspector').getByText(/^Full diagnostics \(/).waitFor();
-  assert.match(await page.locator('#project-inspector pre').filter({hasText:'worktree has uncommitted changes'}).first().innerText(),/worktree has uncommitted changes/);
+  await page.locator('#project-inspector').getByText(/^Full diagnostics \(/).click();
+  const diagnostics=page.locator('#project-inspector .project-diagnostic');
+  await diagnostics.waitFor({state:'visible'});
+  assert.match(await diagnostics.innerText(),/worktree has uncommitted changes/);
   assert.ok((await page.locator('#project-inspector .project-failure, #project-inspector .project-muted').count())>0);
   await page.locator('#project-inspector').getByRole('button',{name:'Executor terminal',exact:true}).click();
   await page.locator('#peek-cmd-input').fill(note);
@@ -330,6 +350,16 @@ try {
   await page.locator('#project-inspector .project-report-asset').first().waitFor();
   await page.locator('#project-inspector').getByText('Historical, per task. Not project acceptance.').waitFor();
   assert.equal(await page.locator('#project-inspector').getByRole('button',{name:'Executor terminal',exact:true}).count(),0,'retired executor must not offer a live terminal');
+  await page.locator('#project-inspector .project-report-asset').first().click();
+  const retainedPreview=page.locator('#file-overlay');
+  await retainedPreview.waitFor({state:'visible'});
+  await page.locator('#file-body').getByText(/Fixture report for/).waitFor();
+  assert.ok((await page.locator('#file-body').innerText()).includes('Task: '+retiredCard.id),'preview must show this task\'s retained evidence');
+  assert.equal(await retainedPreview.getByRole('button',{name:'Edit',exact:true}).isVisible(),false,'retained evidence must be read-only');
+  assert.equal(await page.locator('#file-save-btn').isVisible(),false,'retained evidence must not offer Save');
+  await page.screenshot({path:path.join(out,'08-retained-report-preview.png'),fullPage:true});
+  await retainedPreview.getByRole('button',{name:'✕',exact:true}).click();
+  await retainedPreview.waitFor({state:'hidden'});
   await page.screenshot({path:path.join(out,'08-retired-assets.png'),fullPage:true});
   // Per-project drafts survive switching.
   await page.locator('#project-command').fill('Draft for lifecycle-ui');
@@ -344,7 +374,7 @@ try {
   await page.locator('#project-attempts').fill('4');
   const settingsLoads=await page.evaluate(()=>_projectsToken);await page.waitForFunction(t=>_projectsToken>=t+2,settingsLoads,{timeout:15000});
   assert.equal(await page.locator('#project-attempts').inputValue(),'4','unsaved settings must survive refresh');
-  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  await page.locator('#project-settings-cancel').click();
   assert.notEqual(await page.locator('#project-attempts').inputValue(),'4','Cancel restores saved settings');
   // Empty project and a failed-then-retried read.
   await create('empty-ui');

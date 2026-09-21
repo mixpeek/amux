@@ -4,12 +4,82 @@ Evidence updated: 2026-09-21. Branch: `codex/amux-project-lifecycle`.
 
 This validates the project execution path on a disposable server, not a production fleet migration. The existing group, issue, command, attempt, delivery, token and Git integration primitives remain authoritative. Projects own outcomes; temporary workers execute finite claims.
 
-## Current evidence — acceptance and final private image
+## Current checkpoint — consolidated Projects UI
+
+The private UI at `https://localhost:18972/` runs commit
+`fdd4c33d21f53d6a60fc9da6b41f8b243b7f24a2`, build `18c849dccb3a0085`.
+Projects is the entry point for new project work. The global Orchestrations tab
+and Board launch form are removed; legacy records remain accessible as history.
+Workers are disposable task executors, not permanent orchestrators. The bounded
+planning call and executor can use different provider/model profiles.
+
+Evidence root: `BASE=../extractor-case-run` relative to this checkout. The exact
+build and private deployment are recorded in `BASE/astra-project-ui-build.json`
+and `BASE/astra-project-ui-private-deploy.json`. No production migration or
+upstream/main push is claimed.
+
+The native Amux-authored UI passed **36 focused desktop/phone checks**, **45
+dashboard asset checks**, workspace check and strict all-target Clippy. State
+tests passed 27, outbox tests 14; SPA lint reported zero errors and 51 existing
+warnings. The refresh-failure negative control failed the intended assertion.
+See `BASE/aab11-focused-ui-r3-results.json`, `BASE/aab11-rust-gates.json`,
+`BASE/aab11-state-lint-results.json` and `BASE/aab11-refresh-negative.json`.
+
+The full fresh-server lifecycle run passed **14 scenarios**, with zero uncaught
+browser errors, 14 fixture intake calls and 13 fixture execution calls in
+571.84 seconds. Build identity remained unchanged across the deliberate restart;
+the fixture server and isolated tmux socket were stopped. The exact command,
+binary and test SHA are in
+`BASE/aab11-full-new-server-r4/completion-proof.json`. Four desktop/phone/evidence
+screenshots were independently inspected. Providers were deterministic and
+nonbillable; the HTTPS UI/API, SQLite, tmux, Git, verification and retirement were
+real. This does not establish live model quality or whole-project acceptance.
+
+Earlier runs and their failing selectors are retained in
+`BASE/aab11-full-new-server*`; they are not full-suite passes. In particular, r3
+passed 13 scenarios before an ambiguous Cancel locator stopped the last check.
+The parent repaired test selectors and strengthened
+terminal/evidence assertions after a failed native local-model edit. These are
+parent-authored test changes, not native product implementation. The rejected
+native report and source are preserved in
+`BASE/aab11-local-rejected-evaluation.json`; no completion credit was given.
+
+**Task Verified is not project Accepted.** The live extractor project correctly
+shows project acceptance **Not configured**. AAB-10's independent acceptance
+contract is unfinished and is not included in the deployed image. Its partial
+workspace check and three unit tests do not validate the unregistered acceptance
+module. Current acceptance must eventually bind the approved contract, current
+intent, integrated main and retained evidence; reopening work or changing any
+of those inputs must invalidate current success without rewriting history.
+
+PAA-5 is Verified at report `0743d8c61b25ddc967c383b4ca02e27a42860a66`,
+integrated into disposable local main `c1d308e3a6348f92d36dc802e99c744d34836706`.
+Its 16 declared assets remain retained after its worktree was removed and worker
+`px-extractor-astra-acceptan-460fb6aa19` expired. Actual UI inspection opened the
+read-only report, decoded the 1280×2186 PNG, played the 19.48-second Studio video,
+and found all four retired executor workers in the existing Expired section.
+See [current extractor evidence](../../../extractor-case-run/CURRENT-EXTRACTOR-EVIDENCE.md),
+`BASE/paa5-verified-retirement-proof.json` and
+`BASE/aab11-live-retained-evidence-ui.json`. The initial prototype was direct
+Codex work; later native Amux adoption, repair, verification, integration and
+retirement were supervised. This was not native execution from inception.
+
+AAB-11 remains open: project terminals still expose a legacy Fan-out tab on
+first open, worker headers can show a default model instead of the configured
+model, and the terminal directory bar shows the source repository instead of
+the active worktree. Closed dialogs also remain in the accessibility tree
+despite their transparent appearance. The scoped Cancel test does not fix that
+product defect. These are recorded in `BASE/aab11-ui-followup-review.md`.
+Passing lifecycle scenarios does not close those UI defects or establish whole
+project acceptance.
+
+## Earlier checkpoint — extractor acceptance and startup image
 
 Evidence root below: `BASE=../extractor-case-run` relative to this checkout.
 `BASE/final-evidence-brief.json` separates real acceptance executed on 182 from
 the final ab2 launcher-image validation and read-only post-deploy audit. No
 result below is a blanket all-tests-pass claim or a full-suite rerun on ab2.
+This section preserves that earlier checkpoint; the current runtime is above.
 
 ### Real extractor outcome
 
