@@ -124,3 +124,39 @@ test('a send still pending after ten minutes of checking goes to the person (ba2
  assert.equal(h.queue.length,1);assert.equal(h.queue[0].state,'blocked');assert.match(h.queue[0].error,/timed out/);
  assert(h.signals.some(s=>s.kind==='acceptance_timed_out'));
 });
+// AMUX-4910. A 5xx is retried because a server that FAILED may succeed next
+// time. 501 is not that: it is the server saying the capability does not exist
+// here, so the same request gets the same answer forever.
+//
+// THE SPECIMEN, measured 2026-09-20: one tick of the "Use worktree" checkbox,
+// whose POST /api/sessions the server answers 501 with an exact remedy, was
+// replayed 845 times at a dead-flat 4/min for over three hours. It generated
+// enough 5xx on its own to trip the route.mounted_routes_answer invariant,
+// where it was then filed as a SERVER fault (AMUX-4900) alongside four healthy
+// routes. One client retry rule, three cards deep.
+const worktreeCreate=()=>({id:'c1',url:'/api/sessions',options:{method:'POST',headers:{},body:JSON.stringify({name:'lc1-solo-haiku',worktree:true})},timestamp:Date.now()});
+const notImplemented={status:501,body:{error:"worktree creation is not implemented on this server yet - uncheck 'Use worktree' to create a normal worker"}};
+test('a 501 is terminal: one attempt, and the outbox never asks again (AMUX-4910)',async()=>{
+ const h=harness([worktreeCreate()],[notImplemented]);
+ await h.drain();
+ assert.equal(h.requests.length,1,'exactly one attempt for a capability that does not exist');
+ assert.equal(h.queue.length,1,'the operation is kept for the person to see, not silently dropped');
+ assert.equal(h.queue[0].state,'blocked','501 must not stay retryable');
+ assert.match(h.queue[0].error,/not implemented/,"the server's own remedy survives to the panel");
+ // The real defect was the SECOND attempt, and the 845th. A fresh replay over
+ // the stored queue must issue no request at all: harness() asserts on any
+ // request it has no reply for, so an extra attempt fails loudly here.
+ const again=harness(JSON.parse(JSON.stringify(h.queue)),[]);
+ await again.drain();
+ assert.equal(again.requests.length,0,'a blocked 501 is never replayed');
+});
+test('a transient 5xx is still retried, so the 501 rule did not blunt recovery (AMUX-4910)',async()=>{
+ const h=harness([worktreeCreate()],[{status:503,body:{error:'service unavailable'}}]);
+ await h.drain();
+ assert.equal(h.requests.length,1);
+ assert.notEqual(h.queue[0].state,'blocked','503 means this attempt failed, not that the capability is absent');
+ const again=harness(JSON.parse(JSON.stringify(h.queue)),[{status:201,body:{ok:true,name:'lc1-solo-haiku'}}]);
+ await again.drain();
+ assert.equal(again.requests.length,1,'a transient failure is retried');
+ assert.equal(again.queue.length,0,'and clears when it succeeds');
+});

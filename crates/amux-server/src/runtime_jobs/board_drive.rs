@@ -931,12 +931,21 @@ impl Fleet for LiveFleet {
         Ok(disposition)
     }
     async fn deliver_blocker_recovery(&self, lane: &str, text: &str, card: &str, rev: i64, identity: &str) -> Result<bool, String> {
+        if !self.nudge_budget_admits(lane, card, "blocker-recovery").await? {
+            return Ok(false);
+        }
         let queued = crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store, lane, text, GUARD, card, rev, identity).await?;
-        if queued { self.record_prompt(lane, text).await; }
+        if queued {
+            self.record_prompt(lane, text).await;
+            self.nudge_budget_spend(lane, card, "blocker-recovery").await;
+        }
         Ok(queued)
     }
     async fn deliver_about(&self, lane: &str, text: &str, card: &str, rev: i64) -> Result<bool, String> {
+        if !self.nudge_budget_admits(lane, card, "idle-with-card").await? {
+            return Ok(false);
+        }
         let identity={
             let c=self.state.store.read().map_err(|e|e.to_string())?;
             let row=bs::get_issue(&c,card).map_err(|e|e.to_string())?.ok_or("reminder card disappeared")?;
@@ -945,10 +954,131 @@ impl Fleet for LiveFleet {
         };
         let result=crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store,lane,text,GUARD,card,rev,&identity).await?;
-        if result { self.record_prompt(lane,text).await; }
+        if result {
+            self.record_prompt(lane,text).await;
+            self.nudge_budget_spend(lane, card, "idle-with-card").await;
+        }
         Ok(result)
     }
+}
 
+impl LiveFleet {
+    /// The MB-55 budget, read under the card's CURRENT status. Held and spent
+    /// both answer false and log why, so a lane that stops hearing about a
+    /// card is explained in the same log the delivery would have been.
+    async fn nudge_budget_admits(&self, lane: &str, card: &str, kind: &str) -> Result<bool, String> {
+        let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
+        let now = now_f64();
+        let verdict = self.state.store.read_async(move |conn| {
+            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
+            Ok(nudge_budget_check(conn, &l, &c, &k, &status, now)?)
+        }).await.map_err(|e| e.to_string())?;
+        match verdict {
+            NudgeBudget::Admit { .. } => Ok(true),
+            NudgeBudget::Held { n, next_at } => {
+                tracing::info!(target: "amux::board_drive", session = lane, card, kind, n,
+                    admitted_in_s = (next_at - now) as i64, measured = true, n_considered = 1,
+                    verdict = "nudge_budget_held", "board_drive: {kind} for {card} held by its per-card budget (MB-55)");
+                Ok(false)
+            }
+            NudgeBudget::Spent { n } => {
+                tracing::warn!(target: "amux::board_drive", session = lane, card, kind, n,
+                    measured = true, n_considered = 1, verdict = "nudge_budget_spent",
+                    "board_drive: {kind} for {card} spent its budget ({n} deliveries, no status change); silent until the card's status moves (MB-55)");
+                Ok(false)
+            }
+        }
+    }
+
+    async fn nudge_budget_spend(&self, lane: &str, card: &str, kind: &str) {
+        let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
+        let now = now_f64();
+        let _ = self.state.store.write_async(move |conn| {
+            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
+            // Best-effort: a budget row that fails to write must never stop a
+            // delivery that already happened from being reported.
+            let _ = nudge_budget_record(conn, &l, &c, &k, &status, now);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await;
+    }
+}
+
+/// A PER-CARD BUDGET FOR THE NUDGES THAT RE-ARM ON THEIR OWN DEMANDS (MB-55).
+///
+/// `reminder_identity` and the blocker-recovery signature both hash the
+/// fields their prompts tell the worker to write (next_action,
+/// acceptance_criteria, evidence, gate, desc), so compliance rotates the key
+/// and the same nudge re-delivers. That is by design for a CHANGED card. What
+/// was missing since the 09-17 flattening (7a56d2d4, 15b72193, e00fca78
+/// deleted the 3-per-24h budget) is any bound on how often a changed card may
+/// be nudged. Measured on the live db: board-drive nudges went from 91 a day
+/// on 09-16 to 649 on 09-19; MI-585x took 39 blocker reviews, MF-1238 13 plus
+/// 34 idle reminders.
+///
+/// Backoff 1h, 4h, 24h after each delivery, then SPENT after
+/// `NUDGE_BUDGET_SPENT_AT` deliveries: the lane is not told again until the
+/// card changes STATUS, which is the one write the prompt cannot ask for and a
+/// worker cannot make by accident. A status change resets the budget.
+pub(crate) const NUDGE_BUDGET_BACKOFF_S: [f64; 3] = [3600.0, 4.0 * 3600.0, 24.0 * 3600.0];
+pub(crate) const NUDGE_BUDGET_SPENT_AT: i64 = 4;
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum NudgeBudget {
+    /// Deliver; `n` deliveries have gone before under this status.
+    Admit { n: i64 },
+    /// Inside the backoff window after delivery `n`.
+    Held { n: i64, next_at: f64 },
+    /// `NUDGE_BUDGET_SPENT_AT` deliveries without a status change.
+    Spent { n: i64 },
+}
+
+pub(crate) fn nudge_budget_check(
+    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+) -> rusqlite::Result<NudgeBudget> {
+    let row: Option<(i64, f64, String)> = conn
+        .query_row(
+            "SELECT n, next_at, status_at_last FROM board_drive_nudge_budget \
+             WHERE session=?1 AND card=?2 AND kind=?3",
+            rusqlite::params![session, card, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => NudgeBudget::Admit { n: 0 },
+        Some((_, _, at_last)) if at_last != status => NudgeBudget::Admit { n: 0 },
+        Some((n, _, _)) if n >= NUDGE_BUDGET_SPENT_AT => NudgeBudget::Spent { n },
+        Some((n, next_at, _)) if now < next_at => NudgeBudget::Held { n, next_at },
+        Some((n, _, _)) => NudgeBudget::Admit { n },
+    })
+}
+
+/// Record a delivery. Returns the delivery count under the current status.
+pub(crate) fn nudge_budget_record(
+    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+) -> rusqlite::Result<i64> {
+    let prior: Option<(i64, String, f64)> = conn
+        .query_row(
+            "SELECT n, status_at_last, first_at FROM board_drive_nudge_budget \
+             WHERE session=?1 AND card=?2 AND kind=?3",
+            rusqlite::params![session, card, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (n_before, first_at) = match prior {
+        Some((n, ref at_last, first)) if at_last == status => (n, first),
+        _ => (0, now),
+    };
+    let n = n_before + 1;
+    let step = NUDGE_BUDGET_BACKOFF_S[(n_before as usize).min(NUDGE_BUDGET_BACKOFF_S.len() - 1)];
+    conn.execute(
+        "INSERT INTO board_drive_nudge_budget (session, card, kind, n, first_at, last_at, next_at, status_at_last) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+         ON CONFLICT(session, card, kind) DO UPDATE SET \
+           n=excluded.n, first_at=excluded.first_at, last_at=excluded.last_at, \
+           next_at=excluded.next_at, status_at_last=excluded.status_at_last",
+        rusqlite::params![session, card, kind, n, first_at, now, now + step, status],
+    )?;
+    Ok(n)
 }
 
 /// A reminder is a reaction to meaningful card state, not to a timer, log
@@ -1974,7 +2104,7 @@ fn blocked_card_is_releasable(conn: &Connection, row: &bs::IssueRow) -> bool {
         && row.archived == 0
         && !row.depends_on.is_empty()
         && row.blocked_on.as_deref().map(str::trim).unwrap_or("").is_empty()
-        && !parked_on_live_trigger(row)
+        && !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
         && deps_blocking(conn, row).is_empty()
 }
 
@@ -2029,11 +2159,33 @@ pub(crate) async fn unblock_resolved_blocked(state: &AppState) -> usize {
     moved
 }
 
-fn parked_on_live_trigger(row: &bs::IssueRow) -> bool {
-    row.source_ref
+/// A trigger holds a deps-cleared card only while the owner has verified it
+/// within `SOURCE_REF_STALE_S`. Until 2026-09-20 this tested only that
+/// `source_ref` was non-empty, so a ref nobody had looked at in weeks outranked
+/// "every dependency is done" forever. Measured on the live board that day: of
+/// the 13 backlog cards the store's own resolution rule called releasable, 10
+/// carried a source_ref, every one unverified for over 24h, and the promotion
+/// arm released none of them; fleet-wide 771 of the 837 backlog cards with a
+/// source_ref were stale, so the arm reached almost nothing (MB-53).
+///
+/// The MG-1388 protection survives: a deliberate re-park bumps
+/// `last_verified_at`, which makes the trigger fresh again and holds the card.
+fn parked_on_live_trigger(row: &bs::IssueRow, now: i64) -> bool {
+    fresh_source_ref_trigger(row, now)
+}
+
+/// Age in seconds of a source_ref the owner has NOT verified within
+/// `SOURCE_REF_STALE_S`, for the promotion log line. `None` when there is no
+/// trigger or it is fresh. A never-verified ref reports its age as `i64::MAX`.
+fn stale_trigger_age(row: &bs::IssueRow, now: i64) -> Option<i64> {
+    let has_ref = row
+        .source_ref
         .as_deref()
-        .map(str::trim)
-        .is_some_and(|s| !s.is_empty())
+        .is_some_and(|v| !v.trim().is_empty());
+    if !has_ref || fresh_source_ref_trigger(row, now) {
+        return None;
+    }
+    Some(row.last_verified_at.map_or(i64::MAX, |at| now - at))
 }
 
 /// Fleet-wide scan for the drive-to-verified pass: every agent-owned, live,
@@ -2096,7 +2248,8 @@ fn still_promotable(conn: &Connection, row: &bs::IssueRow, arm: PromoteArm) -> b
     }
     match arm {
         PromoteArm::DepsCleared => {
-            !parked_on_live_trigger(row) && promotable_deps(conn, row).is_some()
+            !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
+                && promotable_deps(conn, row).is_some()
         }
         // A REVISIT DATE OUTRANKS A `source_ref` TRIGGER, deliberately.
         //
@@ -2237,7 +2390,7 @@ fn backlog_due_promotions(conn: &Connection) -> (Vec<String>, usize) {
     (due_drain_plan(&pairs, &todo_depth, drain_todo_ceiling()), due_total)
 }
 
-fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usize) {
+fn backlog_dep_promotions(conn: &Connection, now: i64) -> (Vec<(String, Vec<String>)>, usize) {
     let rows = bs::list_issues(
         conn,
         &["backlog".to_string()],
@@ -2263,11 +2416,22 @@ fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usi
         let Some(deps) = promotable_deps(conn, &r) else {
             continue;
         };
-        // The owner's own trigger OVERRIDES terminal deps — hold the card, and
-        // count the hold so the promotion pass leaving it parked is visible.
-        if parked_on_live_trigger(&r) {
+        // The owner's own FRESH trigger OVERRIDES terminal deps — hold the card,
+        // and count the hold so the promotion pass leaving it parked is visible.
+        if parked_on_live_trigger(&r, now) {
             held_on_trigger += 1;
             continue;
+        }
+        // A stale trigger no longer holds the card. Say so, with the age, so a
+        // promotion past a ref the owner meant to keep is self-announcing.
+        if let Some(age) = stale_trigger_age(&r, now) {
+            let age_h = if age == i64::MAX { -1 } else { age / 3600 };
+            tracing::info!(
+                target: "amux::board_drive", card = %r.id, trigger_age_h = age_h,
+                measured = true, n_considered = 1, verdict = "trigger_stale_promoted",
+                "board_drive: source_ref unverified past {}h no longer holds a deps-cleared backlog card (MB-53)",
+                SOURCE_REF_STALE_S / 3600
+            );
         }
         promotions.push((r.id.clone(), deps));
     }
@@ -2288,8 +2452,9 @@ fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usi
 /// that cleared it (two-fixes: the next promotion — or a wrongful one — is
 /// self-announcing).
 pub(crate) async fn promote_ready_backlog(state: &AppState) -> (usize, usize) {
+    let now = crate::runtime_jobs::registry::unix_now() as i64;
     let (candidates, held_on_trigger) = match state.store.read() {
-        Ok(conn) => backlog_dep_promotions(&conn),
+        Ok(conn) => backlog_dep_promotions(&conn, now),
         Err(_) => return (0, 0),
     };
     let mut promoted = 0;
@@ -9339,11 +9504,23 @@ mod tests {
         ins("FREE", "blocked", "[\"DONE-DEP\"]", None, None);
         ins("WATCHED", "blocked", "[\"DONE-DEP\"]", Some("vendor ships the fix"), None);
         ins("TRIGGERED", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        // A trigger holds only while the owner has verified it recently (MB-53).
+        conn.execute(
+            "UPDATE issues SET last_verified_at=?1 WHERE id='TRIGGERED'",
+            [now_f64() as i64],
+        )
+        .unwrap();
+        ins("STALE-TRIGGER", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        conn.execute(
+            "UPDATE issues SET last_verified_at=?1 WHERE id='STALE-TRIGGER'",
+            [now_f64() as i64 - 30 * 24 * 3600],
+        )
+        .unwrap();
         ins("STILL", "blocked", "[\"OPEN-DEP\"]", None, None);
         ins("PROSE", "blocked", "[]", None, None);
         let got: Vec<String> = blocked_dep_unblocks(&conn).into_iter().map(|(id, _)| id).collect();
-        assert_eq!(got, vec!["FREE".to_string()],
-            "only a card whose dependencies were the whole block is released");
+        assert_eq!(got, vec!["FREE".to_string(), "STALE-TRIGGER".to_string()],
+            "a card whose dependencies were the whole block is released, and a trigger nobody has verified in 30 days no longer counts as a block (MB-53)");
     }
 
     #[tokio::test]
@@ -11307,7 +11484,7 @@ mod tests {
         )
         .unwrap();
 
-        let (got, _held) = backlog_dep_promotions(&conn);
+        let (got, _held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
 
         assert!(ids.contains("P-all-terminal"), "all-terminal deps must promote: {ids:?}");
@@ -11341,10 +11518,27 @@ mod tests {
             [],
         )
         .unwrap();
-        // The MG-1388 shape: a terminal dep AND a live source_ref trigger.
+        // The MG-1388 shape: a terminal dep AND a live source_ref trigger, verified
+        // by the owner within the last 24h.
+        conn.execute(
+            "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,last_verified_at,updated,created) \
+             VALUES ('T-armed','T-armed','backlog','me','agent','investigation','[\"A-done\"]',\
+                     'some namespace holds both an archive- and a competitor-shaped collection',999_000,100,100)",
+            [],
+        )
+        .unwrap();
+        // The MB-53 shape: the same trigger, last verified 30 days ago -> promotes.
+        conn.execute(
+            "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,last_verified_at,updated,created) \
+             VALUES ('T-stale','T-stale','backlog','me','agent','investigation','[\"A-done\"]',\
+                     'some namespace holds both an archive- and a competitor-shaped collection',100,100,100)",
+            [],
+        )
+        .unwrap();
+        // And a trigger that was NEVER verified -> promotes.
         conn.execute(
             "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,updated,created) \
-             VALUES ('T-armed','T-armed','backlog','me','agent','investigation','[\"A-done\"]',\
+             VALUES ('T-never','T-never','backlog','me','agent','investigation','[\"A-done\"]',\
                      'some namespace holds both an archive- and a competitor-shaped collection',100,100)",
             [],
         )
@@ -11364,9 +11558,17 @@ mod tests {
         )
         .unwrap();
 
-        let (got, held) = backlog_dep_promotions(&conn);
+        let (got, held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
         assert!(!ids.contains("T-armed"), "a live-trigger park must NOT be promoted: {ids:?}");
+        assert!(
+            ids.contains("T-stale"),
+            "a trigger unverified for 30 days no longer holds a deps-cleared card (MB-53): {ids:?}"
+        );
+        assert!(
+            ids.contains("T-never"),
+            "a trigger that was never verified is not a live trigger (MB-53): {ids:?}"
+        );
         assert!(
             ids.contains("T-plain"),
             "a no-trigger terminal-deps card still promotes (guard not vacuous): {ids:?}"
@@ -11375,7 +11577,7 @@ mod tests {
             ids.contains("T-blank"),
             "a whitespace-only source_ref is not a live trigger: {ids:?}"
         );
-        assert_eq!(held, 1, "exactly the one live-trigger card is counted as held");
+        assert_eq!(held, 1, "exactly the one FRESH live-trigger card is counted as held");
     }
 
     /// AMUX-3777: the HELD-CARD re-nag arm, which had NO coverage at all.
@@ -12411,6 +12613,33 @@ mod tests {
     ///
     /// A test that mints its own input can only ever pin ITSELF. This one runs
     /// the real producer into the real parser.
+    /// MB-55: the budget is keyed on (session, card, kind) and resets only on
+    /// a STATUS change, the one write the nudge cannot ask for.
+    #[test]
+    fn nudge_budget_backs_off_then_spends_and_a_status_change_resets_it() {
+        let conn = board_db();
+        let (s, c, k) = ("lane", "CARD-1", "blocker-recovery");
+        let t0 = 1_000_000.0;
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0).unwrap(), 1);
+        // 1h backoff after the first delivery.
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 10.0).unwrap(), NudgeBudget::Held { n: 1, .. }));
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), NudgeBudget::Admit { n: 1 });
+        // 4h after the second, 24h after the third.
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), 2);
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0 + 3.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 2, .. }));
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 20_000.0).unwrap(), 3);
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 20_000.0 + 23.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 3, .. }));
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 200_000.0).unwrap(), 4);
+        // Four deliveries with no status change: spent, whatever the clock says.
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 9_000_000.0).unwrap(), NudgeBudget::Spent { n: 4 });
+        // Another kind on the same card has its own budget.
+        assert_eq!(nudge_budget_check(&conn, s, c, "idle-with-card", "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        // A status change resets it.
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), 1);
+    }
+
     #[test]
     fn reminder_identity_ignores_heartbeat_but_tracks_requirements_and_worker_lifetime() {
         let conn=board_db();add_card(&conn,"STATE-1","lane","doing","Report","Current report requirements");

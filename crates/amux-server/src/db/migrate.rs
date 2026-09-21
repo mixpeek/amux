@@ -465,14 +465,18 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 82,
-        name: "0082_project_execution",
-        sql: include_str!("../../migrations/0082_project_execution.sql"),
+        name: "0082_nudge_budget",
+        sql: include_str!("../../migrations/0082_nudge_budget.sql"),
     },
-
     Migration {
         version: 83,
-        name: "0083_project_attempts",
-        sql: include_str!("../../migrations/0083_project_attempts.sql"),
+        name: "0083_project_execution",
+        sql: include_str!("../../migrations/0083_project_execution.sql"),
+    },
+    Migration {
+        version: 84,
+        name: "0084_project_attempts",
+        sql: include_str!("../../migrations/0084_project_attempts.sql"),
     },
 ];
 
