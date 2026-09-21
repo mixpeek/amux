@@ -66,5 +66,15 @@ try {
   assert.equal(taskProof.requests[0].path,'/sample/tasks/A/retry');
   assert.equal(taskProof.requests[0].body.expect_generation,2);assert.equal(taskProof.requests[0].body.expect_revision,7);
   assert.equal(taskProof.grants,1);
+  await page.evaluate(()=>{
+    Object.assign(data.usage,{measured:true,tokens:300,requested_outcomes:1,cost_measured:false,estimated_cost_usd:null,cost_reason:'execution model rates missing',execution_cost_turns_measured:0,execution_turns_measured:2,executor_unattributed_turns_measured:1,executor_unattributed_tokens:200});
+    _projectRender(data);
+  });
+  assert.match(await page.locator('#project-usage').innerText(),/Cost unknown \(execution model rates missing\)/);
+  assert.match(await page.locator('#project-usage').innerText(),/0\/2 execution turns priced/);
+  assert.match(await page.locator('#project-usage').innerText(),/1 executor turns outside attempt windows \(200 tokens\)/);
+  await page.evaluate(()=>{Object.assign(data.usage,{cost_measured:true,estimated_cost_usd:0,cost_reason:null,execution_cost_turns_measured:2});_projectRender(data);});
+  assert.match(await page.locator('#project-usage').innerText(),/\$0\.0000 estimated cost/);
+  assert.doesNotMatch(await page.locator('#project-usage').innerText(),/Cost unknown/);
   console.log('project intake retry UI: PASS (original receipt, bounded grant, key reuse, pause preserved, waiting phase, task retry uncertainty key)');
 } finally {await browser.close();}

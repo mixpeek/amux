@@ -198,6 +198,22 @@ pub(crate) fn workspace_workdirs(home:&Path,mut dirs:BTreeMap<String,String>)->B
     dirs
 }
 
+/// Read through the existing session index once; write only bounded exact row IDs.
+fn ownership_repairs(c:&rusqlite::Connection,owners:&[(String,String)])->rusqlite::Result<Vec<(i64,String)>> {
+    if owners.is_empty(){return Ok(vec![]);}
+    let mut unique=HashMap::<String,Option<String>>::new();
+    for (conversation,owner) in owners {
+        unique.entry(conversation.clone()).and_modify(|prior|{if prior.as_deref()!=Some(owner.as_str()){*prior=None;}}).or_insert_with(||Some(owner.clone()));
+    }
+    let owners:HashMap<_,_>=unique.into_iter().filter_map(|(key,value)|value.map(|v|(key,v))).collect();
+    if owners.is_empty(){return Ok(vec![]);}
+
+    let conversations=serde_json::to_string(&owners.keys().collect::<Vec<_>>()).unwrap();
+    let mut q=c.prepare("SELECT id,conversation FROM token_ledger INDEXED BY idx_ledger_session WHERE session='' AND task='' AND conversation IN (SELECT value FROM json_each(?1)) ORDER BY id LIMIT 1000")?;
+    let rows=q.query_map([conversations],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?;
+    rows.map(|r|r.map(|(id,conversation)|(id,owners[&conversation].clone()))).collect()
+}
+
 /// One pass over the codex rollouts. Returns how many ledger rows were written.
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
     index_once_at(store, home, &codex_sessions_dir(), &workspace_workdirs(home,crate::api::session_verbs::all_session_workdirs())).await
@@ -260,13 +276,16 @@ pub async fn index_once_at(
 
     token_ledger::warn_unpriced("codex", &table, &batches);
     let inserted = token_ledger::commit_ledger_batch(store, batches).await?;
+    let repairs={let c=store.read()?;ownership_repairs(&c,&repairs)?};
     let repaired=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));let count=repaired.clone();
-    store.write_async(move|c|{
-        let mut n=0;for (conversation,lane) in repairs {n+=c.execute("UPDATE token_ledger SET session=?2 WHERE conversation=?1 AND session='' AND task=''",rusqlite::params![conversation,lane])?;}
-        count.store(n,std::sync::atomic::Ordering::Relaxed);
-        if n>0 {tracing::info!(measured=true,n_considered=n,verdict="codex_workspace_usage_recovered","unowned exact-match rollout rows assigned from durable workspace identity");}
-        Ok(crate::db::WriteOutcome{applied:n>0,events:vec![]})
-    }).await?;
+    if !repairs.is_empty() {
+        store.write_async(move|c|{
+            let mut n=0;for (id,lane) in repairs {n+=c.execute("UPDATE token_ledger SET session=?2 WHERE id=?1 AND session='' AND task=''",rusqlite::params![id,lane])?;}
+            count.store(n,std::sync::atomic::Ordering::Relaxed);
+            if n>0 {tracing::info!(measured=true,n_considered=n,verdict="codex_workspace_usage_recovered","unowned exact-match rollout rows assigned from durable workspace identity");}
+            Ok(crate::db::WriteOutcome{applied:n>0,events:vec![]})
+        }).await?;
+    }
     if inserted > 0 || repaired.load(std::sync::atomic::Ordering::Relaxed)>0 {
         token_ledger::attribute_tasks(store).await?;
     }
@@ -446,6 +465,19 @@ mod tests {
         assert_eq!(row,("retired".into(),"".into(),1),"ownership repair neither double bills nor invents a claim window");
         std::fs::write(home.path().join("sessions/active.env"),"CC_DIR=/foreign\n").unwrap();
         assert!(!workspace_workdirs(home.path(),BTreeMap::new()).contains_key("active"));
+    }
+
+    #[tokio::test]
+    async fn codex_ownership_repair_skips_unchanged_rows_and_admits_new_owners() {
+        let st=store();st.write(|c| {
+            for (conversation,session) in [("one",""),("two",""),("foreign","fixed")] {c.execute("INSERT INTO token_ledger(ts,session,conversation,input) VALUES(1,?1,?2,10)",rusqlite::params![session,conversation])?;}
+            let first=vec![("one".into(),"owner".into()),("foreign".into(),"wrong".into())];let rows=ownership_repairs(c,&first)?;assert_eq!(rows.len(),1);
+            for (id,owner) in rows {c.execute("UPDATE token_ledger SET session=?2 WHERE id=?1",rusqlite::params![id,owner])?;}
+            assert!(ownership_repairs(c,&first)?.is_empty(),"unchanged pass does not enter writer");
+            let later=vec![("one".into(),"owner".into()),("two".into(),"retired-owner".into())];let rows=ownership_repairs(c,&later)?;assert_eq!(rows.len(),1);assert_eq!(rows[0].1,"retired-owner");
+            assert!(ownership_repairs(c,&[("two".into(),"first".into()),("two".into(),"second".into())])?.is_empty(),"ambiguous conversation ownership refused");
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
     }
 
 }

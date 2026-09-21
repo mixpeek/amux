@@ -5521,6 +5521,11 @@ fn needsyou_renag_text(
 /// TUBES-2459 was the live specimen. The repair is a race-safe lifecycle write,
 /// not a display exemption: `backlog` is the durable state for work that cannot
 /// run, and the existing dependency/revisit machinery is what brings it back.
+fn legacy_blocked_doing(conn:&rusqlite::Connection,row:&bs::IssueRow)->bool {
+    row.project_group.is_none() && row.status=="doing" && row.owner_type=="agent"
+        && row.archived==0 && !is_dormant_type(&row.item_type)
+        && row.session.as_deref().is_some_and(|s|!s.is_empty()) && !doing_is_unblocked(conn,row)
+}
 async fn normalize_blocked_doing(state: &AppState) -> usize {
     let candidates: Vec<String> = match state.store.read() {
         Ok(conn) => bs::list_issues(
@@ -5531,12 +5536,7 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
         )
         .unwrap_or_default()
         .into_iter()
-        .filter(|row| {
-            row.owner_type == "agent"
-                && !is_dormant_type(&row.item_type)
-                && row.session.as_deref().is_some()
-                && !doing_is_unblocked(&conn, row)
-        })
+        .filter(|row| legacy_blocked_doing(&conn,row))
         .map(|row| row.id)
         .collect(),
         Err(error) => {
@@ -5561,11 +5561,7 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
                 let Some(row) = bs::get_issue(conn, &card_w)? else {
                     return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                 };
-                if row.status != "doing"
-                    || row.owner_type != "agent"
-                    || row.archived != 0
-                    || is_dormant_type(&row.item_type)
-                    || doing_is_unblocked(conn, &row)
+                if !legacy_blocked_doing(conn,&row)
                 {
                     return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                 }
@@ -10527,6 +10523,15 @@ mod tests {
             0,
             "the stale blocked claim must not be resumed or advertised current"
         );
+    }
+
+    #[tokio::test]
+    async fn project_output_wait_never_enters_legacy_normalization() {
+        let (_dir,state,store)=drive_state();drive_card(&store,"PROJECT-WAIT","doing","agent","code");
+        store.write(|c| {c.execute("UPDATE issues SET project_group='sample',depends_on='[\"MISSING\"]',execution_state='{\"stage\":\"waiting\",\"wait_category\":\"required_outputs\"}' WHERE id='PROJECT-WAIT'",[])?;Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        {let c=store.read().unwrap();let row=bs::get_issue(&c,"PROJECT-WAIT").unwrap().unwrap();assert!(!legacy_blocked_doing(&c,&row));}
+        assert_eq!(normalize_blocked_doing(&state).await,0);assert_eq!(normalize_blocked_doing(&state).await,0);
+        assert_eq!(drive_status(&store,"PROJECT-WAIT"),"doing");assert_eq!(drive_events(&store,"task.blocked_normalized"),0);
     }
 
     #[tokio::test]

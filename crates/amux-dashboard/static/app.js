@@ -11597,7 +11597,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1009';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1010';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44974,6 +44974,7 @@ function _projectRender(data) {
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   document.getElementById('project-usage').textContent=u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake · '+u.execution_attempts+' execution attempts · '+u.intake_calls+' intake calls · '+(u.measured?u.tokens.toLocaleString()+' observed tokens':'Token usage not yet observed')+' · Coverage: '+u.intake_calls_measured+'/'+u.intake_calls+' intake calls; '+u.execution_turns_measured+' execution turns measured';
+  document.getElementById('project-usage').textContent+=' · '+(u.cost_measured && Number.isFinite(u.estimated_cost_usd)?'$'+u.estimated_cost_usd.toFixed(4)+' estimated cost':'Cost unknown'+(u.cost_reason?' ('+u.cost_reason+')':''))+' · '+(u.execution_cost_turns_measured || 0)+'/'+(u.execution_turns_measured || 0)+' execution turns priced · '+(u.executor_unattributed_turns_measured || 0)+' executor turns outside attempt windows ('+(u.executor_unattributed_tokens || 0)+' tokens)';
   document.getElementById('project-commands').innerHTML=data.commands.filter(c=>c.pending).map(c=>'<div class="project-intake"><strong>Request '+c.id+' · '+(c.waiting_reason?(c.waiting_reason==='intake_attempts_exhausted'?'Intake attempt limit reached':esc(c.waiting_reason.replaceAll('_',' '))):'Interpreting')+'</strong><p>'+esc(c.text)+'</p>'+(c.result?.error?'<p>'+esc(c.result.error)+'</p>':'')+(c.retry_available?'<button class="btn" '+(_projectIntakeRetries.has('retry_'+p.name+'_'+c.id)?'disabled ':'')+'onclick="_projectRetryIntake('+Number(c.id)+')">Retry intake</button><p>Authorize one additional attempt on this request'+(p.policy.paused?' when the project resumes':'')+'. Previous attempts remain recorded.</p>':'')+'</div>').join('');
   const migrations=data.migrations || [];
   document.getElementById('project-migration-history').innerHTML=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');

@@ -289,6 +289,11 @@ pub(crate) fn executor_task(c:&rusqlite::Connection,worker:&str)->anyhow::Result
     anyhow::ensure!(row.project_group.as_deref()==Some(project) && e.worker==worker && row.session.as_deref()==Some(worker) && row.archived==0 && !crate::db::board_store::is_terminal_status(&row.status),"project worker task identity changed");
     Ok(Some((project.into(),id.into())))
 }
+pub(crate) fn executor_steering_allowed(c:&rusqlite::Connection,worker:&str)->anyhow::Result<bool> {
+    let Some((name,_))=executor_task(c,worker)? else {return Ok(false)};
+    let Some(project)=store::get(c,&name)? else {return Ok(false)};
+    Ok(project.policy.enabled && !project.policy.paused && crate::project_execution::usage::waiting(c,&project)?.is_none())
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CancelLegacy {idempotency_key:String,expect_attempts:i64,reason:String,superseded_by_steering:String}

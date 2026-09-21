@@ -3826,3 +3826,25 @@ CARD: AAB-3
 SYMPTOM: Project worker Send now re-entered legacy intake instead of its current task; treating task steering as outcome receipts inflated usage denominators. Task retry reset attempt counters. Shared parent CC_DIR left distinct Codex worktrees unowned. Report paths were inert prose and repeated criterion checks reran identical suites.
 COST: A redundant legacy receipt remained pending, the original steering remained queued, actual task spend was unowned and human verification assets could not be opened after disposal.
 FIX: One project routing authority with durable task steering and genuine-outcome receipt filters; operator cancellation preserves receipt history. One bounded idempotent retry grant preserves monotonic attempts. Validated active/retired workspace identity recovers only unowned exact matches. Explicit hashed passive assets are retained and registered before Verified/disposal, with read-only Projects links. Deduplicate byte-identical checks within each immutable phase. Logs: project.within_task_steering, project.legacy_intake_held, project.legacy_receipt_cancelled, project.retry_granted/refused, codex_workspace_usage_recovered, project.assets_retained, project.asset_retention_failed and project.verification_commands. Final parent Rust/browser checks and isolated live acceptance remain pending.
+
+## Live project telemetry and resumed boot sends made false confirmations
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Private project showed 77 turns/6,536,939 tokens with estimated cost 0 despite unpriced Astra. Executor-owned steering usage fell outside attempt windows. Bootstrap resume/send returned confirmed while a timer left an unsubmitted, truncated/duplicated paste draft. Legacy normalization repeatedly attempted project-row mutation; unchanged Codex ownership repair occupied the writer for ~1.5s every tick.
+COST: Unknown costs looked free, budget coverage missed execution outside attempt windows, one manual Enter intervention was needed, and unnecessary legacy/writer work repeated.
+FIX: Reuse ledger prices/coverage with null unknown cost and truthful known zero; account validated dedicated executor rows separately without changing task attribution. Share project pause/budget predicates at steering claim and typing. Durable boot queue, single claim, fresh empty-frame readiness and draft preservation replace paste timers. Shared legacy normalization predicate excludes project rows; bounded indexed row-ID ownership repair skips no-op writer transactions. Logs: project.cost_unmeasured, boot_delivery_queued/enqueue_failed/start_failed, steering_draft_preserved and existing ownership/delivery verdicts. Parent Rust/native checks pending; no paid call or live project mutation performed.
+
+## Deferred transport holds became 500 and plain Codex completion stayed blocked
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent broad transport suite reported 332 pass, 2 fail, 2 ignored: five deliberate boot/draft/project-budget holds lacked send_failure_status arms; finished plain Codex background frame was classified as a typed composer.
+COST: Recoverable queued delivery looked like a server fault, and a completed background terminal could hold steering indefinitely.
+FIX: Shared failure classifier returns actionable 409 holds with retained-message/draft guidance; real hard failures remain 500. Shared composer parser recognizes the complete ANSI-free Codex exact placeholder/final-footer layout, retaining dim-proof requirements for styled captures. Draft, multiline input, paste, foreground/background work and partially styled negative controls remain. Log signal: codex_plain_capture_placeholder plus existing HTTP status and steering_draft_preserved/held delivery diagnostics. Parent rerun pending; no live project mutation.

@@ -221,3 +221,102 @@ Existing `idle_boundary_measured_without_current_hook` diagnostics announce a
 recognized fallback; the parent bootstrap Send now remains an explicit manual
 intervention, not proof of automatic delivery. The zero token-coverage launcher
 configuration reported by the parent is separate and is not changed here.
+
+## Live accounting and boot-delivery follow-up to 9d0681b2
+
+The private acceptance observed 77 execution turns / 6,536,939 tokens while
+unpriced Astra usage incorrectly displayed an estimated $0. Project totals now
+use the ledger's existing price table and pricing predicates. Missing execution
+rates or incomplete intake cost withhold the aggregate estimate (`null`), with
+`cost_measured`, `cost_reason`, `execution_cost_turns_measured` and
+`unpriced_models` alongside observed tokens. Known free local rates remain a
+measured zero. Configured dollar budgets hold execution and queued project
+steering when cost coverage is unknown; no Astra rate was guessed or added.
+Estimates use current configured rates without rewriting historical ledger rows.
+
+Rows already attributed to a project task remain authoritative. Additional rows
+with an empty task and the identity of a validated dedicated executor workspace
+count toward project totals, including after `.env.reaped`. The workspace record,
+repository provenance, project environment and durable execution identity must
+agree, without another project's claim to that executor. These rows appear as
+`executor_unattributed_turns_measured` and `executor_unattributed_tokens`, while
+`execution_attempt_turns_measured` identifies task-attributed coverage. Neither
+ledger task labels nor attempt windows are changed. Foreign/unowned rows remain
+excluded. Steering still creates no original outcome receipt.
+
+The existing steering claim and typing boundary share the same current project
+identity/pause/budget predicate. Legacy blocked-Doing normalization shares one
+read/write predicate that excludes project rows before any attempted mutation.
+Codex ownership repair reads the existing session index once for at most 1,000
+eligible row IDs, skips the writer entirely when none need repair, and performs
+conditional updates by primary key. Later exact ownership can still recover old
+rows; conflicting conversation owners are refused.
+
+The observed bootstrap failure returned `confirmed` for a deferred boot send,
+then left a pasted-content draft requiring one recorded manual Enter. Boot/start
+prompts now enter the existing durable steering queue instead of a fire-and-forget
+poll/paste timer. Deferred responses are not confirmation. One claim owns delivery;
+a refusal releases that same row, retaining exact bytes. Start records its prior
+frame fingerprint; an unchanged pre-start frame, unknown UI, busy frame or draft
+cannot establish fresh readiness. Boot deliveries never become forced mid-turn
+sends merely by aging, and do not trust a stale idle hook. Existing drafts are
+held, never cleared/re-pasted by the queue. Start failure retains the queued
+message for explicit recovery. Existing project task steering remains on its
+project route. No new worker, provider call, live restart or project write was
+performed for this follow-up.
+
+Log signals include `project.cost_unmeasured`, `boot_delivery_queued`,
+`boot_delivery_enqueue_failed`, `boot_delivery_start_failed`,
+`steering_draft_preserved`, and existing project delivery/ownership verdicts.
+
+Parent's bounded native verification plan (after normal checks and private-only
+build): use the existing private bootstrap when quiescent, not a running project
+executor. Bracket observations with `/health` build/commit. For the next already
+authorized instruction, save exact request bytes/hash and one stable client ID;
+resume then send during startup. Expect deferred/no submitted=true until one
+queue claimant actually confirms submission. Inspect native UI plus queue/history
+and provider user-event bytes, not only `/api/sessions` or DOM state. Replay the
+same request ID: one queue/history delivery, no duplicated/truncated text. In a
+separate no-send observation, leave an existing draft (including a paste chip):
+queue must remain held and draft bytes unchanged. Observe a busy/background frame:
+no boot forced paste. A failed startup must leave the same message pending for
+explicit recovery, not an orphaned timer. Stop at any unexpected draft, duplication
+or uncertain submission; do not clear it or press Enter automatically. Record any
+manual intervention separately. No extra paid call or new worker is authorized by
+this plan; use only an otherwise-authorized next instruction.
+
+The final review correction also exposes cost coverage in Projects: unknown cost
+includes its reason; a fully priced free model displays a measured zero estimate.
+Executor turns outside attempt windows have a separate turn/token label. The
+existing Chromium intake/retry fixture covers both labels without provider calls.
+Usage selects disjoint task-owned and unassigned session-owned rows through the
+existing task/session indexes. Canonical workspace aliases are rejected as
+ambiguous ownership, including retained executor identities. A synthetic 842,035-row
+SQLite check verified indexed SEARCH plans and the expected two included rows;
+its single warm-query timing is not an end-to-end latency claim.
+
+Boot readiness accepts a changed idle frame or a positively observed childless to
+live-child provider launch, then still requires an empty composer and no generation.
+Thus an identical transcript after a new launch can drain, while the old process
+cannot qualify merely by age. The /start route sets a scheduled-start hold before
+enqueuing; the operation lock protects the launch after that hold is consumed.
+Tests cover same-text fresh versus stale frames, scheduled-start holds, drafts and
+busy states. Parent native acceptance must additionally observe the actual pane,
+durable row and receipt across restart; parser tests are not native delivery proof.
+
+Final follow-up source and pending parent commands are recorded in
+`/private/tmp/amux-astra-20260920/logs/aab3-live-followup-handoff.json` and its
+source manifest. Rust runtime tests and Chromium/native acceptance for these exact
+bytes remain pending. No production/main integration or live project mutation is
+claimed by this follow-up.
+
+The broad transport follow-up classifies intentional boot, draft and project
+budget/pause holds as HTTP 409 with a concrete recovery hint; it does not exempt
+them as hard failures. The durable message remains queued. Fully ANSI-free Codex
+captures recognize the exact placeholder followed by a final provider footer;
+partially styled captures still require the dim placeholder. This is a rendered
+layout contract (plain text cannot distinguish a deliberately identical user
+string). Actual other drafts, extra lines and pasted text stay typed, and both
+foreground and background working frames still fail the shared boundary gate.
+The existing finished-background regression is retained with negative controls.
+The recognition emits `codex_plain_capture_placeholder` once per process.

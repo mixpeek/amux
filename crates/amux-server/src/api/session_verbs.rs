@@ -7593,6 +7593,21 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     // Codex 0.153.4 paints its entire footer without ANSI attributes. Only
     // recognize that layout beside its dim, empty prompt: a real draft (even
     // one that looks like a model/path row) must retain the Typed verdict.
+    // Plain captures lose all SGR evidence. Admit only the complete provider
+    // layout with its exact placeholder and final footer; partially styled
+    // frames still need dim proof so a real typed prompt cannot be hidden.
+    let plain_codex_placeholder = !raw_frame.contains('\u{1b}')
+        && stripped[idx].trim()=="› Ask Codex to do anything"
+        && idx+2==stripped.len()
+        && possible_codex_footer_chrome(raw_lines[idx+1])
+        && crate::backend::adapter::codex_pane_generation_state(raw_frame).is_some();
+    if plain_codex_placeholder {
+        static ANNOUNCED: std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+        if !ANNOUNCED.swap(true,std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(measured=true,n_considered=1,verdict="codex_plain_capture_placeholder", "complete unstyled Codex placeholder/footer recognized; generation gate remains independent");
+        }
+        return ComposerState::Placeholder("AskCodextodoanything".into());
+    }
     let (prompt_plain,prompt_dim)=dim_mask(raw_lines[idx]);
     let codex_empty_prompt=stripped[idx].trim_start().starts_with('›')
         && prompt_plain.trim().trim_start_matches('›').trim().is_empty()
@@ -7756,6 +7771,11 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
     //     these names the state and a way out, and every one becomes deliverable
     //     on its own without anybody fixing amux.
     let conflict: &[(&str, &str)] = &[
+        ("project pause, identity or budget holds automatic delivery", "message remains queued; inspect the current project task, pause and usage coverage, and resolve the hold before automatic delivery"),
+        ("boot readiness not freshly observed", "message remains queued; wait for the new provider's idle empty composer, inspect startup if it does not become ready; do not send a duplicate"),
+        ("worker is not ready; durable message remains queued", "message remains queued; start or recover the worker and wait for its idle empty composer; do not send a duplicate"),
+        ("composer contains a draft", "message remains queued; inspect and submit or deliberately discard the existing draft in the pane before delivery can resume"),
+        ("composer draft appeared before paste", "existing draft was preserved; inspect and submit or deliberately discard it in the pane before the queued delivery resumes"),
         ("not running", "POST /api/sessions/<name>/start, or send again to auto-wake it"),
         ("worker is still starting", "wait for the provider terminal to be ready, then retry the retained message"),
         // The keys landed and Claude Code did not take them. amux did its job
@@ -8080,6 +8100,7 @@ pub(crate) fn read_frame(raw: &str, tail_sq: &str) -> FrameRead {
 /// deliverer, schedules). None means "not verified", never "failed".
 pub(crate) fn submit_verdict_of(msg: &str) -> Option<&'static str> {
     let m = msg.trim();
+    if matches!(m,"sent (waiting for in-flight boot)"|"sent (auto-woke)") {return None;}
     if m.starts_with("not submitted") {
         return Some("stuck");
     }
@@ -8398,58 +8419,39 @@ pub(crate) fn all_lane_names() -> Vec<String> {
     names
 }
 
-async fn send_after_ready(
-    state: AppState,
-    name: String,
-    text: String,
-    timeout_s: u64,
-    origin: SendOrigin,
-) {
-    // py:24889 _send_after_ready — wait for Claude's input prompt, then send.
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_s);
-    while std::time::Instant::now() < deadline {
-        let out = tmux_capture(&name, 15).await;
-        if !out.is_empty() {
-            let clean = strip_ansi(&out);
-            if agent_ui_visible(&clean) && !at_resume_picker(&clean) {
-                sleep_ms(1200).await;
-                let _ = send_text_boxed(&state, &name, &text, false, origin).await;
-                return;
-            }
-        }
-        sleep_ms(500).await;
+/// A deferred boot prompt is durable input, not a confirmed submission.
+async fn queue_boot_prompt(state:&AppState,name:&str,text:&str,origin:SendOrigin)->(bool,String) {
+    use sha2::Digest;
+    let start=meta_i64(&load_meta(name),"last_started");
+    let identity=hex::encode(sha2::Sha256::digest(text.as_bytes()));
+    let id=format!("boot-delivery:{name}:{start}:{origin:?}:{identity}");
+    let guard=if origin==SendOrigin::Owner {""}else{"auto-deliver"};
+    match steer_enqueue_idempotent_report(state,name,text,guard,"",&id).await {
+        Ok(row)=>{
+            tracing::info!(session=name,delivery_id=row.id,measured=true,n_considered=1,verdict="boot_delivery_queued","exact boot prompt retained for the single durable delivery claimant");
+            (true,"queued (steering) — waiting for fresh boot readiness".into())
+        },
+        Err(error)=>(false,error.into()),
     }
-    // TIMED OUT WITH THE MESSAGE UNDELIVERED (AMUX-3055). This path used to
-    // return silently, so a dropped create-modal start prompt left NO trace
-    // anywhere (no log line, no event, no board card) and the only symptom was
-    // an empty session a human had to notice. That invisibility is exactly what
-    // the repo's "every bug fix is two fixes" rule exists to kill: the next drop
-    // of this class now self-announces in the server log AND the session-events
-    // feed, so a sweep finds it without anyone watching the pane.
-    tracing::warn!(
-        session = %name,
-        timeout_s,
-        chars = text.chars().count(),
-        // Name the PROVIDER, not "Claude". This line said "Claude UI" on a muse lane, which
-        // reads as a launch bug — the Producer reported it as amux having started Claude for
-        // a provider=muse lane. It had not; the readiness predicate simply knew no muse
-        // markers. A message that misnames what it watched sends the next reader after the
-        // wrong defect.
-        "send_after_ready: agent UI never became ready before timeout; start/wake prompt DROPPED undelivered"
-    );
-    emit_event(
-        &state,
-        &name,
-        "session.prompt_dropped",
-        Some(json!({
-            "reason": "ui_not_ready_before_timeout",
-            "timeout_s": timeout_s,
-            "chars": text.chars().count(),
-        })),
-        None,
-        "send-after-ready",
-    )
-    .await;
+}
+
+async fn queue_start_prompt(state:AppState,name:String,text:String,origin:SendOrigin) {
+    let (ok,error)=queue_boot_prompt(&state,&name,&text,origin).await;
+    if !ok {tracing::warn!(session=name,%error,measured=true,n_considered=1,verdict="boot_delivery_enqueue_failed","boot prompt was not accepted into durable delivery");}
+}
+
+fn boot_frame_fingerprint(raw:&str)->String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(strip_ansi(raw).as_bytes()))
+}
+fn fresh_boot_frame(raw:&str,previous:&str,fresh_launch:bool)->bool {
+    !raw.is_empty() && agent_ui_visible(&strip_ansi(raw)) && !at_resume_picker(&strip_ansi(raw))
+        && pane_is_at_boundary(raw) && composer_state(raw).typed().is_none()
+        && (fresh_launch || boot_frame_fingerprint(raw)!=previous)
+}
+
+fn boot_delivery_held(raw:&str,previous:&str,pending:bool,fresh_launch:bool,starting:bool,legacy_boot:bool)->bool {
+    starting || legacy_boot || (pending && !fresh_boot_frame(raw,previous,fresh_launch))
 }
 
 /// Which delivery mode a send takes: `true` = tmux paste-buffer, `false` =
@@ -8551,7 +8553,7 @@ pub(crate) fn submission_verdict(ok: bool, msg: &str) -> (Option<bool>, &'static
         // zero-character `message.sent` event and `submission=confirmed`, then
         // the dashboard silently tried a best-effort Enter fallback.
         (Some(false), "no_effect")
-    } else if msg.starts_with("queued") {
+    } else if msg.starts_with("queued") || matches!(msg,"sent (waiting for in-flight boot)"|"sent (auto-woke)") {
         (None, "deferred")
     } else if msg.contains("could not be verified") {
         (None, "unverified")
@@ -8744,16 +8746,6 @@ pub(crate) async fn deliver_automated(
     }
 }
 
-fn send_text_boxed<'a>(
-    state: &'a AppState,
-    name: &'a str,
-    text: &'a str,
-    defer_if_busy: bool,
-    origin: SendOrigin,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = (bool, String)> + Send + 'a>> {
-    Box::pin(send_text_inner(state, name, text, SendMode::deferring(defer_if_busy, origin)))
-}
-
 /// How a send should behave, and on whose authority.
 ///
 /// Grouped when `origin` made this eight positional arguments, four of them
@@ -8890,41 +8882,36 @@ async fn send_text_inner(
     }
     // AMUX-4574: same rule at the layer that types, before the herdr branch
     // returns past every other check.
-    if origin == SendOrigin::Automation && lane_is_paused(name) {
+    if (origin == SendOrigin::Automation || from_steering) && lane_is_paused(name) {
         return (false, "target is paused: amux automation is not delivered into a paused worker. \
                         The owner's own send still works."
             .into());
     }
     let cfg = parse_env(name);
+    if from_steering && cfg.get("CC_PROJECT").is_some() {
+        let allowed=state.store.read().ok().and_then(|c|super::projects::executor_steering_allowed(&c,name).ok()).unwrap_or(false);
+        if !allowed {return (false,"project pause, identity or budget holds automatic delivery".into());}
+    }
     if !iterm2_id(&cfg).is_empty() {
         return (false, "iTerm2-backed sessions are not supported by the rust origin yet".into());
     }
     if backend_of_cfg(&cfg) == "herdr" {
         return herdr_send(name, text).await;
     }
-    let boot_in_flight = {
-        let meta = load_meta(name);
-        let last_started = meta.get("last_started").and_then(|v| v.as_i64()).unwrap_or(0);
-        now_i64() - last_started < 20
-    };
-    let mut out_st = tmux_capture(name, 15).await;
-    // A newly-created pane can be running its launch shell without drawing a
-    // shell prompt OR the provider composer. Sending then types the user's
-    // prompt into the startup script. Wait on positive UI evidence, not the
-    // process existence or the model name echoed by the launch command.
-    if boot_in_flight && !agent_ui_visible(&strip_ansi(&out_st)) {
-        tracing::info!(session = %name, verdict = "send_waiting_for_boot_ui",
-            "new worker has not drawn its provider UI — holding message before typing");
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while std::time::Instant::now() < deadline && !agent_ui_visible(&strip_ansi(&out_st)) {
-            sleep_ms(250).await;
-            out_st = tmux_capture(name, 15).await;
-        }
-        if !agent_ui_visible(&strip_ansi(&out_st)) {
-            tracing::warn!(session = %name, verdict = "send_boot_ui_not_ready",
-                "provider UI did not appear — message was not typed into the launch shell");
-            return (false, "worker is still starting — message not sent; retry when its terminal is ready".into());
-        }
+    let boot_meta=load_meta(name);
+    let boot_pending=boot_meta.get("boot_readiness_pending").and_then(Value::as_bool).unwrap_or(false);
+    let legacy_boot=now_i64()-meta_i64(&boot_meta,"last_started")<20 && !boot_meta.contains_key("boot_readiness_pending");
+    let mut out_st=tmux_capture(name,15).await;
+    let starting=boot_meta.get("boot_start_scheduled").and_then(Value::as_bool)==Some(true) || session_op_lock(name).try_lock().is_err();
+    let boot_in_flight=boot_delivery_held(&out_st,&meta_str(&boot_meta,"boot_previous_frame"),boot_pending,boot_meta.get("boot_fresh_launch").and_then(Value::as_bool)==Some(true),starting,legacy_boot);
+    if boot_in_flight {
+        if from_steering {return (false,"boot readiness not freshly observed; durable message remains queued".into());}
+        return queue_boot_prompt(state,name,text,origin).await;
+    }
+    if boot_pending {update_meta(name,&[("boot_readiness_pending",json!(false))]);}
+    if from_steering && composer_state(&out_st).typed().is_some() {
+        tracing::warn!(session=name,measured=true,n_considered=1,verdict="steering_draft_preserved","existing composer draft retained; no repaste or clear");
+        return (false,"composer contains a draft; durable message remains queued".into());
     }
     if !out_st.is_empty() && at_resume_picker(&strip_ansi(&out_st)) {
         return (false, "session is in resume picker".into());
@@ -8982,24 +8969,14 @@ async fn send_text_inner(
         needs_wake = true;
     }
     if needs_wake {
-        if boot_in_flight {
-            let st2 = state.clone();
-            let (n, t) = (name.to_string(), text.to_string());
-            crate::db::interactions::spawn(async move { send_after_ready(st2, n, t, 30, origin).await });
-            return (true, "sent (waiting for in-flight boot)".into());
-        }
-        if !env_path(name).exists() {
-            return (false, "not running".into());
-        }
-        // Auto-wake parity (py:25463): start, then deliver once ready.
-        let (ok, msg) = start_session(state, name, "", false).await;
-        if !ok {
-            return (false, format!("auto-wake failed: {msg}"));
-        }
-        let st2 = state.clone();
-        let (n, t) = (name.to_string(), text.to_string());
-        crate::db::interactions::spawn(async move { send_after_ready(st2, n, t, 60, origin).await });
-        return (true, "sent (auto-woke)".into());
+        if from_steering {return (false,"worker is not ready; durable message remains queued".into());}
+        if !env_path(name).exists() {return (false,"not running".into());}
+        // Persist before boot; failure/restart cannot lose the accepted bytes.
+        let queued=queue_boot_prompt(state,name,text,origin).await;
+        if !queued.0 {return queued;}
+        let (ok,error)=start_session(state,name,"",false).await;
+        if !ok {tracing::warn!(session=name,%error,measured=true,n_considered=1,verdict="boot_delivery_start_failed","start failed; accepted prompt remains queued for explicit recovery");}
+        return queued;
     }
     let mut text = text.to_string();
     if text.is_empty() {
@@ -9357,6 +9334,9 @@ async fn send_text_inner(
                  measured as non-lossy mid-turn (AMUX-2909); this is the regression"
             );
         }
+    }
+    if from_steering && composer_state(&tmux_capture(name,15).await).typed().is_some() {
+        return (false,"composer draft appeared before paste; retained without modification".into());
     }
     send_key(name, "C-u").await;
     sleep_ms(40).await;
@@ -9982,6 +9962,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // leg takes the lock in turn (no re-entrancy).
     let op_lock = session_op_lock(name);
     let _op = op_lock.lock().await;
+    update_meta(name,&[("boot_start_scheduled",json!(false))]);
     if is_session_blocked(name) {
         return (false, "session is blocked; remove it from blocked-sessions.txt first".into());
     }
@@ -10013,6 +9994,8 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     if cfg.get("CC_ARCHIVED") == Some("1") {
         return (false, "session is archived; wake it first".into());
     }
+    let previous=boot_frame_fingerprint(&tmux_capture(name,15).await);
+    update_meta(name,&[("boot_readiness_pending",json!(true)),("boot_previous_frame",json!(previous)),("boot_fresh_launch",json!(false))]);
     let pending_meta = load_meta(name);
     let pending_context = match state.store.read().map_err(|e| e.to_string()).and_then(|conn| {
         resume_launch_context(&conn, name, &pending_meta, cfg.get_or("CC_DIR", ""))
@@ -10775,6 +10758,9 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     } else {
         std::collections::BTreeMap::new()
     };
+    // An observed childless shell -> live child transition proves this launch
+    // is fresh even when a resumed provider redraws an identical transcript.
+    let launch_was_childless=pane_has_live_child(name).await==Some(false);
     // Launch the provider command.
     let _ = send_literal(name, &cmd).await;
     sleep_ms(150).await;
@@ -10982,6 +10968,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // pipe before running the new command, so re-arming is always safe.
     let _ = tmux(&["pipe-pane", "-t", &ptq, &pipe_cmd]).await;
     meta.remove("start_error");
+    meta.insert("boot_fresh_launch".into(),json!(launch_was_childless && launched && pane_has_live_child(name).await==Some(true)));
     meta.insert("last_started".into(), json!(now_i64()));
     // The launch directory is runtime identity, including when a saved active
     // task overrides the worker's general configured checkout.
@@ -11040,7 +11027,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     if !instr.is_empty() && parse_env(name).get("CC_PROJECT").is_none() {
         let st2 = state.clone();
         let n = name.to_string();
-        crate::db::interactions::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
+        queue_start_prompt(st2, n, instr, SendOrigin::Owner).await;
     }
     (true, "started".into())
 }
@@ -15582,7 +15569,7 @@ async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
                 if let Some(project) = env.get("CC_PROJECT") {
                     let guard:String=conn.query_row("SELECT COALESCE(guard,'') FROM steering_queue WHERE id=?1",[&id],|r|r.get(0))?;
                     let current=if guard=="project-execution" {crate::project_execution::planner::delivery_current(conn, project, &session, &id).map_err(crate::project_execution::store::sql_error)?}
-                        else {super::projects::executor_task(conn,&session).map_err(crate::project_execution::store::sql_error)?.is_some() && crate::project_execution::store::get(conn,project).map_err(crate::project_execution::store::sql_error)?.is_some_and(|p|p.policy.enabled && !p.policy.paused)};
+                        else {super::projects::executor_steering_allowed(conn,&session).map_err(crate::project_execution::store::sql_error)?};
                     if !current {
                         tracing::info!(session,delivery_id=id,verdict="project_stale_delivery_refused",measured=true,n_considered=1,"project paused or execution superseded");
                         return Ok(crate::db::WriteOutcome{applied:false,events:vec![]});
@@ -15607,6 +15594,7 @@ async fn send_claimed_steering(state: &AppState, id: &str, session: &str, text: 
         tracing::debug!(session, delivery_id=id, verdict="steering_claim_not_acquired", "concurrent or obsolete delivery did not type into the provider");
         return None;
     }
+    let mode=if id.starts_with("boot-delivery:"){SendMode::drained(false,false)}else{mode};
     let result = send_text_inner(state, session, text, mode).await;
     if !result.0 {
         unclaim_steering_row(&state.store, id).await;
@@ -18062,14 +18050,17 @@ async fn post_dispatch(
                 tracing::warn!(session = %name, reason = %reason, "session_start_refused: /start cannot launch this session");
                 return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason}));
             }
-            let prompt = body_str(body, "prompt").trim().to_string();
+            let prompt = body_str(body, "prompt");
+            update_meta(name,&[("boot_start_scheduled",json!(true))]);
             if !prompt.is_empty() {
+                let queued=queue_boot_prompt(state,name,&prompt,SendOrigin::Owner).await;
+                if !queued.0 {update_meta(name,&[("boot_start_scheduled",json!(false))]);return jresp(StatusCode::CONFLICT,json!({"ok":false,"error":queued.1}));}
                 // The create modal's prompt enters through /start rather than
                 // /send. Until now it bypassed cmd_history entirely, so the
                 // same human message rendered as "Unclassified" after a
                 // refresh and could disappear without a durable audit row if
                 // first-run boot timed out. Record the accepted work before
-                // spawning boot; send_after_ready remains the sole deliverer.
+                // spawning boot; the durable steering claimant is the sole deliverer.
                 let email = headers
                     .get("x-amux-user-email")
                     .and_then(|value| value.to_str().ok())
@@ -18098,17 +18089,7 @@ async fn post_dispatch(
             let n = name.to_string();
             crate::db::interactions::spawn(async move {
                 let (ok, msg) = start_session(&st2, &n, "", false).await;
-                if ok {
-                    if !prompt.is_empty() {
-                        // 60s, matching the auto-wake path: a session created
-                        // from the modal is on its FIRST-run boot (fresh Claude
-                        // Code, MCP init), the slowest case, so a 30s window was
-                        // the tightest one for the very path most likely to
-                        // exceed it (AMUX-3055). The loop still exits the instant
-                        // the composer appears, so this only widens the ceiling.
-                        send_after_ready(st2.clone(), n.clone(), prompt, 60, SendOrigin::Owner).await;
-                    }
-                } else {
+                if !ok {
                     // A background failure must still be SEEN (ethos rule 4).
                     // The event stream alone was not enough (AMUX-3364): a
                     // `server-rs.log` sweep found nothing, so a start that
@@ -19805,7 +19786,7 @@ pub(crate) async fn instructions_post_verb(state: &AppState, name: &str, body: &
             } else {
                 let st2 = state.clone();
                 let n = name.to_string();
-                crate::db::interactions::spawn(async move { send_after_ready(st2, n, instr, 60, SendOrigin::Owner).await });
+                queue_start_prompt(st2, n, instr, SendOrigin::Owner).await;
             }
             applied = true;
         }
@@ -33173,6 +33154,16 @@ mod steer_freeze_tests {
             "a weaker background hint cannot contradict the shared idle verdict and starve steering"
         );
 
+        assert!(matches!(composer_state(CODEX_BACKGROUND_FINISHED),ComposerState::Placeholder(_)));
+        for draft in ["do not send this draft", "[Pasted text #1 +8 lines]", "Ask Codex to do anything else", "Ask Codex to do anything\nsecond draft line"] {
+            let frame=CODEX_BACKGROUND_FINISHED.replace("Ask Codex to do anything",draft);
+            assert!(composer_state(&frame).typed().is_some(),"{draft}");
+            assert!(!pane_is_at_boundary(&frame),"draft is not a send boundary: {draft}");
+        }
+        assert!(!pane_is_at_boundary(CODEX_FOREGROUND_WORKING));
+        let styled_draft=CODEX_BACKGROUND_FINISHED.replace("›", "\u{1b}[1m›\u{1b}[0m");
+        assert!(composer_state(&styled_draft).typed().is_some(),"styled frame requires dim placeholder proof");
+        assert!(!pane_is_at_boundary(&styled_draft));
         assert!(!provider_background_working(CODEX_BACKGROUND_FINISHED));
         assert!(reported_idle_is_boundary(Some(0), CODEX_BACKGROUND_FINISHED));
         assert!(
@@ -34440,6 +34431,11 @@ mod refusal_status_tests {
     fn state_refusals_are_conflicts() {
         for msg in [
             "not running",
+            "project pause, identity or budget holds automatic delivery",
+            "boot readiness not freshly observed; durable message remains queued",
+            "composer contains a draft; durable message remains queued",
+            "worker is not ready; durable message remains queued",
+            "composer draft appeared before paste; retained without modification",
             "worker is still starting — message not sent; retry when its terminal is ready",
             "session is in resume picker",
             "session at a selector — retry at next idle boundary",
@@ -36159,5 +36155,57 @@ mod project_steering_tests {
         assert_eq!(c.query_row("SELECT COUNT(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),3);
         std::fs::write(env_path("normal-fixture"),"CC_COMMAND_LIFECYCLE=1\n").unwrap();
         assert!(super::super::board_lifecycle::enabled("normal-fixture"));
+        let id:String=c.query_row("SELECT id FROM steering_queue WHERE session=?1 LIMIT 1",[&worker],|r|r.get(0)).unwrap();drop(c);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for (budget,paused,expected) in [(Some(1.0),false,false),(None,false,true),(None,true,false)] {
+                state.store.write(move|c| {let mut p=crate::project_execution::store::get(c,"sample").unwrap().unwrap();p.policy.cost_budget_usd=budget;p.policy.paused=paused;crate::project_execution::store::save(c,"sample",p.revision,&p.policy,"test").map_err(crate::project_execution::store::sql_error)}).unwrap();
+                assert_eq!(claim_steering_row(&state.store,&id).await,expected,"budget={budget:?}, paused={paused}");
+                if expected {
+                    assert!(!claim_steering_row(&state.store,&id).await,"one delivery claimant");
+                    // Release the fixture claim so the final pause assertion tests
+                    // policy admission, not an already claimed delivery row.
+                    unclaim_steering_row(&state.store,&id).await;
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)] mod boot_delivery_tests {
+    use super::*;
+    #[test] fn boot_delivery_requires_fresh_empty_idle_frame() {
+        let old="old transcript\n\n\u{1b}[1m›\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  gpt-6-astra medium · ~/private/repo · resumed\n";
+        let fingerprint=boot_frame_fingerprint(old);
+        assert!(!fresh_boot_frame(old,&fingerprint,false),"pre-restart frame is not readiness");
+        assert!(fresh_boot_frame(old,&fingerprint,true),"same text in positively observed new launch is ready");
+        assert!(boot_delivery_held(old,&fingerprint,false,true,true,false),"scheduled start holds old pane even before start acquires operation lock");
+        assert!(!boot_delivery_held(old,&fingerprint,true,true,false,false),"new process idle frame admits drain after launch finishes");
+        let idle=old.replace("old transcript","new startup frame");assert!(fresh_boot_frame(&idle,&fingerprint,false));
+        for draft in ["[Pasted Content 1024 chars]","unfinished user draft"] {
+            let raw=idle.replace("\u{1b}[2mAsk Codex to do anything\u{1b}[0m",draft);
+            assert!(!fresh_boot_frame(&raw,&fingerprint,true),"draft {draft}");
+        }
+        for busy in ["• Working (1s • esc to interrupt)","• Waiting for background terminal (1s • esc to interrupt)"] {
+            assert!(!fresh_boot_frame(&idle.replace("new startup frame",busy),&fingerprint,true));
+        }
+        assert!(!fresh_boot_frame("",&fingerprint,true));
+        for deferred in ["sent (waiting for in-flight boot)","sent (auto-woke)","queued (steering) — waiting for fresh boot readiness"] {assert_eq!(submit_verdict_of(deferred),None);assert_eq!(submission_verdict(true,deferred),(None,"deferred"));}
+    }
+    #[test] fn boot_delivery_preserves_exact_bytes_and_single_claim_across_retry() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();std::fs::write(env_path("boot-fixture"),"CC_ISOLATED=1\n").unwrap();
+        let db=crate::db::Store::open(&home.path().join("db")).unwrap();
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let text=format!("  precise unicode α\n{}\n  ","do not duplicate or truncate ".repeat(100));
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let first=queue_boot_prompt(&state,"boot-fixture",&text,SendOrigin::Owner).await;assert!(first.0);assert_eq!(submit_verdict_of(&first.1),None);
+            assert!(queue_boot_prompt(&state,"boot-fixture",&text,SendOrigin::Owner).await.0);
+            assert!(!queue_boot_prompt(&state,"boot-fixture",&text,SendOrigin::Automation).await.0,"isolated automation protection retained");
+            let (id,stored,count):(String,String,i64)={let c=state.store.read().unwrap();c.query_row("SELECT id,text,COUNT(*) FROM steering_queue",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()};assert_eq!(stored,text);assert_eq!(count,1);
+            assert!(claim_steering_row(&state.store,&id).await);assert!(!claim_steering_row(&state.store,&id).await);
+            unclaim_steering_row(&state.store,&id).await;
+            assert!(claim_steering_row(&state.store,&id).await,"failure releases the same durable row, not a new paste timer");
+            assert_eq!(state.store.read().unwrap().query_row("SELECT text FROM steering_queue WHERE id=?1",[id],|r|r.get::<_,String>(0)).unwrap(),text);
+        });
     }
 }
