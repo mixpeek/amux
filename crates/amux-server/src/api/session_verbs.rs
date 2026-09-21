@@ -9670,16 +9670,52 @@ fn log_flush_ms() -> u64 {
         .unwrap_or(2000)
 }
 
-async fn poll_shell_prompt(name: &str, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    while std::time::Instant::now() < deadline {
-        let out = tmux_capture(name, 5).await;
-        if !out.is_empty() && at_shell_prompt(&strip_ansi(&out)) {
-            return true;
-        }
-        sleep_ms(150).await;
+/// A prompt in scrollback is not completion evidence. Source a short private
+/// file instead of filling the canonical PTY input buffer while profiles run.
+/// The receipt belongs to this exact submission, never to an earlier prompt.
+async fn shell_command_with<F, Fut>(line: &str, launch: bool, timeout: Duration, submit: F) -> Result<(), String>
+where F: FnOnce(String) -> Fut, Fut: std::future::Future<Output = bool> {
+    let dir=tempfile::Builder::new().prefix("amux-shell-").tempdir().map_err(|e|e.to_string())?;
+    let script=dir.path().join("command");
+    let receipt=dir.path().join("receipt");
+    let acknowledge=format!("printf '%s' \"$?\" > {}",sh_quote(&receipt.to_string_lossy()));
+    let body=if launch {format!("printf '0' > {}\n{line}\n",sh_quote(&receipt.to_string_lossy()))}
+        else {format!("{line}\n{acknowledge}\n")};
+    std::fs::write(&script,body).map_err(|e|e.to_string())?;
+    if !submit(format!(". {}",sh_quote(&script.to_string_lossy()))).await {
+        return Err("tmux did not accept shell command submission".into());
     }
-    false
+    let deadline=tokio::time::Instant::now()+timeout;
+    loop {
+        if let Ok(status)=std::fs::read_to_string(&receipt) {
+            if status=="0" {return Ok(())}
+            if !status.is_empty() {return Err(format!("shell setup exited {status}"))}
+        }
+        if tokio::time::Instant::now()>=deadline {
+            return Err("shell command receipt timed out; provider launch not confirmed".into());
+        }
+        sleep_ms(50).await;
+    }
+}
+
+async fn startup_shell_command(name: &str, line: &str, launch: bool) -> Result<(), String> {
+    shell_command_with(line,launch,Duration::from_secs(10),|line|async move {
+        let target=pt(name);
+        matches!(tmux(&shell_line_args(&target,&line)).await,Some(o) if o.status.success())
+    }).await
+}
+
+fn shell_start_failed(name: &str, error: &str) -> (bool,String) {
+    update_meta(name,&[("start_error",json!(error)),("boot_fresh_launch",json!(false))]);
+    tracing::warn!(session=name,measured=true,n_considered=1,verdict="shell_start_failed",%error,
+        "worker startup unconfirmed; no started event or subsequent shell submission");
+    (false,error.into())
+}
+
+fn provider_start_confirmed(ui_visible: bool, live_child: Option<bool>) -> bool {
+    // A healthy slow provider need not have painted a recognizable UI yet.
+    // Conversely a stale UI frame cannot make a positively stopped pane live.
+    live_child==Some(true) || (ui_visible && live_child.is_none())
 }
 
 async fn type_line(name: &str, line: &str) {
@@ -10656,6 +10692,15 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             }
         }
     }
+    // Setup completion and launch admission share one receipt-based transport.
+    // Never submit the next line after a timeout or a failed tmux operation.
+    macro_rules! shell_step {
+        ($line:expr, $launch:expr) => {
+            if let Err(error)=startup_shell_command(name,$line,$launch).await {
+                return shell_start_failed(name,&error);
+            }
+        };
+    }
     if tmux_exists {
         // Reuse the surviving tmux session (py:24589).
         let output = tmux_capture(name, 10).await;
@@ -10664,10 +10709,8 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             sleep_ms(100).await;
             send_key(name, "C-u").await;
             sleep_ms(100).await;
-            type_line(name, "HISTFILE=/dev/null").await;
-            poll_shell_prompt(name, 3000).await;
-            type_line(name, &format!("cd {}", sh_quote(&work_dir))).await;
-            poll_shell_prompt(name, 3000).await;
+            shell_step!("HISTFILE=/dev/null",false);
+            shell_step!(&format!("cd {}", sh_quote(&work_dir)),false);
         } else {
             send_key(name, "C-c").await;
             sleep_ms(3000).await;
@@ -10677,15 +10720,12 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 let sh = user_shell();
                 let _ = tmux(&["respawn-pane", "-k", "-t", &ptq, &sh]).await;
                 sleep_ms(1000).await;
-                type_line(name, &shell_rc).await;
-                poll_shell_prompt(name, 3000).await;
+                shell_step!(&shell_rc,false);
             } else {
                 send_key(name, "C-u").await;
                 sleep_ms(100).await;
-                type_line(name, "HISTFILE=/dev/null").await;
-                poll_shell_prompt(name, 3000).await;
-                type_line(name, &format!("cd {}", sh_quote(&work_dir))).await;
-                poll_shell_prompt(name, 3000).await;
+                shell_step!("HISTFILE=/dev/null",false);
+                shell_step!(&format!("cd {}", sh_quote(&work_dir)),false);
             }
         }
         // `tmux set-environment` changes what future pane processes inherit;
@@ -10693,15 +10733,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         // tmux's shell-escaped output. The typed command contains no values,
         // so provider keys cannot land in terminal history or pane logs.
         let target = st(name);
-        type_line(
-            name,
-            &format!(
-                "eval \"$(tmux show-environment -s -t {})\"",
-                sh_quote(&target)
-            ),
-        )
-        .await;
-        poll_shell_prompt(name, 3000).await;
+        shell_step!(&format!("eval \"$(tmux show-environment -s -t {})\"",sh_quote(&target)),false);
     } else {
         // Fresh tmux session hosting the user's login shell (py:24647).
         //
@@ -10771,19 +10803,12 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
             let _ = tmux(&["set-environment", "-t", &stq, key, value]).await;
         }
         if !deferred_secrets.is_empty() {
-            type_line(
-                name,
-                &format!("eval \"$(tmux show-environment -s -t {})\"", sh_quote(&stq)),
-            )
-            .await;
-            poll_shell_prompt(name, 3000).await;
+            shell_step!(&format!("eval \"$(tmux show-environment -s -t {})\"",sh_quote(&stq)),false);
         }
-        type_line(name, &shell_rc).await;
-        poll_shell_prompt(name, 3000).await;
+        shell_step!(&shell_rc,false);
     }
     if has_oauth && provider != "codex" && provider != "gemini" && provider != "muse" {
-        type_line(name, "unset ANTHROPIC_API_KEY").await;
-        poll_shell_prompt(name, 3000).await;
+        shell_step!("unset ANTHROPIC_API_KEY",false);
     }
     // Startup profiles and scoped environment files may change directory.
     // Pin the actual provider invocation to the resolved workspace, even when
@@ -10804,9 +10829,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // is fresh even when a resumed provider redraws an identical transcript.
     let launch_was_childless=pane_has_live_child(name).await==Some(false);
     // Launch the provider command.
-    let _ = send_literal(name, &cmd).await;
-    sleep_ms(150).await;
-    send_key(name, "Enter").await;
+    shell_step!(&cmd,true);
     // Wait for the agent UI (py:24717).
     let mut launched = false;
     for i in 0..20 {
@@ -10919,9 +10942,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 &work_dir,
                 &build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags),
             );
-            let _ = send_literal(name, &cmd_fresh).await;
-            sleep_ms(150).await;
-            send_key(name, "Enter").await;
+            shell_step!(&cmd_fresh,true);
             for _ in 0..10 {
                 sleep_ms(500).await;
                 let out2 = tmux_capture(name, 10).await;
@@ -10965,9 +10986,7 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 "start_session",
             )
             .await;
-            let _ = send_literal(name, &cmd).await;
-            sleep_ms(150).await;
-            send_key(name, "Enter").await;
+            shell_step!(&cmd,true);
             let mut relaunched = false;
             for _ in 0..20 {
                 sleep_ms(500).await;
@@ -10986,6 +11005,9 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 save_meta(name, &meta);
             }
         }
+    }
+    if !provider_start_confirmed(launched,pane_has_live_child(name).await) {
+        return shell_start_failed(name,"provider launch ended without a live process or confirmed UI");
     }
     // Stream output to the session log (py:24800).
     let _ = std::fs::create_dir_all(logs_dir());
@@ -24029,6 +24051,102 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "shell did not receive two complete lines: {result:?}");
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    #[tokio::test]
+    async fn startup_shell_receipts_preserve_long_input_and_wait_for_setup() {
+        use std::process::Command;
+        let dir=tempfile::tempdir_in("/tmp").unwrap();
+        let socket=dir.path().join("socket");
+        struct PrivateServer(std::path::PathBuf);
+        impl Drop for PrivateServer {
+            fn drop(&mut self) {let _=Command::new("tmux").arg("-S").arg(&self.0).arg("kill-server").output();}
+        }
+        let _server=PrivateServer(socket.clone());
+        let created=Command::new("tmux").arg("-S").arg(&socket)
+            .args(["-f","/dev/null","new-session","-d","-s","amux-startup-proof","/bin/bash --noprofile --norc"])
+            .output().unwrap();
+        assert!(created.status.success(),"{}",String::from_utf8_lossy(&created.stderr));
+        let submit=|line:String| {
+            let socket=socket.clone();
+            async move {
+                let target=super::pt("startup-proof");
+                tokio::process::Command::new("tmux").arg("-S").arg(socket)
+                    .args(super::shell_line_args(&target,&line)).output().await.unwrap().status.success()
+            }
+        };
+        let timeout=std::time::Duration::from_secs(5);
+        let quote=|p:&std::path::Path|super::sh_quote(&p.to_string_lossy());
+        let setup_done=dir.path().join("setup-done");
+        let result=dir.path().join("provider-argv");
+        let payload="x".repeat(4096);
+        let cwd=std::fs::canonicalize(dir.path()).unwrap();
+        // More than the PTY canonical buffer; setup runs slowly and changes cwd
+        // and environment in the same shell that will launch the provider.
+        let setup=format!("sleep 0.5; export AMUX_TEST_VALUE={}; cd {}; unset AMUX_TEST_REMOVED; printf done > {}",
+            super::sh_quote(&payload),quote(&cwd),quote(&setup_done));
+        // Hold the shell inside a foreground setup until submission completes.
+        // This deterministically exercises canonical-mode input, not just a
+        // conveniently idle readline prompt. No provider/model is involved.
+        let busy=dir.path().join("busy");let release=dir.path().join("release");
+        assert!(submit(format!("export AMUX_TEST_REMOVED=present; printf ready > {}; while [ ! -e {} ]; do sleep 0.02; done",quote(&busy),quote(&release))).await);
+        let deadline=tokio::time::Instant::now()+timeout;
+        while !busy.exists() {
+            assert!(tokio::time::Instant::now()<deadline,"shell never entered setup");
+            super::sleep_ms(20).await;
+        }
+        super::shell_command_with(&setup,false,timeout,|line| {
+            let submit=&submit;let release=&release;
+            async move {
+                let accepted=submit(line).await;
+                std::fs::write(release,"release").unwrap();
+                accepted
+            }
+        }).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&setup_done).unwrap(),"done");
+        let launch=format!("printf '%s\\n' \"$AMUX_TEST_VALUE\" \"$PWD\" \"${{AMUX_TEST_REMOVED-unset}}\" {} > {}",
+            super::sh_quote(&payload),quote(&result));
+        super::shell_command_with(&launch,true,timeout,submit).await.unwrap();
+        let deadline=tokio::time::Instant::now()+timeout;
+        let expected=format!("{payload}\n{}\nunset\n{payload}\n",std::fs::canonicalize(dir.path()).unwrap().display());
+        loop {
+            if std::fs::read_to_string(&result).unwrap_or_default()==expected {break}
+            assert!(tokio::time::Instant::now()<deadline,"exact provider input/cwd/env not received");
+            super::sleep_ms(20).await;
+        }
+        let error=super::shell_command_with("false",false,timeout,submit).await.unwrap_err();
+        assert_eq!(error,"shell setup exited 1");
+        let error=super::shell_command_with("true",false,timeout,|_|async{false}).await.unwrap_err();
+        assert!(error.contains("tmux did not accept"));
+        // A stale prompt cannot acknowledge this submission, and no launch is
+        // sent after the bounded timeout. The setup may finish on its own.
+        let never=dir.path().join("must-not-launch");
+        let setup=super::shell_command_with("sleep 0.5",false,std::time::Duration::from_millis(50),submit).await;
+        assert!(setup.as_ref().unwrap_err().contains("receipt timed out"));
+        if setup.is_ok() {
+            super::shell_command_with(&format!("touch {}",quote(&never)),true,timeout,submit).await.unwrap();
+        }
+        super::sleep_ms(600).await;
+        assert!(!never.exists());
+    }
+
+    #[test]
+    fn startup_shell_failure_is_durable_and_slow_live_provider_is_not_failed() {
+        let dir=tempfile::tempdir().unwrap();
+        let _home=crate::api::settings::test_env::set_home(dir.path());
+        let (ok,error)=super::shell_start_failed("startup-proof","shell command receipt timed out");
+        assert!(!ok);
+        let meta=super::load_meta("startup-proof");
+        assert_eq!(meta.get("start_error"),Some(&serde_json::json!(error)));
+        assert_eq!(meta.get("boot_fresh_launch"),Some(&serde_json::json!(false)));
+        assert!(!meta.contains_key("start_count"));
+        assert!(!meta.contains_key("last_started"));
+        assert!(super::provider_start_confirmed(false,Some(true)),"healthy slow startup stays alive");
+        assert!(super::provider_start_confirmed(true,Some(true)));
+        assert!(super::provider_start_confirmed(true,None));
+        assert!(!super::provider_start_confirmed(true,Some(false)),"old UI cannot prove a live process");
+        assert!(!super::provider_start_confirmed(false,Some(false)));
+        assert!(!super::provider_start_confirmed(false,None),"unknown is not confirmed startup");
     }
 
     /// ATE-75: the suggestion probe ran successfully but found nothing to

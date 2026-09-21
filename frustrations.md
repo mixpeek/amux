@@ -3982,3 +3982,15 @@ CARD: AAB-3
 SYMPTOM: Parent observed PAA-4 generation3 independent verification stop at exactly 600 seconds after backend and Studio/build checks; fresh browser proof never ran. The report was retained, but the existing retry action authorized another model execution rather than rerunning checks.
 COST: One real independent gate attempt failed; no further paid/provider trial or real retry was requested by this worker. Full original API snapshot paa4-g3-independent-observation.json retained.
 FIX: Snapshot patch adds bounded project-configured verification_timeout_secs (default600, 1–3600), one shared per-command source/merged runner, and explicit operator Rerun checks through existing retry authority with report/input/revision/idempotency binding and unchanged model attempts/history. Failure stays waiting; no automatic repair loop from a checks-only grant. candidate_verification_command and project.verification_retry_granted emit measured evidence. Focused API/process/negative tests and isolated full UI extension await parent; no live state or accepted output changed.
+
+
+## Shell startup reported started after truncated launch input (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Full isolated 424 UI run reached ten scenarios, then PRU-1 never entered its nonbillable provider. start_session recorded started despite a childless shell; its exact execution packet stayed unsent and the observer correctly held executor_stopped_before_result. Prompt polling accepted scrollback and ignored timeouts. A private tmux/Bash probe proved input loss while setup occupied the terminal: 1,916 submitted bytes lost Enter and retained only 908 of 1,800 payload bytes after an extra Enter, measured through argv rather than rendered text.
+COST: One full isolated UI run failed before a report; no real project retry or model call was made for diagnosis. Original 424 failure and read-only fixture evidence retained.
+FIX: Source short private temporary scripts in the existing shell, acknowledge each setup command with a unique filesystem receipt, and stop on submission failure/nonzero status/timeout before sending more input. Initial and existing fallback launches share this transport. A stopped provider cannot produce session.started; durable start_error and measured shell_start_failed expose the failure, while a live slow startup remains allowed. Private positive proof preserved all 4,096 payload bytes, cwd and environment. Focused production-helper regressions added; parent Rust/full UI validation pending. No deployment or live project changes.
