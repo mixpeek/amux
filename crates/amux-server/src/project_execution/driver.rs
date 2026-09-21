@@ -486,6 +486,12 @@ pub(crate) async fn tick(state: &AppState) {
             if let Err(error) = drive_project(&state, &project.name).await {
                 tracing::warn!(project=%project.name,%error,verdict="project_tick_failed",measured=true,n_considered=1,"durable project state retained for recovery");
             }
+            let current = state.store.read().ok().and_then(|c| store::get(&c, &project.name).ok().flatten());
+            if let Some(current) = current {
+                if let Err(error) = super::acceptance::tick(&state, &current).await {
+                    tracing::warn!(project=%project.name,%error,verdict="project_acceptance_tick_failed",measured=true,n_considered=1,"project acceptance remains pending for bounded retry");
+                }
+            }
             running
                 .lock()
                 .expect("project runners")

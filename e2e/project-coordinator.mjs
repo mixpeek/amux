@@ -41,7 +41,7 @@ try {
   assert.equal(await page.locator('#project-provider').inputValue(),'claude');
   assert.equal(await page.locator('#project-executor').inputValue(),'sonnet');
   assert.equal(await page.locator('#project-command').inputValue(),'Keep this unsent outcome');
-  await page.locator('.project-settings').first().evaluate(el=>el.open=true);
+  await page.locator('.project-settings').filter({hasText:'Execution settings'}).evaluate(el=>el.open=true);
   await page.locator('#project-coordinator-provider').selectOption('claude');
   await page.locator('#project-coordinator').fill('haiku');
   await page.locator('#project-provider').selectOption('codex');

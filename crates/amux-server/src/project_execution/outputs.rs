@@ -46,19 +46,7 @@ pub(crate) fn authorization_hold(conn: &Connection, row: &bs::IssueRow) -> anyho
 }
 
 pub fn ready(conn: &Connection, row: &bs::IssueRow) -> anyhow::Result<bool> {
-    for id in &row.depends_on {
-        let Some(output) = bs::get_issue(conn, id)? else {
-            return Ok(false);
-        };
-        if output.project_group != row.project_group
-            || output.status != "verified"
-            || output.archived != 0
-            || authorization_hold(conn, &output)?
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    Ok(super::graph::readiness(conn, row)? == super::graph::Readiness::Ready)
 }
 
 pub fn declare(
@@ -148,28 +136,20 @@ pub fn declare(
             .any(|d| !row.depends_on.contains(d)),
         "no new required output; do not replay a completed continuation"
     );
+    // The shared graph seam owns existence, same-project, archived and cycle rules for every surface.
+    let mut proposed = row.depends_on.clone();
     for output in &request.required_outputs {
-        let mut pending = vec![(output.clone(), vec![id.to_string()])];
-        let mut visited = HashSet::new();
-        while let Some((next, path)) = pending.pop() {
-            anyhow::ensure!(!path.contains(&next), "cyclic or self output dependency");
-            if !visited.insert(next.clone()) {
-                continue;
-            }
-            let target = bs::get_issue(conn, &next)?
-                .ok_or_else(|| anyhow::anyhow!("required output missing: {next}"))?;
-            anyhow::ensure!(
-                target.project_group.as_deref() == Some(project) && target.archived == 0,
-                "required output outside active project: {next}"
-            );
-            anyhow::ensure!(
-                !authorization_hold(conn, &target)?,
-                "authorization wait is not a required output: {next}"
-            );
-            let mut path = path;
-            path.push(next);
-            pending.extend(target.depends_on.into_iter().map(|dep| (dep, path.clone())));
+        if !proposed.contains(output) {
+            proposed.push(output.clone());
         }
+    }
+    super::graph::validate(conn, project, id, &proposed, "required_outputs").map_err(|e| anyhow::anyhow!("{e}"))?;
+    for output in &request.required_outputs {
+        let target = bs::get_issue(conn, output)?.ok_or_else(|| anyhow::anyhow!("required output missing: {output}"))?;
+        anyhow::ensure!(
+            !authorization_hold(conn, &target)?,
+            "authorization wait is not a required output: {output}"
+        );
     }
     for output in &request.required_outputs {
         if !row.depends_on.contains(output) {
@@ -332,6 +312,17 @@ pub(crate) mod tests {
     fn worker(c: &Connection) -> String {
         planner::execution(c, "A").unwrap().worker
     }
+    fn current_verified(c: &Connection, id: &str) {
+        c.execute("UPDATE issues SET status='verified',evidence='Integrated current output' WHERE id=?1", [id]).unwrap();
+        let row = bs::get_issue(c, id).unwrap().unwrap();
+        let mut execution = planner::execution(c, id).unwrap();
+        execution.stage = "verified".into();
+        execution.input_hash = planner::input_hash(&row);
+        execution.report = Some(planner::Report {
+            assets: vec![], head: "b".repeat(40), checks: vec![], summary: "verified output".into(),
+        });
+        planner::save_execution(c, &row, &execution, "test.verified").unwrap();
+    }
     #[tokio::test]
     async fn project_outputs_continuation_usage_is_attributed_only_inside_its_window() {
         let (_dir, db, request) = fixture();
@@ -341,7 +332,7 @@ pub(crate) mod tests {
             c.execute("UPDATE task_attempts SET started_at=?1,ended_at=?2",params![now-120,now-100])?;
             c.execute("UPDATE session_events SET ts=?1",[now-100])?;
             declare(c,"sample","A",&w,&request).unwrap();
-            c.execute("UPDATE issues SET status='verified' WHERE id='B'",[])?;
+            current_verified(c, "B");
             resume(c,"sample","A").unwrap();
             c.execute("UPDATE session_events SET ts=?1 WHERE type='project.outputs_continued' OR (type='task.claimed' AND json_extract(data,'$.continuation')=1)",[now-60])?;
             let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
@@ -384,7 +375,7 @@ pub(crate) mod tests {
         db.write(move|c| {
             let before=planner::execution(c,"A").unwrap();let attempts=attempts::list_for_card(c,"A")?;
             // Negative control: even a Verified producer cannot wake a prose wait.
-            c.execute("UPDATE issues SET status='verified' WHERE id='B'",[])?;
+            current_verified(c, "B");
             assert!(!resume(c,"sample","A").unwrap().applied);
             let view=store::board(c,"sample").unwrap();
             assert_eq!(view["cards"].as_array().unwrap().iter().find(|c|c["id"]=="A").unwrap()["phase"],"waiting");
@@ -395,7 +386,7 @@ pub(crate) mod tests {
             let waiting=planner::execution(c,"A").unwrap();
             assert_eq!(waiting.output_wait.as_ref().unwrap().previous_wait,before.waiting);
             assert_eq!(waiting.last_failure,before.last_failure);
-            c.execute("UPDATE issues SET status='verified',evidence='Independent gate passed and integrated accepted SHA' WHERE id='B'",[])?;
+            current_verified(c, "B");
             assert!(resume(c,"sample","A").unwrap().applied);
             assert!(!resume(c,"sample","A").unwrap().applied);
             let after=planner::execution(c,"A").unwrap();
@@ -483,7 +474,7 @@ pub(crate) mod tests {
         let (_dir, db, request) = fixture();
         db.write(move|c| {
             declare(c,"sample","A",&worker(c),&request).unwrap();
-            c.execute("UPDATE issues SET status='verified' WHERE id='B'",[])?;
+            current_verified(c, "B");
             let p=store::get(c,"sample").unwrap().unwrap();
             for field in ["paused","enabled","max_executors","token_budget"] {
                 let mut policy=p.policy.clone();

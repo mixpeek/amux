@@ -2232,6 +2232,7 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("telegram_mappings.last_routed_session", RenameDisposition::Migrate),
     ("mdai_runs", RenameDisposition::Migrate),
     ("board_drive_nudge_state", RenameDisposition::Migrate),
+    ("board_drive_nudge_budget", RenameDisposition::Migrate),
     ("dictation_history", RenameDisposition::Migrate),
     ("reclaim_quarantine", RenameDisposition::Migrate),
     ("send_dedup", RenameDisposition::Migrate),

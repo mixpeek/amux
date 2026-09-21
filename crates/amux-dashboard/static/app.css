@@ -754,6 +754,7 @@
     transform: translateY(12px);
     transition: opacity 0.25s, transform 0.25s cubic-bezier(.4,0,.2,1);
   }
+  .overlay[hidden] { display: none !important; }
   .overlay.active { pointer-events: auto; opacity: 1; transform: none; }
   /* ── Generic centered modal (calendar event editor) ─────────────────────────
      These classes had NO rules — openEventModal's markup rendered as unstyled
@@ -6954,6 +6955,7 @@ select.input { height:var(--control-height); }
 
 /* Project-first workspace: concise board cards, one task inspector (AAB-11) */
 .project-summary{margin:0 0 16px}.project-progress{font-size:15px;font-weight:600}.project-acceptance{margin-top:4px;font-size:14px}.project-muted{color:var(--muted);font-size:13px}
+.project-review-assets{margin:10px 0;padding:10px;border:1px solid var(--border);border-radius:8px}.project-review-assets>div{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .project-workspace{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);gap:20px;align-items:start}
 .project-workspace .project-columns{flex-wrap:wrap}.project-workspace .project-column{min-width:200px}
 .project-card-select{display:block;width:100%;min-height:44px;text-align:left;background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer}.project-card-select strong{display:block;margin-top:6px;font-size:15px;line-height:1.4}

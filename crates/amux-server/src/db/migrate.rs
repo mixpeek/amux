@@ -23,7 +23,7 @@ struct Migration {
     sql: &'static str,
 }
 
-/// Recorded names that are known to be an earlier name for the SAME migration.
+/// Recorded names that are safe predecessors of the registered migration.
 ///
 /// A version/name mismatch normally means a migration was skipped and remains
 /// a startup error. This one is different and was already proven/documented in
@@ -31,9 +31,14 @@ struct Migration {
 /// stale `0029_` filename prefix to `0035_` without changing its schema work.
 /// Keeping that fact executable prevents every healthy boot from raising a
 /// false migration-collision alarm while preserving the alarm for every
-/// unrecognized mismatch.
+/// unrecognized mismatch. Versions 82/83 were assigned independently on the
+/// project-lifecycle branch. Migration 85 is an idempotent union of both
+/// histories, so either deployed history converges before the server uses the
+/// schema.
 const MIGRATION_NAME_ALIASES: &[(i64, &str, &str)] = &[
     (35, "0029_regenerable_samples", "0035_regenerable_samples"),
+    (82, "0082_project_execution", "0082_nudge_budget"),
+    (83, "0083_project_attempts", "0083_project_execution"),
 ];
 
 fn known_name_alias(version: i64, recorded: &str, registered: &str) -> bool {
@@ -477,6 +482,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 84,
         name: "0084_project_attempts",
         sql: include_str!("../../migrations/0084_project_attempts.sql"),
+    },
+    Migration {
+        version: 85,
+        name: "0085_project_migration_collision_reconcile",
+        sql: include_str!("../../migrations/0085_project_migration_collision_reconcile.sql"),
     },
 ];
 
@@ -1021,6 +1031,89 @@ mod registration_guard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn apply_history_through(conn: &Connection, through: i64) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _amux_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL,
+                duration_ms INTEGER
+            );",
+        )
+        .unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= through) {
+            apply_one(conn, migration.sql).unwrap();
+            conn.execute(
+                "INSERT INTO _amux_migrations(version,name,applied_at,duration_ms) VALUES(?1,?2,'test',0)",
+                rusqlite::params![migration.version, migration.name],
+            )
+            .unwrap();
+        }
+    }
+
+    fn assert_reconciled_project_schema(conn: &Connection) {
+        for (table, column) in [
+            ("group_config", "execution_policy"),
+            ("group_config", "execution_rev"),
+            ("issues", "project_group"),
+            ("issues", "execution_state"),
+            ("cmd_history", "project_group"),
+            ("steering_queue", "sender"),
+        ] {
+            let present: bool = conn
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1)"),
+                    [column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(present, "missing {table}.{column}");
+        }
+        let nudge: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_drive_nudge_budget')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(nudge, "the main-line nudge budget must survive reconciliation");
+    }
+
+    #[test]
+    fn current_main_history_upgrades_to_project_schema() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, 82);
+        apply_all(&mut conn).unwrap();
+        assert_reconciled_project_schema(&conn);
+        assert!(renumbered_migrations(&conn).is_empty());
+    }
+
+    #[test]
+    fn deployed_project_branch_history_converges_without_collision_or_missing_main_schema() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, 81);
+        apply_one(&conn, include_str!("../../migrations/0083_project_execution.sql")).unwrap();
+        conn.execute(
+            "INSERT INTO _amux_migrations(version,name,applied_at,duration_ms) VALUES(82,'0082_project_execution','test',0)",
+            [],
+        )
+        .unwrap();
+        apply_one(&conn, include_str!("../../migrations/0084_project_attempts.sql")).unwrap();
+        conn.execute(
+            "INSERT INTO _amux_migrations(version,name,applied_at,duration_ms) VALUES(83,'0083_project_attempts','test',0)",
+            [],
+        )
+        .unwrap();
+
+        apply_all(&mut conn).unwrap();
+        assert_reconciled_project_schema(&conn);
+        assert!(renumbered_migrations(&conn).is_empty());
+        let recorded: String = conn
+            .query_row("SELECT name FROM _amux_migrations WHERE version=82", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(recorded, "0082_project_execution", "deployed history remains immutable");
+    }
 
     /// AF-353: a version whose recorded name is no longer the registered one
     /// must be REPORTED, and a clean database must stay quiet.

@@ -183,6 +183,7 @@ fn waiting_label(reason:&str,e:&Execution)->String {
         "budget_usage_unmeasured"=>"Token usage unmeasured",
         "budget_cost_unmeasured"=>"Cost unmeasured",
         _ if reason.starts_with("required_output:")=>"Required output",
+        _ if reason.starts_with("invalid_dependency:")=>"Invalid dependency",
         _ if e.report.is_some() && e.waiting.as_deref()==Some(reason) && e.wait_category.is_none()=>"Verification failed",
         _=>"Execution held",
     }.into()
@@ -245,14 +246,9 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             Some("authorization_required".into())
         } else if !state.stage.is_empty() && state.input_hash != input_hash(row) {
             Some("requirements_changed".into())
-        } else if let Some(dep) = row
-            .depends_on
-            .iter()
-            .find(|id| !rows.iter().any(|r| &r.id == *id && r.status == "verified"))
-        {
-            Some(format!("required_output:{dep}"))
-        } else if !super::outputs::ready(conn, row)? {
-            Some("required_output_unavailable".into())
+        } else if let Some(blocker) = super::graph::readiness(conn, row)?.blocker() {
+            // One shared predicate for edges, verified outputs and holds; invalid edges stay visible.
+            Some(blocker)
         } else if output_continuation {
             if let Some(reason) = &budget_wait {
                 Some(reason.clone())
@@ -517,6 +513,8 @@ pub fn record_report(
         return Err(error);
     }
     let policy=store::get(conn,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
+    let criteria: Vec<String> = serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    super::acceptance::contract_binding(&criteria, report, policy.policy.acceptance.as_ref())?;
     let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
         .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
     anyhow::ensure!(crate::fanout_workspace::same_repository(&workspace.repo,&policy.policy.repository) && workspace.branch==format!("amux/fanout/{worker}"),"registered workspace does not match project executor");

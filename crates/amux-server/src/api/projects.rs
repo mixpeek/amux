@@ -23,9 +23,56 @@ pub fn routes() -> Router<AppState> {
         .route("/{name}/tasks/{id}/wait", axum::routing::post(wait))
         .route("/{name}/tasks/{id}/required-outputs", axum::routing::post(required_outputs))
         .route("/{name}/tasks/{id}/retry", axum::routing::post(retry))
+        .route("/{name}/acceptance/approve", axum::routing::post(approve_acceptance))
+        .route("/{name}/acceptance/rerun", axum::routing::post(rerun_acceptance))
         .route("/{name}/migration/preview", axum::routing::post(preview))
         .route("/{name}/migration/apply", axum::routing::post(migrate))
         .route("/{name}/migration/rollback", axum::routing::post(rollback))
+}
+
+async fn approve_acceptance(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<crate::project_execution::acceptance::Approval>,
+) -> Response {
+    if !operator(&headers) {
+        return error(StatusCode::FORBIDDEN, "project acceptance requires operator scope");
+    }
+    let project = name.clone();
+    match state.store.write_async(move |c| {
+        let p = store::get(c, &project).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        crate::project_execution::acceptance::approve(c, &p, &body).map_err(store::sql_error)
+    }).await {
+        Ok(out) => match state.store.read_async(move |c| store::board(c, &name)).await {
+            Ok(mut value) => { value["applied"] = json!(out.applied); Json(value).into_response() }
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        },
+        Err(e) => error(StatusCode::CONFLICT, e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptanceRerun { fingerprint: String }
+
+async fn rerun_acceptance(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<AcceptanceRerun>,
+) -> Response {
+    if !operator(&headers) {
+        return error(StatusCode::FORBIDDEN, "project acceptance rerun requires operator scope");
+    }
+    let project = name.clone();
+    match state.store.write_async(move |c| {
+        let p = store::get(c, &project).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        crate::project_execution::acceptance::request_rerun(c, &p, &body.fingerprint).map_err(store::sql_error)
+    }).await {
+        Ok(out) => Json(json!({"applied":out.applied,"project":name})).into_response(),
+        Err(e) => error(StatusCode::CONFLICT, e),
+    }
 }
 
 pub(crate) fn permitted(headers: &HeaderMap, name: &str) -> bool {

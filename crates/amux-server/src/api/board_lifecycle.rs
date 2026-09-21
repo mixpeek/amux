@@ -377,6 +377,16 @@ fn apply(
     telemetry: &Value,
 ) -> rusqlite::Result<WriteOutcome> {
     let project = project_for_message(conn, message_id)?;
+    if let Some(name) = project.as_deref() {
+        if let Some(contract) = crate::project_execution::store::get(conn, name)
+            .map_err(crate::project_execution::store::sql_error)?
+            .and_then(|p| p.policy.acceptance)
+        {
+            let task_criteria: Vec<Vec<String>> = d.tasks.iter().map(|t| t.acceptance_criteria.clone()).collect();
+            crate::project_execution::acceptance::check_plan_refs(&contract, &task_criteria)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e))))?;
+        }
+    }
     let pending: bool = conn.query_row(
         "SELECT capture_pending!=0 FROM cmd_history WHERE id=?1",
         [message_id],
@@ -601,6 +611,15 @@ fn apply(
         }
         bs::save_patched(conn, p)?;
         events.push(event(p, parent_created));
+    }
+    // Every committed edge of a project plan goes through the shared graph seam before the receipt
+    // is written; an invalid plan rolls the whole commit back and is retried as a repairable error.
+    if let Some(project) = project.as_deref() {
+        let mut touched = children.clone();
+        if let Some(p) = parent.as_ref() { touched.push(p.id.clone()); }
+        if let Err((task, error)) = crate::project_execution::graph::validate_tasks(conn, project, &touched, "intake_commit") {
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("plan dependency refused for {task}: {error}")))));
+        }
     }
     let root = parent
         .as_ref()
@@ -861,6 +880,9 @@ pub(crate) async fn capture_inner(
     let prompt_chars = prompt.chars().count();
     if let Some(project)=&project {
         prompt.push_str(&format!("\nProject repository: {}. All outcomes belong to this project, never to an executor. Do not modify a working task; defer such refinements with a clear reason. No outside dependency edges. Model verification inputs explicitly: if a task cannot run its acceptance checks without another task output, put that producer key in needs with a concrete dependency_reason, even if implementation could begin independently. Dependencies wait for Verified outputs in this project; never encode unavailable outputs only as prose operational waits.",project.policy.repository));
+        if let Some(contract) = &project.policy.acceptance {
+            prompt.push_str(&crate::project_execution::acceptance::catalogue(contract));
+        }
     }
     let model = project.as_ref().map(|p|p.policy.coordinator.model.clone()).unwrap_or_else(||mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref()));
     let started = std::time::Instant::now();

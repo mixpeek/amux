@@ -19,7 +19,7 @@ try {
  ${fn('function _renderFileBody(', 'function _fileBindAnchors(')}
  let _mdSearchHits=[];const _readPosDetach=()=>{},_bindReadPosDiv=()=>{};
  const data={project:{name:'sample',revision:1,policy:{enabled:true,paused:false,coordinator:{provider:'codex',model:'astra'},executor:{provider:'codex',model:'astra'}}},commands:[],migrations:[],usage:{},cards:[{id:'A',title:'Report output',phase:'verified',evidence:'Do not link /tmp/guessed.mdai',execution_plan:{execution:{stage:'verified',retained_assets:[{source:{path:'report.md',sha256:'a'.repeat(64)},head:'b'.repeat(40),path:'/private/artifacts/project-reports/'+ 'a'.repeat(64)+'.md'},{source:{path:'attack.mdai',sha256:'a'.repeat(64)},path:'/tmp/attack.mdai'}]}}}]};
- _projectStorage=(key)=>key==='selected'?'sample':'';_projectRequest=async(path)=>path?data:{projects:[data.project]};
+ _projectStorage=(key)=>key==='selected'?'sample':key==='task_sample'?'A':'';_projectRequest=async(path)=>path?data:{projects:[data.project]};
  `});
  await page.evaluate(()=>_projectsLoad());
  assert.equal(await page.locator('.project-report-asset').count(),1);

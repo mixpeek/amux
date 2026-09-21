@@ -48,6 +48,21 @@ pub fn list(conn: &Connection) -> anyhow::Result<Vec<Project>> {
         .collect()
 }
 
+fn acceptance_revision_high_water(conn: &Connection, name: &str) -> anyhow::Result<u32> {
+    let revision: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(revision),0) FROM (
+            SELECT CAST(json_extract(data,'$.policy.acceptance.revision') AS INTEGER) revision
+              FROM session_events WHERE session=?1 AND type='project.policy'
+            UNION ALL
+            SELECT CAST(json_extract(data,'$.contract_revision') AS INTEGER) revision
+              FROM session_events WHERE session=?1 AND type='project.acceptance'
+        )",
+        [format!("project:{name}")],
+        |r| r.get(0),
+    )?;
+    Ok(revision.max(0) as u32)
+}
+
 pub fn save(
     conn: &Connection,
     name: &str,
@@ -57,8 +72,27 @@ pub fn save(
 ) -> anyhow::Result<WriteOutcome> {
     anyhow::ensure!(amux_core::project::valid_name(name), "invalid project name");
     policy.validate().map_err(anyhow::Error::msg)?;
+    if let Some(contract) = &policy.acceptance {
+        contract.validate().map_err(anyhow::Error::msg)?;
+    }
     let current = get(conn, name)?;
     let revision = current.as_ref().map(|p| p.revision).unwrap_or(0);
+    // The contract revision is server-owned: it moves only when the criteria change, so a receipt
+    // can always be tied to the exact contract it was judged against.
+    let mut normalized = policy.clone();
+    if let Some(contract) = normalized.acceptance.as_mut() {
+        let high_water = acceptance_revision_high_water(conn, name)?;
+        contract.revision = match current.as_ref().and_then(|p| p.policy.acceptance.as_ref()) {
+            Some(old) if old.criteria == contract.criteria => old.revision,
+            Some(old) => {
+                let next = high_water.max(old.revision).saturating_add(1);
+                tracing::info!(project=name,from=old.revision,to=next,measured=true,n_considered=contract.criteria.len(),verdict="project.acceptance_contract_revised","acceptance contract criteria changed; prior receipts stay bound to the old revision");
+                next
+            }
+            None => high_water.saturating_add(1),
+        };
+    }
+    let policy = &normalized;
     anyhow::ensure!(
         revision == expected,
         "project revision conflict: expected {expected}, current {revision}"
@@ -135,8 +169,10 @@ pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
             card
         })
         .collect();
+    let mut acceptance=super::acceptance::status(conn,&project)?;
+    acceptance["executor_retirement"]=super::acceptance::retirement_allowed(conn,name)?;
     Ok(
-        json!({"project":project,"pause_settled":pause_settled,"cards":cards,"migrations":migrations,"commands":super::intake::receipts(conn,name)?,"measured":true,"n_considered":rows.len(),
+        json!({"project":project,"pause_settled":pause_settled,"cards":cards,"migrations":migrations,"commands":super::intake::receipts(conn,name)?,"acceptance":acceptance,"measured":true,"n_considered":rows.len(),
         "usage":super::usage::summary(conn,name)?}),
     )
 }
@@ -302,6 +338,28 @@ mod tests {
         assert_eq!(list(&conn).unwrap().len(), 1);
     }
     #[test]
+    fn acceptance_revision_never_reuses_an_old_identity_after_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("db")).unwrap();
+        store.write(|c| {
+            let mut p = policy();
+            p.acceptance = Some(serde_json::from_value(json!({"criteria":[{"id":"e2e","requirement":"e2e passes","verifier":{"type":"command","id":"e2e-command","command":"./e2e.sh"}}]})).unwrap());
+            save(c, "example", 0, &p, "test").map_err(sql_error)?;
+            assert_eq!(get(c, "example").unwrap().unwrap().policy.acceptance.unwrap().revision, 1);
+            p.acceptance = None;
+            save(c, "example", 1, &p, "test").map_err(sql_error)?;
+            p.acceptance = Some(serde_json::from_value(json!({"criteria":[{"id":"e2e","requirement":"e2e passes","verifier":{"type":"command","id":"e2e-command","command":"./e2e.sh"}}]})).unwrap());
+            save(c, "example", 2, &p, "test").map_err(sql_error)?;
+            let restored = get(c, "example").unwrap().unwrap();
+            assert_eq!(restored.policy.acceptance.as_ref().unwrap().revision, 2);
+            let mut changed = restored.policy.clone();
+            changed.acceptance.as_mut().unwrap().criteria[0].requirement = "e2e and chaos pass".into();
+            save(c, "example", restored.revision, &changed, "test").map_err(sql_error)?;
+            assert_eq!(get(c, "example").unwrap().unwrap().policy.acceptance.unwrap().revision, 3);
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+    #[test]
     fn preview_names_active_claims_and_foreign_edges_without_changing_cards() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("db")).unwrap();
@@ -412,6 +470,12 @@ pub fn apply_migration(
         {
             super::intake::receive(conn,name,&format!("migration:{}:{}",id,row.id),&format!("Structure existing task {} on this project board. Update or merge its canonical outcome, retaining every original constraint; do not create a duplicate. Original title: {}\nOriginal request: {}",row.id,current.title,current.desc))?;
         }
+    }
+    // Ownership changes must not turn a task's edges into invalid ones; the graph seam judges them
+    // after the rows joined the project. A failure aborts the whole migration.
+    let migrated: Vec<String> = p.rows.iter().map(|r| r.id.clone()).collect();
+    if let Err((task, error)) = super::graph::validate_tasks(conn, name, &migrated, "migration") {
+        anyhow::bail!("migration would leave {task} with an invalid dependency: {error}");
     }
     conn.execute("INSERT INTO session_events(ts,session,type,data,idem,source) VALUES(?1,?2,'project.migrated',?3,?4,'operator')",params![crate::config::now_f64(),format!("project:{name}"),serde_json::to_string(&p)?,id])?;
     tracing::info!(project=name,migration=%id,measured=true,n_considered=p.rows.len(),verdict="project_migrated","explicit board ownership migration committed");

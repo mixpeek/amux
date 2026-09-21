@@ -11141,6 +11141,14 @@ pub async fn patch_item(
                         foreign_dependency_refusal(&foreign)), no_write());
                 }
             }
+            if map.contains_key("depends_on") {
+                if let Some(project) = next.project_group.as_deref() {
+                    if let Err(e) = crate::project_execution::graph::validate(conn, project, &row.id, &next.depends_on, "board_edit") {
+                        return finish(&slot_w, PatchOut::Refused(StatusCode::BAD_REQUEST,
+                            json!({"error": e.to_string(), "code": format!("dependency_{}", e.code())})), no_write());
+                    }
+                }
+            }
             if bs::BoardOwner::of(&next) != bs::BoardOwner::of(&row) {
                 let dependents = bs::foreign_dependents(conn, &row.id, &bs::BoardOwner::of(&next))?;
                 if !dependents.is_empty() {

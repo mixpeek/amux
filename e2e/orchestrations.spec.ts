@@ -117,6 +117,7 @@ test.describe('global orchestration groups',()=>{
     const section = page.locator('#expired-section');
     await expect(section).toContainText('1 expired');
     await expect(section).toContainText('Retained project evidence');
+    await expect(section.locator('.paused-card-name')).toHaveText('PU-1 · Retained project evidence');
     await expect(section).toContainText('project-coordinator');
     const childHtml = await page.evaluate(()=>eval(`_bdRenderFanoutChildren({children:[{id:'PU-1',title:'Retained project evidence',status:'verified',session:'px-acceptance-a1b2c3d4e5'}]})`));
     expect(childHtml).toContain('expired');

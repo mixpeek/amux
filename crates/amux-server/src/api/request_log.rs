@@ -1424,6 +1424,8 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/projects/{name}/tasks/{id}/wait", methods: &["POST"] },
     RouteEntry { path: "/api/projects/{name}/tasks/{id}/required-outputs", methods: &["POST"] },
     RouteEntry { path: "/api/projects/{name}/tasks/{id}/retry", methods: &["POST"] },
+    RouteEntry { path: "/api/projects/{name}/acceptance/approve", methods: &["POST"] },
+    RouteEntry { path: "/api/projects/{name}/acceptance/rerun", methods: &["POST"] },
     RouteEntry { path: "/api/projects/{name}/migration/apply", methods: &["POST"] },
     RouteEntry { path: "/api/projects/{name}/migration/rollback", methods: &["POST"] },
     RouteEntry { path: "/api/usage", methods: &["GET"] },

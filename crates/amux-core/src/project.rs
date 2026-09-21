@@ -32,7 +32,123 @@ pub struct ExecutionPolicy {
     pub verify_command: String,
     #[serde(default = "verification_timeout_default")]
     pub verification_timeout_secs: u64,
+    /// Operator-approved project acceptance contract. `None` is a legacy project: acceptance is
+    /// reported as not configured, never inferred from task completion.
+    #[serde(default)]
+    pub acceptance: Option<AcceptanceContract>,
 }
+/// The project-level acceptance contract. It is operator authority: executors report against it and
+/// can neither replace a verifier, add, omit or repeat a criterion, nor approve a human criterion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptanceContract {
+    /// Server-owned. It increments whenever the criteria change; a client value is ignored.
+    #[serde(default)]
+    pub revision: u32,
+    pub criteria: Vec<ContractCriterion>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContractCriterion {
+    /// Stable identity, referenced by tasks as `contract:<id>`.
+    pub id: String,
+    pub requirement: String,
+    pub verifier: ContractVerifier,
+    /// Candidate-relative files the verifier must leave behind. They are retained as passive assets.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContractVerifier {
+    /// A repository command run on the integrated commit. Exit 0 passes.
+    Command {
+        id: String,
+        command: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+    /// Explicit human review. Only the operator can approve it, bound to the exact revision.
+    Human { id: String, instructions: String },
+}
+impl ContractVerifier {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Command { id, .. } | Self::Human { id, .. } => id,
+        }
+    }
+    pub fn is_human(&self) -> bool {
+        matches!(self, Self::Human { .. })
+    }
+}
+pub const MAX_CONTRACT_CRITERIA: usize = 32;
+pub fn valid_contract_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && id.len() <= 48
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+/// Passive formats only, the same set the report asset store retains.
+pub fn valid_evidence_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    !path.is_empty()
+        && path.len() <= 240
+        && p.is_relative()
+        && p.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+        && p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "md" | "json" | "png" | "webm"))
+}
+impl AcceptanceContract {
+    pub fn validate(&self) -> Result<(), String> {
+        // An empty contract must never pass vacuously.
+        if self.criteria.is_empty() {
+            return Err("acceptance contract needs at least one criterion".into());
+        }
+        if self.criteria.len() > MAX_CONTRACT_CRITERIA {
+            return Err(format!("acceptance contract allows at most {MAX_CONTRACT_CRITERIA} criteria"));
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut verifiers = std::collections::HashSet::new();
+        for c in &self.criteria {
+            if !valid_contract_id(&c.id) {
+                return Err(format!("criterion id {:?} must match [a-z0-9][a-z0-9_-]{{0,47}}", c.id));
+            }
+            if !ids.insert(c.id.as_str()) {
+                return Err(format!("duplicate criterion id {}", c.id));
+            }
+            if c.requirement.trim().is_empty() || c.requirement.len() > 500 {
+                return Err(format!("{}: requirement must be 1..500 characters", c.id));
+            }
+            if !valid_contract_id(c.verifier.id()) || !verifiers.insert(c.verifier.id()) {
+                return Err(format!("{}: verifier id must be a valid, unique identity", c.id));
+            }
+            match &c.verifier {
+                ContractVerifier::Command { command, timeout_secs, .. } => {
+                    if command.trim().is_empty() || command.len() > 4000 {
+                        return Err(format!("{}: command must be 1..4000 characters", c.id));
+                    }
+                    if timeout_secs.is_some_and(|t| !(1..=MAX_VERIFICATION_TIMEOUT_SECS).contains(&t)) {
+                        return Err(format!("{}: timeout_secs must be 1..{MAX_VERIFICATION_TIMEOUT_SECS}", c.id));
+                    }
+                }
+                ContractVerifier::Human { instructions, .. } => {
+                    if instructions.trim().is_empty() || instructions.len() > 2000 {
+                        return Err(format!("{}: human review needs 1..2000 characters of instructions", c.id));
+                    }
+                }
+            }
+            if c.evidence.len() > 8 || c.evidence.iter().any(|e| !valid_evidence_path(e)) {
+                return Err(format!("{}: evidence must be at most 8 relative md/json/png/webm paths", c.id));
+            }
+        }
+        Ok(())
+    }
+    pub fn criterion(&self, id: &str) -> Option<&ContractCriterion> {
+        self.criteria.iter().find(|c| c.id == id)
+    }
+}
+
 pub const MAX_VERIFICATION_TIMEOUT_SECS: u64 = 3600;
 pub fn verification_timeout_default() -> u64 { 600 }
 fn one() -> usize {
@@ -117,6 +233,37 @@ pub fn phase(status: &str, structured: bool) -> Phase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn acceptance_contract_is_stable_bounded_and_never_vacuous() {
+        let good = |v: serde_json::Value| serde_json::from_value::<AcceptanceContract>(v).unwrap();
+        let ok = good(serde_json::json!({"criteria":[{"id":"unit","requirement":"unit tests pass","verifier":{"type":"command","id":"unit-tests","command":"cargo test"},"evidence":["report.md"]},{"id":"review","requirement":"owner reviews","verifier":{"type":"human","id":"owner","instructions":"look"}}]}));
+        assert_eq!(ok.validate(), Ok(()));
+        assert!(ok.criterion("unit").is_some() && ok.criterion("nope").is_none());
+        assert!(good(serde_json::json!({"criteria":[]})).validate().is_err(), "empty criteria never pass");
+        let mut dup = ok.clone();
+        dup.criteria[1].id = "unit".into();
+        assert!(dup.validate().unwrap_err().contains("duplicate"));
+        let mut same_verifier = ok.clone();
+        same_verifier.criteria[1].verifier = ContractVerifier::Human { id: "unit-tests".into(), instructions: "x".into() };
+        assert!(same_verifier.validate().is_err());
+        for bad in ["Unit", "", "-x", "a b", &"a".repeat(49)] {
+            let mut c = ok.clone();
+            c.criteria[0].id = bad.into();
+            assert!(c.validate().is_err(), "{bad:?}");
+        }
+        for path in ["/etc/passwd", "../x.md", "a/../b.md", "x.sh", "", "x"] {
+            assert!(!valid_evidence_path(path), "{path}");
+        }
+        assert!(valid_evidence_path("out/report.md") && valid_evidence_path("shot.png"));
+        let mut long = ok.clone();
+        long.criteria[0].verifier = ContractVerifier::Command { id: "unit-tests".into(), command: "  ".into(), timeout_secs: None };
+        assert!(long.validate().is_err());
+        long.criteria[0].verifier = ContractVerifier::Command { id: "unit-tests".into(), command: "true".into(), timeout_secs: Some(3601) };
+        assert!(long.validate().is_err());
+        assert!(serde_json::from_value::<AcceptanceContract>(serde_json::json!({"criteria":[],"extra":1})).is_err());
+        // A legacy policy without a contract still parses and reads as unconfigured.
+        assert!(policy().acceptance.is_none());
+    }
     #[test]
     fn project_verification_timeout_is_defaulted_positive_and_bounded() {
         let mut p=policy();assert_eq!(p.verification_timeout_secs,600);

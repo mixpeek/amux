@@ -5234,7 +5234,7 @@ function providerDefaultModel(provider) {
 
 function sessionConfiguredModel(s) {
   const provider = sessionProvider(s);
-  return flagValue((s && s.flags) || '', '--model') || (s && s.active_model) || providerDefaultModel(provider);
+  return flagValue((s && s.flags) || '', '--model') || (s && s.active_model) || (s && s.model) || providerDefaultModel(provider);
 }
 
 function providerYoloFlag(provider) {
@@ -7021,7 +7021,10 @@ function _applyPeekTabVisibility() {
   });
   PEEK_TABS.forEach(t => {
     const el = document.getElementById('peek-tab-' + t.id);
-    if (el) el.style.display = peekHiddenTabs.has(t.id) ? 'none' : '';
+    if (el) {
+      const eligible = t.id !== 'fanout' || (typeof sessions !== 'undefined' && sessions.some(s => s.ephemeral && s.ephemeral_parent === peekSession));
+      el.style.display = peekHiddenTabs.has(t.id) || !eligible ? 'none' : '';
+    }
   });
 }
 _loadPeekTabPrefs();
@@ -7531,16 +7534,18 @@ function _renderExpiredSection() {
     filtered.forEach(w => {
       const doneCt = w.cards.filter(c => TERMINAL.has(c.status)).length;
       const total = w.cards.length;
+      const primary = [...w.cards].sort((a,b) => (b.updated || 0) - (a.updated || 0))[0];
       const epicCard = boardItems.find(c => w.cards.some(ch => ch.epic === c.id));
-      const epicTitle = epicCard ? epicCard.title : w.name;
+      const workerTitle = primary ? `${primary.id} · ${primary.title}` : w.name;
       html += `<div class="paused-card" data-session="${esc(w.name)}">
         <div class="paused-card-top">
-          <span class="paused-card-name">${esc(epicTitle)}</span>
+          <span class="paused-card-name">${esc(workerTitle)}</span>
           <span class="paused-card-chip model" style="opacity:0.6">${doneCt}/${total} done</span>
           <span class="paused-card-spacer"></span>
         </div>
         <div class="paused-card-meta"><code>${esc(w.name)}</code>
-          ${w.parent ? `<span style="opacity:0.4;">&middot;</span> parent: <code>${esc(w.parent)}</code>` : ''}</div>
+          ${w.parent ? `<span style="opacity:0.4;">&middot;</span> parent: <code>${esc(w.parent)}</code>` : ''}
+          ${epicCard ? `<span style="opacity:0.4;">&middot;</span> project outcome: ${esc(epicCard.title)}` : ''}</div>
         <div style="margin-top:4px;">`;
       w.cards.forEach(c => {
         const st = c.status || 'todo';
@@ -11758,7 +11763,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1022';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1024';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12016,7 +12021,6 @@ function openPeek(name, opts) {
   requestAnimationFrame(_peekScrollAffordance);
   _peekOpenGeneration++;
   const openIdentity = _peekIdentity(name);
-  try { _applyPeekTabVisibility(); } catch(e) {}
   _peekPollStop('switch');   // wind down any prior open-view poller (beaconed)
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   const _tb = document.getElementById('peek-transcript-body');
@@ -12030,6 +12034,7 @@ function openPeek(name, opts) {
     _peekFilesRestore(name);
   }
   peekSession = name;
+  try { _updateFanoutTabVisibility(); } catch(e) {}
   _syncComposerPending();
   const identityOverlay = document.getElementById('peek-overlay');
   if (identityOverlay) {
@@ -12045,7 +12050,8 @@ function openPeek(name, opts) {
   // Reset the Plan strip so it reloads for the new session (no stale flash).
   _peekPlanLast = 0;
   const _pp = document.getElementById('peek-plan'); if (_pp) _pp.style.display = 'none';
-  peekSessionDir = (sessions.find(s => s.name === name) || {}).dir || '';
+  const peekSessionRecord = sessions.find(s => s.name === name) || {};
+  peekSessionDir = (peekSessionRecord.worktree_active && peekSessionRecord.worktree_path) ? peekSessionRecord.worktree_path : (peekSessionRecord.dir || '');
   // Reset to terminal tab
   _peekGitData = null;
   const _gtp = document.getElementById('peek-git-tree-panel');
@@ -12141,6 +12147,9 @@ function openPeek(name, opts) {
   loadPeekCommitGuard(name);
   updateConnectionStatus();
   const peekOv = document.getElementById('peek-overlay');
+  peekOv.hidden = false;
+  peekOv.inert = false;
+  peekOv.setAttribute('aria-hidden', 'false');
   peekOv.classList.add('active');
   // A translated/scaled terminal changes the visible scroll viewport after its
   // first paint. Keep this contract observable so a future generic-overlay CSS
@@ -12358,6 +12367,9 @@ function closePeek() {
   if (splitBtn) splitBtn.classList.remove('active');
   const ov = document.getElementById('peek-overlay');
   ov.classList.remove('active', 'vv-compact', 'peek-focus');
+  ov.hidden = true;
+  ov.inert = true;
+  ov.setAttribute('aria-hidden', 'true');
   delete ov.dataset.session;
   delete ov.dataset.generation;
   ov.style.height = '';
@@ -32581,8 +32593,8 @@ function _updateFanoutTabVisibility() {
   const children = allSess2.filter(s => s.ephemeral && s.ephemeral_parent === peekSession);
   const hasChildren = children.length > 0;
 
-  tab.style.display = hasChildren ? '' : 'none';
   if (countBadge) countBadge.textContent = hasChildren ? String(children.length) : '';
+  _applyPeekTabVisibility();
 }
 
 // ── Enhanced subtasks in board detail with fan-out worker status ──
@@ -44961,7 +44973,7 @@ function _projectModelOptions(role,provider) {
   document.getElementById('project-'+role+'-models').innerHTML=_projectModelSuggestions(provider);
 }
 function _projectConfig(project) {
-  const p=project?.policy || {repository:'',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2};
+  const p=project?.policy || {repository:'',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
   return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()" oninput="_projectSettingsDirty()" onchange="_projectSettingsDirty()"><div class="project-form-grid">'+
     '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
     '<label>Repository<input id="project-repository" required placeholder="/absolute/path/to/repository" value="'+esc(p.repository)+'"></label>'+
@@ -44974,12 +44986,14 @@ function _projectConfig(project) {
     '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
     '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
-    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div><p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
+    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div>'+
+    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;Happy and unhappy paths pass&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;command&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;},&quot;evidence&quot;:[&quot;artifacts/e2e-report.md&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label><p class="project-muted">This contract runs independently on integrated <code>origin/main</code>. Leave blank only when whole-project acceptance is intentionally not configured.</p>'+
+    '<p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
 }
 
 // Unsaved settings edits belong to the project they were typed in and survive
 // refresh, project switches and reloads until Save or Cancel.
-const _projectSettingIds=['name','repository','coordinator-provider','coordinator','provider','executor','capacity','verify','verification-timeout','attempts','token-budget','cost-budget'];
+const _projectSettingIds=['name','repository','coordinator-provider','coordinator','provider','executor','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
 function _projectSettingsKey() { return 'settings_'+(_projectsName||''); }
 function _projectSettingsDirty() {
   const draft={};_projectSettingIds.forEach(id=>{const el=document.getElementById('project-'+id);if(el) draft[id]=el.value;});
@@ -45000,7 +45014,9 @@ function _projectSettingsCancel() {
 async function _projectSave() {
   const value=id=>document.getElementById('project-'+id).value.trim();
   const name=value('name'); const current=_projectsData?.project;
-  const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
+  let acceptance=null;
+  try {if(value('contract')) acceptance=JSON.parse(value('contract'));} catch(e) {_projectError(new Error('Acceptance contract must be valid JSON: '+e.message));return;}
+  const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
   try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectStorage(_projectSettingsKey(),'');_projectChoose(name);} catch(e){_projectError(e);}
 }
 async function _projectPause() {
@@ -45083,7 +45099,8 @@ function _projectPatch(parent, items) {
 }
 function _projectRender(data) {
   const p=data.project,u=data.usage;
-  document.getElementById('project-state').textContent=p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):p.policy.enabled?'Driving project outcomes':'Disabled';
+  const retirement=data.acceptance?.executor_retirement;
+  document.getElementById('project-state').textContent=p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':p.policy.enabled?'Driving project outcomes':'Disabled';
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   const setText=(id,text)=>{const el=document.getElementById(id);if(el && el.textContent!==text) el.textContent=text;};
@@ -45093,7 +45110,7 @@ function _projectRender(data) {
   setText('project-progress',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+verifiedTasks+' of '+data.cards.length+' tasks verified'+(closedTasks?' · '+closedTasks+' closed (not verified)':'')+' · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake');
   const acc=data.acceptance,accEl=document.getElementById('project-acceptance');
   const accHtml=acc && typeof acc.state==='string'
-    ? 'Project acceptance: <strong>'+esc(acc.state)+'</strong>'
+    ? _projectAcceptanceHtml(acc)
     : 'Project acceptance: <strong>Not configured</strong> <span class="project-muted">Task verification below is per task and historical. It is not an independent check of the whole project.</span>';
   if(accEl && accEl.dataset.sig!==accHtml) {accEl.dataset.sig=accHtml;accEl.innerHTML=accHtml;}
   setText('project-usage',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+u.execution_attempts+' execution attempts · '+u.intake_calls+' intake calls · '+(u.measured?u.tokens.toLocaleString()+' observed tokens':'Token usage not yet observed')+' · Coverage: '+u.intake_calls_measured+'/'+u.intake_calls+' intake calls; '+u.execution_turns_measured+' execution turns measured · '+(u.cost_measured && Number.isFinite(u.estimated_cost_usd)?'$'+u.estimated_cost_usd.toFixed(4)+' estimated cost':'Cost unknown'+(u.cost_reason?' ('+u.cost_reason+')':''))+' · '+(u.execution_cost_turns_measured || 0)+'/'+(u.execution_turns_measured || 0)+' execution turns priced · '+(u.executor_unattributed_turns_measured || 0)+' executor turns outside attempt windows ('+(u.executor_unattributed_tokens || 0)+' tokens)');
@@ -45131,6 +45148,45 @@ function _projectRender(data) {
     });
   }
   _projectInspectorRender(data);
+}
+function _projectAcceptanceHtml(acc) {
+  const criteria=Array.isArray(acc.criteria)?acc.criteria:[];
+  const rows=criteria.map(c=>{
+    const result=c.result&&typeof c.result==='object'?c.result:{};
+    const state=result.state||'pending';
+    const evidence=Array.isArray(result.evidence)?result.evidence:[];
+    const links=evidence.map((a,i)=>a?.path&&/\.(md|json|png|webm)$/.test(a.path)?'<button class="btn" onclick="_projectAcceptanceAsset(\''+escJs(c.id)+'\','+i+')">'+esc(a.source?.path||a.path.split('/').pop())+'</button>':'').join(' ');
+    const review=c.verifier?.type==='human' && acc.state==='awaiting_human' && !result.approval
+      ? '<button class="btn primary" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'approve\')">Approve</button> <button class="btn" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'reject\')">Reject</button>' : '';
+    return '<li><strong>'+esc(c.requirement)+'</strong> · '+esc(state)+(links?'<div>'+links+'</div>':'')+(result.output?'<details><summary>Verifier output</summary><pre>'+esc(_projectClip(result.output,4000))+'</pre></details>':'')+review+'</li>';
+  }).join('');
+  const produced=Array.isArray(acc.review_assets)?acc.review_assets:[];
+  const artifacts=produced.map((x,i)=>x?.asset?.source?.path&&/\.(md|json|png|webm)$/.test(x.asset.source.path)?'<button class="btn project-report-asset" onclick="_projectAcceptanceRetainedAsset('+i+')">'+esc(x.task+' · '+x.asset.source.path)+'</button>':'').join(' ');
+  const rerun=['failed','operational_failure'].includes(acc.state)?'<button class="btn" onclick="_projectAcceptanceRerun()">Rerun whole-project acceptance</button>':'';
+  const hold=acc.state==='awaiting_human'?'<p class="project-wait">Completed executors are stopped. Their worker records, terminals and worktrees remain available until this review is approved.</p>':'';
+  const retirement=acc.executor_retirement;
+  const retirementNotice=retirement && retirement.allowed===false && retirement.state==='review_not_configured'?'<p class="project-wait">Executor expiration is held: '+esc(retirement.reason)+'.</p>':'';
+  return '<div>Project acceptance: <strong>'+esc(acc.state)+'</strong>'+(acc.main?' · integrated '+_projectSha(acc.main):'')+'</div>'+hold+retirementNotice+(acc.reason?'<p class="project-muted">'+esc(acc.reason.replaceAll('_',' '))+'</p>':'')+(artifacts?'<div class="project-review-assets"><strong>Produced artifacts to review</strong><div>'+artifacts+'</div></div>':'')+(rows?'<details open><summary>Whole-project criteria ('+criteria.length+')</summary><ol class="project-criteria">'+rows+'</ol></details>':'')+rerun;
+}
+async function _projectAcceptanceDecision(criterion,decision) {
+  const acc=_projectsData?.acceptance;if(!acc?.fingerprint)return;
+  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/acceptance/approve','POST',{criterion,fingerprint:acc.fingerprint,decision,note:''});await _projectsLoad();}catch(e){_projectError(e);}
+}
+async function _projectAcceptanceRerun() {
+  const acc=_projectsData?.acceptance;if(!acc?.fingerprint)return;
+  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/acceptance/rerun','POST',{fingerprint:acc.fingerprint});await _projectsLoad();}catch(e){_projectError(e);}
+}
+function _projectAcceptanceAsset(criterion,index) {
+  const c=_projectsData?.acceptance?.criteria?.find(x=>x.id===criterion);
+  const a=c?.result?.evidence?.[index];
+  if(a?.path && /\.(md|json|png|webm)$/.test(a.path)) openFilePreview(a.path,{readOnly:true});
+}
+function _projectAcceptanceRetainedAsset(index) {
+  const a=_projectsData?.acceptance?.review_assets?.[index]?.asset;
+  if(!a || !/\.(md|json|png|webm)$/.test(a.source?.path||'') || !/^[a-f0-9]{64}$/.test(a.source?.sha256||'')) return;
+  const ext=a.source.path.split('.').pop();
+  if(!a.path.endsWith('/artifacts/project-reports/'+a.source.sha256+'.'+ext)) return;
+  openFilePreview(a.path,{readOnly:true});
 }
 function _projectSelectTask(id) {
   if(!_projectsData) return;
@@ -45183,8 +45239,9 @@ function _projectInspectorRender(data) {
   const retired=!reg && inInventory;
   const running=!!reg && reg.running!==false && reg.status!=='stopped';
   const live=running;
+  const reviewHeld=!!reg && !running && c.phase==='verified' && _projectsData?.acceptance?.state==='awaiting_human' && (_projectsData.acceptance.criteria||[]).some(x=>x.verifier?.type==='human');
   const inventoryState=(invError?'stale:'+invError:'ok')+(reg?':reg':'')+(inInventory?':inv':'');
-  const sig=JSON.stringify([c,retired,live,!!reg,inventoryState,data.project.policy.executor]);
+  const sig=JSON.stringify([c,retired,live,reviewHeld,!!reg,inventoryState,data.project.policy.executor]);
   if(box.dataset.sig===sig) return;
   const scroll=box.dataset.task===c.id?box.scrollTop:0;
   const active=document.activeElement,focusKey=box.contains(active)?active.dataset?.focus:null;
@@ -45204,13 +45261,13 @@ function _projectInspectorRender(data) {
     :'<p class="project-muted">No verification evidence yet.</p>';
   const assets=_projectAssetLinks(c);
   const diag=plan.waiting_reason?_projectSection(key('diagnostics'),'Full diagnostics ('+String(plan.waiting_reason).length.toLocaleString()+' characters)',false,'<p class="project-muted">Cause (end of diagnostic): '+esc(_projectCause(plan.waiting_reason))+'</p><pre class="project-diagnostic" tabindex="0">'+esc(plan.waiting_reason)+'</pre>'):'';
-  const workerLine=worker?(esc(worker)+' · '+(reg?(running?'registered, running':'registered, not running'):inInventory?'<strong>retired (Expired)</strong>'+(invError?' <span class="project-muted">(inventory stale: '+esc(invError)+')</span>':''):invError?'<span class="project-muted">retirement unknown (inventory unavailable: '+esc(invError)+')</span>':'<span class="project-muted">not registered, retirement not confirmed</span>')):'<span class="project-muted">no executor assigned</span>';
-  const action=(live?'<button class="btn" data-focus="insp:peek" onclick="openPeek(\''+escJs(worker)+'\')">Executor terminal</button>':(retired?'<p class="project-muted">The executor has retired. Retained evidence and assets stay above.</p>':''))+
+  const workerLine=worker?(esc(worker)+' · '+(reg?(running?'registered, running':reviewHeld?'<strong>stopped and retained for human review</strong>':'registered, not running'):inInventory?'<strong>retired (Expired)</strong>'+(invError?' <span class="project-muted">(inventory stale: '+esc(invError)+')</span>':''):invError?'<span class="project-muted">retirement unknown (inventory unavailable: '+esc(invError)+')</span>':'<span class="project-muted">not registered, retirement not confirmed</span>')):'<span class="project-muted">no executor assigned</span>';
+  const action=((live||reviewHeld)?'<button class="btn" data-focus="insp:peek" onclick="openPeek(\''+escJs(worker)+'\')">'+(reviewHeld?'Review executor terminal':'Executor terminal')+'</button>':(retired?'<p class="project-muted">The executor has retired. Retained evidence and assets stay above.</p>':''))+
     ((c.verification_retry_available===true)?'<button class="btn" data-focus="insp:verify" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button><p>Verify the retained report again; no model execution.</p>':'')+
     ((c.retry_available===true)?'<button class="btn" data-focus="insp:retry" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button><p>Worker repair: authorizes one additional model attempt.</p>':'');
   const html='<h3 tabindex="-1">'+esc(c.id)+' · '+esc(c.title)+'</h3><p class="project-muted">Phase: '+esc(c.phase)+(plan.waiting_label?' · '+esc(_projectClip(plan.waiting_label,120)):'')+'</p>'+currentIssue+
     '<p>'+esc(_projectClip(c.next_action||'',600))+'</p>'+
-    _projectSection(key('criteria'),'Criteria and evidence',true,'<ol class="project-criteria">'+(rows||'<li class="project-muted">No acceptance criteria recorded.</li>')+'</ol><p class="project-muted">Independent project acceptance: Not configured.</p>')+
+    _projectSection(key('criteria'),'Criteria and evidence',true,'<ol class="project-criteria">'+(rows||'<li class="project-muted">No acceptance criteria recorded.</li>')+'</ol><p class="project-muted">Whole-project acceptance is shown above and runs independently on integrated main.</p>')+
     _projectSection(key('attempt'),'Current attempt',true,'<dl class="project-facts"><dt>Stage</dt><dd>'+esc(e.stage||'')+'</dd><dt>Attempt / generation</dt><dd>'+esc(String(e.attempt ?? ''))+' / '+esc(String(e.generation ?? ''))+'</dd><dt>Executor setting</dt><dd>'+esc(data.project.policy.executor.provider)+' · '+esc(data.project.policy.executor.model)+'</dd><dt>Worker</dt><dd>'+workerLine+'</dd><dt>Reported candidate</dt><dd>'+_projectSha(report?.head)+'</dd></dl>'+(report?.summary?'<p class="project-report">'+esc(_projectClip(report.summary,1500))+'</p>':''))+
     _projectSection(key('history'),'Task verification history',true,'<p class="project-muted">Historical, per task. Not project acceptance.</p>'+lastFailure+historical)+
     _projectSection(key('assets'),'Retained assets',true,assets||'<p class="project-muted">No retained assets.</p>')+

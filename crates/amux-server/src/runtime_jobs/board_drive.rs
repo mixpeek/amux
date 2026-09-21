@@ -2750,6 +2750,7 @@ pub(crate) async fn reap_ephemeral_workers<F: Fleet>(state: &AppState, fleet: &F
             Ok(crate::fanout_retirement::Outcome::NeedsIntegration) => {
                 crate::fanout_workspace::queue_integration(state,&name).await;
             },
+            Ok(crate::fanout_retirement::Outcome::ReviewHeld) => report.reaped_parked += 1,
             Ok(crate::fanout_retirement::Outcome::Deferred) => {},
             Err(error) => {
                 report.errors += 1;

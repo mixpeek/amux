@@ -6,11 +6,11 @@ type Card = {id:string;title:string;phase:string;stage?:string;waiting?:string|n
 const policy={enabled:true,paused:false,repository:'/tmp/r',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'true',verification_timeout_secs:60,max_executors:1,max_attempts:2};
 const card=(c:Card)=>({id:c.id,title:c.title,phase:c.phase,rev:1,next_action:'next',acceptance_criteria:['Output passes'],evidence:c.phase==='verified'?JSON.stringify({report:{head:'a'.repeat(40)},merged:'b'.repeat(40),gate:'true'}):'',
   execution_plan:{waiting_reason:c.waiting??null,waiting_label:c.label??null,execution:{stage:c.stage??'working',attempt:1,generation:2,worker:c.worker??'',report:null,retained_assets:[],last_failure:c.lastFailure??null,input_hash:'h'}}});
-const world={cards:[] as Card[],failAll:false,failFirst:0,sessions:[] as unknown[],inventory:'ok' as 'ok'|'fail',expired:[] as string[],requests:0};
-const detail=(name:string)=>({project:{name,revision:1,policy},usage:{verified_outcomes:0,requested_outcomes:0,execution_attempts:0,intake_calls:0,measured:false,tokens:0,intake_calls_measured:0,execution_turns_measured:0,cost_measured:false},commands:[],cards:world.cards.map(card),pause_settled:true,migrations:[]});
+const world={cards:[] as Card[],failAll:false,failFirst:0,sessions:[] as unknown[],inventory:'ok' as 'ok'|'fail',expired:[] as string[],requests:0,acceptance:null as any,approval:null as any};
+const detail=(name:string)=>({project:{name,revision:1,policy},usage:{verified_outcomes:0,requested_outcomes:0,execution_attempts:0,intake_calls:0,measured:false,tokens:0,intake_calls_measured:0,execution_turns_measured:0,cost_measured:false},commands:[],cards:world.cards.map(card),pause_settled:true,migrations:[],acceptance:world.acceptance||{state:'not_configured',measured:true,n_considered:0}});
 
 test.beforeEach(async ({page})=>{
-  Object.assign(world,{cards:[],failAll:false,failFirst:0,sessions:[],inventory:'ok',expired:[],requests:0});
+  Object.assign(world,{cards:[],failAll:false,failFirst:0,sessions:[],inventory:'ok',expired:[],requests:0,acceptance:null,approval:null});
   await page.addInitScript(()=>{
     localStorage.setItem('amux_walkthrough_done','1');localStorage.setItem('amux_project_selected','px');
     (window as any)._PROJECT_REFRESH_MS=100;(window as any)._PROJECT_REFRESH_CAP_MS=300;
@@ -34,6 +34,25 @@ test('closed tasks are counted separately and never as verified',async ({page})=
   await open(page);
   const text=await page.locator('#project-progress').innerText();
   expect(text).toContain('1 of 3 tasks verified');expect(text).toContain('1 closed (not verified)');
+});
+
+test('whole-project acceptance is reviewable and human approval is bound to its fingerprint',async ({page})=>{
+  await page.route('**/api/projects/*/acceptance/approve',async r=>{world.approval=r.request().postDataJSON();await r.fulfill({json:detail('px')});});
+  world.cards=[{id:'T-1',title:'verified output',phase:'verified',stage:'verified'}];
+  const retained={source:{path:'demo.webm',sha256:'c'.repeat(64)},path:'/private/artifacts/project-reports/'+ 'c'.repeat(64)+'.webm'};
+  world.acceptance={state:'awaiting_human',fingerprint:'f'.repeat(64),main:'a'.repeat(40),review_assets:[{task:'T-1',title:'verified output',worker:'px-a',asset:retained}],criteria:[
+    {id:'e2e',requirement:'Happy and unhappy paths pass',verifier:{type:'command',id:'e2e-suite'},result:{state:'passed',output:'14 scenarios passed',evidence:[]}},
+    {id:'owner',requirement:'Owner can inspect the demo',verifier:{type:'human',id:'owner-review'},result:{state:'pending_human',evidence:[]}},
+  ]};
+  await open(page);
+  const acceptance=page.locator('#project-acceptance');
+  await expect(acceptance).toContainText('awaiting_human');
+  await expect(page.locator('#project-state')).toContainText('executors retained without running');
+  await expect(acceptance).toContainText('Produced artifacts to review');
+  await expect(acceptance.getByRole('button',{name:'T-1 · demo.webm'})).toBeVisible();
+  await expect(acceptance).toContainText('14 scenarios passed');
+  await acceptance.getByRole('button',{name:'Approve'}).click();
+  await expect.poll(()=>world.approval).toEqual({criterion:'owner',fingerprint:'f'.repeat(64),decision:'approve',note:''});
 });
 
 test('a failure is current only while the task is waiting; older failures are labelled historical',async ({page})=>{
@@ -76,6 +95,16 @@ test('live registered identity outranks a stale retirement record; unknown inven
   await expect(box).toContainText('retirement unknown (inventory unavailable');
   world.sessions=[{name:'px-b',running:false,status:'stopped'}];await page.evaluate('fetchSessions()');
   await expect(box).toContainText('registered, not running');await expect(box.getByRole('button',{name:'Executor terminal'})).toHaveCount(0);
+});
+
+test('a stopped verified executor remains inspectable while human review is pending',async ({page})=>{
+  world.cards=[{id:'T-1',title:'review me',phase:'verified',stage:'verified',worker:'px-review'}];
+  world.sessions=[{name:'px-review',running:false,status:'stopped'}];
+  world.acceptance={state:'awaiting_human',fingerprint:'f'.repeat(64),criteria:[{id:'owner',requirement:'Review output',verifier:{type:'human'},result:{state:'pending_human',evidence:[]}}]};
+  await open(page);await pick(page,'T-1');
+  const box=page.locator('#project-inspector');
+  await expect(box).toContainText('stopped and retained for human review');
+  await expect(box.getByRole('button',{name:'Review executor terminal'})).toBeVisible();
 });
 
 test('a transient outage recovers by itself without navigation or reload',async ({page})=>{

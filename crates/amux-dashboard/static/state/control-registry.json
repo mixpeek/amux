@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2105,
+  "n_considered": 2111,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2008,6 +2008,18 @@
     },
     "_pmResend": {
       "kind": "command._pmResend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectAcceptanceAsset": {
+      "kind": "command._projectAcceptanceAsset",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectAcceptanceRetainedAsset": {
+      "kind": "command._projectAcceptanceRetainedAsset",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
