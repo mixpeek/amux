@@ -4008,3 +4008,14 @@ SYMPTOM: The fb31 isolated UI passed two scenarios, then PU-5 held shell command
 COST: One fresh exact-image UI run stopped before its repair scenario; prior focused gates and long-input/stale-UI mutation results remain valid only for their scope. No real project/model retry was granted for diagnosis.
 FIX: One bounded 60-second budget across shell setup/submission, separate entered/completed receipts, no advancement on entry alone, and stage/elapsed diagnostics in shell_command_entered/shell_command_settled plus durable shell_start_failed. Completion after expiry does not recreate or write into disposed receipt storage; later provider submission remains refused. Real shared-helper tests cover delayed entry, a controlled held profile, timeout stage, zero remaining budget, late completion and unchanged exact input/env/cwd guards. Private controlled probes passed; parent Rust/mutation/full UI remain pending. Final docs stay outside the checkout.
 Validation update (2026-09-21): runtime ab2b73576000cd5808e8b583269f9b2e144b65e5 passed startup/cwd/env/pause and 65 project tests, both entry/late mutation controls with exact restoration, workspace check and strict Clippy. Full exact-image isolated UI: 13 PASS, zero uncaught errors, 14 fixture intake/13 execution calls; restart identity and cleanup verified. Evidence: ../extractor-case-run/astra-slow-setup-results.json and lifecycle-ui-ab2b73576000/completion-proof.json. Private post-deploy audit 48/48 and retained-report UI passed; original real acceptance gates remain the 182 run. Prior 424/fb31 failures are retained. This updates measured validation only; no entry retirement or main-merge claim.
+
+## Local certificate failure prevents reaching connection repair (AAB-9)
+AREA: browser
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-9
+SYMPTOM: Parent's browser received ERR_CERT_AUTHORITY_INVALID at private localhost:18972 before the app loaded. offline_origin inferred trust from TLS filenames; the only withheld-auth action navigated with the owner token in the query string.
+COST: Parent could not reach the normal configuration UI for the isolated acceptance instance; existing status could not distinguish loaded certificate, saved certificate and browser trust.
+FIX: Native AAB-9 source adds shared Connect recovery via explicit-token POST/HttpOnly session, validated atomic certificate configuration, active resolver metadata and read-only localhost first-access guidance. Shared outbox excludes sensitive security mutations. Focused route/TLS and desktop/mobile regressions authored; parent compilation/browser/OS-trust validation pending. No runtime/trust-store changes by worker. No retirement or production success claimed.

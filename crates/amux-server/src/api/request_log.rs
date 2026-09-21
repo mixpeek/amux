@@ -1250,6 +1250,9 @@ const ANY: &[&str] = &["*"];
 /// public and protected alike. Ordering is by mount site for diffability;
 /// matching specificity is computed, not positional.
 pub const ROUTE_TABLE: &[RouteEntry] = &[
+    RouteEntry { path: "/api/connection/security", methods: &["GET"] },
+    RouteEntry { path: "/api/connection/session", methods: &["POST"] },
+    RouteEntry { path: "/api/connection/certificate", methods: &["POST"] },
     RouteEntry { path: "/api/brex/status", methods: &["GET"] },
     RouteEntry { path: "/api/brex/card", methods: &["POST"] },
     RouteEntry { path: "/api/brex/webhook", methods: &["POST"] },

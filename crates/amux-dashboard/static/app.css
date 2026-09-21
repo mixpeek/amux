@@ -1936,6 +1936,47 @@
   .settings-tab-panel.active { display: block; }
   .settings-section { padding: 6px 14px; }
   .settings-section-label { font-size: 0.68rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; font-weight: 600; }
+  #connection-security {
+    display: flex; flex-direction: column; gap: 10px;
+    line-height: 1.5; overflow-wrap: anywhere; min-width: 0;
+  }
+  #connection-security p,
+  #connection-security details { font-size: 0.78rem; line-height: 1.5; margin: 0; }
+  #connection-security .connection-help { font-size: 0.72rem; color: var(--dim); }
+  #connection-security code { overflow-wrap: anywhere; }
+  #connection-security-status {
+    margin: 0; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--card); color: var(--text);
+    font: 0.72rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+  }
+  #connection-security .connection-control {
+    display: block; margin: 0; font-size: 0.78rem; line-height: 1.45; min-width: 0;
+  }
+  #connection-security .connection-control .search-input,
+  #connection-security .connection-control input[type="file"] {
+    display: block; width: 100%; max-width: 100%; min-width: 0;
+    margin-top: 6px; box-sizing: border-box;
+  }
+  #connection-security .connection-control input[type="file"] {
+    padding: 6px 0; color: var(--text); line-height: 1.35;
+  }
+  #connection-certificate-form {
+    display: flex; flex-direction: column; gap: 10px;
+    margin: 2px 0; padding: 10px; border: 1px solid var(--border);
+    border-radius: 6px; min-width: 0;
+  }
+  #connection-certificate-form legend { padding: 0 4px; color: var(--dim); font-size: 0.72rem; }
+  #connection-security-error {
+    min-height: 1.5em; margin: 0; font-size: 0.78rem; line-height: 1.5;
+    white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+  }
+  #connection-security .btn { align-self: flex-start; margin-top: 2px; }
+  #connection-security details { margin-top: 2px; }
+  #connection-security summary { cursor: pointer; line-height: 1.45; }
+  @media (max-width: 600px) {
+    #connection-security .btn { width: 100%; min-height: 40px; }
+  }
   /* Four providers fit as four one-line summaries; only the tightest quota is
      expanded on open. Details retain every provider window and exact reset
      without turning the 260px Settings menu into a quota dashboard. */

@@ -59,6 +59,7 @@ pub mod memories;
 pub mod metrics;
 pub mod observability;
 pub mod offline_origin;
+pub mod connection;
 pub mod messages;
 pub mod org;
 pub mod prefs;
@@ -503,6 +504,7 @@ pub fn router(state: AppState) -> Router {
         // a revocable member cookie; the outer identity layer below resolves
         // it before auth and request logging.
         .merge(org::public_routes())
+        .merge(connection::routes(crate::config::ServerConfig::from_process_env().tls_dir()))
         .route("/api/_clear_sw", axum::routing::get(static_files::clear_sw_landing))
         .merge(static_files::routes())
         .merge(protected)

@@ -1639,16 +1639,119 @@ function _dismissOrgBanner() {
   localStorage.setItem('amux_dismissed_org_banners', JSON.stringify(dismissed));
 }
 
+// Connection & security — sensitive drafts live only in this DOM, never outbox/storage.
+let _connectionSecurityBusy = false;
+function _openConnectionSecurity(event) {
+  event?.stopPropagation();
+  const banner=document.getElementById('amux-auth-withheld'); if(banner) banner.hidden=true;
+  document.getElementById('about-overlay')?.classList.remove('active');
+  document.getElementById('settings-menu')?.classList.add('open');
+  _settingsTab('integrations');
+  document.getElementById('connection-security')?.scrollIntoView({block:'nearest'});
+}
+function _connectionSecurityError(message) {
+  const node=document.getElementById('connection-security-error');
+  if(node) node.textContent=message;
+}
+async function _connectionSecurityRequest(path, body) {
+  // Direct single request: never api()/offlineQueue or an automatic replay.
+  const url=location.origin+'/api/connection/'+path;
+  const options={credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15000),headers:_authHeaders()};
+  const response=body===undefined ? await fetch(url,options) : await _directInteractionFetch(url,{
+    ...options,method:'POST',headers:_authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)
+  });
+  const result=await response.json();
+  if(!response.ok) {
+    const reasons={invalid_owner_token:'The owner token is invalid or has been revoked.',same_origin_required:'Open this server directly over HTTPS before signing in.',owner_session_or_token_required:'Sign in with this server’s owner token first.',certificate_invalid_or_key_mismatch:'The certificate is invalid or its key does not match.',certificate_hostname_mismatch:'The certificate does not cover this server hostname.',certificate_not_currently_valid:'The certificate is expired or not yet valid.',certificate_validation_or_save_failed:'The server could not validate or save this certificate.',certificate_inspector_unavailable:'The server needs OpenSSL to validate certificate dates.'};
+    throw new Error(reasons[result.error] || 'Connection security request refused. Refresh status before retrying.');
+  }
+  return result;
+}
+async function _connectionSecurityLoad() {
+  const node=document.getElementById('connection-security-status');
+  if(!node) return;
+  try {
+    const data=await _connectionSecurityRequest('security');
+    const tls=data.tls || {}, cert=tls.active;
+    const auth={owner:'Signed in as owner',member:'Scoped member · owner access required to change certificates',sign_in_required:'Sign in required',not_configured:'Owner token is not configured'}[data.auth] || 'Authentication unknown';
+    node.textContent=auth+'\n'+(cert
+      ? 'Loaded fallback certificate SHA-256: '+cert.sha256+'\nSubject: '+(cert.subject||'unavailable')+'\nExpires: '+(cert.not_after?new Date(cert.not_after*1000).toISOString():'unmeasured')
+      : 'Loaded certificate metadata unavailable')
+      +(tls.tailscale?'\nTailscale SNI: '+tls.tailscale.hostname+' · '+tls.tailscale.sha256:'')
+      +(tls.saved_sha256?'\nSaved certificate SHA-256: '+tls.saved_sha256:'')
+      +(tls.restart_required?'\nRestart required — saved certificate is not active.':'')
+      +'\nBrowser/OS trust is not measured by this server.';
+    const upload=document.getElementById('connection-certificate-form');
+    if(upload) upload.disabled=!data.can_configure || _connectionSecurityBusy;
+    document.querySelectorAll('.connection-security-summary').forEach(n=>{n.textContent=auth+' · Connection & security';});
+  } catch(e) { _connectionSecurityError('Could not refresh security status. '+e.message); }
+}
+function _connectionSecurityPending(on) {
+  _connectionSecurityBusy=on;
+  for(const id of ['connection-sign-in','connection-certificate-save']) {
+    const node=document.getElementById(id); if(node) node.disabled=on;
+  }
+}
+async function _connectionSignIn() {
+  if(_connectionSecurityBusy) return;
+  const input=document.getElementById('connection-owner-token');
+  const token=input?.value.trim();
+  if(!token) { _connectionSecurityError('Enter the owner token for this server.');input?.focus();return; }
+  _connectionSecurityPending(true); _connectionSecurityError('');
+  try {
+    await _connectionSecurityRequest('session',{token});
+    input.value='';
+    // Cookie is HttpOnly. Refresh through the existing SW-safe bootstrap;
+    // never put the token in a URL, storage, connection export or debug event.
+    location.assign('/api/_clear_sw');
+  } catch(e) {
+    _connectionSecurityError('Sign-in did not complete. '+e.message+' Your input is retained in this open form only; retry explicitly.');
+  } finally { _connectionSecurityPending(false); }
+}
+async function _connectionCertificateSave() {
+  if(_connectionSecurityBusy) return;
+  const cert=document.getElementById('connection-certificate')?.files?.[0];
+  const key=document.getElementById('connection-private-key')?.files?.[0];
+  if(!cert || !key) { _connectionSecurityError('Choose both a server certificate PEM and its private key PEM.');return; }
+  if(cert.size>65536 || key.size>32768) { _connectionSecurityError('Certificate limit: 64 KiB. Key limit: 32 KiB.');return; }
+  _connectionSecurityPending(true); _connectionSecurityError('');
+  try {
+    const result=await _connectionSecurityRequest('certificate',{certificate_pem:await cert.text(),private_key_pem:await key.text()});
+    document.getElementById('connection-certificate').value='';
+    document.getElementById('connection-private-key').value='';
+    _connectionSecurityError('Saved '+result.saved.sha256+'. Restart required; this action has not restarted the server or changed browser trust.');
+    await _connectionSecurityLoad();
+  } catch(e) {
+    _connectionSecurityError('Certificate save was not confirmed. '+e.message+' Files are retained in this open form. Refresh status and compare the saved fingerprint before an explicit retry.');
+  } finally { _connectionSecurityPending(false); await _connectionSecurityLoad(); }
+}
+// Only names and credential-free HTTPS origins can be synced or exported.
+function _connectionEntries(list) {
+  if(!Array.isArray(list)) return [];
+  return list.flatMap(c=>{
+    try {
+      const url=new URL(c.url);
+      if(url.protocol!=='https:' || url.username || url.password || url.search || url.hash || !['','/'].includes(url.pathname)) return [];
+      return [{name:String(c.name||url.host).slice(0,120),url:url.origin}];
+    } catch(e) {return [];}
+  });
+}
+
 // ── Instance (connection) switcher ─────────────────────────────────────────
 const _CONNECTIONS_KEY = 'amux_connections';
 
 function _loadConnections() {
-  try { return JSON.parse(localStorage.getItem(_CONNECTIONS_KEY) || '[]'); }
+  try {
+    const raw=localStorage.getItem(_CONNECTIONS_KEY) || '[]';
+    const safe=_connectionEntries(JSON.parse(raw));
+    if(JSON.stringify(safe)!==raw) _saveConnections(safe);
+    return safe;
+  }
   catch { return []; }
 }
 
 function _saveConnections(list) {
-  localStorage.setItem(_CONNECTIONS_KEY, JSON.stringify(list));
+  localStorage.setItem(_CONNECTIONS_KEY, JSON.stringify(_connectionEntries(list)));
 }
 
 function _renderInstanceSwitcher() {
@@ -1675,7 +1778,7 @@ function _renderInstanceSwitcher() {
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</span>
         ${isCurr ? '<span style="color:var(--accent);font-size:0.65rem;">current</span>' : `<span style="color:var(--dim);font-size:0.7rem;">${esc(c.url.replace(/^https?:\/\//, ''))}</span>`}
       </a>`;
-    }).join('');
+    }).join('') + '<button class="btn connection-security-summary" onclick="_openConnectionSecurity(event)">Connection &amp; security</button>';
   }
 
   if (list) {
@@ -1717,8 +1820,7 @@ function _toggleAddConnectionForm(show) {
   if (visible) {
     const ni = document.getElementById('add-conn-name');
     const ui = document.getElementById('add-conn-url');
-    if (ni) { ni.value = ''; ni.focus(); }
-    if (ui) ui.value = '';
+    if (ni) ni.focus();
   }
 }
 
@@ -1735,10 +1837,12 @@ function _addConnectionSave() {
   const name = (ni ? ni.value : '').trim();
   const url = (ui ? ui.value : '').trim().replace(/\/$/, '');
   if (!name || !url) return;
+  if (!_connectionEntries([{name,url}]).length) { _connectionSecurityError('Use an HTTPS origin only, without credentials, path, query or fragment.'); return; }
   const conns = _loadConnections();
   conns.push({ name, url });
   _saveConnections(conns);
   _toggleAddConnectionForm(false);
+  if(ni) ni.value=''; if(ui) ui.value='';
   _renderInstanceSwitcher();
 }
 
@@ -3551,7 +3655,7 @@ const _origFetch = window.fetch.bind(window);
 // deploy has its fetch fail, get queued, and report success. Ethan saw the two
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
-const _OUTBOX_SKIP = /\/api\/(client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org)/;
+const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org)/;
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -4589,52 +4693,13 @@ function _sessionReadNotice() {
     + errDetail + ' · ' + esc(_sessionLoadError.reason) + '</code></details></div>';
 }
 
-// AF-639. The honest end state for a browser the server will not bootstrap:
-// say so, and hand over the one action that fixes it. One visit carrying
-// ?_token= is enough — the server swaps it for an HttpOnly owner session and
-// strips it back out of the address bar (static_files.rs::serve_shell), so
-// this survives reloads and does not leave the bearer in history.
+// Locked-out browsers use the same Connect actions, not a credential URL.
 function _amuxAuthWithheldBanner() {
-  if (!document.body || document.getElementById('amux-auth-withheld')) return;
-  const bar = document.createElement('div');
-  bar.id = 'amux-auth-withheld';
-  // Inline styles, same reasoning as the legacy-origin banner above: this has
-  // to render even when app.css never loaded, and every /api fetch on this
-  // page is failing, so it cannot depend on anything fetched.
-  bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:100000;' +
-    'padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 12px;' +
-    'background:#7c2d12;color:#fff;font:500 13px/1.45 -apple-system,system-ui,sans-serif;' +
-    'box-shadow:0 2px 12px rgba(0,0,0,.4);';
-  bar.innerHTML = '<div style="max-width:720px;margin:0 auto;">' +
-    '<b>Not signed in to this server.</b> Everything below is cached and will not update: ' +
-    'this browser is remote, so the server did not give this page a token and every request ' +
-    'is being refused. Paste the token from <code>~/.amux/auth_token</code> on the server ' +
-    'machine to sign in for good.</div>';
-  const row = document.createElement('div');
-  row.style.cssText = 'max-width:720px;margin:8px auto 0;display:flex;gap:8px;flex-wrap:wrap;';
-  const input = document.createElement('input');
-  input.type = 'password';
-  input.autocomplete = 'off';
-  input.placeholder = 'auth token';
-  input.style.cssText = 'flex:1;min-width:180px;min-height:44px;padding:0 12px;border-radius:8px;' +
-    'border:1px solid rgba(255,255,255,.4);background:rgba(0,0,0,.25);color:#fff;font-size:13px;';
-  const go = document.createElement('button');
-  go.textContent = 'Sign in';
-  go.style.cssText = 'min-height:44px;padding:0 16px;border-radius:8px;border:0;' +
-    'background:#fff;color:#7c2d12;font-weight:600;font-size:13px;cursor:pointer;';
-  const submit = () => {
-    const t = input.value.trim();
-    if (!t) { input.focus(); return; }
-    location.href = location.pathname + '?_token=' + encodeURIComponent(t);
-  };
-  go.onclick = submit;
-  input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
-  row.appendChild(input);
-  row.appendChild(go);
-  bar.appendChild(row);
+  if(!document.body || document.getElementById('amux-auth-withheld') || (document.getElementById('settings-menu')?.classList.contains('open') && document.getElementById('stab-integrations')?.classList.contains('active'))) return;
+  const bar=document.createElement('div');bar.id='amux-auth-withheld';
+  bar.style.cssText='position:fixed;left:0;right:0;top:0;z-index:100000;padding:12px;background:#7c2d12;color:white;font:14px system-ui;';
+  bar.innerHTML='<b>Not signed in to this server.</b> Cached information may be stale. <button class="btn" onclick="_openConnectionSecurity(event)">Connection &amp; security · Sign in</button>';
   document.body.appendChild(bar);
-  // Deliberately NOT dismissable. The whole failure is that the page looks
-  // fine, and a banner the user can close reproduces that within a minute.
 }
 
 let _sessEtag = null;
@@ -11605,7 +11670,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1014';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1016';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -35326,7 +35391,7 @@ async function _swOfferGoodOrigin() {
   // advice is still delivered in full when it applies.
   if (info && info.proxied) {
     console.warn('[amux] offline mode unavailable on this origin (proxied TLS) — '
-                 + 'not a certificate problem, nothing to install:', info.why);
+                 + 'certificate trust is unmeasured:', info.why);
     return;
   }
   const bar = document.createElement('div');
@@ -35335,13 +35400,9 @@ async function _swOfferGoodOrigin() {
     + 'background:#7a2d2d;color:#fff;font-size:0.78rem;line-height:1.45;'
     + 'padding:12px 14px calc(12px + env(safe-area-inset-bottom));'
     + 'display:flex;gap:10px;align-items:flex-start;';
-  const msg = (good && good !== here)
-    ? 'Offline mode is OFF. This PWA was installed from <b>' + esc(here) + '</b>, whose '
-      + 'self-signed certificate blocks the service worker — so nothing can be cached, '
-      + 'and on cellular this address is unreachable. Open <b>' + esc(good) + '</b> and '
-      + 're-add it to your home screen.'
-    : 'Offline mode is OFF — the service worker could not install'
-      + (info && info.why ? ': ' + esc(info.why) : '.');
+  const msg = 'Offline mode is OFF — the service worker could not install. '
+    + (info && info.why ? esc(info.why) : 'Open Connection &amp; security for repair actions.')
+    + (good && good !== here ? ' A loaded Tailscale certificate is available at '+esc(good)+'. Browser trust must still be checked.' : '');
   bar.innerHTML = '<div style="flex:1;min-width:0;">' + msg + '</div>'
     + (good && good !== here
         ? '<button onclick="location.href=' + JSON.stringify(good) + '" style="flex-shrink:0;min-height:44px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.5);background:transparent;color:#fff;font-weight:600;cursor:pointer;">Open</button>'
@@ -35962,9 +36023,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ═══════ SERVER SWITCHER ═══════
 function _getSavedServers() {
-  try { return JSON.parse(localStorage.getItem('amux_servers') || '[]'); } catch(e) { return []; }
+  try { return _connectionEntries(JSON.parse(localStorage.getItem('amux_servers') || '[]')); } catch(e) { return []; }
 }
-function _saveServers(list) { localStorage.setItem('amux_servers', JSON.stringify(list)); }
+function _saveServers(list) { localStorage.setItem('amux_servers', JSON.stringify(_connectionEntries(list))); }
 
 // Bootstrap: migrate amux_servers → amux_connections (one-time), then read ?_sync=
 (function _bootstrapFromUrl() {
@@ -36036,7 +36097,7 @@ function renderServerList() {
   if (!conns.length || conns.every(c => c.url.replace(/\/+$/, '') === current)) {
     html += '<div style="color:var(--dim);font-size:0.7rem;text-align:center;padding:4px 0;">No other servers saved</div>';
   }
-  list.innerHTML = html;
+  list.innerHTML = html+'<button class="btn connection-security-summary" onclick="_openConnectionSecurity(event)">Connection &amp; security</button>';
 }
 
 function toggleAddServer() {
@@ -36064,7 +36125,7 @@ function _ensureCurrentServerSaved(servers) {
 function saveNewServer() {
   const name = document.getElementById('add-server-name').value.trim();
   let url = _normalizeServerUrl(document.getElementById('add-server-url').value.trim());
-  if (!url) { showToast('URL is required'); return; }
+  if (!_connectionEntries([{name,url}]).length) { showToast('Use an HTTPS origin without credentials, path, query or fragment.'); return; }
   const servers = _loadConnections();
   if (servers.some(s => s.url.replace(/\/+$/, '') === url)) { showToast('Server already saved'); return; }
   _ensureCurrentServerSaved(servers);
@@ -36306,12 +36367,14 @@ function _settingsTab(name) {
   }
   try { localStorage.setItem('amux_settings_tab', name); } catch (e) {}
   menu.scrollTop = 0;
+  if(name==='integrations') _connectionSecurityLoad();
 }
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');
   const header = document.querySelector('.header-row');
   if (header) document.documentElement.style.setProperty('--mobile-header-bottom', (header.getBoundingClientRect().bottom + 6) + 'px');
   const open = menu.classList.toggle('open');
+  if(!open) closeSettings();
   if (open) {
     // Restore the last-used settings tab (default: account) before painting.
     let savedTab = 'account';
@@ -36666,6 +36729,7 @@ async function sendTestAlert(btn) {
 
 function closeSettings() {
   document.getElementById('settings-menu').classList.remove('open');
+  const banner=document.getElementById('amux-auth-withheld'); if(banner) banner.hidden=false;
 }
 
 function saveDeviceName(val) {
@@ -36736,7 +36800,7 @@ function toggleSettingsAddServer() {
 function saveSettingsNewServer() {
   const name = document.getElementById('settings-new-server-name').value.trim();
   let url = _normalizeServerUrl(document.getElementById('settings-new-server-url').value.trim());
-  if (!url) { showToast('URL is required'); return; }
+  if (!_connectionEntries([{name,url}]).length) { showToast('Use an HTTPS origin without credentials, path, query or fragment.'); return; }
   const servers = _loadConnections();
   if (servers.some(s => s.url.replace(/\/+$/, '') === url)) {
     showToast('Server already saved');

@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2094,
+  "n_considered": 2102,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -574,6 +574,30 @@
     },
     "_connScopePicker": {
       "kind": "command._connScopePicker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connectionCertificateSave": {
+      "kind": "command._connectionCertificateSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connectionSecurityLoad": {
+      "kind": "command._connectionSecurityLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connectionSecurityRequest": {
+      "kind": "command._connectionSecurityRequest",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connectionSignIn": {
+      "kind": "command._connectionSignIn",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1622,6 +1646,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openConnectionSecurity": {
+      "kind": "command._openConnectionSecurity",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_openIssue": {
       "kind": "command._openIssue",
       "feedback_required": true,
@@ -2428,6 +2458,12 @@
     },
     "_sessionReadRecovered": {
       "kind": "command._sessionReadRecovered",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_settingsTab": {
+      "kind": "command._settingsTab",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

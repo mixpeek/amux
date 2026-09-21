@@ -428,6 +428,27 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
         </div>
         <div class="settings-tab-panel" id="stab-integrations" data-stab="integrations">
+        <section class="settings-section" id="connection-security">
+          <div class="settings-section-label">Connection &amp; security</div>
+          <p>These actions apply only to this server. Tokens and keys are never saved in the connection list.</p>
+          <pre id="connection-security-status">Open Connect to read active security status.</pre>
+          <button class="btn" onclick="_connectionSecurityLoad()">Refresh security status</button>
+          <p class="connection-help">Use <code>auth_token</code> from this server’s active Amux home. This is not a provider API key or invite token.</p>
+          <label class="connection-control">Owner token
+            <input id="connection-owner-token" type="password" autocomplete="off" spellcheck="false" class="search-input" onkeydown="if(event.key==='Enter')_connectionSignIn()">
+          </label>
+          <button class="btn" id="connection-sign-in" onclick="_connectionSignIn()">Sign in on this server</button>
+          <fieldset id="connection-certificate-form" disabled>
+            <legend>Server certificate · owner only</legend>
+            <label class="connection-control">Certificate PEM <input id="connection-certificate" type="file" accept=".pem,.crt"></label>
+            <label class="connection-control">Private key PEM <input id="connection-private-key" type="file" accept=".pem,.key"></label>
+            <p class="connection-help">Use a matching, currently valid server certificate for this hostname. Never upload a CA private key. Saving requires an operator restart; Tailscale SNI remains separate.</p>
+            <button class="btn" id="connection-certificate-save" onclick="_connectionCertificateSave()">Validate and save certificate</button>
+          </fieldset>
+          <p id="connection-security-error" role="status"></p>
+          <details><summary>Browser blocks HTTPS before sign-in?</summary><p>On the server machine, open <code>http://localhost:&lt;this server's port&gt;/connection-setup</code> for local trust and install instructions. This page cannot grant OS/browser trust. Ask the operator to provide a trusted certificate; do not disable TLS checks.</p></details>
+        </section>
+        <div class="settings-sep"></div>
         <div class="settings-section" id="settings-apikeys-section">
           <div class="settings-section-label">API Keys</div>
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Anthropic API key for Claude workers</div>

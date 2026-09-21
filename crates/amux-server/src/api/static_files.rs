@@ -196,7 +196,7 @@ pub(crate) fn owner_session_status(state: &AppState, headers: &HeaderMap) -> &'s
     }
 }
 
-fn establish_owner_session(state: &AppState) -> Response {
+pub(crate) fn establish_owner_session(state: &AppState) -> Response {
     let Some(value) = owner_session_value(state) else {
         return Redirect::to("/").into_response();
     };
