@@ -9670,39 +9670,64 @@ fn log_flush_ms() -> u64 {
         .unwrap_or(2000)
 }
 
+// One total shell-startup budget, not a fresh allowance for every setup line.
+// Measured healthy Bash rc + explicit profile took 26.4s on the test host.
+// Profiles remain supported; entry is progress, never setup completion.
+const SHELL_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A prompt in scrollback is not completion evidence. Source a short private
 /// file instead of filling the canonical PTY input buffer while profiles run.
 /// The receipt belongs to this exact submission, never to an earlier prompt.
-async fn shell_command_with<F, Fut>(line: &str, launch: bool, timeout: Duration, submit: F) -> Result<(), String>
+async fn shell_command_with<F, Fut>(session: &str, line: &str, launch: bool, timeout: Duration, submit: F) -> Result<(), String>
 where F: FnOnce(String) -> Fut, Fut: std::future::Future<Output = bool> {
+    let started=tokio::time::Instant::now();
+    let deadline=started+timeout;
+    if timeout.is_zero() {return Err("shell startup budget exhausted before submission".into())}
     let dir=tempfile::Builder::new().prefix("amux-shell-").tempdir().map_err(|e|e.to_string())?;
     let script=dir.path().join("command");
     let receipt=dir.path().join("receipt");
-    let acknowledge=format!("printf '%s' \"$?\" > {}",sh_quote(&receipt.to_string_lossy()));
-    let body=if launch {format!("printf '0' > {}\n{line}\n",sh_quote(&receipt.to_string_lossy()))}
-        else {format!("{line}\n{acknowledge}\n")};
+    let entry=dir.path().join("entered");
+    let directory=sh_quote(&dir.path().to_string_lossy());
+    let receipt_path=sh_quote(&receipt.to_string_lossy());
+    // Completion receives the preceding status as an argument, before its
+    // existence check can overwrite it. If the waiter has expired/cancelled,
+    // do not recreate a receipt or complain about its disposed directory.
+    let ack=format!("if [ -d {directory} ]; then printf '%s' \"$1\" > {receipt_path}; fi");
+    let entered=format!("[ -d {directory} ] || return 125\nprintf 1 > {}\n",sh_quote(&entry.to_string_lossy()));
+    let body=if launch {format!("{entered}[ -d {directory} ] || return 125\nprintf 0 > {receipt_path}\n{line}\n")}
+        else {format!("{entered}_amux_setup_receipt() {{ {ack}; }}\n{line}\n_amux_setup_receipt \"$?\"\nunset -f _amux_setup_receipt\n")};
     std::fs::write(&script,body).map_err(|e|e.to_string())?;
     if !submit(format!(". {}",sh_quote(&script.to_string_lossy()))).await {
         return Err("tmux did not accept shell command submission".into());
     }
-    let deadline=tokio::time::Instant::now()+timeout;
+    let mut entered=false;
     loop {
+        if !entered && entry.exists() {
+            entered=true;
+            tracing::info!(session,measured=true,n_considered=1,launch,elapsed_ms=started.elapsed().as_millis() as u64,
+                verdict="shell_command_entered","shell accepted startup script; completion still required");
+        }
         if let Ok(status)=std::fs::read_to_string(&receipt) {
-            if status=="0" {return Ok(())}
-            if !status.is_empty() {return Err(format!("shell setup exited {status}"))}
+            if status=="0" && tokio::time::Instant::now()<deadline {return Ok(())}
+            if !status.is_empty() && status!="0" {return Err(format!("shell setup exited {status}"))}
         }
         if tokio::time::Instant::now()>=deadline {
-            return Err("shell command receipt timed out; provider launch not confirmed".into());
+            let stage=if entered {"setup_running"} else {"awaiting_entry"};
+            return Err(format!("shell command receipt timed out: {stage}, elapsed_ms={}; provider launch not confirmed",started.elapsed().as_millis()));
         }
         sleep_ms(50).await;
     }
 }
 
-async fn startup_shell_command(name: &str, line: &str, launch: bool) -> Result<(), String> {
-    shell_command_with(line,launch,Duration::from_secs(10),|line|async move {
+async fn startup_shell_command(name: &str, line: &str, launch: bool, deadline: tokio::time::Instant) -> Result<(), String> {
+    let started=tokio::time::Instant::now();
+    let result=shell_command_with(name,line,launch,deadline.saturating_duration_since(started),|line|async move {
         let target=pt(name);
         matches!(tmux(&shell_line_args(&target,&line)).await,Some(o) if o.status.success())
-    }).await
+    }).await;
+    tracing::info!(session=name,measured=true,n_considered=1,launch,elapsed_ms=started.elapsed().as_millis() as u64,
+        ok=result.is_ok(),verdict="shell_command_settled","bounded startup submission settled");
+    result
 }
 
 fn shell_start_failed(name: &str, error: &str) -> (bool,String) {
@@ -10694,9 +10719,10 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     }
     // Setup completion and launch admission share one receipt-based transport.
     // Never submit the next line after a timeout or a failed tmux operation.
+    let shell_deadline=tokio::time::Instant::now()+SHELL_STARTUP_TIMEOUT;
     macro_rules! shell_step {
         ($line:expr, $launch:expr) => {
-            if let Err(error)=startup_shell_command(name,$line,$launch).await {
+            if let Err(error)=startup_shell_command(name,$line,$launch,shell_deadline).await {
                 return shell_start_failed(name,&error);
             }
         };
@@ -24095,7 +24121,7 @@ mod tests {
             assert!(tokio::time::Instant::now()<deadline,"shell never entered setup");
             super::sleep_ms(20).await;
         }
-        super::shell_command_with(&setup,false,timeout,|line| {
+        super::shell_command_with("startup-proof",&setup,false,timeout,|line| {
             let submit=&submit;let release=&release;
             async move {
                 let accepted=submit(line).await;
@@ -24106,7 +24132,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&setup_done).unwrap(),"done");
         let launch=format!("printf '%s\\n' \"$AMUX_TEST_VALUE\" \"$PWD\" \"${{AMUX_TEST_REMOVED-unset}}\" {} > {}",
             super::sh_quote(&payload),quote(&result));
-        super::shell_command_with(&launch,true,timeout,submit).await.unwrap();
+        super::shell_command_with("startup-proof",&launch,true,timeout,submit).await.unwrap();
         let deadline=tokio::time::Instant::now()+timeout;
         let expected=format!("{payload}\n{}\nunset\n{payload}\n",std::fs::canonicalize(dir.path()).unwrap().display());
         loop {
@@ -24114,20 +24140,68 @@ mod tests {
             assert!(tokio::time::Instant::now()<deadline,"exact provider input/cwd/env not received");
             super::sleep_ms(20).await;
         }
-        let error=super::shell_command_with("false",false,timeout,submit).await.unwrap_err();
+        // A profile has entered but cannot complete until explicitly released.
+        // The receipt must not admit the provider at entry, even with an old
+        // shell prompt visible. This is synchronization, not a timing guess.
+        let profile_entered=dir.path().join("profile-entered");
+        let profile_release=dir.path().join("profile-release");
+        let profile_done=dir.path().join("profile-done");
+        let profile=format!("printf entered > {}; while [ ! -e {} ]; do sleep 0.02; done; printf done > {}",
+            quote(&profile_entered),quote(&profile_release),quote(&profile_done));
+        let mut completion=Box::pin(super::shell_command_with("startup-proof",&profile,false,timeout,submit));
+        tokio::select! {
+            result=&mut completion=>panic!("entered is not completed: {result:?}"),
+            ()=async {
+                let deadline=tokio::time::Instant::now()+timeout;
+                while !profile_entered.exists() {
+                    assert!(tokio::time::Instant::now()<deadline);
+                    super::sleep_ms(20).await;
+                }
+                // Give the receipt reader a turn after the shell's entry.
+                super::sleep_ms(100).await;
+            }=>{}
+        }
+        assert!(!profile_done.exists());
+        std::fs::write(&profile_release,"release").unwrap();
+        completion.await.unwrap();
+        assert_eq!(std::fs::read_to_string(&profile_done).unwrap(),"done");
+        let error=super::shell_command_with("startup-proof","true",false,std::time::Duration::from_millis(50),|_|async{true}).await.unwrap_err();
+        assert!(error.contains("awaiting_entry"),"{error}");
+        let error=super::shell_command_with("startup-proof","true",false,std::time::Duration::ZERO,|_|async{panic!("expired budget must not submit")}).await.unwrap_err();
+        assert!(error.contains("budget exhausted before submission"));
+        let error=super::shell_command_with("startup-proof","false",false,timeout,submit).await.unwrap_err();
         assert_eq!(error,"shell setup exited 1");
-        let error=super::shell_command_with("true",false,timeout,|_|async{false}).await.unwrap_err();
+        let error=super::shell_command_with("startup-proof","true",false,timeout,|_|async{false}).await.unwrap_err();
         assert!(error.contains("tmux did not accept"));
         // A stale prompt cannot acknowledge this submission, and no launch is
         // sent after the bounded timeout. The setup may finish on its own.
         let never=dir.path().join("must-not-launch");
-        let setup=super::shell_command_with("sleep 0.5",false,std::time::Duration::from_millis(50),submit).await;
-        assert!(setup.as_ref().unwrap_err().contains("receipt timed out"));
+        let blocked=dir.path().join("blocked-profile");let release=dir.path().join("late-release");
+        let late_done=dir.path().join("late-done");
+        let line=format!("printf entered > {}; while [ ! -e {} ]; do sleep 0.02; done; printf done > {}",
+            quote(&blocked),quote(&release),quote(&late_done));
+        let setup=super::shell_command_with("startup-proof",&line,false,std::time::Duration::from_secs(2),submit).await;
+        assert!(blocked.exists(),"profile really entered before the completion deadline");
+        assert!(setup.as_ref().unwrap_err().contains("setup_running"));
         if setup.is_ok() {
-            super::shell_command_with(&format!("touch {}",quote(&never)),true,timeout,submit).await.unwrap();
+            super::shell_command_with("startup-proof",&format!("touch {}",quote(&never)),true,timeout,submit).await.unwrap();
         }
-        super::sleep_ms(600).await;
+        std::fs::write(&release,"release").unwrap();
+        let deadline=tokio::time::Instant::now()+timeout;
+        while !late_done.exists() {
+            assert!(tokio::time::Instant::now()<deadline);
+            super::sleep_ms(20).await;
+        }
         assert!(!never.exists());
+        // Wait for a subsequent acknowledged shell step, proving the old script
+        // has finished, then inspect only this owned socket for receipt errors.
+        super::shell_command_with("startup-proof","true",false,timeout,submit).await.unwrap();
+        let pane=Command::new("tmux").arg("-S").arg(&socket)
+            .args(["capture-pane","-p","-t","=amux-startup-proof:","-S","-"])
+            .output().unwrap();
+        assert!(pane.status.success());
+        assert!(!String::from_utf8_lossy(&pane.stdout).contains("No such file or directory"));
+
     }
 
     #[test]

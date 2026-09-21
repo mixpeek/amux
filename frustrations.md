@@ -3994,3 +3994,15 @@ CARD: AAB-3
 SYMPTOM: Full isolated 424 UI run reached ten scenarios, then PRU-1 never entered its nonbillable provider. start_session recorded started despite a childless shell; its exact execution packet stayed unsent and the observer correctly held executor_stopped_before_result. Prompt polling accepted scrollback and ignored timeouts. A private tmux/Bash probe proved input loss while setup occupied the terminal: 1,916 submitted bytes lost Enter and retained only 908 of 1,800 payload bytes after an extra Enter, measured through argv rather than rendered text.
 COST: One full isolated UI run failed before a report; no real project retry or model call was made for diagnosis. Original 424 failure and read-only fixture evidence retained.
 FIX: Source short private temporary scripts in the existing shell, acknowledge each setup command with a unique filesystem receipt, and stop on submission failure/nonzero status/timeout before sending more input. Initial and existing fallback launches share this transport. A stopped provider cannot produce session.started; durable start_error and measured shell_start_failed expose the failure, while a live slow startup remains allowed. Private positive proof preserved all 4,096 payload bytes, cwd and environment. Focused production-helper regressions added; parent Rust/full UI validation pending. No deployment or live project changes.
+
+
+## Healthy shell profiles exceeded the submission acknowledgement window (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: The fb31 isolated UI passed two scenarios, then PU-5 held shell command receipt timed out without provider input. The short script did execute; its late receipt found the already-disposed directory. A private no-provider probe measured 11.8 seconds before script entry and 14.6 more seconds sourcing the existing profile (26.4 total). The 10-second per-command acknowledgement conflated slow shell initialization/profile execution with missing input.
+COST: One fresh exact-image UI run stopped before its repair scenario; prior focused gates and long-input/stale-UI mutation results remain valid only for their scope. No real project/model retry was granted for diagnosis.
+FIX: One bounded 60-second budget across shell setup/submission, separate entered/completed receipts, no advancement on entry alone, and stage/elapsed diagnostics in shell_command_entered/shell_command_settled plus durable shell_start_failed. Completion after expiry does not recreate or write into disposed receipt storage; later provider submission remains refused. Real shared-helper tests cover delayed entry, a controlled held profile, timeout stage, zero remaining budget, late completion and unchanged exact input/env/cwd guards. Private controlled probes passed; parent Rust/mutation/full UI remain pending. Final docs stay outside the checkout.
