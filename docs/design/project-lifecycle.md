@@ -35,10 +35,25 @@ Verified, its reported head is contained in current remote main, the checkout is
 and only then removes the worktree and marks the worker Expired. A rejection retains the evidence and
 executor context for a follow-up request.
 
-This follows the useful boundary in Factory's delegation flow: autonomous execution returns a
-reviewable session and change set, while proposed changes and test results remain subject to review
-before the lifecycle is considered delivered. See Factory's
-[Remote Delegations](https://docs.factory.ai/remote-delegations) and
+This follows the useful boundaries in Factory's flow without copying its agent-controlled state:
+
+* Missions define features, milestones, success criteria and a validation strategy before execution.
+* Separate validation workers exercise the running application at milestone boundaries.
+* Mission Control lets a person inspect each feature's criteria and commits, and each worker's
+  transcript and subtasks.
+* Remote delegation still returns proposed changes and test results for human review. Automated
+  code review is another verifier; it does not substitute for that review.
+
+Amux keeps the same separation in smaller primitives: the project contract is the plan, project
+tasks are the features, deterministic command criteria are the validation workers, retained assets
+are the review packet, and an explicit human decision is the final disposal gate. This also keeps
+cost bounded: command verifiers run once per fingerprint, completed providers are stopped while
+review is pending, and no model turn is spent asking another agent whether the human approved.
+
+See Factory's [Missions overview](https://docs.factory.ai/missions/overview),
+[Planning & Validation](https://docs.factory.ai/missions/planning),
+[Mission Control](https://docs.factory.ai/missions/running-app),
+[Remote Delegations](https://docs.factory.ai/remote-delegations), and
 [Automated Code Review](https://docs.factory.ai/software-factory/code-review-ci) documentation.
 
 ## Guarantees

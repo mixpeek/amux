@@ -909,6 +909,13 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // migration landed at 04:1x and the check was red by the next sweep, which
     // is the check doing exactly what it exists for.
     ("board_drive_nudge_state", "last_nudge_at", false),
+    // SECONDS: the per-card delivery budget is written from the same `now_f64()`
+    // sample used by board-drive. `first_at` preserves the first delivery,
+    // `last_at` receives `now`, and `next_at` receives `now + step` where the
+    // step is expressed in seconds (migration 0082, reconciled by 0085).
+    ("board_drive_nudge_budget", "first_at", false),
+    ("board_drive_nudge_budget", "last_at", false),
+    ("board_drive_nudge_budget", "next_at", false),
     // ATE-93 overlap coordination stamps every table from board.rs `now_secs()`
     // inside the same transaction as the board log/evidence writes. All seven
     // are therefore seconds; declaring them together keeps callback retries,

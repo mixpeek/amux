@@ -33,6 +33,40 @@ const openFailure=async row=>{
 };
 const verified=async n=>page.waitForFunction(n=>document.querySelector('#project-progress')?.textContent.includes(n+' / '+n+' structured outcomes verified'),n,{timeout:180000});
 const retired=async()=>wait(()=>!fs.readdirSync(path.join(config.home,'sessions')).some(n=>n.startsWith('px-')&&n.endsWith('.env')),'verified executors did not retire');
+let humanReviewCaptured=false;
+const reviewAndRetire=async(requireHeld=false)=>{
+  await page.waitForFunction(()=>_projectsData?.acceptance?.state==='awaiting_human',null,{timeout:180000});
+  const acceptance=page.locator('#project-acceptance');
+  await acceptance.getByText('Completed executors are stopped.',{exact:false}).waitFor();
+  const artifacts=acceptance.locator('.project-review-assets .project-report-asset');
+  assert.ok(await artifacts.count()>0,'human review must link the produced task artifacts');
+  const held=_projectsData.cards.find(c=>{
+    const worker=c.execution_plan.execution.worker;
+    return c.phase==='verified'&&worker&&fs.existsSync(path.join(config.home,'sessions',worker+'.env'));
+  });
+  assert.ok(held||!requireHeld,'human review needs a stopped completed executor before the first approval');
+  const worker=held?.execution_plan.execution.worker;
+  if(held){
+    assert.ok(fs.existsSync(path.join(config.home,'worktrees',worker)),'review-held worktree must remain available');
+    await page.locator('[data-task="'+held.id+'"] .project-card-select').click();
+    await page.locator('#project-inspector').getByText('stopped and retained for human review').waitFor({timeout:60000});
+    await page.locator('#project-inspector').getByRole('button',{name:'Review executor terminal',exact:true}).waitFor();
+  }
+  if(!humanReviewCaptured){
+    await page.screenshot({path:path.join(out,'02-human-review-held.png'),fullPage:true});
+    await artifacts.first().click();
+    await page.locator('#file-overlay').waitFor({state:'visible'});
+    await page.locator('#file-body').getByText(/Fixture report for/).waitFor();
+    await page.screenshot({path:path.join(out,'02-human-artifact-preview.png'),fullPage:true});
+    await page.locator('#file-overlay').getByRole('button',{name:'✕',exact:true}).click();
+    await page.locator('#file-overlay').waitFor({state:'hidden'});
+    humanReviewCaptured=true;
+  }
+  await acceptance.getByRole('button',{name:'Approve',exact:true}).click();
+  await page.waitForFunction(()=>_projectsData?.acceptance?.state==='accepted',null,{timeout:30000});
+  await retired();
+  if(worker) assert.ok(!fs.existsSync(path.join(config.home,'worktrees',worker)),'accepted executor worktree must be deleted');
+};
 const record=(scenario,extra={})=>{const result={verdict:'PASS',scenario,...extra};results.push(result);console.log(JSON.stringify(result));};
 async function create(name,capacity='1'){
   await page.getByRole('button',{name:'+ New project',exact:true}).click();
@@ -93,11 +127,11 @@ try {
   await page.locator('#peek-body').getByText(/Create (alpha|beta) report/).waitFor();
   await page.screenshot({path:path.join(out,'02-executor-terminal.png'),fullPage:true});
   await page.locator('#peek-close-btn').click();
-  fault('alpha',false);fault('beta',false);await verified(1);await retired();
+  fault('alpha',false);fault('beta',false);await verified(1);await reviewAndRetire(true);
   assert.equal(main('alpha'),'alpha');assert.equal(main('beta'),'beta');
   assert.equal(calls().filter(c=>c.phase==='execution').length,2,'duplicate provider execution');
   assert.equal(fs.readdirSync(path.join(config.home,'worktrees')).length,0);
-  record('UI intake, reload draft, duplicate reconciliation, two isolated executors, main verification and retirement',{intakeCalls:1,executionCalls:2});
+  record('UI intake, duplicate reconciliation, isolated execution, main verification, retained human artifact review, and post-approval retirement',{intakeCalls:1,executionCalls:2});
 
   fault('pause',true);await submit('Create pause report and verify it.');
   await wait(()=>fs.existsSync(beat('pause')),'pause executor never started');
@@ -105,10 +139,10 @@ try {
   const pausedBeat=fs.readFileSync(beat('pause'),'utf8');await new Promise(r=>setTimeout(r,1800));
   assert.equal(fs.readFileSync(beat('pause'),'utf8'),pausedBeat,'paused provider still writing');
   await page.screenshot({path:path.join(out,'03-paused.png'),fullPage:true});
-  fault('pause',false);await page.locator('#project-pause').click();await verified(2);await retired();
+  fault('pause',false);await page.locator('#project-pause').click();await verified(2);await reviewAndRetire();
   assert.equal(main('pause'),'pause');record('UI pause stops running work; resume completes same task without adding an attempt');
 
-  await submit('Create repair report and verify it.');await verified(3);await retired();
+  await submit('Create repair report and verify it.');await verified(3);await reviewAndRetire();
   assert.equal(main('repair'),'repair');
   const repairCalls=calls().filter(c=>c.phase==='execution'&&c.worker===calls().filter(c=>c.phase==='execution').at(-1).worker);assert.deepEqual(repairCalls.map(c=>c.attempt),[1,2]);
   record('Failed artifact check triggers one bounded repair and verified integration');
@@ -124,7 +158,7 @@ try {
   await wait(async()=>{try{const response=await context.request.get(config.url+'/health');return response.ok()&&(await response.json()).pid===server.pid}catch{return false}},'test server did not restart',60000);
   await page.reload({waitUntil:'domcontentloaded'});await page.locator('#tab-projects').click();
   await page.waitForFunction(()=>document.getElementById('project-command')?.value==='Unsubmitted draft survives server restart');
-  fault('restart',false);await verified(4);await retired();assert.equal(main('restart'),'restart');
+  fault('restart',false);await verified(4);await reviewAndRetire();assert.equal(main('restart'),'restart');
   record('Server restart preserves claim, running provider, project state and local draft');
 
   await page.getByText('Execution settings',{exact:true}).click();
@@ -143,7 +177,7 @@ try {
   assert.equal(calls().length,beforeBudgetCalls,'held budget request must not call intake or execution');
   await page.screenshot({path:path.join(out,'04-budget-wait.png'),fullPage:true});
   await page.getByText('Execution settings',{exact:true}).click();await page.locator('#project-token-budget').fill('');
-  await saveSettings();await verified(5);await retired();assert.equal(main('budget'),'budget');
+  await saveSettings();await verified(5);await reviewAndRetire();assert.equal(main('budget'),'budget');
   record('Observed budget stops new claims, explains waiting, resumes after explicit policy edit');
 
   const beforeQuotaCalls=calls().length;
@@ -201,7 +235,7 @@ try {
     assert.deepEqual(cards.map(c=>c.id).sort(),beforeRecheckIds,'recheck must preserve exact card identities');
     return cards.every(c=>c.phase==='verified');
   },'same seven rechecked project cards did not all become Verified',180000);
-  await retired();
+  await reviewAndRetire();
   assert.deepEqual((await projectRead()).cards.map(c=>c.id).sort(),beforeRecheckIds);
   assert.equal(intakeCount(later),1);
   const beforeIdle=calls().length;await new Promise(r=>setTimeout(r,2400));assert.equal(calls().length,beforeIdle);
@@ -275,7 +309,7 @@ try {
   assert.equal(reverified.generation,retainedExecution.generation);assert.equal(reverified.attempt,retainedExecution.attempt);
   assert.deepEqual(reverified.report,retainedExecution.report);assert.equal(reverified.verification_retries.length,1);
   assert.match(reverified.verification_retries[0].previous_result.waiting,/Command timed out after 1 seconds/);
-  await retired();assert.equal(calls().length,rerunCalls,'rerunning retained checks must not call intake or executor');
+  await reviewAndRetire();assert.equal(calls().length,rerunCalls,'rerunning retained checks must not call intake or executor');
   assert.equal(main('reverify'),'reverify');
   record('Explicit verification rerun preserves report/attempt, changes bounded timeout, verifies and retires with zero model calls');
 
@@ -342,7 +376,7 @@ try {
   record('Failed task retains owner steering without work; explicit one-retry grant delivers it once within the same task');
   // AAB-11 consolidated workflow: acceptance wording, retired evidence, drafts, settings, empty and error states.
   await page.locator('#project-selector').selectOption('lifecycle-ui');
-  await page.locator('#project-acceptance').getByText('Not configured').first().waitFor();
+  await page.locator('#project-acceptance').getByText('waiting for tasks',{exact:false}).first().waitFor();
   const retiredCard=(await projectRead()).cards.find(c=>c.phase==='verified'&&(c.execution_plan.execution.retained_assets||[]).length>0);
   assert.ok(retiredCard,'a verified task with retained assets must exist');
   await page.locator('[data-task="'+retiredCard.id+'"] .project-card-select').click();
@@ -388,7 +422,7 @@ try {
   await page.locator('#project-error-retry').click();
   await page.waitForFunction(()=>!document.getElementById('project-error')?.textContent);
   await page.screenshot({path:path.join(out,'10-error-retry.png'),fullPage:true});
-  record('Consolidated project workflow: acceptance Not configured, retired evidence, per-project drafts, settings save/cancel, empty and retry states');
+  record('Consolidated project workflow: current acceptance, retired evidence, per-project drafts, settings save/cancel, empty and retry states');
   await page.locator('#project-pause').click();
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({results,errors,calls:calls(),fixture:config},null,2));
