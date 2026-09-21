@@ -40,7 +40,8 @@ const reviewAndRetire=async(requireHeld=false)=>{
   await acceptance.getByText('Completed executors are stopped.',{exact:false}).waitFor();
   const artifacts=acceptance.locator('.project-review-assets .project-report-asset');
   assert.ok(await artifacts.count()>0,'human review must link the produced task artifacts');
-  const held=_projectsData.cards.find(c=>{
+  const cards=await page.evaluate(()=>_projectsData.cards);
+  const held=cards.find(c=>{
     const worker=c.execution_plan.execution.worker;
     return c.phase==='verified'&&worker&&fs.existsSync(path.join(config.home,'sessions',worker+'.env'));
   });
