@@ -1701,8 +1701,12 @@ def _expanding_remove_word(raw):
     return "".join(out)
 
 
-def _dynamic_remove_operands(command):
-    """Recognize unchecked variable directory prefixes in direct rm/rmdir calls.
+def _scan_remove_operands(command):
+    """Recognize unchecked variable prefixes and cd-relative globs in direct rm/rmdir calls.
+
+    Returns (variable_operands, cd_glob_operands). The second list holds a relative
+    glob (./* or *) removed after a cd: Claude's native check refuses to auto-allow
+    it too, because it cannot resolve where the glob points.
 
     Scan real command positions, including loops and common command wrappers.
     Inert quoted arguments, comments and document heredocs are not invocations.
@@ -1713,7 +1717,7 @@ def _dynamic_remove_operands(command):
     import shlex
     tokens = _REMOVE_TOKENS.findall(_strip_heredoc_bodies(command.replace("\\\n", "")))
     start, removing, redirect, comment = True, False, False, False
-    matched, parents = [], []
+    matched, cd_globs, parents, changed_dir = [], [], [], False
     for raw in tokens:
         if raw == "\n":
             start, removing, redirect, comment = True, False, False, False
@@ -1752,6 +1756,8 @@ def _dynamic_remove_operands(command):
                 continue
             if word == "--":
                 continue
+            if word in ("cd", "pushd"):
+                changed_dir = True
             removing = word in ("rm", "/bin/rm", "/usr/bin/rm", "rmdir", "/bin/rmdir", "/usr/bin/rmdir")
             start = False
             continue
@@ -1760,16 +1766,74 @@ def _dynamic_remove_operands(command):
             match = _REMOVE_PREFIX.match(operand)
             if match and not re.match(r'^[A-Za-z_][A-Za-z_0-9]*:\?', match.group(1) or ""):
                 matched.append(raw)
-    return matched
+            elif (changed_dir and re.search(r"(?:^|/)\*+$", operand)
+                  and not operand.startswith(("/", "~", "$", "\0"))):
+                cd_globs.append(raw)
+    return matched, cd_globs
+
+
+def _dynamic_remove_operands(command):
+    """Variable-prefix operands only (callers and tests that predate the cd-glob finding)."""
+    return _scan_remove_operands(command)[0]
+
+
+def _worker_identity():
+    """Name the amux worker running this hook, or "" when not inside amux.
+
+    An ISOLATED lane is spawned without AMUX_SESSION/AMUX_WORKER (AMUX-3232), so
+    testing the environment alone switched this correction OFF for exactly the lanes
+    that have no harness and nobody watching to answer Claude's native "explicit
+    approval" prompt: every unguarded rm parked an isolated worker on a dialog until
+    the owner found it (eight goal-spec workers, 2026-09-21). Such a lane still runs
+    in tmux session amux-<name> and still carries CC_ISOLATED, so recognise it by
+    either. tmux is asked only after a removal was found, so an ordinary Bash call
+    pays nothing.
+    """
+    name = os.environ.get("AMUX_SESSION") or os.environ.get("AMUX_WORKER")
+    if name:
+        return name
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        import subprocess
+        try:
+            session = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#S"],
+                                     capture_output=True, text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            session = ""
+        if session.startswith("amux-"):
+            return session[len("amux-"):]
+    return "isolated" if os.environ.get("CC_ISOLATED") == "1" else ""
+
+
+_REMOVE_VAR_REASON = (
+    "amux: rm/rmdir has an unchecked variable directory prefix (for example $WT/$f). "
+    "An empty prefix changes the deletion target; Claude may demand interactive approval even in bypass mode. "
+    "This entire Bash call was rejected before execution: none of its commands ran. "
+    'Fastest fix: guard each variable, as rm -P "${D:?}/${f:?}" (the shell stops with an error '
+    "when D or f is empty), or use a literal path. "
+    "Inspect the resolved targets first, verify they stay inside your intended worktree and belong to this task, "
+    "then retry only necessary deletions with explicit literal paths. For already-landed files, compare exact "
+    "contents with the intended commit; git cat-file -e proves existence, not equality. Preserve differing or "
+    "peer-owned work, or use a fresh isolated worktree. Correct the command and continue; do not wait for "
+    "a human to approve this form or switch tools to evade the native deletion check."
+)
+_REMOVE_GLOB_REASON = (
+    "amux: rm has a relative glob target (./* or *) after a cd. Claude cannot resolve where that glob points "
+    "and demands interactive approval even in bypass mode. This entire Bash call was rejected before execution: "
+    "none of its commands ran. For a directory you created and own, clear it without a cd: "
+    'find "${DIR:?}" -mindepth 1 -delete, or rm -rf "${DIR:?}"/* (both accepted by the native check). '
+    "Never point either at a directory that holds another lane's work. Correct the command and continue; "
+    "do not wait for a human to approve this form."
+)
 
 
 def _remove_correction(command):
     """Return a deny decision to the model before native interactive approval."""
-    worker = os.environ.get("AMUX_SESSION") or os.environ.get("AMUX_WORKER")
-    if not worker:
+    operands, cd_globs = _scan_remove_operands(command)
+    if not operands and not cd_globs:
         return None
-    operands = _dynamic_remove_operands(command)
-    if not operands:
+    worker = _worker_identity()
+    if not worker:
         return None
     # Only hashes/counts reach the audit: commands and paths may contain secrets.
     import hashlib
@@ -1779,24 +1843,18 @@ def _remove_correction(command):
         if log.exists() and log.stat().st_size > 4 * 1024 * 1024:
             log.replace(log.with_suffix(".jsonl.1"))
         with log.open("a") as stream:
-            stream.write(json.dumps({"ts": time.time(), "event": "unsafe_remove_operand",
+            stream.write(json.dumps({"ts": time.time(),
+                                    "event": "unsafe_remove_operand" if operands else "unsafe_remove_glob",
                                     "session": worker, "verdict": "deny", "measured": True,
-                                    "n_considered": len(operands),
+                                    "n_considered": len(operands) + len(cd_globs),
                                     "command_sha256": hashlib.sha256(command.encode()).hexdigest()}) + "\n")
     except OSError:
         pass  # unavailable telemetry must not defeat the correction
+    reason = (_REMOVE_VAR_REASON if operands else "") + (" " if operands and cd_globs else "") + (_REMOVE_GLOB_REASON if cd_globs else "")
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
-        "permissionDecisionReason": (
-            "amux: rm/rmdir has an unchecked variable directory prefix (for example $WT/$f). "
-            "An empty prefix changes the deletion target; Claude may demand interactive approval even in bypass mode. "
-            "This entire Bash call was rejected before execution: none of its commands ran. "
-            "Inspect the resolved targets first, verify they stay inside your intended worktree and belong to this task, "
-            "then retry only necessary deletions with explicit literal paths. For already-landed files, compare exact "
-            "contents with the intended commit; git cat-file -e proves existence, not equality. Preserve differing or "
-            "peer-owned work, or use a fresh isolated worktree. Correct the command and continue; do not wait for "
-            "a human to approve this form or switch tools to evade the native deletion check."
-        )}}
+        "permissionDecisionReason": reason}}
+
 
 def main():
     data = json.load(sys.stdin)

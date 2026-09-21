@@ -1144,9 +1144,47 @@ def main():
         failures.append(
             "AF-577: the refusal must explicitly rule OUT --local; got %r" % _err[:300])
 
+    # --- rm correction must not depend on AMUX_SESSION (isolated lanes) ------------
+    # An ISOLATED worker is spawned with no AMUX_SESSION, so the correction used to
+    # switch itself off and Claude's native, non-bypassable "Dangerous rm operation"
+    # dialog parked the worker until a human pressed 1 (8 goal-spec workers, 2026-09-21).
+    def _hook_out(command, env_add=None):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("AMUX_SESSION", "AMUX_WORKER", "CC_ISOLATED", "TMUX_PANE", "TMUX")}
+        env.update(env_add or {})
+        return subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": work}),
+            capture_output=True, text=True, env=env, timeout=30).stdout
+    _RM_LOOP = 'D=~/x; for f in a b; do rm -P "$D/$f"; done'
+    _iso, _amux, _none = {"CC_ISOLATED": "1"}, {"AMUX_SESSION": "w"}, {}
+    _rmcases = [
+        ("amux worker: unguarded loop var is denied", _RM_LOOP, _amux, True),
+        ("ISOLATED lane (no AMUX_SESSION): unguarded loop var is denied", _RM_LOOP, _iso, True),
+        ("outside amux entirely: left to Claude's native check", _RM_LOOP, _none, False),
+        ("guarded ${D:?}/${f:?} passes", 'D=~/x; for f in a b; do rm -P "${D:?}/${f:?}"; done', _iso, False),
+        ("literal path passes", "rm -f /tmp/a/b.txt", _iso, False),
+        ("cd then rm -rf ./* is denied", 'F=$(mktemp -d); cd "$F" && rm -rf ./*', _iso, True),
+        ("cd then rm -rf * is denied", 'cd "$(mktemp -d)" && rm -rf *', _iso, True),
+        ("cd then rm of a named file passes", 'cd "$(mktemp -d)" && rm -f a.txt', _iso, False),
+        ("cd then rm *.log passes (not a bare glob)", 'cd "$(mktemp -d)" && rm -f *.log', _iso, False),
+        ("rm ./build/* with no cd passes", "rm -rf ./build/*", _iso, False),
+        ("find -delete on a guarded dir passes", 'find "${D:?}" -mindepth 1 -delete', _iso, False),
+        ("rm -rf \"${D:?}\"/* passes", 'rm -rf "${D:?}"/*', _iso, False),
+    ]
+    for _n, _cmd, _envadd, _want in _rmcases:
+        _out = _hook_out(_cmd, _envadd)
+        _got = '"permissionDecision": "deny"' in _out
+        if _got != _want:
+            failures.append("rm-correction: %s -> denied=%s, want %s. stdout: %r" % (_n, _got, _want, _out[:160]))
+    _rmreason = _hook_out(_RM_LOOP, _iso)
+    if "${D:?}" not in _rmreason:
+        failures.append("rm-correction: the denial must name the ${VAR:?} rewrite; got %r" % _rmreason[:200])
+    _rmcases = len(_rmcases) + 1
+
     total = (len(cases) + len(trio) + len(quad) + len(matrix) + _bodies + 1
              + len(redir_cases) + _mr101 + _subst + _lockcases + _amendlock + _sweep
-             + _wtcfg)
+             + _wtcfg + _rmcases)
     if failures:
         print(f"FAIL {len(failures)}/{total}:")
         for f in failures:
