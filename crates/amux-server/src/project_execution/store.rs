@@ -123,8 +123,9 @@ pub fn save(
         let active: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM issues WHERE project_group=?1 AND execution_state IS NOT NULL AND json_extract(execution_state,'$.stage') NOT IN ('verified',''))", [name], |r|r.get(0))?;
         anyhow::ensure!(!active || (current.policy.repository == policy.repository
             && current.policy.verify_command == policy.verify_command
-            && current.policy.executor == policy.executor),
-            "repository, verification gate and executor profile are fixed while executions retain work; finish or reconcile those executions first");
+            && current.policy.executor == policy.executor
+            && current.policy.worktree == policy.worktree),
+            "repository, verification gate, checkout mode and executor profile are fixed while executions retain work; finish or reconcile those executions first");
     }
     conn.execute("INSERT INTO group_config(name,execution_policy,execution_rev,updated) VALUES(?1,?2,?3,?4) ON CONFLICT(name) DO UPDATE SET execution_policy=excluded.execution_policy,execution_rev=excluded.execution_rev,updated=excluded.updated",
         params![name,serde_json::to_string(policy)?,revision+1,chrono::Utc::now().timestamp()])?;

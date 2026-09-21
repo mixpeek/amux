@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2111,
+  "n_considered": 2113,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2018,6 +2018,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_projectAcceptanceDecision": {
+      "kind": "command._projectAcceptanceDecision",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectAcceptanceRerun": {
+      "kind": "command._projectAcceptanceRerun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_projectAcceptanceRetainedAsset": {
       "kind": "command._projectAcceptanceRetainedAsset",
       "feedback_required": true,
@@ -2026,6 +2038,66 @@
     },
     "_projectAssetPreview": {
       "kind": "command._projectAssetPreview",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectChoose": {
+      "kind": "command._projectChoose",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectMigrationApply": {
+      "kind": "command._projectMigrationApply",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectMigrationRollback": {
+      "kind": "command._projectMigrationRollback",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectPause": {
+      "kind": "command._projectPause",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectRetry": {
+      "kind": "command._projectRetry",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectRetryIntake": {
+      "kind": "command._projectRetryIntake",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectRetryNow": {
+      "kind": "command._projectRetryNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectSave": {
+      "kind": "command._projectSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectSend": {
+      "kind": "command._projectSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectsLoad": {
+      "kind": "command._projectsLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

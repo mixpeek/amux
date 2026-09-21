@@ -10155,7 +10155,12 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     };
 
     // --- Worktree isolation (opt-in via CC_WORKTREE=1) ---
-    let fanout = cfg.get("CC_EPHEMERAL") == Some("1");
+    // Project executors are ephemeral lifecycle records even when an operator explicitly chooses
+    // shared-checkout mode. In that mode the project policy already bounds execution to one worker,
+    // so starting must not manufacture a fan-out worktree behind the UI's back.
+    let project_shared_checkout =
+        cfg.get("CC_PROJECT").is_some() && cfg.get("CC_WORKTREE") == Some("0");
+    let fanout = cfg.get("CC_EPHEMERAL") == Some("1") && !project_shared_checkout;
     let worktree_enabled = fanout || cfg.get_or("CC_WORKTREE", "") == "1";
     if fanout {
         match crate::fanout_workspace::ensure(&home(), name, &work_dir).await {

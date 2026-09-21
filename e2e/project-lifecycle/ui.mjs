@@ -32,10 +32,20 @@ const openFailure=async row=>{
   return details.locator('pre');
 };
 const verified=async n=>page.waitForFunction(n=>document.querySelector('#project-progress')?.textContent.includes(n+' / '+n+' structured outcomes verified'),n,{timeout:180000});
-const retired=async()=>wait(()=>!fs.readdirSync(path.join(config.home,'sessions')).some(n=>n.startsWith('px-')&&n.endsWith('.env')),'verified executors did not retire');
+const envValue=(body,key)=>{
+  const match=body.match(new RegExp('^'+key+'=(?:"([^"]*)"|(.*))$','m'));
+  return match ? (match[1] ?? match[2] ?? '') : '';
+};
+const projectExecutors=project=>fs.readdirSync(path.join(config.home,'sessions'))
+  .filter(n=>n.startsWith('px-')&&n.endsWith('.env'))
+  .filter(n=>envValue(fs.readFileSync(path.join(config.home,'sessions',n),'utf8'),'CC_PROJECT')===project);
+const reviewHeldExecutors=project=>projectExecutors(project)
+  .filter(n=>envValue(fs.readFileSync(path.join(config.home,'sessions',n),'utf8'),'CC_REVIEW_HELD')==='1');
+const retired=async(project,worker)=>wait(()=>projectExecutors(project).length===0&&(!worker||!fs.existsSync(path.join(config.home,'worktrees',worker))),'verified executors did not retire for '+project);
 let humanReviewCaptured=false;
 const reviewAndRetire=async(requireHeld=false)=>{
   await page.waitForFunction(()=>_projectsData?.acceptance?.state==='awaiting_human',null,{timeout:180000});
+  const project=await page.evaluate(()=>_projectsData.project.name);
   const acceptance=page.locator('#project-acceptance');
   await acceptance.getByText('Completed executors are stopped.',{exact:false}).waitFor();
   const artifacts=acceptance.locator('.project-review-assets .project-report-asset');
@@ -47,10 +57,13 @@ const reviewAndRetire=async(requireHeld=false)=>{
   });
   assert.ok(held||!requireHeld,'human review needs a stopped completed executor before the first approval');
   const worker=held?.execution_plan.execution.worker;
+  const usesWorktree=await page.evaluate(()=>_projectsData?.project?.policy?.worktree!==false);
   if(held){
-    assert.ok(fs.existsSync(path.join(config.home,'worktrees',worker)),'review-held worktree must remain available');
+    if(usesWorktree) assert.ok(fs.existsSync(path.join(config.home,'worktrees',worker)),'review-held worktree must remain available');
+    else assert.ok(!fs.existsSync(path.join(config.home,'worktrees',worker)),'shared-checkout project must not create a worktree');
     await page.locator('[data-task="'+held.id+'"] .project-card-select').click();
     await page.locator('#project-inspector').getByText('stopped and retained for human review').waitFor({timeout:60000});
+    await page.locator('#project-inspector').getByText(usesWorktree?'Dedicated worktree':'Shared project checkout',{exact:true}).first().waitFor({timeout:60000});
     await page.locator('#project-inspector').getByRole('button',{name:'Review executor terminal',exact:true}).waitFor();
   }
   if(!humanReviewCaptured){
@@ -65,13 +78,14 @@ const reviewAndRetire=async(requireHeld=false)=>{
   }
   await acceptance.getByRole('button',{name:'Approve',exact:true}).click();
   await page.waitForFunction(()=>_projectsData?.acceptance?.state==='accepted',null,{timeout:30000});
-  await retired();
-  if(worker) assert.ok(!fs.existsSync(path.join(config.home,'worktrees',worker)),'accepted executor worktree must be deleted');
+  await retired(project,worker);
+  if(worker) assert.ok(!fs.existsSync(path.join(config.home,'worktrees',worker)),usesWorktree?'accepted executor worktree must be deleted':'shared-checkout executor must not materialize a worktree');
 };
 const record=(scenario,extra={})=>{const result={verdict:'PASS',scenario,...extra};results.push(result);console.log(JSON.stringify(result));};
-async function create(name,capacity='1'){
+async function create(name,capacity='1',options={}){
   await page.getByRole('button',{name:'+ New project',exact:true}).click();
   await page.locator('#project-name').fill(name);await page.locator('#project-repository').fill(config.repo);
+  if(options.worktree===false) await page.locator('#project-worktree').selectOption('0');
   await page.locator('#project-verify').fill('git diff --check');await page.locator('#project-capacity').selectOption(capacity);
   await page.getByRole('button',{name:'Create project',exact:true}).click();await page.locator('#project-command').waitFor();
 }
@@ -133,6 +147,19 @@ try {
   assert.equal(calls().filter(c=>c.phase==='execution').length,2,'duplicate provider execution');
   assert.equal(fs.readdirSync(path.join(config.home,'worktrees')).length,0);
   record('UI intake, duplicate reconciliation, isolated execution, main verification, retained human artifact review, and post-approval retirement',{intakeCalls:1,executionCalls:2});
+
+  await create('shared-checkout-ui','1',{worktree:false});
+  assert.equal(await page.locator('#project-worktree').inputValue(),'0');
+  await submit('Create shared checkout report and verify it.');
+  await verified(1);
+  const sharedWorker=projectExecutors('shared-checkout-ui').map(n=>n.replace(/\\.env$/,''))[0];
+  assert.ok(sharedWorker,'shared-checkout executor must be retained before human review');
+  assert.ok(!fs.existsSync(path.join(config.home,'worktrees',sharedWorker)),'shared-checkout mode must not create a worktree');
+  await reviewAndRetire(true);
+  assert.equal(main('shared'),'shared');
+  assert.equal(projectExecutors('shared-checkout-ui').length,0);
+  record('Project mode also supports an explicit single-executor shared checkout with human review and expiration');
+  await page.locator('#project-selector').selectOption('lifecycle-ui');
 
   fault('pause',true);await submit('Create pause report and verify it.');
   await wait(()=>fs.existsSync(beat('pause')),'pause executor never started');
@@ -236,12 +263,13 @@ try {
     assert.deepEqual(cards.map(c=>c.id).sort(),beforeRecheckIds,'recheck must preserve exact card identities');
     return cards.every(c=>c.phase==='verified');
   },'same seven rechecked project cards did not all become Verified',180000);
-  await reviewAndRetire();
+  await page.waitForFunction(()=>_projectsData?.acceptance?.state==='pending'&&_projectsData?.acceptance?.reason==='waiting_for_tasks',null,{timeout:30000});
+  await wait(()=>reviewHeldExecutors('lifecycle-ui').length>0,'unresolved intake must keep completed executors review-held for later project review',60000);
   assert.deepEqual((await projectRead()).cards.map(c=>c.id).sort(),beforeRecheckIds);
   assert.equal(intakeCount(later),1);
   const beforeIdle=calls().length;await new Promise(r=>setTimeout(r,2400));assert.equal(calls().length,beforeIdle);
   assert.equal(await page.locator('.project-card').count(),7);
-  record('Malformed intake retains exact parser errors and finite calls; duplicates inherit failure without calls; later distinct work proceeds',{malformedCalls:intakeCount(malformed),distinctMalformedCalls:intakeCount(distinct),laterCalls:intakeCount(later),duplicateCalls:0});
+  record('Malformed intake retains exact parser errors and finite calls; unresolved requests block project approval and retain executors; later distinct work proceeds',{malformedCalls:intakeCount(malformed),distinctMalformedCalls:intakeCount(distinct),laterCalls:intakeCount(later),duplicateCalls:0});
 
   await page.screenshot({path:path.join(out,'05-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'06-mobile.png'),fullPage:true});

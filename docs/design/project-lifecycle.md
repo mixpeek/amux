@@ -30,6 +30,11 @@ shared retirement function refuses to remove them until a human criterion exists
 current project fingerprint is Accepted. Projects created before this rule show **Review gate needs
 configuration** and retain their executors until the contract is fixed.
 
+Human review opens only after every accepted request has either become structured project work or
+been explicitly cancelled. An exhausted or quota-blocked intake request is still part of the project
+intent: it keeps acceptance pending and completed executors retained instead of allowing a person to
+approve a deceptively incomplete review packet.
+
 Approval releases cleanup. The normal ephemeral sweep then confirms the worker board is fully
 Verified, its reported head is contained in current remote main, the checkout is clean and unchanged,
 and only then removes the worktree and marks the worker Expired. A rejection retains the evidence and

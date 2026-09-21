@@ -65,45 +65,20 @@ async fn prepare(
     permit(state, &p.name, &row.id, e)?;
     let path = sv::env_path(&e.worker);
     let mut env = sv::EnvFile::load(&path);
-    if path.exists() {
-        if env.get("CC_PROJECT") != Some(p.name.as_str())
-            || env.get("CC_BOARD_CARD") != Some(row.id.as_str())
-        {
-            return Err("executor name collision".into());
-        }
-    } else {
-        for (key, value) in [
-            ("CC_DIR", p.policy.repository.as_str()),
-            ("CC_PROJECT", p.name.as_str()),
-            ("CC_BOARD_CARD", row.id.as_str()),
-            ("CC_EPHEMERAL", "1"),
-            ("CC_WORKTREE", "1"),
-            ("CC_AUTO_PICKUP", "0"),
-            ("CC_AUTO_CONTINUE", "0"),
-            ("CC_WORKTREE_AUTO_MERGE", "0"),
-            ("AMUX_BOARD_DELEGATION", "0"),
-            ("CC_PROVIDER", p.policy.executor.provider.as_str()),
-            ("CC_DESC", row.title.as_str()),
-            ("CC_WORKTREE_VERIFY", p.policy.verify_command.as_str()),
-        ] {
-            env.set(key, value);
-        }
-        env.set("CC_TAGS", &format!("{},ephemeral", p.name));
-        let flags = if p.policy.executor.provider == "claude" {
-            "--dangerously-skip-permissions"
-        } else {
-            ""
-        };
-        let flags = sv::route_model_to_env(
-            &mut env,
-            &p.policy.executor.provider,
-            &p.policy.executor.model,
-            flags,
-        );
-        env.set("CC_FLAGS", &flags);
-        env.write(&path).map_err(|e| e.to_string())?;
+    if !p.policy.worktree {
+        sync_shared_checkout(&p.policy.repository).await?;
     }
-    workspace::ensure(&crate::config::amux_home(), &e.worker, &p.policy.repository).await?;
+    if path.exists()
+        && (env.get("CC_PROJECT") != Some(p.name.as_str())
+            || env.get("CC_BOARD_CARD") != Some(row.id.as_str()))
+    {
+        return Err("executor name collision".into());
+    }
+    configure_executor_env(&mut env, p, row);
+    env.write(&path).map_err(|e| e.to_string())?;
+    if p.policy.worktree {
+        workspace::ensure(&crate::config::amux_home(), &e.worker, &p.policy.repository).await?;
+    }
     permit(state, &p.name, &row.id, e)?;
     if !sv::is_running(&e.worker).await {
         sv::start_for_board_dispatch(state, &e.worker).await?;
@@ -129,9 +104,14 @@ fn previous_result(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> ser
 
 pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
     let output_protocol=format!("For an unavailable concrete same-project output, POST /api/projects/{}/tasks/{}/required-outputs with generation, input_hash, idempotency_key, required_outputs (explicit task IDs), reason, and replaces_wait (null for a new wait; exact prior waiting string to replace an operational wait). Never turn spend/customer authorization into outputs. Stop after declaration. When outputs are Verified the harness continues the SAME attempt with a fresh generation and delivery ID. On continuation fetch the accepted local origin/main and compose required commits into your own candidate without resetting your existing work, then rerun/report every criterion; an output arriving is not verification of your task. Required output receipts below identify accepted reports and integration evidence.",p.name,row.id);
+    let checkout_instruction = if p.policy.worktree {
+        "Execute this finite project task in your isolated worktree. Own all required implementation locally."
+    } else {
+        "Execute this finite project task in the project's shared checkout. This project is single-lane in shared-checkout mode; keep the checkout clean, commit the exact result, and do not start unrelated work."
+    };
     format!(
         r#"{output_protocol}
-Execute this finite project task in your isolated worktree. Own all required implementation locally. Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. report.assets is required for new completed project tasks. Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.
+{checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then report the exact HEAD and one executable candidate-relative check for EVERY acceptance criterion. The harness reruns these checks and the project gate. Report through POST /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. report.assets is required for new completed project tasks. Markdown/JSON reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after reporting. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.
 Task packet:
 {}"#,
         p.name,
@@ -189,6 +169,130 @@ pub(crate) fn validated_verification_commands<'a>(w: &workspace::Workspace, gate
     Ok(commands)
 }
 
+fn project_effort_flags(provider: &str, effort: &str) -> Option<String> {
+    if effort.is_empty() {
+        None
+    } else if provider == "codex" {
+        Some(format!("-c model_reasoning_effort={effort}"))
+    } else if provider == "ollama" {
+        None
+    } else {
+        Some(format!("--effort {effort}"))
+    }
+}
+
+fn executor_flags(provider: &str, effort: Option<&str>) -> String {
+    let mut flags = if provider == "claude" {
+        "--dangerously-skip-permissions".to_string()
+    } else {
+        String::new()
+    };
+    if let Some(effort) = effort.and_then(|effort| project_effort_flags(provider, effort)) {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str(&effort);
+    }
+    flags
+}
+
+fn configure_executor_env(env: &mut sv::EnvFile, p: &store::Project, row: &bs::IssueRow) {
+    for (key, value) in [
+        ("CC_DIR", p.policy.repository.as_str()),
+        ("CC_PROJECT", p.name.as_str()),
+        ("CC_BOARD_CARD", row.id.as_str()),
+        ("CC_EPHEMERAL", "1"),
+        ("CC_WORKTREE", if p.policy.worktree { "1" } else { "0" }),
+        ("CC_AUTO_PICKUP", "0"),
+        ("CC_AUTO_CONTINUE", "0"),
+        ("CC_WORKTREE_AUTO_MERGE", "0"),
+        ("AMUX_BOARD_DELEGATION", "0"),
+        ("CC_PROVIDER", p.policy.executor.provider.as_str()),
+        ("CC_DESC", row.title.as_str()),
+        ("CC_WORKTREE_VERIFY", p.policy.verify_command.as_str()),
+    ] {
+        env.set(key, value);
+    }
+    env.set("CC_TAGS", &format!("{},ephemeral", p.name));
+    let flags = executor_flags(
+        &p.policy.executor.provider,
+        p.policy.executor.effort.as_deref(),
+    );
+    let flags = sv::route_model_to_env(
+        env,
+        &p.policy.executor.provider,
+        &p.policy.executor.model,
+        &flags,
+    );
+    env.set("CC_FLAGS", &flags);
+}
+
+async fn sync_shared_checkout(repo: &str) -> Result<(), String> {
+    let root = workspace::git(repo, &["rev-parse", "--show-toplevel"]).await?;
+    if !workspace::git(&root, &["status", "--porcelain"]).await?.is_empty() {
+        return Err("shared checkout has uncommitted changes; clean it or enable dedicated worktrees".into());
+    }
+    let branch = workspace::git(&root, &["branch", "--show-current"]).await?;
+    if branch != "main" {
+        return Err(format!("shared-checkout project must run from the main branch, found {branch}; enable dedicated worktrees for branch work"));
+    }
+    if let Err(error) = workspace::git(&root, &["fetch", "origin", "main"]).await {
+        tracing::warn!(%error,repo=%root,verdict="project_shared_checkout_fetch_failed",
+            "shared-checkout project could not fetch origin/main before execution; continuing only if local main is all that exists");
+        return Ok(());
+    }
+    let head = workspace::git(&root, &["rev-parse", "HEAD"]).await?;
+    let main = workspace::git(&root, &["rev-parse", "origin/main"]).await?;
+    if head == main {
+        return Ok(());
+    }
+    workspace::git(&root, &["merge-base", "--is-ancestor", &head, &main])
+        .await
+        .map_err(|_| "shared checkout has local commits not contained in origin/main; reconcile it or enable dedicated worktrees".to_string())?;
+    workspace::git(&root, &["merge", "--ff-only", "origin/main"]).await?;
+    if workspace::git(&root, &["rev-parse", "HEAD"]).await? != main
+        || !workspace::git(&root, &["status", "--porcelain"]).await?.is_empty()
+    {
+        return Err("shared checkout did not fast-forward cleanly to origin/main".into());
+    }
+    Ok(())
+}
+
+async fn integrate_shared_checkout(w: &workspace::Workspace, head: &str) -> Result<String, String> {
+    if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != head {
+        return Err("shared checkout changed after verification".into());
+    }
+    if !workspace::git(&w.path, &["status", "--porcelain"]).await?.is_empty() {
+        return Err("shared checkout has uncommitted changes".into());
+    }
+    let main = match workspace::git(&w.repo, &["fetch", "origin", "main"]).await {
+        Ok(_) => Some(workspace::git(&w.repo, &["rev-parse", "origin/main"]).await?),
+        Err(error) => {
+            if w.branch == "main" {
+                tracing::warn!(branch=%w.branch,%error,verdict="project_shared_checkout_local_main",
+                    "origin/main unavailable; treating the named local main checkout as the integrated target");
+                return Ok(head.to_string());
+            }
+            return Err(format!("shared-checkout project cannot confirm origin/main from branch {}; either use the main checkout or enable dedicated worktrees: {error}", w.branch));
+        }
+    };
+    if let Some(main) = main.as_deref() {
+        if workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, main]).await.is_ok() {
+            return Ok(main.to_string());
+        }
+    }
+    if w.branch != "main" {
+        return Err("shared-checkout project report is not contained in origin/main; use the main checkout or enable dedicated worktrees for branch integration".into());
+    }
+    workspace::git(&w.repo, &["push", "origin", "HEAD:refs/heads/main"]).await?;
+    workspace::git(&w.repo, &["fetch", "origin", "main"]).await?;
+    let main = workspace::git(&w.repo, &["rev-parse", "origin/main"]).await?;
+    workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, &main])
+        .await
+        .map_err(|_| "shared-checkout head is not contained in origin/main after push".to_string())?;
+    Ok(main)
+}
+
 async fn verify(
     state: &AppState,
     p: &store::Project,
@@ -206,8 +310,23 @@ async fn verify(
     let report = e.report.as_ref().ok_or("no report")?;
     verification_permit()?;
     let home = crate::config::amux_home();
-    let w = workspace::load(&home, &e.worker).ok_or("workspace missing")?;
-    if !workspace::same_repository(&w.repo,&p.policy.repository) || w.branch!=format!("amux/fanout/{}",e.worker) {return Err("registered workspace does not match project executor".into());}
+    let w = if p.policy.worktree {
+        let w = workspace::load(&home, &e.worker).ok_or("workspace missing")?;
+        if !workspace::same_repository(&w.repo,&p.policy.repository) || w.branch!=format!("amux/fanout/{}",e.worker) {return Err("registered workspace does not match project executor".into());}
+        w
+    } else {
+        let repo = workspace::git(&p.policy.repository, &["rev-parse", "--show-toplevel"]).await?;
+        let branch = workspace::git(&repo, &["branch", "--show-current"]).await?;
+        if branch.trim().is_empty() {
+            return Err("shared-checkout project executor is detached; use a named branch or enable dedicated worktrees".into());
+        }
+        workspace::Workspace {
+            repo: repo.clone(),
+            path: repo,
+            branch,
+            base: String::new(),
+        }
+    };
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head {
         return Err("reported head is stale".into());
     }
@@ -231,7 +350,11 @@ async fn verify(
     let retained = super::assets::retain(&home, std::path::Path::new(&w.path), report)
         .await
         .map_err(|e| e.to_string())?;
-    let merged = workspace::integrate_checks(&w,&commands,timeout,&verification_permit).await?;
+    let merged = if p.policy.worktree {
+        workspace::integrate_checks(&w,&commands,timeout,&verification_permit).await?
+    } else {
+        integrate_shared_checkout(&w, &report.head).await?
+    };
     verification_permit()?;
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
         || !workspace::git(&w.path, &["status", "--porcelain"])
@@ -243,7 +366,7 @@ async fn verify(
     workspace::write_integration_status(
         &home,
         &e.worker,
-        &json!({"status":"integrated","head":report.head,"merged":merged}),
+        &json!({"status":"integrated","head":report.head,"merged":merged,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
     );
     let expected_policy=p.policy.clone();
     let (id, expected, project) = (id.to_string(), e.clone(), p.name.clone());
@@ -717,6 +840,44 @@ mod observation_tests {
 
 #[cfg(test)]
 mod command_tests {
+    #[test]
+    fn project_executor_effort_uses_provider_launch_syntax() {
+        assert_eq!(super::project_effort_flags("codex","low").as_deref(),Some("-c model_reasoning_effort=low"));
+        assert_eq!(super::project_effort_flags("claude","low").as_deref(),Some("--effort low"));
+        assert_eq!(super::project_effort_flags("ollama","low"),None);
+        assert_eq!(super::project_effort_flags("codex",""),None);
+    }
+    #[test]
+    fn project_existing_executor_env_refreshes_provider_model_and_effort() {
+        use super::*;
+        use serde_json::json;
+
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
+        let row = bs::get_issue(&db.read().unwrap(), "A").unwrap().unwrap();
+        let policy = serde_json::from_value(json!({
+            "repository": "/repo",
+            "worktree": true,
+            "coordinator": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+            "executor": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+            "verify_command": "git diff --check",
+            "enabled": true
+        })).unwrap();
+        let project = store::Project { name: "sample".into(), revision: 1, policy };
+        let mut env = sv::EnvFile::default();
+        env.set("CC_PROJECT", "sample");
+        env.set("CC_BOARD_CARD", "A");
+        env.set("CC_PROVIDER", "codex");
+        env.set("CC_MODEL", "stale-ollama-model");
+        env.set("CC_FLAGS", "--model gpt-5.5 --effort low");
+
+        configure_executor_env(&mut env, &project, &row);
+
+        assert_eq!(env.get("CC_PROVIDER"), Some("codex"));
+        assert_eq!(env.get("CC_FLAGS"), Some("--model gpt-5.5 -c model_reasoning_effort=low"));
+        assert_eq!(env.get("CC_MODEL"), None);
+        assert_eq!(env.get("CC_WORKTREE"), Some("1"));
+        assert_eq!(env.get("AMUX_BOARD_DELEGATION"), Some("0"));
+    }
     #[test]
     fn project_verification_retry_failure_stays_waiting_without_model_repair() {
         use super::*;

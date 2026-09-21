@@ -6,7 +6,12 @@ from pathlib import Path
 home=Path(os.environ['AMUX_HOME']);base=os.environ['AMUX_URL'].rstrip('/')
 worker=os.environ['AMUX_SESSION']
 # Refuse before files/Git/HTTP if launcher recovery lost the isolated workspace.
-if not Path.cwd().resolve().is_relative_to((home/'worktrees').resolve()):
+shared_checkout=os.environ.get('CC_WORKTREE')=='0'
+if shared_checkout:
+    expected=Path(os.environ['CC_DIR']).resolve()
+    if Path.cwd().resolve()!=expected:
+        raise SystemExit('fixture refused shared-checkout provider cwd outside configured repository: '+str(Path.cwd()))
+elif not Path.cwd().resolve().is_relative_to((home/'worktrees').resolve()):
     raise SystemExit('fixture refused provider cwd outside isolated worktrees: '+str(Path.cwd()))
 def post(path,body):
     req=urllib.request.Request(base+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Amux-Session':worker})

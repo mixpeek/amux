@@ -94,6 +94,67 @@ pub(crate) async fn retire<F: Fleet>(
             Outcome::Deferred
         });
     }
+    if env.contains_key("CC_PROJECT") && env.get("CC_WORKTREE").is_some_and(|v| v == "0") {
+        if source == expired {
+            return Ok(Outcome::Deferred);
+        }
+        let lock = crate::api::session_verbs::session_op_lock(name);
+        let Ok(_op) = lock.try_lock() else {
+            return Ok(Outcome::Deferred);
+        };
+        let still_current = || -> Result<bool, String> {
+            Ok(active.exists()
+                && std::fs::read(&active).ok().as_deref() == Some(env_bytes.as_slice())
+                && board(state, name)?.as_ref() == Some(&snapshot))
+        };
+        if fleet.is_running(name).await {
+            fleet.stop_for_retirement(name).await?;
+        }
+        if fleet.is_running(name).await {
+            return Err("provider did not stop; shared checkout worker retained".into());
+        }
+        if !still_current()? {
+            return Ok(Outcome::Deferred);
+        }
+        if let Some(project) = env.get("CC_PROJECT") {
+            let gate = {
+                let conn = state.store.read().map_err(|e| e.to_string())?;
+                crate::project_execution::acceptance::retirement_allowed(&conn, project).map_err(|e| e.to_string())?
+            };
+            if gate["allowed"] != true {
+                crate::api::session_verbs::set_review_hold_at(&active, true)?;
+                tracing::info!(session=name,project,state=%gate["state"],fingerprint=%gate["fingerprint"],verdict="project_executor_review_held",measured=true,n_considered=1,
+                    "verified shared-checkout executor stopped and retained until human artifact review accepts the current project");
+                return Ok(Outcome::ReviewHeld);
+            }
+        }
+        let worker = name.to_string();
+        let old_env = env_bytes;
+        let expected_board = snapshot;
+        let retired_head = receipt["head"].as_str().unwrap_or("").to_string();
+        let retired_main = receipt["merged"].as_str().unwrap_or("").to_string();
+        let finalized = state.store.write_async(move |conn| {
+            if !active.exists()
+                || verified_board(conn,&worker)?.as_ref() != Some(&expected_board)
+                || std::fs::read(&active).ok().as_deref() != Some(old_env.as_slice()) {
+                return Ok(crate::db::WriteOutcome {applied:false,events:vec![]});
+            }
+            conn.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,'fanout.decommissioned',?3,'board-drive')",
+                rusqlite::params![crate::config::now_f64(),worker,serde_json::json!({"head":retired_head,"main":retired_main,"cards":expected_board,"worktree_removed":false,"mode":"shared_checkout"}).to_string()])?;
+            std::fs::rename(&active,&expired).map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await;
+        return match finalized {
+            Ok(outcome) if outcome.applied => {
+                crate::api::session_verbs::dispose_verified_worker_terminal(name).await;
+                crate::api::sessions_legacy::invalidate_sessions_cache();
+                tracing::info!(session=name,verdict="project_shared_executor_decommissioned",measured=true,worktree_removed=false,
+                    "fully verified shared-checkout project executor expired after confirming integration and review");
+                Ok(Outcome::Expired)
+            }
+            result => result.map(|_| Outcome::Deferred).map_err(|e| e.to_string()),
+        };
+    }
     let w = workspace::load(home, name).ok_or("verified worker has no workspace record")?;
     let head = receipt["head"]
         .as_str()

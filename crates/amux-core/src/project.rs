@@ -7,12 +7,19 @@ use serde::{Deserialize, Serialize};
 pub struct ModelProfile {
     pub provider: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
     pub repository: String,
+    /// Project executors default to a dedicated Git worktree. Shared-checkout mode is explicit,
+    /// single-lane, and reserved for projects where the operator wants one worker in the saved
+    /// project directory instead of a disposable candidate checkout.
+    #[serde(default = "enabled_by_default")]
+    pub worktree: bool,
     pub coordinator: ModelProfile,
     pub executor: ModelProfile,
     #[serde(default = "one")]
@@ -157,6 +164,9 @@ fn one() -> usize {
 fn two() -> u32 {
     2
 }
+fn enabled_by_default() -> bool {
+    true
+}
 
 impl ExecutionPolicy {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -167,9 +177,21 @@ impl ExecutionPolicy {
             if profile.provider.trim().is_empty() || profile.model.trim().is_empty() {
                 return Err("coordinator and executor each need a provider and model");
             }
+            if profile.effort.as_deref().is_some_and(|effort| {
+                !effort.is_empty()
+                    && !matches!(
+                        effort,
+                        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+                    )
+            }) {
+                return Err("effort must be one of none, minimal, low, medium, high, xhigh, max, ultra");
+            }
         }
         if !(1..=3).contains(&self.max_executors) {
             return Err("max_executors must be 1..3; one executor is the default");
+        }
+        if !self.worktree && self.max_executors != 1 {
+            return Err("shared-checkout projects support exactly one executor; enable dedicated worktrees for parallel execution");
         }
         if !(1..=5).contains(&self.max_attempts) {
             return Err("max_attempts must be 1..5");
@@ -282,6 +304,7 @@ mod tests {
         let p = policy();
         assert_eq!(p.max_executors, 1);
         assert_eq!(p.max_attempts, 2);
+        assert!(p.worktree);
         assert!(!p.enabled);
         assert_eq!(p.token_budget, None);
         p.validate().unwrap();
@@ -292,6 +315,9 @@ mod tests {
         p.max_executors = 4;
         assert!(p.validate().is_err());
         p.max_executors = 3;
+        p.worktree = false;
+        assert!(p.validate().is_err());
+        p.worktree = true;
         p.cost_budget_usd = Some(f64::NAN);
         assert!(p.validate().is_err());
         p.cost_budget_usd = Some(0.0);

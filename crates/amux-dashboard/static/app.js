@@ -44980,15 +44980,24 @@ function _projectModelOptions(role,provider) {
   // Suggestions change; an explicitly entered model remains the user's choice.
   document.getElementById('project-'+role+'-models').innerHTML=_projectModelSuggestions(provider);
 }
+function _projectEffortOptions(value) {
+  return ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(v=>'<option value="'+esc(v)+'" '+(v===(value||'')?'selected':'')+'>'+(v?esc(v):'Provider default')+'</option>').join('');
+}
 function _projectConfig(project) {
-  const p=project?.policy || {repository:'',coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  const worktree=p.worktree!==false;
+  const coordinatorEffort=p.coordinator.effort || (p.coordinator.provider==='codex'?'low':'');
+  const executorEffort=p.executor.effort || (p.executor.provider==='codex'?'low':'');
   return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()" oninput="_projectSettingsDirty()" onchange="_projectSettingsDirty()"><div class="project-form-grid">'+
     '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
     '<label>Repository<input id="project-repository" required placeholder="/absolute/path/to/repository" value="'+esc(p.repository)+'"></label>'+
+    '<label>Executor checkout<select id="project-worktree" onchange="_projectCheckoutChanged()"><option value="1" '+(worktree?'selected':'')+'>Dedicated worktrees (default)</option><option value="0" '+(!worktree?'selected':'')+'>Shared project checkout (single executor)</option></select></label>'+
     '<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
     '<label>Planning model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label>'+
+    '<label>Planning effort<select id="project-coordinator-effort">'+_projectEffortOptions(coordinatorEffort)+'</select></label>'+
     '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
     '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
+    '<label>Executor effort<select id="project-executor-effort">'+_projectEffortOptions(executorEffort)+'</select></label>'+
     '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
     '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+
     '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
@@ -45001,7 +45010,11 @@ function _projectConfig(project) {
 
 // Unsaved settings edits belong to the project they were typed in and survive
 // refresh, project switches and reloads until Save or Cancel.
-const _projectSettingIds=['name','repository','coordinator-provider','coordinator','provider','executor','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
+const _projectSettingIds=['name','repository','worktree','coordinator-provider','coordinator','coordinator-effort','provider','executor','executor-effort','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
+function _projectCheckoutChanged() {
+  const checkout=document.getElementById('project-worktree'), capacity=document.getElementById('project-capacity');
+  if(checkout?.value==='0' && capacity) capacity.value='1';
+}
 function _projectSettingsKey() { return 'settings_'+(_projectsName||''); }
 function _projectSettingsDirty() {
   const draft={};_projectSettingIds.forEach(id=>{const el=document.getElementById('project-'+id);if(el) draft[id]=el.value;});
@@ -45012,6 +45025,7 @@ function _projectSettingsRestore() {
   let draft;try{draft=JSON.parse(_projectStorage(_projectSettingsKey()));}catch(e){}
   if(!draft) return;
   _projectSettingIds.forEach(id=>{const el=document.getElementById('project-'+id);if(el&&draft[id]!==undefined&&!el.readOnly) el.value=draft[id];});
+  _projectCheckoutChanged();
   const state=document.getElementById('project-settings-state');if(state) state.textContent='Unsaved changes restored';
 }
 function _projectSettingsCancel() {
@@ -45024,7 +45038,13 @@ async function _projectSave() {
   const name=value('name'); const current=_projectsData?.project;
   let acceptance=null;
   try {if(value('contract')) acceptance=JSON.parse(value('contract'));} catch(e) {_projectError(new Error('Acceptance contract must be valid JSON: '+e.message));return;}
-  const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
+  const worktree=value('worktree')!=='0';
+  if(!worktree && Number(value('capacity'))!==1) {_projectError(new Error('Shared project checkout supports exactly one executor. Use dedicated worktrees for parallel execution.'));return;}
+  const coordinator={provider:value('coordinator-provider'),model:value('coordinator')};
+  const executor={provider:value('provider'),model:value('executor')};
+  if(value('coordinator-effort')) coordinator.effort=value('coordinator-effort');
+  if(value('executor-effort')) executor.effort=value('executor-effort');
+  const policy={repository:value('repository'),worktree,coordinator,executor,verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
   try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectStorage(_projectSettingsKey(),'');_projectChoose(name);} catch(e){_projectError(e);}
 }
 async function _projectPause() {
@@ -45269,14 +45289,15 @@ function _projectInspectorRender(data) {
     :'<p class="project-muted">No verification evidence yet.</p>';
   const assets=_projectAssetLinks(c);
   const diag=plan.waiting_reason?_projectSection(key('diagnostics'),'Full diagnostics ('+String(plan.waiting_reason).length.toLocaleString()+' characters)',false,'<p class="project-muted">Cause (end of diagnostic): '+esc(_projectCause(plan.waiting_reason))+'</p><pre class="project-diagnostic" tabindex="0">'+esc(plan.waiting_reason)+'</pre>'):'';
-  const workerLine=worker?(esc(worker)+' · '+(reg?(running?'registered, running':reviewHeld?'<strong>stopped and retained for human review</strong>':'registered, not running'):inInventory?'<strong>retired (Expired)</strong>'+(invError?' <span class="project-muted">(inventory stale: '+esc(invError)+')</span>':''):invError?'<span class="project-muted">retirement unknown (inventory unavailable: '+esc(invError)+')</span>':'<span class="project-muted">not registered, retirement not confirmed</span>')):'<span class="project-muted">no executor assigned</span>';
+  const checkoutMode=data.project.policy.worktree===false?'Shared project checkout':'Dedicated worktree';
+  const workerLine=worker?(esc(worker)+' · '+checkoutMode+' · '+(reg?(running?'registered, running':reviewHeld?'<strong>stopped and retained for human review</strong>':'registered, not running'):inInventory?'<strong>retired (Expired)</strong>'+(invError?' <span class="project-muted">(inventory stale: '+esc(invError)+')</span>':''):invError?'<span class="project-muted">retirement unknown (inventory unavailable: '+esc(invError)+')</span>':'<span class="project-muted">not registered, retirement not confirmed</span>')):'<span class="project-muted">no executor assigned</span>';
   const action=((live||reviewHeld)?'<button class="btn" data-focus="insp:peek" onclick="openPeek(\''+escJs(worker)+'\')">'+(reviewHeld?'Review executor terminal':'Executor terminal')+'</button>':(retired?'<p class="project-muted">The executor has retired. Retained evidence and assets stay above.</p>':''))+
     ((c.verification_retry_available===true)?'<button class="btn" data-focus="insp:verify" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button><p>Verify the retained report again; no model execution.</p>':'')+
     ((c.retry_available===true)?'<button class="btn" data-focus="insp:retry" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button><p>Worker repair: authorizes one additional model attempt.</p>':'');
   const html='<h3 tabindex="-1">'+esc(c.id)+' · '+esc(c.title)+'</h3><p class="project-muted">Phase: '+esc(c.phase)+(plan.waiting_label?' · '+esc(_projectClip(plan.waiting_label,120)):'')+'</p>'+currentIssue+
     '<p>'+esc(_projectClip(c.next_action||'',600))+'</p>'+
     _projectSection(key('criteria'),'Criteria and evidence',true,'<ol class="project-criteria">'+(rows||'<li class="project-muted">No acceptance criteria recorded.</li>')+'</ol><p class="project-muted">Whole-project acceptance is shown above and runs independently on integrated main.</p>')+
-    _projectSection(key('attempt'),'Current attempt',true,'<dl class="project-facts"><dt>Stage</dt><dd>'+esc(e.stage||'')+'</dd><dt>Attempt / generation</dt><dd>'+esc(String(e.attempt ?? ''))+' / '+esc(String(e.generation ?? ''))+'</dd><dt>Executor setting</dt><dd>'+esc(data.project.policy.executor.provider)+' · '+esc(data.project.policy.executor.model)+'</dd><dt>Worker</dt><dd>'+workerLine+'</dd><dt>Reported candidate</dt><dd>'+_projectSha(report?.head)+'</dd></dl>'+(report?.summary?'<p class="project-report">'+esc(_projectClip(report.summary,1500))+'</p>':''))+
+    _projectSection(key('attempt'),'Current attempt',true,'<dl class="project-facts"><dt>Stage</dt><dd>'+esc(e.stage||'')+'</dd><dt>Attempt / generation</dt><dd>'+esc(String(e.attempt ?? ''))+' / '+esc(String(e.generation ?? ''))+'</dd><dt>Executor setting</dt><dd>'+esc(data.project.policy.executor.provider)+' · '+esc(data.project.policy.executor.model)+(data.project.policy.executor.effort?' · '+esc(data.project.policy.executor.effort):'')+'</dd><dt>Checkout mode</dt><dd>'+esc(checkoutMode)+'</dd><dt>Worker</dt><dd>'+workerLine+'</dd><dt>Reported candidate</dt><dd>'+_projectSha(report?.head)+'</dd></dl>'+(report?.summary?'<p class="project-report">'+esc(_projectClip(report.summary,1500))+'</p>':''))+
     _projectSection(key('history'),'Task verification history',true,'<p class="project-muted">Historical, per task. Not project acceptance.</p>'+lastFailure+historical)+
     _projectSection(key('assets'),'Retained assets',true,assets||'<p class="project-muted">No retained assets.</p>')+
     diag+'<div class="project-actions">'+action+'</div>';

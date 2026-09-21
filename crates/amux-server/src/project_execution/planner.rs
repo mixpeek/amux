@@ -515,9 +515,19 @@ pub fn record_report(
     let policy=store::get(conn,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
     let criteria: Vec<String> = serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
     super::acceptance::contract_binding(&criteria, report, policy.policy.acceptance.as_ref())?;
-    let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
-        .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
-    anyhow::ensure!(crate::fanout_workspace::same_repository(&workspace.repo,&policy.policy.repository) && workspace.branch==format!("amux/fanout/{worker}"),"registered workspace does not match project executor");
+    let workspace=if policy.policy.worktree {
+        let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
+            .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
+        anyhow::ensure!(crate::fanout_workspace::same_repository(&workspace.repo,&policy.policy.repository) && workspace.branch==format!("amux/fanout/{worker}"),"registered workspace does not match project executor");
+        workspace
+    } else {
+        crate::fanout_workspace::Workspace {
+            repo: policy.policy.repository.clone(),
+            path: policy.policy.repository.clone(),
+            branch: format!("shared-checkout/{worker}"),
+            base: String::new(),
+        }
+    };
     if let Err(error)=super::driver::validated_verification_commands(&workspace,&policy.policy.verify_command,report) {
         tracing::warn!(project,task=id,worker,generation,measured=true,n_considered=report.checks.len()+1,verdict="project.report_commands_refused",%error,"report unchanged; correct candidate-relative commands and resubmit this generation");
         anyhow::bail!("report command refused before verification; correct the command and resubmit the same generation: {error}");
