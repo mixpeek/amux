@@ -306,9 +306,49 @@ pub(crate) fn validate_verification_command(workspace: &Workspace, command: &str
     Ok(())
 }
 
+/// Shared semantics for source and merged candidates: preflight ALL distinct
+/// commands before any process, then run each with its own bounded timeout.
+pub(crate) fn distinct_verification_commands<'a>(commands: impl IntoIterator<Item=&'a str>) -> Vec<&'a str> {
+    let mut seen=std::collections::HashSet::new();
+    commands.into_iter().filter(|c|seen.insert(*c)).collect()
+}
+pub(crate) async fn verify_commands<F: Fn() -> Result<(),String>>(
+    workspace:&Workspace, candidate:&str, commands:&[&str], timeout:Duration, permit:&F,
+) -> Result<(),String> {
+    if !(Duration::from_secs(1)..=Duration::from_secs(amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS)).contains(&timeout) {
+        return Err("verification timeout must be 1..3600 seconds".into());
+    }
+    let commands=distinct_verification_commands(commands.iter().copied());
+    if commands.is_empty() || commands.iter().any(|c|c.trim().is_empty()) {return Err("verification command is required".into());}
+    for command in &commands {validate_verification_command(workspace,command)?;}
+    permit()?;
+    let head=git(candidate,&["rev-parse","HEAD"]).await?;
+    if !git(candidate,&["status","--porcelain"]).await?.is_empty() {return Err("worktree has uncommitted changes".into());}
+    for command in commands {
+        let mut cmd=tokio::process::Command::new("sh");
+        cmd.args(["-c",command]).current_dir(candidate).env("AMUX_SESSION",workspace.branch.trim_start_matches("amux/fanout/"));
+        let started=std::time::Instant::now();
+        let result=checked_command(cmd,permit,timeout).await;
+        tracing::info!(candidate,command,timeout_secs=timeout.as_secs(),elapsed_ms=started.elapsed().as_millis() as u64,measured=true,n_considered=1,ok=result.as_ref().is_ok_and(|(s,_)|s.success()),verdict="candidate_verification_command","bounded candidate check completed");
+        let (status,output)=result?;
+        if !status.success() {return Err(format!("verification failed ({command}): candidate validation exited {}. {output}",status.code().unwrap_or(-1)));}
+        if git(candidate,&["rev-parse","HEAD"]).await?!=head || !git(candidate,&["status","--porcelain"]).await?.is_empty() {
+            return Err("verification changed the reported worktree".into());
+        }
+    }
+    permit()
+}
+
 pub async fn integrate<F: Fn() -> Result<(), String>>(
+    workspace: &Workspace, verification: &str, permit: F,
+) -> Result<String, String> {
+    integrate_checks(workspace,&[verification],Duration::from_secs(amux_core::project::verification_timeout_default()),permit).await
+}
+
+pub(crate) async fn integrate_checks<F: Fn() -> Result<(), String>>(
     workspace: &Workspace,
-    verification: &str,
+    verification: &[&str],
+    timeout: Duration,
     permit: F,
 ) -> Result<String, String> {
     let head = git(&workspace.path, &["rev-parse", "HEAD"]).await?;
@@ -317,7 +357,7 @@ pub async fn integrate<F: Fn() -> Result<(), String>>(
         if git(&workspace.path, &["rev-parse", "HEAD"]).await? != head {
             return Err("Worker workspace changed during integration; integration deferred".into());
         }
-        if let Some(merged) = integrate_attempt(workspace, verification, &head, &permit).await? {
+        if let Some(merged) = integrate_attempt(workspace, verification, timeout, &head, &permit).await? {
             return Ok(merged);
         }
         tracing::info!(session=%workspace.branch.trim_start_matches("amux/fanout/"), attempt,
@@ -328,7 +368,8 @@ pub async fn integrate<F: Fn() -> Result<(), String>>(
 
 async fn integrate_attempt<F: Fn() -> Result<(), String>>(
     workspace: &Workspace,
-    verification: &str,
+    verification: &[&str],
+    timeout: Duration,
     head: &str,
     permit: &F,
 ) -> Result<Option<String>, String> {
@@ -362,10 +403,10 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
         "Workspace history no longer descends from its recorded base; reconcile it locally"
             .to_string()
     })?;
-    if verification.trim().is_empty() {
+    if verification.is_empty() || verification.iter().any(|c|c.trim().is_empty()) {
         return Err("Set CC_WORKTREE_VERIFY to the repository's validation command; the harness will run it on the merged candidate".into());
     }
-    validate_verification_command(workspace, verification)?;
+    for command in verification {validate_verification_command(workspace, command)?;}
     let temp = tempfile::Builder::new()
         .prefix("amux-integrate-")
         .tempdir()
@@ -382,11 +423,7 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
         let merged=git(&candidate,&["rev-parse","HEAD"]).await?;
         // The configured command is run from the merged checkout. Existing git
         // hooks remain enabled, including the repository's pre-push gates.
-        let mut cmd=tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(verification).current_dir(&candidate)
-            .env("AMUX_SESSION",workspace.branch.trim_start_matches("amux/fanout/"));
-        let (status,output)=checked_command(cmd,permit,Duration::from_secs(600)).await?;
-        if !status.success() { return Err(format!("Candidate validation exited {}; fix and recommit locally. {}",status.code().unwrap_or(-1),output)); }
+        verify_commands(workspace,&candidate,verification,timeout,permit).await?;
         if git(&candidate,&["rev-parse","HEAD"]).await?!=merged
             || !git(&candidate,&["status","--porcelain"]).await?.is_empty() {
             return Err("Validation modified the candidate; commit the required changes in the worker workspace".into());
@@ -1032,6 +1069,43 @@ mod tests {
         )
         .unwrap();
         assert!(board_snapshot(&c, "child").is_err());
+    }
+    #[tokio::test]
+    async fn project_verification_source_and_merged_use_distinct_per_command_timeouts() {
+        let (d,w)=fixture().await;commit(&w,"done.txt","done\n").await;
+        let log=d.path().join("checked-paths");
+        let a=format!("sleep 3; printf '%s\\n' \"$PWD\" >> '{}'",log.display());
+        let b=format!("sleep 3; printf '%s\\n' \"$PWD\" >> '{}'",log.display());
+        // A byte-distinct command also runs. Combined wall time exceeds the
+        // five-second bound (6s total); each command has 2s scheduling slack.
+        let b=format!("{b}; true");let commands=[a.as_str(),a.as_str(),b.as_str()];
+        verify_commands(&w,&w.path,&commands,Duration::from_secs(5),&||Ok(())).await.unwrap();
+        integrate_checks(&w,&commands,Duration::from_secs(5),||Ok(())).await.unwrap();
+        let text=std::fs::read_to_string(log).unwrap();let paths:Vec<_>=text.lines().collect();
+        assert_eq!(paths.len(),4,"two distinct commands, once per immutable phase");
+        let source=std::fs::canonicalize(&w.path).unwrap();
+        assert_eq!(std::fs::canonicalize(paths[0]).unwrap(),source);
+        assert_eq!(std::fs::canonicalize(paths[1]).unwrap(),source);
+        // Integration has disposed its temporary candidate; compare its recorded
+        // physical paths without resolving a directory that no longer exists.
+        assert_ne!(paths[2],paths[0]);assert_ne!(paths[2],paths[1]);
+        assert_eq!(paths[2],paths[3]);
+        let err=verify_commands(&w,&w.path,&["true","exit 9"],Duration::from_secs(1),&||Ok(())).await.unwrap_err();
+        assert!(err.contains("verification failed (exit 9)"));
+    }
+    #[tokio::test]
+    async fn project_verification_timeout_kills_children_in_both_candidate_phases() {
+        for merged in [false,true] {
+            let (d,w)=fixture().await;commit(&w,"done.txt","done\n").await;
+            let marker=d.path().join("leaked-child");
+            let command=format!("(sleep 2; echo leaked > '{}') & wait",marker.display());
+            let result=if merged {integrate_checks(&w,&[&command],Duration::from_secs(1),||Ok(())).await.map(|_|())}
+                else {verify_commands(&w,&w.path,&[&command],Duration::from_secs(1),&||Ok(())).await};
+            assert!(result.unwrap_err().contains("timed out after 1 seconds"),"merged={merged}");
+            tokio::time::sleep(Duration::from_millis(2200)).await;
+            assert!(!marker.exists(),"timeout leaked verification descendant, merged={merged}");
+            assert!(git(&w.path,&["status","--porcelain"]).await.unwrap().is_empty());
+        }
     }
     #[tokio::test]
     async fn cancellation_kills_validation_descendants_and_retains_failure_output() {

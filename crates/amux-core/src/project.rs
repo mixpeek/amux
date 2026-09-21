@@ -30,7 +30,11 @@ pub struct ExecutionPolicy {
     pub enabled: bool,
     /// A repository-owned candidate check, executed through fanout_workspace.
     pub verify_command: String,
+    #[serde(default = "verification_timeout_default")]
+    pub verification_timeout_secs: u64,
 }
+pub const MAX_VERIFICATION_TIMEOUT_SECS: u64 = 3600;
+pub fn verification_timeout_default() -> u64 { 600 }
 fn one() -> usize {
     1
 }
@@ -60,6 +64,9 @@ impl ExecutionPolicy {
                 .is_some_and(|n| !n.is_finite() || n <= 0.0)
         {
             return Err("budgets must be positive finite values or null (unconfigured)");
+        }
+        if !(1..=MAX_VERIFICATION_TIMEOUT_SECS).contains(&self.verification_timeout_secs) {
+            return Err("verification_timeout_secs must be an integer from 1 to 3600");
         }
         if self.verify_command.trim().is_empty() {
             return Err("verify_command is required; completion needs artifact checks");
@@ -110,6 +117,16 @@ pub fn phase(status: &str, structured: bool) -> Phase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_verification_timeout_is_defaulted_positive_and_bounded() {
+        let mut p=policy();assert_eq!(p.verification_timeout_secs,600);
+        for n in [1,600,3600] {p.verification_timeout_secs=n;assert!(p.validate().is_ok());}
+        for n in [0,3601,u64::MAX] {p.verification_timeout_secs=n;assert!(p.validate().is_err());}
+        for n in [serde_json::json!(-1),serde_json::json!(1.5),serde_json::json!("Infinity"),serde_json::Value::Null] {
+            let mut v=serde_json::to_value(policy()).unwrap();v["verification_timeout_secs"]=n;
+            assert!(serde_json::from_value::<ExecutionPolicy>(v).is_err());
+        }
+    }
     fn policy() -> ExecutionPolicy {
         serde_json::from_value(serde_json::json!({"repository":"/repo","coordinator":{"provider":"claude","model":"haiku"},"executor":{"provider":"codex","model":"configured-model"},"verify_command":"./verify.sh"})).unwrap()
     }

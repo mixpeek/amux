@@ -400,6 +400,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn project_superseded_packet_history_unblocks_only_verified_retirement() {
+        use crate::project_execution::{planner,store};
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        db.write(|c| {
+            let row=crate::db::board_store::get_issue(c,"A")?.unwrap();
+            let mut current=planner::execution(c,"A").unwrap();
+            let old:String=c.query_row("SELECT json_extract(data,'$.execution.delivery_id') FROM session_events WHERE type='project.claimed' AND json_extract(data,'$.task')='A' ORDER BY id LIMIT 1",[],|r|r.get(0))?;
+            assert_ne!(old,current.delivery_id);
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES(?1,?2,'old unsent packet',1,'project-execution')",rusqlite::params![old,current.worker])?;
+            // Normal recovery is not retirement, even after stale input settles.
+            assert!(verified_board(c,&current.worker)?.is_none());
+            current.stage="verified".into();current.waiting=None;
+            c.execute("UPDATE issues SET status='verified' WHERE id='A'",[])?;
+            planner::save_execution(c,&row,&current,"project.verified").map_err(store::sql_error)?;
+            assert!(verified_board(c,&current.worker)?.is_none(),"old pending packet really blocks retirement");
+            assert!(planner::settle_superseded_packets(c)?.applied);
+            assert!(verified_board(c,&current.worker)?.is_some(),"non-sent settlement releases existing retirement predicate");
+            assert_eq!(c.query_row("SELECT text,outcome FROM steering_history WHERE id=?1",[&old],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?,("old unsent packet".into(),"void:project-execution-superseded".into()));
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('owner-note',?1,'retained owner input',2,'project-steering')",[&current.worker])?;
+            assert!(!planner::settle_superseded_packets(c)?.applied);
+            assert!(verified_board(c,&current.worker)?.is_none(),"owner note still blocks disposal");
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
+
     #[tokio::test]
     async fn verified_published_board_stops_idle_provider_removes_worktree_and_expires_with_history(
     ) {

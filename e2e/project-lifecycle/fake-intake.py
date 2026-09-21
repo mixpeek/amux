@@ -20,6 +20,7 @@ else:
     if 'repair' in text: names=['repair']
     if 'budget' in text: names=['budget']
     if 'dirty' in text: names=['dirty']
+    if 'reverify' in text: names=['reverify']
     tasks=[]
     for i,name in enumerate(names):
         existing=next((c for c in data['candidates'] if c['title']==f'Create {name} report'),None)

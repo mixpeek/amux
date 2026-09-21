@@ -10162,7 +10162,7 @@ function _steeringRender() {
         <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;">
-        <button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>
+        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`}
         <button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>
       </div>
     </div>`;
@@ -10232,6 +10232,10 @@ async function _steeringSendNow(msgId) {
   const sess = sessions.find(s => s.name === peekSession);
   const msg = _steerQueueFor(sess).find(m => m.id === msgId);
   if (!msg) return;
+  if (msg.guard === 'project-steering') {
+    showToast('Project notes deliver automatically at the next authorized turn. Cancel to remove.');
+    return;
+  }
   const btn = document.querySelector(`[onclick*="_steeringSendNow('${msgId}')"]`);
   if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
   showToast('Sending now to ' + peekSession + '…');
@@ -11601,7 +11605,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1012';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1014';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44924,6 +44928,7 @@ function _projectConfig(project) {
     '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
     '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
     '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+
+    '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
     '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
     '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div><p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button></form>';
@@ -44931,7 +44936,7 @@ function _projectConfig(project) {
 async function _projectSave() {
   const value=id=>document.getElementById('project-'+id).value.trim();
   const name=value('name'); const current=_projectsData?.project;
-  const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
+  const policy={repository:value('repository'),coordinator:{provider:value('coordinator-provider'),model:value('coordinator')},executor:{provider:value('provider'),model:value('executor')},verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,enabled:true,paused:current?.policy.paused || false};
   try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectChoose(name);} catch(e){_projectError(e);}
 }
 async function _projectPause() {
@@ -44988,7 +44993,7 @@ function _projectRender(data) {
   document.getElementById('project-cards').innerHTML=phases.map(([phase,label])=>{
     const rows=data.cards.filter(c=>c.phase===phase);if(!rows.length) return '';return '<section class="project-column"><h3>'+label+' <span>'+rows.length+'</span></h3>'+rows.map(c=>{
       const plan=c.execution_plan,e=plan.execution,working=phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
-      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_label || 'Execution held')+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+_projectAssetLinks(c)+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((c.retry_available === true)?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button>':'')+'</article>';
+      return '<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><h4>'+esc(c.title)+'</h4>'+(plan.waiting_reason?'<p class="project-wait">'+esc(plan.waiting_label || 'Execution held')+'</p><details><summary>Waiting details</summary><pre>'+esc(plan.waiting_reason)+'</pre></details>':'')+'<p>'+esc(c.next_action || '')+'</p><details><summary>Criteria and evidence</summary><pre>'+esc(JSON.stringify(c.acceptance_criteria || [],null,2))+'</pre><pre>'+esc(c.evidence || 'No verification evidence yet')+'</pre></details>'+_projectAssetLinks(c)+(e.worker?'<button class="btn" onclick="openPeek(\''+escJs(e.worker)+'\')">Executor details</button>':'')+((c.verification_retry_available === true)?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button><p>Verify the retained report again; no model execution.</p>':'')+((c.retry_available === true)?'<button class="btn" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button><p>Worker repair: authorizes one additional model attempt.</p>':'')+'</article>';
     }).join('')+(rows.length?'':'<p class="project-empty">No tasks</p>')+'</section>';
   }).join('');
 }
@@ -45016,11 +45021,14 @@ async function _projectMigrationApply() {
 async function _projectMigrationRollback() {
   try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/migration/rollback','POST',{migration:document.getElementById('project-migration-id').value.trim()});await _projectsLoad();}catch(e){_projectError(e);}
 }
-async function _projectRetry(id) {
-  const name=_projectsName,key='task_retry_'+name+'_'+id,c=_projectsData?.cards.find(c=>c.id===id);
+async function _projectRetry(id,verification=false) {
+  const name=_projectsName,key=(verification?'task_verify_':'task_retry_')+name+'_'+id,c=_projectsData?.cards.find(c=>c.id===id);
   if(!c || _projectIntakeRetries.has(key))return;
   let body;try{body=JSON.parse(_projectStorage(key));}catch(e){}
-  if(!body)body={idempotency_key:crypto.randomUUID(),expect_generation:c.execution_plan.execution.generation,expect_revision:c.rev,input_hash:c.execution_plan.execution.input_hash};
+  if(!body){
+    const request={idempotency_key:crypto.randomUUID(),expect_generation:c.execution_plan.execution.generation,expect_revision:c.rev,input_hash:c.execution_plan.execution.input_hash};
+    body=verification?{action:'verify',request,report:c.execution_plan.execution.report}:request;
+  }
   _projectStorage(key,JSON.stringify(body));_projectIntakeRetries.add(key);
   try {await _projectRequest('/'+encodeURIComponent(name)+'/tasks/'+encodeURIComponent(id)+'/retry','POST',body);_projectStorage(key,'');}
   catch(e){if(e.status===409)_projectStorage(key,'');_projectError(e);}

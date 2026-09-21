@@ -28,12 +28,21 @@ fn permit(state: &AppState, project: &str, id: &str, expected: &Execution) -> Re
     let actual = planner::execution(&c, id).map_err(|e| e.to_string())?;
     if actual.generation != expected.generation
         || actual.stage != expected.stage
+        || actual.worker != expected.worker
+        || actual.report != expected.report
+        || actual.verification_retry_pending != expected.verification_retry_pending
         || actual.input_hash != expected.input_hash
         || planner::input_hash(&row) != expected.input_hash
         || row.project_group.as_deref() != Some(project)
         || row.archived != 0
     {
         return Err("claim or requirements changed".into());
+    }
+    if expected.verification_retry_pending {
+        if let Some(reason)=super::usage::waiting(&c,&p).map_err(|e|e.to_string())? {return Err(reason);}
+        if actual.suspended || actual.wait_category.is_some() || super::outputs::authorization_hold(&c,&row).map_err(|e|e.to_string())? {
+            return Err("verification retry held by current authorization".into());
+        }
     }
     if !super::outputs::ready(&c, &row).map_err(|e| e.to_string())? {
         return Err("required output no longer verified".into());
@@ -147,6 +156,7 @@ async fn transition(
             if waiting.is_some() && e.report.is_some() && matches!(stage.as_str(),"repair"|"waiting") {
                 tracing::warn!(task=%id,action="verify",measured=true,n_considered=1,verdict="project_verification_failed","verification failed; exact diagnostic remains in execution waiting details");
             }
+            if matches!(stage.as_str(),"waiting"|"repair") {e.verification_retry_pending=false;}
             e.stage = stage;
             e.waiting = waiting;
             e.observed_at = chrono::Utc::now().timestamp();
@@ -157,11 +167,7 @@ async fn transition(
 }
 
 fn verification_commands<'a>(gate: &'a str, report: &'a planner::Report) -> Vec<&'a str> {
-    let mut seen = std::collections::HashSet::new();
-    std::iter::once(gate)
-        .chain(report.checks.iter().map(|c| c.command.as_str()))
-        .filter(|c| seen.insert(*c))
-        .collect()
+    workspace::distinct_verification_commands(std::iter::once(gate).chain(report.checks.iter().map(|c|c.command.as_str())))
 }
 
 /// One source-path policy, applied to the entire set before any shell command.
@@ -177,10 +183,19 @@ async fn verify(
     id: &str,
     e: &Execution,
 ) -> Result<(), String> {
+    let verification_permit=|| {
+        permit(state,&p.name,id,e)?;
+        let c=state.store.read().map_err(|e|e.to_string())?;
+        let current=store::get(&c,&p.name).map_err(|e|e.to_string())?.ok_or("project disappeared")?;
+        if current.policy.repository!=p.policy.repository || current.policy.verify_command!=p.policy.verify_command
+            || current.policy.verification_timeout_secs!=p.policy.verification_timeout_secs {return Err("verification policy changed; rerun checks with current policy".into());}
+        Ok(())
+    };
     let report = e.report.as_ref().ok_or("no report")?;
-    permit(state, &p.name, id, e)?;
+    verification_permit()?;
     let home = crate::config::amux_home();
     let w = workspace::load(&home, &e.worker).ok_or("workspace missing")?;
+    if !workspace::same_repository(&w.repo,&p.policy.repository) || w.branch!=format!("amux/fanout/{}",e.worker) {return Err("registered workspace does not match project executor".into());}
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head {
         return Err("reported head is stale".into());
     }
@@ -192,20 +207,8 @@ async fn verify(
     }
     let commands = validated_verification_commands(&w, &p.policy.verify_command, report)?;
     tracing::info!(task=id,measured=true,n_considered=report.checks.len()+1,distinct=commands.len(),verdict="project.verification_commands","byte-identical commands run once per immutable candidate phase; criterion mappings retained");
-    // Each check runs independently; a later success cannot mask an earlier failure.
-    for command in &commands {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", command]).current_dir(&w.path);
-        let (status, output) = workspace::checked_command(
-            cmd,
-            &|| permit(state, &p.name, id, e),
-            std::time::Duration::from_secs(600),
-        )
-        .await?;
-        if !status.success() {
-            return Err(format!("verification failed ({command}): {output}"));
-        }
-    }
+    let timeout=std::time::Duration::from_secs(p.policy.verification_timeout_secs);
+    workspace::verify_commands(&w,&w.path,&commands,timeout,&verification_permit).await?;
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
         || !workspace::git(&w.path, &["status", "--porcelain"])
             .await?
@@ -216,17 +219,8 @@ async fn verify(
     let retained = super::assets::retain(&home, std::path::Path::new(&w.path), report)
         .await
         .map_err(|e| e.to_string())?;
-    let merged = workspace::integrate(
-        &w,
-        &commands
-            .iter()
-            .map(|c| format!("( {c}\n )"))
-            .collect::<Vec<_>>()
-            .join(" &&\n"),
-        || permit(state, &p.name, id, e),
-    )
-    .await?;
-    permit(state, &p.name, id, e)?;
+    let merged = workspace::integrate_checks(&w,&commands,timeout,&verification_permit).await?;
+    verification_permit()?;
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
         || !workspace::git(&w.path, &["status", "--porcelain"])
             .await?
@@ -239,20 +233,93 @@ async fn verify(
         &e.worker,
         &json!({"status":"integrated","head":report.head,"merged":merged}),
     );
+    let expected_policy=p.policy.clone();
     let (id, expected, project) = (id.to_string(), e.clone(), p.name.clone());
     state.store.write_async(move|c| {
         let row=bs::get_issue(c,&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let mut current=planner::execution(c,&id).map_err(store::sql_error)?;
         let policy=store::get(c,&project).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        if current.generation!=expected.generation || planner::input_hash(&row)!=expected.input_hash || policy.policy.paused || !policy.policy.enabled || !super::outputs::ready(c,&row).map_err(store::sql_error)? {return Err(rusqlite::Error::InvalidQuery);}
+        if policy.policy!=expected_policy || current.report!=expected.report || current.verification_retry_pending!=expected.verification_retry_pending || current.stage!=expected.stage || current.generation!=expected.generation || planner::input_hash(&row)!=expected.input_hash || policy.policy.paused || !policy.policy.enabled || !super::outputs::ready(c,&row).map_err(store::sql_error)? {return Err(rusqlite::Error::InvalidQuery);}
         super::assets::check(&retained).map_err(store::sql_error)?;
         super::assets::register(c,&id,&retained)?;
         current.retained_assets=retained;
-        current.stage="verified".into();current.waiting=None;
+        current.stage="verified".into();current.waiting=None;current.verification_retry_pending=false;
         c.execute("UPDATE issues SET status='verified',evidence=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",params![id,json!({"report":current.report,"merged":merged,"gate":policy.policy.verify_command}).to_string()])?;
         planner::save_execution(c,&row,&current,"project.verified").map_err(store::sql_error)
     }).await.map_err(|e|e.to_string())?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct TurnObservation {
+    running: bool,
+    idle: bool,
+    ended_at: Option<f64>,
+    report: serde_json::Value,
+}
+
+fn turn_observation(signals:&crate::api::sessions_legacy::FleetSignals,worker:&str)->TurnObservation {
+    let running=signals.agent_running(&format!("amux-{worker}"));
+    let (_,explain)=signals.derive_status_explain(worker,running);
+    let idle=signals.turn_boundary_status(worker).as_deref()==Some("idle")
+        && explain["subagents_working"]!=true && explain["provider_background_working"]!=true;
+    let report=signals.reports.get(worker).cloned().unwrap_or(serde_json::Value::Null);
+    let ended_at=if explain["decided_by"]=="report" && report["state"]=="idle" {
+        report["ts"].as_f64()
+    } else if let Some(turn)=signals.codex_turns.get(worker).filter(|s|s.state=="idle") {
+        Some(turn.ts)
+    } else if signals.hookless_workers.contains(worker) && idle {
+        signals.activity.get(&format!("amux-{worker}")).map(|ts|*ts as f64)
+    } else {None};
+    TurnObservation{running,idle,ended_at,report}
+}
+
+/// Receipt first, fresh boundary second, compare-and-transition last. Never pair
+/// a pre-delivery idle snapshot with a newly written terminal delivery receipt.
+async fn observe_with<F,Fut>(state:&AppState,project:&str,id:&str,expected:&Execution,probe:F)->anyhow::Result<()>
+where F:FnOnce()->Fut,Fut:std::future::Future<Output=Option<TurnObservation>> {
+    if chrono::Utc::now().timestamp()-expected.observed_at<=30 {return Ok(())}
+    let receipt={let c=state.store.read()?;planner::settled_delivery(&c,expected)?};
+    let Some(observation)=probe().await else {return Ok(())};
+    let interrupted=receipt.as_ref().is_some_and(|r|r.outcome.starts_with("interrupted:"));
+    let ended=observation.idle && receipt.as_ref().is_some_and(|r|interrupted || observation.ended_at.is_some_and(|ts|ts>=r.submitted_at));
+    if observation.running && !ended {
+        if receipt.is_some() && observation.idle && crate::log_dedupe::first_this_bucket(&format!("project-stale-idle:{}",expected.delivery_id),chrono::Utc::now().timestamp()/3600) {
+            tracing::info!(task=id,delivery_id=%expected.delivery_id,measured=true,n_considered=1,verdict="project_stale_idle_held","idle evidence predates this delivery; attempt retained");
+        }
+        return Ok(());
+    }
+    let (project,id,expected)=(project.to_string(),id.to_string(),expected.clone());
+    state.store.write_async(move|c| {
+        let row=bs::get_issue(c,&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let mut current=planner::execution(c,&id).map_err(store::sql_error)?;
+        let p=store::get(c,&project).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let reports:serde_json::Value=c.query_row("SELECT value FROM prefs WHERE key='session_reports'",[],|r|r.get::<_,String>(0)).ok().and_then(|raw|serde_json::from_str(&raw).ok()).unwrap_or(serde_json::Value::Null);
+        let report=reports.get(&expected.worker).cloned().unwrap_or(serde_json::Value::Null);
+        if current.generation!=expected.generation || current.stage!="working" || current.report.is_some()
+            || current.worker!=expected.worker || current.delivery_id!=expected.delivery_id
+            || current.attempt!=expected.attempt || current.observed_at!=expected.observed_at
+            || current.input_hash!=expected.input_hash || planner::input_hash(&row)!=expected.input_hash
+            || current.suspended || current.waiting.is_some() || current.wait_category.is_some() || row.project_group.as_deref()!=Some(project.as_str())
+            || row.status!="doing" || row.archived!=0 || !p.policy.enabled || p.policy.paused
+            || !super::outputs::ready(c,&row).map_err(store::sql_error)?
+            || super::outputs::authorization_hold(c,&row).map_err(store::sql_error)?
+            || planner::settled_delivery(c,&current)?!=receipt || report!=observation.report
+            || c.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1 AND delivering_since IS NOT NULL)",[&current.worker],|r|r.get::<_,bool>(0))? {
+            return Ok(WriteOutcome{applied:false,events:vec![]});
+        }
+        current.stage=if current.attempt<current.attempt_limit(p.policy.max_attempts){"repair"}else{"waiting"}.into();
+        current.waiting=Some(if observation.running{"executor_returned_without_result"}else{"executor_stopped_before_result"}.into());
+        current.observed_at=chrono::Utc::now().timestamp();
+        tracing::warn!(task=%id,delivery_id=%current.delivery_id,measured=true,n_considered=1,verdict="project_current_turn_ended_without_result",interrupted,"current delivery/boundary or stopped executor permits bounded recovery; unsent packet remains retained");
+        planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)
+    }).await?;
+    Ok(())
+}
+
+fn repair_after_failure(e:&Execution,max_attempts:u32,action:&str,error:&str)->bool {
+    !e.verification_retry_pending && e.attempt<e.attempt_limit(max_attempts)
+        && (action=="verify" || matches!(error,"executor_stopped_before_result"|"executor_returned_without_result"))
 }
 
 pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Result<()> {
@@ -329,22 +396,10 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                 verify(state, &p, &id, &e).await
             }
             "observe" => {
-                if !fleet.is_running(&e.worker).await
-                    && chrono::Utc::now().timestamp() - e.observed_at > 30
-                {
-                    Err("executor_stopped_before_result".into())
-                } else if chrono::Utc::now().timestamp() - e.observed_at > 30
-                    && !fleet.active_child_work(&e.worker)
-                    && fleet.at_boundary(&e.worker).await
-                    && {
-                        let c = state.store.read()?;
-                        planner::delivery_attempt_ended(&c, &e)?
-                    }
-                {
-                    Err("executor_returned_without_result".into())
-                } else {
-                    Ok(())
-                }
+                observe_with(state,name,&id,&e,||async {
+                    sv::boundary_signals(state,Some(&e.worker)).await.map(|signals|turn_observation(&signals,&e.worker))
+                }).await?;
+                Ok(())
             }
             "complete_epic" => {
                 let id = id.clone();
@@ -364,12 +419,7 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             if paused {
                 continue;
             }
-            let repair = e.attempt < e.attempt_limit(p.policy.max_attempts)
-                && (plan.action == "verify"
-                    || matches!(
-                        error.as_str(),
-                        "executor_stopped_before_result" | "executor_returned_without_result"
-                    ));
+            let repair = repair_after_failure(&e,p.policy.max_attempts,&plan.action,&error);
             transition(
                 state,
                 &id,
@@ -503,13 +553,178 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 }
 
 #[cfg(test)]
+mod observation_tests {
+    use super::*;
+    fn write_report(c:&rusqlite::Connection,worker:&str,ts:f64) {
+        c.execute("INSERT INTO prefs(key,value) VALUES('session_reports',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!({worker:{"state":"idle","source":"stop-hook","ts":ts}}).to_string()]).unwrap();
+    }
+    fn observation(worker:&str,ts:f64)->TurnObservation {
+        let _=worker;
+        TurnObservation{running:true,idle:true,ended_at:Some(ts),report:json!({"state":"idle","source":"stop-hook","ts":ts})}
+    }
+    #[test]
+    fn project_observation_rejects_delayed_delivery_old_idle_and_report_races() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        db.write(|c| {
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
+            e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
+            planner::register_test_workspace(&e.worker,"/repo");
+            write_report(c,&e.worker,95.0);
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES(?1,?2,'packet',94,'project-execution',100)",params![e.delivery_id,e.worker])?;
+            c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(100,?1,'project.delivery_started',?2)",params![e.worker,json!({"delivery_id":e.delivery_id}).to_string()])?;
+            planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+        }).unwrap();
+        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        let old_idle=observation(&e.worker,95.0);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let probes=std::sync::atomic::AtomicUsize::new(0);
+            observe_with(&state,"sample","A",&e,||async {probes.fetch_add(1,std::sync::atomic::Ordering::SeqCst);Some(old_idle.clone())}).await.unwrap();
+            assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst),1,"liveness remains observable even during delivery");
+            assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"working");
+            let delivery=e.clone();state.store.write(move|c| {
+                c.execute("DELETE FROM steering_queue WHERE id=?1",[&delivery.delivery_id])?;
+                c.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) VALUES(?1,?2,'packet',94,150,'sent')",params![delivery.delivery_id,delivery.worker])?;
+                Ok(WriteOutcome{applied:true,events:vec![]})
+            }).unwrap();
+            // Boot idle 95 is AFTER enqueue 94 but BEFORE actual typing 100.
+            // A terminal receipt at 150 cannot make that old idle current.
+            observe_with(&state,"sample","A",&e,||async {Some(old_idle.clone())}).await.unwrap();
+            let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+            assert_eq!(current.stage,"working","old idle plus new receipt must not consume a repair");assert_eq!(current.attempt,1);
+            // A real stop after submission may precede acknowledgment; it is still current.
+            let worker=e.worker.clone();state.store.write(move|c| {write_report(c,&worker,120.0);Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
+            let ended=observation(&e.worker,120.0);
+            // Writer revalidation: newer prompt activity arrives during the probe.
+            let worker=e.worker.clone();let store=state.store.clone();
+            observe_with(&state,"sample","A",&e,||async move {
+                store.write(move|c| {c.execute("UPDATE prefs SET value=?1 WHERE key='session_reports'",[json!({worker:{"state":"active","source":"prompt-hook","ts":151}}).to_string()])?;Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();Some(ended)
+            }).await.unwrap();
+            assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"working");
+            // A concurrent valid result wins even if observation had a valid idle.
+            let worker=e.worker.clone();state.store.write(move|c| {write_report(c,&worker,120.0);Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
+            let store=state.store.clone();let report_e=e.clone();let ended=observation(&e.worker,120.0);
+            observe_with(&state,"sample","A",&e,||async move {
+                store.write(move|c| planner::record_report(c,"sample","A",&report_e.worker,report_e.generation,&report_e.input_hash,&planner::Report{head:"a".repeat(40),summary:"valid concurrent report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]}).map_err(store::sql_error)).unwrap();Some(ended)
+            }).await.unwrap();
+            let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(current.stage,"reported");assert_eq!(current.attempt,1);assert!(current.report.is_some());
+        });
+    }
+    #[test]
+    fn project_observation_stopped_before_submission_retains_packet_and_bounds_recovery() {
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        db.write(|c| {
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
+            e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
+            write_report(c,&e.worker,95.0);
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES(?1,?2,'original unsent packet',94,'project-execution')",params![e.delivery_id,e.worker])?;
+            planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+        }).unwrap();
+        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        let path=sv::env_path(&e.worker);std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path,"CC_PROJECT=sample\nCC_BOARD_CARD=A\n").unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            // A delivery acquiring the packet during the probe wins the writer race.
+            let db=state.store.clone();let id=e.delivery_id.clone();let worker=e.worker.clone();
+            observe_with(&state,"sample","A",&e,||async move {
+                db.write(move|c|{c.execute("UPDATE steering_queue SET delivering_since=100 WHERE id=?1",[id])?;Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
+                Some(TurnObservation{running:false,..observation(&worker,95.0)})
+            }).await.unwrap();
+            assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"working");
+            state.store.write(|c|{c.execute("UPDATE steering_queue SET delivering_since=NULL",[])?;Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
+            for _ in 0..2 {observe_with(&state,"sample","A",&e,||async {Some(TurnObservation{running:false,..observation(&e.worker,95.0)})}).await.unwrap();}
+        });
+        {
+            let c=state.store.read().unwrap();let current=planner::execution(&c,"A").unwrap();
+            assert_eq!(current.stage,"repair");assert_eq!(current.attempt,1);assert_eq!(current.waiting.as_deref(),Some("executor_stopped_before_result"));
+            assert_eq!(c.query_row("SELECT text FROM steering_queue WHERE id=?1",[&e.delivery_id],|r|r.get::<_,String>(0)).unwrap(),"original unsent packet");
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history WHERE id=?1",[&e.delivery_id],|r|r.get::<_,i64>(0)).unwrap(),0,"never manufacture sent evidence");
+            assert!(crate::api::projects::steering_delivery_hold(&c,&e.worker,&e.delivery_id).unwrap().is_some());
+        }
+        state.store.write(|c|planner::claim(c,"sample","A").map_err(store::sql_error)).unwrap();
+        {
+            let c=state.store.read().unwrap();let next=planner::execution(&c,"A").unwrap();
+            assert_eq!(next.attempt,2);assert_eq!(next.generation,e.generation+1);
+            assert!(crate::api::projects::steering_delivery_hold(&c,&e.worker,&e.delivery_id).unwrap().is_some(),"old packet cannot cross into the new claim");
+        }
+        state.store.write(|c| {
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.observed_at=1;
+            planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+        }).unwrap();
+        let last=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(observe_with(&state,"sample","A",&last,||async {Some(TurnObservation{running:false,..observation(&last.worker,95.0)})})).unwrap();
+        assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"waiting");
+        let snapshot=|| {
+            let c=state.store.read().unwrap();
+            let execution=serde_json::to_value(planner::execution(&c,"A").unwrap()).unwrap();
+            let rows=["task_attempts","steering_queue","steering_history"].map(|table| {
+                let mut stmt=c.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();let columns=stmt.column_count();
+                let rows=stmt.query_map([],|row|Ok((0..columns).map(|i|format!("{:?}",row.get_ref(i).unwrap())).collect::<Vec<_>>())).unwrap();
+                rows.collect::<Result<Vec<_>,_>>().unwrap()
+            });(execution,rows)
+        };
+        let before=snapshot();
+        let refused=state.store.write(|c|planner::claim(c,"sample","A").map_err(store::sql_error)).unwrap();
+        assert!(!refused.applied,"stopped process does not create unlimited attempts");
+        assert_eq!(snapshot(),before,"exhausted claim preserves exact attempt/generation, attempt history and original queue/delivery identity");
+    }
+    #[test]
+    fn project_observation_current_ended_and_interrupted_turns_recover_boundedly() {
+        for outcome in ["sent","interrupted: server restart"] {
+            let (_dir,db,_)=super::super::outputs::tests::fixture();
+            db.write(move|c| {
+                let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
+                write_report(c,&e.worker,120.0);
+                c.execute("INSERT INTO steering_history(id,session,text,delivered_at,outcome) VALUES(?1,?2,'packet',150,?3)",params![e.delivery_id,e.worker,outcome])?;
+                c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(100,?1,'project.delivery_started',?2)",params![e.worker,json!({"delivery_id":e.delivery_id}).to_string()])?;
+                planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+            }).unwrap();
+            let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+            let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                // Foreground/background work or a real draft closes the common boundary.
+                observe_with(&state,"sample","A",&e,||async {Some(TurnObservation{idle:false,..observation(&e.worker,120.0)})}).await.unwrap();
+                assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"working");
+                for _ in 0..2 {observe_with(&state,"sample","A",&e,||async {Some(observation(&e.worker,120.0))}).await.unwrap();}
+            });
+            let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(current.stage,"repair");assert_eq!(current.attempt,1);
+            state.store.write(|c| planner::claim(c,"sample","A").map_err(store::sql_error)).unwrap();
+            let next=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(next.attempt,2);assert_eq!(next.generation,e.generation+1);
+        }
+    }
+}
+
+#[cfg(test)]
 mod command_tests {
+    #[test]
+    fn project_verification_retry_failure_stays_waiting_without_model_repair() {
+        use super::*;
+        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        db.write(|c| {
+            c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
+            e.stage="reported".into();e.waiting=None;e.attempt=1;e.verification_retry_pending=true;
+            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+            planner::save_execution(c,&row,&e,"project.verification_retry_granted").map_err(store::sql_error)
+        }).unwrap();
+        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        let stage=if repair_after_failure(&e,2,"verify","Command timed out after 1 seconds") {"repair"}else{"waiting"};
+        assert_eq!(stage,"waiting","explicit verification retry never grants worker work even below repair cap");
+        tokio::runtime::Runtime::new().unwrap().block_on(transition(&state,"A",&e,stage,Some("Command timed out after 1 seconds".into()))).unwrap();
+        let c=state.store.read().unwrap();let after=planner::execution(&c,"A").unwrap();
+        assert_eq!(after.report,e.report);assert_eq!(after.attempt,1);assert_eq!(after.generation,e.generation);assert!(!after.verification_retry_pending);
+        assert_eq!(planner::plan(&c,&store::get(&c,"sample").unwrap().unwrap()).unwrap().into_iter().find(|p|p.id=="A").unwrap().action,"wait");
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
     #[test]
     fn project_verification_preflights_all_commands_before_any_execution() {
         use super::*;
         let home=tempfile::tempdir().unwrap();
         let _home=crate::api::settings::test_env::set_home(home.path());
-        let (_dir,db,_)=super::super::outputs::tests::fixture();
         let repo=home.path().join("candidate");std::fs::create_dir(&repo).unwrap();
         let git=|args:&[&str]| {
             let result=std::process::Command::new("git").current_dir(&repo)
@@ -522,24 +737,50 @@ mod command_tests {
         git(&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","core.hooksPath=/dev/null","commit","--allow-empty","-m","fixture"]);
         let head=git(&["rev-parse","HEAD"]);
         let marker=home.path().join("must-not-run");
-        let mut e=planner::execution(&db.read().unwrap(),"A").unwrap();
-        let w=workspace::Workspace{repo:"/original-checkout".into(),path:repo.to_string_lossy().into_owned(),branch:format!("amux/fanout/{}",e.worker),base:head.clone()};
-        workspace::save(home.path(),&e.worker,&w).unwrap();
         let first=format!("touch {}",marker.display());
-        let mut p=store::get(&db.read().unwrap(),"sample").unwrap().unwrap();
-        p.policy.verify_command=first.clone();
-        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        // Each scenario fixes repository and gate before claiming any execution.
+        // Do not mutate live immutable policy to manufacture a persisted report.
+        let setup=|name:&str,gate:&str| {
+            let db=crate::db::Store::open(&home.path().join(name)).unwrap();
+            let gate=gate.to_string();
+            db.write(move|c| {
+                let policy=serde_json::from_value(json!({"repository":"/original-checkout","coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":gate,"enabled":true})).unwrap();
+                store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
+                c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES('A','Output','Build output','todo','code','sample',1,1,'Implement and test','[\"Output passes\"]')",[])?;
+                planner::claim(c,"sample","A").map_err(store::sql_error)
+            }).unwrap();
+            let e=planner::execution(&db.read().unwrap(),"A").unwrap();
+            let p=store::get(&db.read().unwrap(),"sample").unwrap().unwrap();
+            let w=workspace::Workspace{repo:p.policy.repository.clone(),path:repo.to_string_lossy().into_owned(),branch:format!("amux/fanout/{}",e.worker),base:head.clone()};
+            workspace::save(home.path(),&e.worker,&w).unwrap();
+            let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+            (state,p,e)
+        };
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             for bad_gate in [false,true] {
                 let mut report=planner::Report{head:head.clone(),summary:"old persisted report".into(),assets:vec![],checks:vec![planner::Check{criterion:"first".into(),command:first.clone()},planner::Check{criterion:"last".into(),command:"/original-checkout/venv/bin/python check.py".into()}]};
-                if bad_gate {p.policy.verify_command=report.checks.pop().unwrap().command;}
+                let gate=if bad_gate {report.checks.pop().unwrap().command}else{first.clone()};
+                let (state,p,mut e)=setup(if bad_gate {"bad-gate"}else{"bad-check"},&gate);
                 e.report=Some(report);e.stage="reported".into();e.waiting=None;
                 let current = e.clone();
                 state.store.write(move |c| {let row=bs::get_issue(c,"A")?.unwrap();planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)}).unwrap();
                 let error=verify(&state,&p,"A",&e).await.unwrap_err();
-                assert!(error.contains("source"),"{error}");
+                assert!(error.contains("original worker or shared checkout"),"{error}");
                 assert!(!marker.exists(),"even the first valid command must not execute");
                 assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().report,e.report);
+            }
+        });
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for dirty in [false,true] {
+                let (state,p,mut e)=setup(if dirty {"dirty-head"}else{"stale-head"},&first);
+                e.stage="reported".into();e.waiting=None;
+                e.verification_retry_pending=true;
+                e.report=Some(planner::Report{head:if dirty{head.clone()}else{"b".repeat(40)},summary:"retained report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:first.clone()}]});
+                let current=e.clone();state.store.write(move|c|{let row=bs::get_issue(c,"A")?.unwrap();planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)}).unwrap();
+                if dirty {std::fs::write(repo.join("dirty"),"uncommitted").unwrap();}
+                let error=verify(&state,&p,"A",&e).await.unwrap_err();
+                assert!(error.contains(if dirty{"uncommitted"}else{"reported head is stale"}),"{error}");
+                assert!(!marker.exists(),"retained report cannot bypass actual candidate identity/cleanliness");
             }
         });
         // Path identity accepts aliases, never unrelated or unresolved paths.

@@ -30,6 +30,10 @@ pub struct Execution {
     pub stage: String,
     #[serde(default)]
     pub retry_grants: Vec<super::task_retry::Grant>,
+    #[serde(default)]
+    pub verification_retries: Vec<super::task_retry::VerificationGrant>,
+    #[serde(default)]
+    pub verification_retry_pending: bool,
     pub attempt: u32,
     pub generation: i64,
     pub input_hash: String,
@@ -66,13 +70,78 @@ pub fn execution(conn: &Connection, id: &str) -> anyhow::Result<Execution> {
         .map(|v| v.unwrap_or_default())
         .map_err(Into::into)
 }
-/// A terminal delivery record permits bounded recovery only once the provider
-/// is independently observed idle. An unclaimed/unknown delivery is not proof.
-pub fn delivery_attempt_ended(conn: &Connection, state: &Execution) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM steering_history WHERE id=?1 AND session=?2 AND (outcome LIKE 'sent%' OR outcome LIKE 'interrupted:%'))",
-        params![state.delivery_id, state.worker], |r| r.get(0),
-    )
+/// Immutable terminal delivery evidence, captured before observing provider state.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DeliveryReceipt {
+    pub completed_at: f64,
+    pub submitted_at: f64,
+    pub outcome: String,
+}
+pub(crate) fn settled_delivery(conn:&Connection,e:&Execution)->rusqlite::Result<Option<DeliveryReceipt>> {
+    let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1 AND (id=?2 OR delivering_since IS NOT NULL))",params![e.worker,e.delivery_id],|r|r.get(0))?;
+    if pending {return Ok(None)}
+    conn.query_row("SELECT delivered_at,outcome,COALESCE((SELECT MAX(ts) FROM session_events WHERE session=?2 AND type='project.delivery_started' AND json_extract(data,'$.delivery_id')=?1),delivered_at) FROM steering_history WHERE id=?1 AND session=?2 AND (outcome LIKE 'sent%' OR outcome LIKE 'interrupted:%')",params![e.delivery_id,e.worker],|r|Ok(DeliveryReceipt{completed_at:r.get(0)?,outcome:r.get(1)?,submitted_at:r.get(2)?})).optional()
+}
+
+/// Run only inside the existing serialized store writer. A newer durable claim,
+/// not a temporary delivery hold, is the authority to void an unsent old packet.
+pub(crate) fn settle_superseded_packets(conn: &Connection) -> rusqlite::Result<WriteOutcome> {
+    let candidates = {
+        let mut q = conn.prepare("SELECT id,session FROM steering_queue WHERE guard='project-execution' AND delivering_since IS NULL")?;
+        let rows = q.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut settled = 0;
+    for (id, worker) in candidates {
+        // Existing structured execution events bind delivery identity to task,
+        // project, generation and input. Never parse packet prose or ID prefixes.
+        let witnesses = {
+            let mut q = conn.prepare("SELECT data FROM session_events WHERE session=?1 AND source='project-driver' AND json_valid(data) AND json_extract(data,'$.execution.delivery_id')=?2")?;
+            let rows = q.query_map(params![worker,id], |r| r.get::<_,String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut binding = None;
+        let mut proven = !witnesses.is_empty();
+        for raw in witnesses {
+            let witness = (|| {
+                let v: Value = serde_json::from_str(&raw).ok()?;
+                let e: Execution = serde_json::from_value(v.get("execution")?.clone()).ok()?;
+                if e.worker != worker || e.delivery_id != id || e.input_hash.is_empty() { return None; }
+                Some((v.get("task")?.as_str()?.to_string(), v.get("project_group")?.as_str()?.to_string(), e.generation, e.input_hash))
+            })();
+            let Some(witness) = witness else { proven = false; break; };
+            if binding.as_ref().is_some_and(|b| b != &witness) { proven = false; break; }
+            binding = Some(witness);
+        }
+        if !proven { continue; }
+        let Some((task, project, old_generation, _old_input)) = binding else { continue; };
+        // get_issue filters deleted IS NULL in this same writer transaction;
+        // soft-deleted cards cannot authorize packet settlement.
+        let Some(row) = bs::get_issue(conn, &task)? else { continue; };
+        let current = execution(conn, &task).map_err(store::sql_error)?;
+        if store::get(conn, &project).map_err(store::sql_error)?.is_none()
+            || old_generation <= 0 || row.archived != 0 || row.session.as_deref() != Some(worker.as_str())
+            || row.project_group.as_deref() != Some(project.as_str()) || current.worker != worker
+            || current.input_hash != input_hash(&row) || current.generation <= old_generation
+            || current.delivery_id.is_empty() || current.delivery_id == id {
+            continue;
+        }
+        // A conflicting receipt is not permission to overwrite history or drop
+        // queued bytes. Successful transactions leave no queue/history overlap.
+        let history: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steering_history WHERE id=?1)", [&id], |r| r.get(0))?;
+        if history { continue; }
+        let now = crate::config::now_f64();
+        let inserted = conn.execute(
+            "INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) SELECT id,session,text,queued_at,?3,'void:project-execution-superseded',guard,sender FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution' AND delivering_since IS NULL",
+            params![id,worker,now],
+        )?;
+        if inserted == 0 { continue; }
+        conn.execute("DELETE FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution' AND delivering_since IS NULL", params![id,worker])?;
+        conn.execute("INSERT OR IGNORE INTO session_events(ts,session,type,data,idem,source) VALUES(?1,?2,'message.voided',?3,?4,'steering')", params![now,worker,json!({"id":id,"task":task,"project":project,"old_generation":old_generation,"current_generation":current.generation,"current_delivery_id":current.delivery_id,"reason":"project-execution-superseded","delivered":false,"measured":true,"n_considered":1}).to_string(),format!("void:{id}")])?;
+        tracing::info!(session=%worker,delivery_id=%id,task=%task,old_generation,current_generation=current.generation,measured=true,n_considered=1,verdict="project_execution_packet_superseded","superseded unsent packet retained in history; not delivered");
+        settled += inserted;
+    }
+    Ok(WriteOutcome { applied: settled > 0, events: vec![] })
 }
 
 pub fn input_hash(row: &bs::IssueRow) -> String {
@@ -372,8 +441,32 @@ pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<Write
     state.delivery_id = format!("project:{}:{}:{}", project.name, id, state.generation);
     state.last_failure = state.waiting.take().or(state.last_failure);
     state.report = None;
+    state.verification_retry_pending = false;
     conn.execute("UPDATE issues SET status='doing',session=?2,lease_owner=?2,lease_generation=?3,lease_acquired_at=?4,lease_heartbeat_at=?4,lease_expires_at=?5 WHERE id=?1 AND project_group=?6",params![id,state.worker,state.generation,chrono::Utc::now().timestamp(),chrono::Utc::now().timestamp()+300,project.name])?;
     save_execution(conn, &row, &state, "project.claimed")
+}
+
+pub(crate) fn validate_report(row:&bs::IssueRow,report:&Report)->anyhow::Result<()> {
+    let criteria: Vec<String> =
+        serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    anyhow::ensure!(
+        !report.head.is_empty()
+            && report.head.bytes().all(|c| c.is_ascii_hexdigit())
+            && report.head.len() == 40,
+        "report needs exact commit SHA"
+    );
+    anyhow::ensure!(
+        !criteria.is_empty()
+            && report.checks.len() == criteria.len()
+            && criteria.iter().all(|c| report
+                .checks
+                .iter()
+                .filter(|check| &check.criterion == c && !check.command.trim().is_empty())
+                .count()
+                == 1),
+        "each current criterion needs exactly one executable check"
+    );
+    Ok(())
 }
 
 pub fn record_report(
@@ -408,25 +501,7 @@ pub fn record_report(
         matches!(state.stage.as_str(), "reserved" | "working"),
         "claim no longer accepts reports"
     );
-    let criteria: Vec<String> =
-        serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
-    anyhow::ensure!(
-        !report.head.is_empty()
-            && report.head.bytes().all(|c| c.is_ascii_hexdigit())
-            && report.head.len() == 40,
-        "report needs exact commit SHA"
-    );
-    anyhow::ensure!(
-        !criteria.is_empty()
-            && report.checks.len() == criteria.len()
-            && criteria.iter().all(|c| report
-                .checks
-                .iter()
-                .filter(|check| &check.criterion == c && !check.command.trim().is_empty())
-                .count()
-                == 1),
-        "each current criterion needs exactly one executable check"
-    );
+    validate_report(&row,report)?;
     let policy=store::get(conn,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
     let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
         .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
@@ -491,6 +566,58 @@ mod tests {
         }).unwrap();
         (dir, db)
     }
+    #[test]
+    fn project_superseded_packet_reconciliation_preserves_identity_and_guards() {
+        for case in ["superseded", "current", "inflight", "owner", "foreign-worker", "foreign-project", "unproven", "input-changed", "history-conflict", "ambiguous", "deleted", "archived", "equal-generation"] {
+            let (_dir, db) = fixture();
+            db.write(move |c| {
+                claim(c,"sample","A").unwrap();
+                let old = execution(c,"A").unwrap();
+                let row = bs::get_issue(c,"A")?.unwrap();
+                let mut failed = old.clone();failed.stage="repair".into();failed.waiting=Some("executor_stopped_before_result".into());
+                save_execution(c,&row,&failed,"project.execution").unwrap();
+                assert!(claim(c,"sample","A").unwrap().applied);
+                let mut current = execution(c,"A").unwrap();
+                let id = match case {"current"=>current.delivery_id.clone(),"unproven"=>"unknown-delivery".into(),_=>old.delivery_id.clone()};
+                let guard = if case=="owner" {"project-steering"} else {"project-execution"};
+                let text = "Exact original packet α\nsecond line; no rewritten prefix";
+                c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,sender,delivering_since) VALUES(?1,?2,?3,123,?4,'project-driver',?5)",params![id,old.worker,text,guard,if case=="inflight"{Some(124.0)}else{None}])?;
+                match case {
+                    "deleted" => {c.execute("UPDATE issues SET deleted=1 WHERE id='A'",[])?;assert!(bs::get_issue(c,"A")?.is_none(),"shared board read excludes soft-deleted rows");},
+                    "archived" => {c.execute("UPDATE issues SET archived=1 WHERE id='A'",[])?;},
+                    "equal-generation" => {current.generation=old.generation;let row=bs::get_issue(c,"A")?.unwrap();save_execution(c,&row,&current,"project.execution").unwrap();},
+                    "foreign-worker" => {c.execute("UPDATE issues SET session='other-worker' WHERE id='A'",[])?;},
+                    "foreign-project" => {c.execute("UPDATE issues SET project_group='other-project' WHERE id='A'",[])?;},
+                    "input-changed" => {current.input_hash="stale-input".into();let row=bs::get_issue(c,"A")?.unwrap();save_execution(c,&row,&current,"project.execution").unwrap();},
+                    "history-conflict" => {c.execute("INSERT INTO steering_history(id,session,text,delivered_at,outcome) VALUES(?1,?2,'prior receipt',1,'interrupted: prior')",params![id,old.worker])?;},
+                    "ambiguous" => {c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(1,?1,'project.claimed',?2,'project-driver')",params![old.worker,json!({"task":"B","project_group":"sample","execution":old}).to_string()])?;},
+                    _=>{}
+                }
+                if case=="superseded" {
+                    c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES(?1,?2,'current packet',125,'project-execution'),('owner-note',?2,'owner note',126,'project-steering')",params![current.delivery_id,old.worker])?;
+                }
+                let before = serde_json::to_value(execution(c,"A").unwrap()).unwrap();
+                let attempt_rows:i64=c.query_row("SELECT COUNT(*) FROM task_attempts",[],|r|r.get(0))?;
+                let result=settle_superseded_packets(c)?;
+                assert_eq!(result.applied,case=="superseded","{case}");
+                assert_eq!(serde_json::to_value(execution(c,"A").unwrap()).unwrap(),before);
+                assert_eq!(c.query_row("SELECT COUNT(*) FROM task_attempts",[],|r|r.get::<_,i64>(0))?,attempt_rows);
+                if case=="superseded" {
+                    let retained:(String,String,String,f64,String,String,String)=c.query_row("SELECT id,session,text,queued_at,outcome,guard,sender FROM steering_history WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
+                    assert_eq!(retained,(id.clone(),old.worker.clone(),text.into(),123.0,"void:project-execution-superseded".into(),guard.into(),"project-driver".into()));
+                    assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1",[&id],|r|r.get::<_,i64>(0))?,0);
+                    assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue",[],|r|r.get::<_,i64>(0))?,2,"current packet and owner note retained");
+                    assert!(!settle_superseded_packets(c)?.applied);
+                    assert_eq!(c.query_row("SELECT COUNT(*) FROM session_events WHERE type='message.voided'",[],|r|r.get::<_,i64>(0))?,1);
+                } else {
+                    assert_eq!(c.query_row("SELECT text FROM steering_queue WHERE id=?1",[&id],|r|r.get::<_,String>(0))?,text);
+                    assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history WHERE outcome='void:project-execution-superseded'",[],|r|r.get::<_,i64>(0))?,0);
+                }
+                Ok(WriteOutcome{applied:true,events:vec![]})
+            }).unwrap();
+        }
+    }
+
     #[test]
     fn project_failure_label_never_uses_a_passing_stdout_prefix() {
         let failure="tree-revert: OK\nrepository guard: refused invalid source";
@@ -568,13 +695,13 @@ mod tests {
         db.write(|c| {
             claim(c, "sample", "A").map_err(store::sql_error)?;
             let state = execution(c, "A").unwrap();
-            assert!(!delivery_attempt_ended(c, &state)?);
+            assert!(settled_delivery(c, &state)?.is_none());
             c.execute("INSERT INTO steering_history(id,session,text,delivered_at,outcome) VALUES(?1,?2,'task packet',1,'interrupted: server restart')", params![state.delivery_id, state.worker])?;
-            assert!(delivery_attempt_ended(c, &state)?);
+            assert!(settled_delivery(c, &state)?.is_some());
             let wrong_worker = Execution { worker: "another-executor".into(), ..state.clone() };
-            assert!(!delivery_attempt_ended(c, &wrong_worker)?);
+            assert!(settled_delivery(c, &wrong_worker)?.is_none());
             c.execute("UPDATE steering_history SET outcome='void:stale'", [])?;
-            assert!(!delivery_attempt_ended(c, &state)?);
+            assert!(settled_delivery(c, &state)?.is_none());
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
     }

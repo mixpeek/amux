@@ -490,3 +490,142 @@ not visibility inside collapsed details. Parent Rust, mutation and browser
 checks are pending for these bytes; previous green revision evidence is not
 reused as a pass. No live project state, historical attempts or provider retries
 were changed by this implementation.
+
+
+### AAB-3: current-turn evidence before no-result recovery
+
+The retained `lifecycle-ui-f557-held-note-boundary` failure showed one extra
+execution: PU-2's delivery completed at 1789964246.649 and a stale boot-idle
+observation triggered repair at 1789964246.706. Its first valid report then lost
+the claim. Fixture calls record attempts 1 and 2, not duplicate packet 1.
+
+Observation now reads delivery evidence before a fresh scoped provider probe,
+and revalidates receipt, provider report, working claim/input identity, holds
+and in-flight delivery in the writer. `project.delivery_started` records the
+current packet immediately before submission, after composer preparation. This
+excludes boot idle after enqueue but before submission, while accepting a real
+stop after submission that precedes the final sent receipt. Older receipts
+without this event conservatively use receipt time. No grace period increased.
+A missing receipt still permits liveness observation: a stopped executor with
+no delivery in flight enters bounded recovery, retaining the unsent queue row
+without inventing a sent receipt. The old packet fails the existing claim gate;
+only a new bounded claim prepares another execution. Interrupted delivery can
+recover at a fresh safe boundary. Concurrent accepted reports win the writer
+comparison; active work/drafts do not authorize an idle transition.
+
+Measured signals are `project_stale_idle_held` (deduplicated) and
+`project_current_turn_ended_without_result`. Deterministic `project_observation_`
+tests inject timing changes at the production observation seam, including
+acquisition of an unsent packet during the probe, a concurrent valid report,
+fast completion before receipt, and exhaustion after stopped-before-submit.
+Parent Rust/mutation/full UI validation is pending for these bytes; see
+`/private/tmp/amux-astra-20260920/logs/aab3-stale-idle-handoff.json` and its sibling
+manifest. Previous failures and the two pending UI/fake-provider corrections
+remain retained. No live state, grants, builds, commits or model calls changed.
+
+
+### AAB-3: project notes have next-turn delivery only
+
+Project-steering queue rows retain Cancel, their exact text/identity and any
+held reason, but do not offer Send now. They show Automatic next turn. Project
+`POST /api/sessions/:worker/send` with `deliver_now=true` returns HTTP 409,
+`code=project_next_turn_only`, before deduplication, enqueue or command history
+writes. The error explains automatic delivery during an authorized working
+claim and cancellation. Explicit refusals log `project_send_now_refused` with
+measured=true and n_considered=1. Legacy Send now is unchanged. No new endpoint,
+queue, scheduler, forced delivery or implicit attempt grant was introduced.
+
+The API regression compares exact records before/after repeated unsupported
+requests in both held and working states (including reused message IDs). The
+full owner-note UI asserts Send now is absent and Cancel remains usable, then
+retains automatic exactly-once delivery following its explicit bounded retry.
+Parent observation run `aab3-stale-idle-focused.log` passed two timing tests and
+failed only the stopped-case fixture's expectation that a refused claim throws;
+that assertion now requires applied=false and unchanged execution, attempt
+history, original queue identity and delivery history. Runtime cap unchanged.
+The refreshed frozen source and parent commands are in
+`/private/tmp/amux-astra-20260920/logs/aab3-observation-and-queue-handoff.json`
+and its sibling manifest. Final Rust/browser results remain pending.
+
+
+### AAB-3: superseded unsent packets no longer prevent retirement
+
+A stopped-before-submission packet remains durable during bounded recovery.
+Once a later claim permanently supersedes that delivery, the normal steering
+tick settles it into existing history with the exact ID/text and explicit
+`void:project-execution-superseded` outcome. One serialized writer proves the
+old structured execution identity and current task/project/worker/generation
+and input, checks history conflicts and the in-flight marker, then moves the
+row atomically. It never treats a temporary hold as supersession. Owner notes,
+current packets, in-flight deliveries, foreign/unproven identities and conflicting
+receipts remain untouched. The actual retirement predicate is unchanged.
+Soft-deleted tasks are excluded by `board_store::get_issue`'s SQL
+`deleted IS NULL` filter within that same transaction; its regression retains
+the old packet. The compile correction removes an invalid IssueRow.deleted
+access, not the soft-delete protection.
+
+Actual settlements emit `message.voided` with delivered=false and measured
+`project_execution_packet_superseded`. Cleanup failure logs
+`project_packet_reconciliation_failed` with measured=false, retains unsafe
+input, and continues unrelated normal queue processing under existing per-row
+guards. A trigger-injected writer failure regression verifies a legacy queue
+row still reaches its existing void/history path while the project packet is
+retained. Shared-helper negatives and the actual retirement predicate cover
+supersession, exact history retention and owner-note disposal protection.
+
+Parent reports the prior observation/queue gates passed. The later cleanup
+compile failed E0609; its original `aab3-final-runtime-project.log` is retained.
+Cleanup tests and both negative controls still require parent validation after
+this narrow compile correction. Complete frozen source and commands are in
+`/private/tmp/amux-astra-20260920/logs/aab3-final-runtime2-handoff.json` and its
+sibling manifest. No live packet, project state, attempt or server was changed
+by the worker; parent controls deployment and normal reconciliation.
+
+
+### AAB-3: bounded command timeout and explicit retained-report verification
+
+The retained PAA-4 generation 3 API snapshot reports waiting at attempt 3 with
+`Command timed out after 600 seconds` and report head
+`f303abcd9ebda8e994e462111bee542412a3f603`. Parent observed backend and Studio/build
+checks before the timeout; fresh browser proof did not run. This is failed
+verification, not accepted output. Evidence remains at
+`/private/tmp/amux-astra-20260920/logs/paa4-g3-independent-observation.json`.
+No retry or live project mutation was performed for this patch.
+
+Project policy now has `verification_timeout_secs`: default 600, integer 1–3600,
+configured through existing execution settings. A shared runner preflights all
+distinct commands, runs each once per immutable source/merged candidate phase
+with that same per-command bound, and retains process-group cancellation and
+HEAD/clean-tree checks. Legacy integration retains its 600-second default.
+The bound is per command, not a combined shell bundle or an environment override.
+`candidate_verification_command` records command, candidate, configured bound,
+elapsed time and measured success. Git operation/pre-push limits are unchanged.
+
+The existing operator-only task retry endpoint also accepts:
+`{ "action": "verify", "request": { "idempotency_key": "<stable click ID>",
+"expect_generation": <current>, "expect_revision": <current task rev>,
+"input_hash": "<current>" }, "report": <exact retained report object> }`.
+Only a failed waiting review with a valid retained report, unchanged requirements,
+verified required outputs and no pause/budget/authorization hold can start it.
+Replay of the identical accepted request is a no-op; stale/foreign/changed
+requests fail. The complete prior failure stays in `verification_retries` and
+`last_failure`. Generation, execution attempt/history, delivery identity and
+report are preserved. No model grant, command intake or steering row is created.
+Actual HEAD/cleanliness and every gate run normally; checks against changed
+policy/candidate identity are refused. A failed explicit verification rerun stays
+waiting, even below the model-repair cap, until another explicit operator action.
+
+Projects shows **Rerun checks** (no model execution) separately from the existing
+worker repair retry (one additional model attempt). Request identity persists
+across uncertain responses in the existing UI retry storage. The measured
+`project.verification_retry_granted` event/log distinguishes this action from a
+model repair grant; existing retry refusal logs retain admission errors.
+
+Snapshot-only tests cover timeout bounds, per-command source/merged consistency,
+timeout descendant cleanup, preflight, stale/dirty candidates, real API replay
+and scope refusal, no model queue/attempt growth, and failed-rerun no-loop behavior.
+The full isolated UI adds a one-second timeout, configuration update, explicit
+rerun of the retained report, zero additional provider calls, Verified and normal
+retirement. These are new pending tests, not a claim of passing runtime/browser
+acceptance. Parent applies the reviewed patch and runs gates/negative controls;
+see `logs/aab3-verification-retry-handoff.json` in the private evidence directory.

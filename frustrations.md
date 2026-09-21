@@ -3934,3 +3934,51 @@ CARD: AAB-3
 SYMPTOM: PAA-2 failure summary showed tree-revert because the UI split retained hook output beginning tree-revert: OK at its first colon.
 COST: The short status concealed the actual failed verification behind an unrelated passing check.
 FIX: Harness-owned waiting_label derived from execution state and exact known reason tokens; full failure output remains unchanged in details, including exact budget labels. New transitions log project_verification_failed. Rust and browser regression cover a passing prefix before refusal; parent validation pending, no historical record rewrite.
+
+
+## Stale boot idle consumed a project repair attempt (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Fresh isolated lifecycle-ui-f557-held-note-boundary expected two executor calls but recorded three. PU-2's new delivery receipt was paired with old boot-idle evidence; repair followed delivery by 57ms, rejecting the valid first report and dispatching attempt 2.
+COST: One unnecessary nonbillable fixture execution and failed full acceptance run; the same race could consume a real model attempt.
+FIX: Current packet submission event, receipt-before-fresh-probe ordering, final writer identity/report/in-flight revalidation, and bounded stopped-before-submission recovery retaining the unsent packet. Measured project_stale_idle_held and project_current_turn_ended_without_result signals. Deterministic timing/negative tests added; parent checks pending. Full failed run and readonly fixture amux-project-ua8ko2u_ retained; source/handoff in aab3-stale-idle-{manifest,handoff}.json. No live attempt or retry grant changed.
+
+
+## Send now duplicated a project owner note instead of delivering it (AAB-3)
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent source review found _steeringSendNow re-posted queued text without its identity while the project send branch ignored deliver_now and created a fresh project-owner ID. The unsupported action could duplicate a held note without sending either.
+COST: One confirmed shared UI/API policy mismatch; no extra live execution trial performed.
+FIX: Remove Send now for project-steering rows, retain Cancel/held reason and explain Automatic next turn. Reject project deliver_now before dedup/enqueue/history mutation with project_next_turn_only and measured project_send_now_refused log. Real send-handler regression preserves exact queue/task/history records across repeated refusals while held and working; full UI preserves explicit retry then exactly-once automatic delivery. Parent final checks pending; legacy Send now unchanged.
+
+
+## Superseded unsent project packet blocked verified retirement (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent observed PAA-4 attempt3 retaining its attempt1 execution packet with project_claim_delivery_stale. Retirement correctly refuses every pending queue row, so permanent supersession left an otherwise finished worker unable to retire.
+COST: One retained real execution packet identified before retirement, plus one cleanup compile failure from an invalid IssueRow.deleted access; the failed log is preserved.
+FIX: Normal steering reconciliation atomically proves supersession and moves exact packet identity/text to existing history with void:project-execution-superseded; never cancels owner/current/in-flight/foreign/unproven rows. Shared get_issue SQL excludes deleted rows in the writer; regression asserts that contract. Measured project_execution_packet_superseded/message.voided signal settlement. project_packet_reconciliation_failed retains unsafe input without vetoing unrelated queues. Helper, actual retirement predicate and injected-failure isolation regressions added; parent cleanup tests/negative controls pending in aab3-final-runtime2 handoff. No live cancellation, retry or retirement performed.
+
+
+## Long verification gate exhausted fixed timeout without a checks-only retry (AAB-3)
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent observed PAA-4 generation3 independent verification stop at exactly 600 seconds after backend and Studio/build checks; fresh browser proof never ran. The report was retained, but the existing retry action authorized another model execution rather than rerunning checks.
+COST: One real independent gate attempt failed; no further paid/provider trial or real retry was requested by this worker. Full original API snapshot paa4-g3-independent-observation.json retained.
+FIX: Snapshot patch adds bounded project-configured verification_timeout_secs (default600, 1–3600), one shared per-command source/merged runner, and explicit operator Rerun checks through existing retry authority with report/input/revision/idempotency binding and unchanged model attempts/history. Failure stays waiting; no automatic repair loop from a checks-only grant. candidate_verification_command and project.verification_retry_granted emit measured evidence. Focused API/process/negative tests and isolated full UI extension await parent; no live state or accepted output changed.

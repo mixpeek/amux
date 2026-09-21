@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2089,
+  "n_considered": 2094,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2002,6 +2002,12 @@
     },
     "_pmResend": {
       "kind": "command._pmResend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectAssetPreview": {
+      "kind": "command._projectAssetPreview",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

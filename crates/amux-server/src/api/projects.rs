@@ -518,12 +518,16 @@ async fn rollback(
 
 async fn retry(
     State(state): State<AppState>,Path((name,id)):Path<(String,String)>,headers:HeaderMap,
-    Json(body):Json<crate::project_execution::task_retry::Request>,
+    Json(body):Json<crate::project_execution::task_retry::RetryRequest>,
 )->Response {
     if !operator(&headers){return error(StatusCode::FORBIDDEN,"retry requires operator scope");}
+    let verification=matches!(&body,crate::project_execution::task_retry::RetryRequest::Verification(_));
     let project=name.clone();let task=id.clone();
-    match state.store.write_async(move|c|crate::project_execution::task_retry::grant(c,&project,&task,&body).map_err(store::sql_error)).await {
-        Ok(out)=>Json(json!({"state":"ready","applied":out.applied})).into_response(),
+    match state.store.write_async(move|c| {
+        use crate::project_execution::task_retry::{self,RetryRequest};
+        match body {RetryRequest::Verification(body)=>task_retry::grant_verification(c,&project,&task,&body),RetryRequest::Repair(body)=>task_retry::grant(c,&project,&task,&body)}.map_err(store::sql_error)
+    }).await {
+        Ok(out)=>Json(json!({"state":if verification{"verification_queued"}else{"ready"},"applied":out.applied,"model_attempt_granted":!verification && out.applied})).into_response(),
         Err(e)=>{tracing::warn!(project=name,task=id,error=%e,measured=true,n_considered=1,verdict="project.retry_refused","operator retry refused");error(StatusCode::CONFLICT,e)}
     }
 }
@@ -680,6 +684,33 @@ mod tests {
         });
         let c=state.store.read().unwrap();let (pending,result):(bool,String)=c.query_row("SELECT capture_pending,intake_result FROM cmd_history WHERE id=42",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();assert!(!pending);assert!(result.contains("retained"));
         assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue WHERE id='original'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
+    #[test]
+    fn project_verification_retry_api_is_operator_bound_idempotent_and_model_free() {
+        use crate::project_execution::{planner,task_retry};
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        db.write(|c| {
+            c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
+            let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
+            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained report".into(),assets:vec![],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+            planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+        }).unwrap();
+        let body={let c=db.read().unwrap();let e=planner::execution(&c,"A").unwrap();let row=crate::db::board_store::get_issue(&c,"A").unwrap().unwrap();json!({"action":"verify","request":{"idempotency_key":"operator-checks","expect_generation":e.generation,"expect_revision":row.rev,"input_hash":e.input_hash},"report":e.report})};
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let before=planner::execution(&state.store.read().unwrap(),"A").unwrap();let app=routes().with_state(state.clone());
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for (project,worker,body,expected) in [("sample",true,body.clone(),StatusCode::FORBIDDEN),("other",false,body.clone(),StatusCode::CONFLICT),("sample",false,json!({"action":"verify"}),StatusCode::UNPROCESSABLE_ENTITY),("sample",false,body.clone(),StatusCode::OK),("sample",false,body.clone(),StatusCode::OK)] {
+                let mut req=axum::http::Request::builder().method("POST").uri(format!("/{project}/tasks/A/retry")).header("content-type","application/json");
+                if worker {req=req.header("x-amux-worker","executor");}
+                let response=app.clone().oneshot(req.body(Body::from(body.to_string())).unwrap()).await.unwrap();assert_eq!(response.status(),expected);
+            }
+        });
+        let c=state.store.read().unwrap();let after=planner::execution(&c,"A").unwrap();
+        assert_eq!(after.attempt,before.attempt);assert_eq!(after.generation,before.generation);assert_eq!(after.report,before.report);assert_eq!(after.delivery_id,before.delivery_id);
+        assert_eq!(after.verification_retries.len(),1);assert!(after.retry_grants.is_empty());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert!(task_retry::verification_eligible(&c,&store::get(&c,"sample").unwrap().unwrap(),&crate::db::board_store::get_issue(&c,"A").unwrap().unwrap(),&after).is_err());
     }
     #[tokio::test]
     async fn project_intake_retry_requires_operator_and_current_receipt() {

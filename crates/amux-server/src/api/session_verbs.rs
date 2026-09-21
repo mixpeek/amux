@@ -9430,6 +9430,15 @@ async fn send_text_inner_bound(state:&AppState,name:&str,text:&str,mode:SendMode
         send_key(name, "Escape").await;
         sleep_ms(60).await;
     }
+    if let Some(id)=delivery {
+        let project_packet=state.store.read().ok().is_some_and(|c|c.query_row("SELECT guard='project-execution' FROM steering_queue WHERE id=?1 AND session=?2",rusqlite::params![id,name],|r|r.get::<_,bool>(0)).unwrap_or(false));
+        if project_packet {
+            // A fast Stop hook can precede final delivery acknowledgment. Keep
+            // actual submission start, not queued age, as its causal lower bound.
+            emit_event(state,name,"project.delivery_started",Some(json!({"delivery_id":id})),None,"steering").await;
+            if let Some(reason)=project_send_hold(state,name,delivery) {return (false,reason);}
+        }
+    }
     send_key(name, "Enter").await;
     // ------------------------------------------------------------------
     // THE EVIDENCE GATE (AMUX-2629). Everything above proves only that bytes
@@ -14552,6 +14561,14 @@ fn pickup_stale_void(
 }
 
 pub async fn steer_deliver_tick(state: &AppState) -> usize {
+    // Reconcile superseded project packets before liveness/boundary checks:
+    // an old unsent packet must not block retirement forever. All proof and
+    // settlement share one writer transaction with the delivery claim gate.
+    if let Err(error) = state.store.write_async(crate::project_execution::planner::settle_superseded_packets).await {
+        tracing::warn!(%error,measured=false,n_considered=0,verdict="project_packet_reconciliation_failed","could not reconcile superseded execution packets; unsafe queue retained; unrelated delivery continues");
+        // Optional cleanup must not veto unrelated delivery. The normal per-row
+        // project gate still refuses stale/unproven execution packets.
+    }
     // Only lanes that actually HAVE a queue: costs nothing on an empty fleet,
     // and keeps the pane captures below proportional to real work.
     // (steer id, card, why) for rows whose premise expired — filled inside the
@@ -19204,6 +19221,13 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     // belongs beside the answer, not in a payload nobody opens).
     if let Some(stamp) = no_reply_path_stamp(&send_origin, session_is_isolated(&send_origin)) {
         text.push_str(&stamp);
+    }
+    // Project owner input has only next-turn delivery. Reject before reserving
+    // an identity or writing history: replaying queue text must not duplicate it.
+    if body.get("deliver_now").map(py_truthy).unwrap_or(false)
+        && parse_env(name).get("CC_PROJECT").is_some() {
+        tracing::info!(session=name,measured=true,n_considered=1,verdict="project_send_now_refused","project owner input uses next-turn delivery; existing queue unchanged");
+        return jresp(StatusCode::CONFLICT,json!({"ok":false,"code":"project_next_turn_only","error":"Project owner notes use automatic next-turn delivery during an authorized working claim. Send now is unsupported; existing queued input is unchanged. Cancel the queued note to remove it.","submitted":false}));
     }
     let msg_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
     if let Some(response)=send_dedup_gate(state,name,&msg_id).await {return response;}
@@ -36238,6 +36262,82 @@ mod project_steering_tests {
             assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
             assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1",[&id],|r|r.get::<_,i64>(0)).unwrap(),1);
             assert!(crate::project_execution::intake::receipts(&c,"sample").unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn project_packet_cleanup_failure_does_not_veto_legacy_queue_progress() {
+        use crate::project_execution::planner;
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        let e=planner::execution(&db.read().unwrap(),"A").unwrap();let worker=e.worker.clone();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(env_path(&worker),"CC_PROJECT=sample\nCC_BOARD_CARD=A\nCC_PAUSED=1\n").unwrap();
+        db.write(move|c| {
+            let old:String=c.query_row("SELECT json_extract(data,'$.execution.delivery_id') FROM session_events WHERE type='project.claimed' AND json_extract(data,'$.task')='A' ORDER BY id LIMIT 1",[],|r|r.get(0))?;
+            assert_ne!(old,e.delivery_id);
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES(?1,?2,'retained project packet',1,'project-execution')",rusqlite::params![old,e.worker])?;
+            c.execute("INSERT INTO issues(id,title,status,session,created,updated) VALUES('LEGACY-1','finished','done','legacy-cleanup-fixture',1,1)",[])?;
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('legacy-stale','legacy-cleanup-fixture',?1,1,?2)",rusqlite::params![format!("{}LEGACY-1 — work it now.",crate::runtime_jobs::board_drive::PICKUP_ANCHOR),BOARD_DRIVE_GUARD])?;
+            // Real writer failure confined to optional project cleanup. Legacy
+            // queue/history remains writable; no fake delivery/provider needed.
+            c.execute_batch("CREATE TRIGGER reject_project_packet_void BEFORE INSERT ON steering_history WHEN NEW.outcome='void:project-execution-superseded' BEGIN SELECT RAISE(ABORT,'fixture project cleanup failure'); END;")?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            assert!(state.store.write_async(planner::settle_superseded_packets).await.is_err(),"fixture must exercise a real transactional failure");
+            steer_deliver_tick(&state).await;
+        });
+        let c=state.store.read().unwrap();
+        assert_eq!(c.query_row("SELECT outcome FROM steering_history WHERE id='legacy-stale'",[],|r|r.get::<_,String>(0)).unwrap(),"void:pickup-stale","unrelated queue authority still progresses after cleanup failure");
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue WHERE id='legacy-stale'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let (old,text,inflight):(String,String,Option<f64>)=c.query_row("SELECT id,text,delivering_since FROM steering_queue WHERE session=?1",[&worker],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(text,"retained project packet");assert!(inflight.is_none());
+        assert!(super::super::projects::steering_delivery_hold(&c,&worker,&old).unwrap().is_some());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history WHERE session=?1",[&worker],|r|r.get::<_,i64>(0)).unwrap(),0,"failed transaction must not create project receipt");
+    }
+
+    #[test]
+    fn project_send_now_refuses_without_changing_held_or_working_note_identity() {
+        use crate::project_execution::{planner,store};
+        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        let worker=planner::execution(&db.read().unwrap(),"A").unwrap().worker;
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(env_path(&worker),"CC_PROJECT=sample\nCC_BOARD_CARD=A\n").unwrap();
+        let state=AppState{store:std::sync::Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let snapshot=|| {
+            let c=state.store.read().unwrap();
+            ["issues","task_attempts","steering_queue","steering_history","cmd_history","session_events"].map(|table| {
+                let mut stmt=c.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();let columns=stmt.column_count();
+                let rows=stmt.query_map([],|row|Ok((0..columns).map(|i|format!("{:?}",row.get_ref(i).unwrap())).collect::<Vec<_>>())).unwrap();
+                rows.collect::<Result<Vec<_>,_>>().unwrap()
+            })
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let response=send_post(&state,&worker,&HeaderMap::new(),&json!({"text":"Original owner note","msg_id":"original-note"})).await;
+            assert_eq!(response.status(),StatusCode::OK);
+            let receipt:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
+            let id=receipt["id"].as_str().unwrap();
+            for working in [false,true] {
+                if working {
+                    state.store.write(|c| {let row=crate::db::board_store::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.waiting=None;planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)}).unwrap();
+                }
+                assert_eq!(project_send_hold(&state,&worker,Some(id)).is_none(),working);
+                let before=snapshot();
+                for msg_id in ["","force-now","force-now","original-note"] {
+                    let response=send_post(&state,&worker,&HeaderMap::new(),&json!({"text":"Original owner note","deliver_now":true,"msg_id":msg_id})).await;
+                    assert_eq!(response.status(),StatusCode::CONFLICT);
+                    let body:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
+                    assert_eq!(body["code"],"project_next_turn_only");assert_eq!(body["submitted"],false);assert!(body.get("id").is_none());
+                    assert_eq!(snapshot(),before,"refusal must not create receipts/tasks/deliveries or alter the existing note/attempt");
+                }
+                let c=state.store.read().unwrap();
+                let note:(String,String,Option<f64>)=c.query_row("SELECT text,guard,delivering_since FROM steering_queue WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                assert_eq!(note,("Original owner note".into(),"project-steering".into(),None));
+                assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+            }
         });
     }
 
