@@ -151,6 +151,15 @@ fn error(status: StatusCode, message: impl ToString) -> Response {
     )
         .into_response()
 }
+
+fn project_profile_supported(
+    profile: &amux_core::project::ModelProfile,
+) -> Result<(), &'static str> {
+    if profile.provider == "codex" && profile.model == "gpt-5-nano" {
+        return Err("gpt-5-nano is not supported for Codex project workers on ChatGPT accounts; use gpt-5.5 with low effort for the cheapest supported Codex project lifecycle run");
+    }
+    Ok(())
+}
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match state
         .store
@@ -233,6 +242,12 @@ async fn configure(
         })
     {
         return error(StatusCode::BAD_REQUEST, "unsupported execution provider");
+    }
+    if let Err(e) = project_profile_supported(&body.policy.coordinator) {
+        return error(StatusCode::BAD_REQUEST, e);
+    }
+    if let Err(e) = project_profile_supported(&body.policy.executor) {
+        return error(StatusCode::BAD_REQUEST, e);
     }
     if !matches!(
         body.policy.coordinator.provider.as_str(),
@@ -1300,6 +1315,7 @@ mod tests {
         let app = routes().with_state(state);
         for (provider, model, expected) in [
             ("codex", "gpt-6-astra", StatusCode::OK),
+            ("codex", "gpt-5-nano", StatusCode::BAD_REQUEST),
             ("claude", "haiku", StatusCode::OK),
             ("gemini", "gemini-pro", StatusCode::BAD_REQUEST),
         ] {

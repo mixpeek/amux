@@ -250,6 +250,10 @@ pub(crate) async fn retire<F: Fleet>(
     }
     // Only our durable worktree lock is released. Never force, rm -rf, or
     // globally prune registrations: new drafts must make Git refuse removal.
+    // The harness receipt is local control-plane state that was already
+    // ingested before human acceptance; remove only that exact file so Git can
+    // still protect any real draft or generated artifact.
+    discard_harness_receipts(&w)?;
     let _ = git(&w.repo, &["worktree", "unlock", &w.path]).await;
     git(&w.repo, &["worktree", "remove", &w.path]).await?;
     if expected.exists()
@@ -330,12 +334,20 @@ async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), Stri
     {
         return Err("workspace belongs to another repository".into());
     }
-    if !git(&w.path, &["status", "--porcelain", "--untracked-files=all"])
-        .await?
-        .is_empty()
-    {
+    if !workspace::project_clean_status(&w.path).await?.is_empty() {
         return Err("workspace has uncommitted or untracked work; preserved".into());
     }
+    Ok(())
+}
+
+fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), String> {
+    let receipt = Path::new(&w.path).join(".amux/project-report.json");
+    match std::fs::remove_file(&receipt) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let _ = std::fs::remove_dir(Path::new(&w.path).join(".amux"));
     Ok(())
 }
 
@@ -533,6 +545,12 @@ mod tests {
         git(&f.w.repo, &["worktree", "lock", &f.w.path])
             .await
             .unwrap();
+        std::fs::create_dir_all(Path::new(&f.w.path).join(".amux")).unwrap();
+        std::fs::write(
+            Path::new(&f.w.path).join(".amux/project-report.json"),
+            r#"{"generation":1,"input_hash":"test","report":{"head":"ignored"}}"#,
+        )
+        .unwrap();
         assert_eq!(f.retire(&fleet).await.unwrap(), Outcome::Expired);
         assert_eq!(fleet.stops.load(Ordering::SeqCst), 1);
         assert!(!Path::new(&f.w.path).exists());

@@ -24,8 +24,8 @@ fn extension(asset: &Asset) -> anyhow::Result<&str> {
     );
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     anyhow::ensure!(
-        matches!(ext, "md" | "json" | "png" | "webm"),
-        "only passive Markdown, JSON, PNG and WebM assets supported"
+        matches!(ext, "md" | "json" | "txt" | "png" | "webm"),
+        "only passive Markdown, JSON, text, PNG and WebM assets supported"
     );
     anyhow::ensure!(
         asset.sha256.len() == 64
@@ -40,7 +40,7 @@ fn extension(asset: &Asset) -> anyhow::Result<&str> {
 pub fn validate_manifest(assets: &[Asset]) -> anyhow::Result<()> {
     anyhow::ensure!(
         !assets.is_empty(),
-        "report must include at least one retained Markdown, JSON, PNG or WebM asset"
+        "report must include at least one retained Markdown, JSON, text, PNG or WebM asset"
     );
     anyhow::ensure!(assets.len() <= 16, "at most 16 assets");
     for asset in assets {
@@ -90,7 +90,7 @@ pub async fn retain(
             hex::encode(Sha256::digest(&bytes)) == asset.sha256,
             "asset identity mismatch"
         );
-        if matches!(ext, "md" | "json") {
+        if matches!(ext, "md" | "json" | "txt") {
             let output = tokio::process::Command::new("git")
                 .args(["show", &format!("{}:{}", report.head, asset.path)])
                 .current_dir(&root)
@@ -155,7 +155,10 @@ pub fn register(c: &rusqlite::Connection, id: &str, assets: &[Retained]) -> rusq
                 &registry::ArtifactRow {
                     id: ulid::Ulid::new().to_string(),
                     task_id: id.into(),
-                    kind: if a.source.path.ends_with(".md") || a.source.path.ends_with(".json") {
+                    kind: if a.source.path.ends_with(".md")
+                        || a.source.path.ends_with(".json")
+                        || a.source.path.ends_with(".txt")
+                    {
                         "doc"
                     } else {
                         "screenshot"

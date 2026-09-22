@@ -225,7 +225,10 @@ fn waiting_label(reason: &str, e: &Execution) -> String {
         "cost_budget_reached" => "Cost budget reached",
         "budget_usage_unmeasured" => "Token usage unmeasured",
         "budget_cost_unmeasured" => "Cost unmeasured",
+        _ if reason.starts_with("refusing to spawn a worker:") => "Spawn blocked",
         _ if reason.starts_with("required_output:") => "Required output",
+        _ if reason == "executor_returned_without_result" => "Executor returned without result",
+        _ if reason == "executor_stopped_before_result" => "Executor stopped before result",
         _ if reason.starts_with("invalid_dependency:") => "Invalid dependency",
         _ if e.report.is_some()
             && e.waiting.as_deref() == Some(reason)

@@ -19,6 +19,22 @@ pub(crate) fn same_repository(left: &str, right: &str) -> bool {
         (Ok(left), Ok(right)) if left == right)
 }
 
+pub(crate) fn status_without_harness_receipts(raw: &str) -> String {
+    raw.lines()
+        .filter(|line| {
+            let path = line.get(3..).unwrap_or(line).trim();
+            path != ".amux/project-report.json" && !path.ends_with(" -> .amux/project-report.json")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(crate) async fn project_clean_status(repo: &str) -> Result<String, String> {
+    git(repo, &["status", "--porcelain", "--untracked-files=all"])
+        .await
+        .map(|raw| status_without_harness_receipts(&raw))
+}
+
 pub(crate) async fn git(repo: &str, args: &[&str]) -> Result<String, String> {
     let mut argv = vec!["-C", repo];
     argv.extend_from_slice(args);
@@ -300,6 +316,9 @@ pub(crate) fn validate_verification_command(
     workspace: &Workspace,
     command: &str,
 ) -> Result<(), String> {
+    if command.contains("$(") || command.contains('`') {
+        return Err("verification commands must be static candidate-relative commands; put dynamic logic in a committed script and call that script".into());
+    }
     for source in [&workspace.path, &workspace.repo] {
         let mut spellings = vec![source.clone()];
         if let Ok(path) = std::fs::canonicalize(source) {
@@ -355,7 +374,7 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
     }
     permit()?;
     let head = git(candidate, &["rev-parse", "HEAD"]).await?;
-    if !git(candidate, &["status", "--porcelain"]).await?.is_empty() {
+    if !project_clean_status(candidate).await?.is_empty() {
         return Err("worktree has uncommitted changes".into());
     }
     for command in commands {
@@ -385,7 +404,7 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
             ));
         }
         if git(candidate, &["rev-parse", "HEAD"]).await? != head
-            || !git(candidate, &["status", "--porcelain"]).await?.is_empty()
+            || !project_clean_status(candidate).await?.is_empty()
         {
             return Err("verification changed the reported worktree".into());
         }
@@ -438,10 +457,7 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
     permit: &F,
 ) -> Result<Option<String>, String> {
     permit()?;
-    if !git(&workspace.path, &["status", "--porcelain"])
-        .await?
-        .is_empty()
-    {
+    if !project_clean_status(&workspace.path).await?.is_empty() {
         return Err("Commit and verify the remaining workspace changes before integration".into());
     }
     git(&workspace.repo, &["fetch", "origin", "main"]).await?;
@@ -491,12 +507,12 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
         // hooks remain enabled, including the repository's pre-push gates.
         verify_commands(workspace,&candidate,verification,timeout,permit).await?;
         if git(&candidate,&["rev-parse","HEAD"]).await?!=merged
-            || !git(&candidate,&["status","--porcelain"]).await?.is_empty() {
+            || !project_clean_status(&candidate).await?.is_empty() {
             return Err("Validation modified the candidate; commit the required changes in the worker workspace".into());
         }
         permit()?;
         if git(&workspace.path,&["rev-parse","HEAD"]).await?!=head
-            || !git(&workspace.path,&["status","--porcelain"]).await?.is_empty() {
+            || !project_clean_status(&workspace.path).await?.is_empty() {
             return Err("Worker workspace changed during validation; integration deferred".into());
         }
         // Detect a stale parent BEFORE an expensive pre-push hook. A remote
@@ -622,10 +638,7 @@ pub(crate) async fn verification_ready(name: &str) -> Result<(), String> {
     if record["head"].as_str() != Some(head.as_str()) {
         return Err("The integration receipt covers an older worktree head; integrate the current commit first".into());
     }
-    if !git(&workspace.path, &["status", "--porcelain"])
-        .await?
-        .is_empty()
-    {
+    if !project_clean_status(&workspace.path).await?.is_empty() {
         return Err("The worktree has uncommitted changes; preserve, commit and integrate them before verification".into());
     }
     Ok(())
@@ -1351,6 +1364,44 @@ mod tests {
         assert_eq!(status.code(), Some(7));
         assert!(output.contains("assertion-failed"));
     }
+    #[test]
+    fn project_status_ignores_only_durable_harness_receipt() {
+        let raw = "\
+?? .amux/project-report.json
+?? .amux/notes.json
+ M src/lib.rs
+R  old-report.md -> .amux/project-report.json
+A  artifacts/project-report.json
+";
+        assert_eq!(
+            status_without_harness_receipts(raw),
+            "\
+?? .amux/notes.json
+ M src/lib.rs
+A  artifacts/project-report.json"
+        );
+    }
+
+    #[test]
+    fn verification_command_policy_rejects_dynamic_shell_expansion() {
+        let workspace = Workspace {
+            repo: "/tmp/source-repo".into(),
+            path: "/tmp/source-repo/.amux/worktrees/child".into(),
+            branch: "amux/fanout/child".into(),
+            base: "a".repeat(40),
+        };
+        assert!(validate_verification_command(&workspace, "python3 scripts/verify.py").is_ok());
+        let err = validate_verification_command(
+            &workspace,
+            r#"grep -Fx "worktree: $(pwd)" artifacts/report.md"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("static candidate-relative"));
+        let err =
+            validate_verification_command(&workspace, "test `pwd` = /tmp/source-repo").unwrap_err();
+        assert!(err.contains("static candidate-relative"));
+    }
+
     #[tokio::test]
     async fn conflicts_stay_local_and_an_incomplete_checkout_is_preserved() {
         let (d, w) = fixture().await;

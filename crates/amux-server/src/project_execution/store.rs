@@ -254,6 +254,7 @@ fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) ->
                 "retained_assets": plan.execution.retained_assets.len(),
                 "waiting_label": plan.waiting_label,
                 "waiting_reason": plan.waiting_reason,
+                "execution_waiting": plan.execution.waiting,
             }));
     }
     by_worker
@@ -275,10 +276,23 @@ fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) ->
                         .unwrap_or(0) as usize
                 })
                 .sum();
+            let blocked_reason = tasks
+                .iter()
+                .find_map(|t| {
+                    [
+                        t.get("waiting_reason").and_then(Value::as_str),
+                        t.get("execution_waiting").and_then(Value::as_str),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .find(|reason| reason.starts_with("refusing to spawn a worker:"))
+                })
+                .map(str::to_string);
             json!({
                 "name": worker,
                 "lifecycle": lifecycle,
-                "openable": lifecycle != "missing" && lifecycle != "expired",
+                "openable": lifecycle != "missing" && lifecycle != "expired" && blocked_reason.is_none(),
+                "blocked_reason": blocked_reason,
                 "resumable": lifecycle == "expired",
                 "task_count": tasks.len(),
                 "verified_tasks": verified_tasks,
@@ -594,7 +608,9 @@ CC_DIR=/tmp/project-worker
         let store = Store::open(&dir.path().join("db")).unwrap();
         store
             .write(|c| {
-                save(c, "example", 0, &policy(), "test").map_err(sql_error)?;
+                let mut p = policy();
+                p.enabled = true;
+                save(c, "example", 0, &p, "test").map_err(sql_error)?;
                 let execution = super::super::planner::Execution {
                     stage: "verified".into(),
                     worker: "project-worker".into(),
@@ -620,6 +636,7 @@ CC_DIR=/tmp/project-worker
         let worker = &view["workers"][0];
         assert_eq!(worker["name"], "project-worker");
         assert_eq!(worker["lifecycle"], "expired");
+        assert_eq!(worker["openable"], false);
         assert_eq!(worker["resumable"], true);
         assert_eq!(worker["task_count"], 1);
         assert_eq!(worker["verified_tasks"], 1);
@@ -630,6 +647,52 @@ CC_DIR=/tmp/project-worker
         assert_eq!(worker["workspace"]["branch"], "amux/fanout/project-worker");
         assert_eq!(worker["integration"]["status"], "integrated");
         assert_eq!(worker["tasks"][0]["id"], "A-1");
+    }
+
+    #[test]
+    fn project_board_does_not_open_spawn_blocked_workers() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(
+            dir.path().join("sessions/spawn-blocked.env"),
+            "CC_PROVIDER=codex
+CC_PROJECT=example
+CC_WORKTREE=1
+CC_EPHEMERAL=1
+CC_DIR=/tmp/spawn-blocked
+",
+        )
+        .unwrap();
+        let store = Store::open(&dir.path().join("db")).unwrap();
+        store
+            .write(|c| {
+                let mut p = policy();
+                p.enabled = true;
+                save(c, "example", 0, &p, "test").map_err(sql_error)?;
+                let execution = super::super::planner::Execution {
+                    stage: "waiting".into(),
+                    worker: "spawn-blocked".into(),
+                    waiting: Some("refusing to spawn a worker: test home requires explicit allowance".into()),
+                    ..Default::default()
+                };
+                c.execute(
+                    r#"INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria,execution_state) VALUES('A-1','Outcome','doing','doc','example',1,2,'Review artifact','["artifact exists"]',?1)"#,
+                    [serde_json::to_string(&execution).unwrap()],
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let view = board(&store.read().unwrap(), "example").unwrap();
+        let worker = &view["workers"][0];
+        assert_eq!(worker["name"], "spawn-blocked");
+        assert_eq!(worker["lifecycle"], "active");
+        assert_eq!(worker["openable"], false);
+        assert!(worker["blocked_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("refusing to spawn"));
+        assert_eq!(worker["tasks"][0]["waiting_label"], "Spawn blocked");
     }
 
     #[test]

@@ -586,6 +586,7 @@ let _expiredWorkerInventoryLoading = false;
 let archivedExpanded = false;
 let gitInfo = {};  // {sessionName: {branch, repo, _conflict}}
 let _sessionLoadError = null; // Last failed worker read; a response is not necessarily data.
+let _cachedWorkersVisible = false; // Explicit opt-in; stale cache must not masquerade as live state.
 let _initialLoad = true;   // true until first data arrives from server
 let _lastDataTime = null;  // timestamp of last successful data
 // AC-275: when NO data has ever arrived, _lastDataTime stays null and every
@@ -4676,6 +4677,7 @@ function _sessionReadFailed(status, reason) {
 function _sessionReadRecovered() {
   const changed = !!_sessionLoadError;
   _sessionLoadError = null;
+  _cachedWorkersVisible = false;
   _sessionRetryAttempt = 0;
   clearTimeout(_sessionRetryTimer);
   _sessionRetryTimer = null;
@@ -4709,7 +4711,10 @@ function _sessionReadNotice() {
   const auth = _sessionLoadError.status === 401;
   const pending = offlineQueue.length + drafts.length;
   const offlineCaps = sessions.length
-    ? ' The worker list is showing the last saved copy.' + (pending
+    ? (_cachedWorkersVisible
+        ? ' The worker list is showing an explicitly opened cached copy.'
+        : ' The cached worker list is hidden so stale workers cannot look live.')
+      + (pending
         ? ' ' + pending + ' queued operation' + (pending === 1 ? '' : 's') + ' will sync automatically when the server returns.'
         : ' Commands you send will be queued and delivered when the server returns.')
     : '';
@@ -4732,6 +4737,39 @@ function _sessionReadNotice() {
     + '<button type="button" class="btn" onclick="_retrySessionRead()">Retry connection</button>'
     + '<details><summary>Connection details</summary><code>GET /api/sessions · '
     + errDetail + ' · ' + esc(_sessionLoadError.reason) + '</code></details></div>';
+}
+
+
+function _showCachedWorkers() {
+  _cachedWorkersVisible = true;
+  render();
+}
+
+function _hideCachedWorkers() {
+  _cachedWorkersVisible = false;
+  render();
+}
+
+function _staleWorkerCacheGate(count) {
+  const n = Number(count || 0);
+  const errDetail = _sessionLoadError && _sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error';
+  return '<div class="offline-cache-gate" role="alert">'
+    + '<div><strong>Live worker state is unavailable.</strong>'
+    + '<p>' + errDetail + ' on GET /api/sessions. Cached workers are hidden so old statuses, boards, and actions do not look current.</p>'
+    + '<p class="offline-cache-gate-meta">' + n + ' cached worker' + (n === 1 ? '' : 's') + ' retained locally for inspection if you need them.</p></div>'
+    + '<div class="offline-cache-gate-actions">'
+    + '<button type="button" class="btn primary" onclick="_retrySessionRead()">Retry connection</button>'
+    + (n ? '<button type="button" class="btn" onclick="_showCachedWorkers()">Show cached copy</button>' : '')
+    + '<a class="btn" href="/api/_clear_sw">Clear cache &amp; reload</a>'
+    + '</div></div>';
+}
+
+function _staleWorkerListBanner() {
+  return '<div class="offline-cache-banner" role="status">'
+    + '<strong>Showing cached workers.</strong> Live reads are still failing, so statuses, board counts, and actions may be stale.'
+    + ' <button type="button" class="btn" onclick="_hideCachedWorkers()">Hide cached copy</button>'
+    + ' <button type="button" class="btn primary" onclick="_retrySessionRead()">Retry connection</button>'
+    + '</div>';
 }
 
 // Locked-out browsers use the same Connect actions, not a credential URL.
@@ -4826,6 +4864,7 @@ async function _fetchSessionsOnce() {
     if (firstLoad) render();
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
+    _cachedWorkersVisible = false;
     if (j !== lastSessionsJSON) {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
@@ -5756,6 +5795,12 @@ function render() {
   _renderGroupsTab();
   const stripEl = document.getElementById('grp-scope-strip');
   if (stripEl && stripEl.innerHTML) { stripEl.innerHTML = ''; stripEl._want = ''; }
+  if (_sessionLoadError && sessions.length && !_cachedWorkersVisible) {
+    el.innerHTML = _staleWorkerCacheGate(sessions.length);
+    _restoreCardFocus(focusedId);
+    return;
+  }
+  const staleWorkerPrefix = (_sessionLoadError && _cachedWorkersVisible) ? _staleWorkerListBanner() : '';
   const _nonArchivedCount = sessions.filter(s => !s.archived && s.lifecycle !== 'paused').length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
@@ -6004,7 +6049,7 @@ function render() {
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     let sortedFiltered;
     sortedFiltered = [...filtered].sort(_sortFnFor(sortMode));
-    el.innerHTML = draftCards + sortedFiltered.map(_renderSessionCard).join('');
+    el.innerHTML = staleWorkerPrefix + draftCards + sortedFiltered.map(_renderSessionCard).join('');
     _checkWorkerStatusOrder();
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
@@ -6067,14 +6112,14 @@ function render() {
           ${!col ? `<div class="tag-group-body">${items.map(_renderSessionCard).join('')}</div>` : ''}
         </div>`;
       });
-      el.innerHTML = draftCards + groupHtml;
+      el.innerHTML = staleWorkerPrefix + draftCards + groupHtml;
     } else {
-      el.innerHTML = draftCards + (nonEmpty.length ? buckets[nonEmpty[0].key] : []).map(_renderSessionCard).join('');
+      el.innerHTML = staleWorkerPrefix + draftCards + (nonEmpty.length ? buckets[nonEmpty[0].key] : []).map(_renderSessionCard).join('');
     }
   } else {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = [...filtered].sort(_sortFnFor(sortMode));
-    el.innerHTML = draftCards + flatList.map(_renderSessionCard).join('');
+    el.innerHTML = staleWorkerPrefix + draftCards + flatList.map(_renderSessionCard).join('');
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
   }
   _checkWorkerStatusOrder();
@@ -20748,7 +20793,7 @@ function _xlsxShowSheet(i) {
 }
 
 async function openFilePreview(path, options = {}) {
-  if (options.readOnly && !/\.(md|json|png|webm)$/.test(path)) return;
+  if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
   // the node's metadata (model / date / cached), lets you scroll the run
   // versions, and RUNS THE CHAIN on open — none of which the generic file body
@@ -35017,6 +35062,7 @@ function connectSSE() {
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
           sessions = msg.payload;
+          _cachedWorkersVisible = false;
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
           try { localStorage.setItem('amux_sessions_cache', j); }
@@ -45000,10 +45046,22 @@ function _projectShortDate(ts) {
 function _projectCardUpdated(card) { return Number(card.updated || card.created || 0); }
 function _projectAssets(data) {
   const assets=[];
+  const seen=new Set();
+  const add=(item)=>{
+    const asset=item?.asset || {};
+    const key=asset.path || asset.source?.sha256 || asset.source?.path || '';
+    if(key && seen.has(key)) return;
+    if(key) seen.add(key);
+    assets.push(item);
+  };
+  const reviewAssets=data.acceptance?.review_assets||[];
+  if(reviewAssets.length) {
+    reviewAssets.forEach((entry,index)=>add({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:'Project acceptance'}}));
+    return assets;
+  }
   (data.cards||[]).forEach(card=>{
-    (card.execution_plan?.execution?.retained_assets||[]).forEach((asset,index)=>assets.push({card,asset,index}));
+    (card.execution_plan?.execution?.retained_assets||[]).forEach((asset,index)=>add({card,asset,index}));
   });
-  (data.acceptance?.review_assets||[]).forEach((entry,index)=>assets.push({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:'Project acceptance'}}));
   return assets;
 }
 function _projectRenderOverview(data) {
@@ -45023,7 +45081,7 @@ function _projectRenderOverview(data) {
   const recent=cards.slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<tr><td>${esc(c.id)}</td><td>${esc(_projectClip(c.title,54))}</td><td><span class="project-status-chip ${esc(c.phase)}">${esc(c.phase)}</span></td><td>${esc(_projectShortDate(_projectCardUpdated(c)))}</td></tr>`).join('');
   const runs=cards.filter(c=>c.execution_plan?.execution?.stage || c.execution_plan?.execution?.report).slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<li><span class="project-run-dot ${c.phase==='verified'?'ok':''}"></span><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.execution?.stage || c.phase,40))}</span><small>${esc(_projectShortDate(_projectCardUpdated(c)))}</small></li>`).join('');
   const deps=cards.filter(c=>(c.depends_on||[]).length || c.execution_plan?.waiting_label || c.execution_plan?.waiting_reason).slice(0,4).map(c=>`<li><button class="project-link" onclick="_projectSetTab('dependencies')">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.waiting_label || ((c.depends_on||[]).length+' explicit dependencies'),80))}</span></li>`).join('');
-  const evidenceSummary=['md','json','png','webm'].map(ext=>[ext,assets.filter(a=>(a.asset?.source?.path||a.asset?.path||'').endsWith('.'+ext)).length]).filter(x=>x[1]).map(([ext,n])=>`<li><span>${esc(ext.toUpperCase())} artifacts</span><strong>${n}</strong></li>`).join('') || '<li><span>No retained artifacts yet</span><strong>0</strong></li>';
+  const evidenceSummary=['md','json','txt','png','webm'].map(ext=>[ext,assets.filter(a=>(a.asset?.source?.path||a.asset?.path||'').endsWith('.'+ext)).length]).filter(x=>x[1]).map(([ext,n])=>`<li><span>${esc(ext.toUpperCase())} artifacts</span><strong>${n}</strong></li>`).join('') || '<li><span>No retained artifacts yet</span><strong>0</strong></li>';
   const repo=(policy.repository||'').replace(/^\/Users\/[^/]+/,'~');
   const context=`<dl class="project-context"><dt>Repository</dt><dd>${esc(repo||'Not configured')}</dd><dt>Checkout</dt><dd>${policy.worktree===false?'Shared checkout':'Dedicated worktrees'}</dd><dt>Planner</dt><dd>${esc([policy.coordinator?.provider,policy.coordinator?.model,policy.coordinator?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Executor</dt><dd>${esc([policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Gate</dt><dd>${esc(policy.verify_command||'Not configured')}</dd></dl>`;
   const html=`<section class="project-overview-card wide"><h3>Project timeline</h3><div class="project-timeline">${timeline}</div></section><section class="project-overview-card"><h3>Project context</h3>${context}</section><section class="project-overview-card wide"><div class="project-card-heading"><h3>Tasks</h3><button class="project-link" onclick="_projectSetTab('tasks')">View kanban →</button></div><table class="project-task-table"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Updated</th></tr></thead><tbody>${recent||'<tr><td colspan="4">No tasks yet</td></tr>'}</tbody></table></section><section class="project-overview-card"><div class="project-card-heading"><h3>Recent runs</h3><button class="project-link" onclick="_projectSetTab('tasks')">View all →</button></div><ul class="project-run-list">${runs||'<li><span>No runs yet</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Dependencies</h3><button class="project-link" onclick="_projectSetTab('dependencies')">View all →</button></div><ul class="project-run-list">${deps||'<li><span>No active dependency holds</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Evidence summary</h3><button class="project-link" onclick="_projectSetTab('evidence')">View all →</button></div><ul class="project-evidence-summary">${evidenceSummary}</ul></section><section class="project-overview-card"><h3>Review note</h3><p>${esc(acc.reason ? acc.reason.replaceAll('_',' ') : (acc.state ? 'Acceptance state: '+acc.state : 'Whole-project acceptance has not run yet.'))}</p></section>`;
@@ -45080,6 +45138,17 @@ function _projectWorkerAction(worker,runtime) {
   if(!name) return '';
   if(runtime.lifecycle==='expired' || worker?.resumable) return `<button class="btn" onclick="_projectResumeWorker('${escJs(name)}')">Resume and open</button>`;
   if(runtime.lifecycle==='missing') return '<span class="project-muted">No worker env remains; retained task evidence is still listed.</span>';
+  const hold=worker?.blocked_reason || (worker?.tasks||[]).find(t=>t.waiting_reason)?.waiting_reason || '';
+  if(worker?.openable===false) {
+    const task=(worker?.tasks||[]).find(t=>t.waiting_reason)?.id || (worker?.tasks||[])[0]?.id || '';
+    const label=(worker?.tasks||[]).find(t=>t.waiting_label)?.waiting_label || 'Worker not openable';
+    const openTask=task?`<button class="btn" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(task)}'),0)">Open task diagnostics</button>`:'';
+    return `<span class="project-muted" title="${esc(hold)}">${esc(label)}</span>${openTask}`;
+  }
+  if(!runtime.running && hold) {
+    const task=(worker?.tasks||[]).find(t=>t.waiting_reason)?.id || '';
+    return `<span class="project-muted" title="${esc(hold)}">${esc((worker?.tasks||[]).find(t=>t.waiting_label)?.waiting_label || 'Waiting')}</span>`+(task?`<button class="btn" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(task)}'),0)">Open task diagnostics</button>`:'');
+  }
   return `<button class="btn" onclick="openPeek('${escJs(name)}')">Open worker</button>`;
 }
 function _projectRenderWorkersPanel(data) {
@@ -45377,13 +45446,13 @@ function _projectAcceptanceHtml(acc) {
     const result=c.result&&typeof c.result==='object'?c.result:{};
     const state=result.state||'pending';
     const evidence=Array.isArray(result.evidence)?result.evidence:[];
-    const links=evidence.map((a,i)=>a?.path&&/\.(md|json|png|webm)$/.test(a.path)?'<button class="btn" onclick="_projectAcceptanceAsset(\''+escJs(c.id)+'\','+i+')">'+esc(a.source?.path||a.path.split('/').pop())+'</button>':'').join(' ');
+    const links=evidence.map((a,i)=>a?.path?'<button class="btn" onclick="_projectAcceptanceAsset(\''+escJs(c.id)+'\','+i+')">'+esc(a.source?.path||a.path.split('/').pop())+'</button>':'').join(' ');
     const review=c.verifier?.type==='human' && acc.state==='awaiting_human' && !result.approval
       ? '<button class="btn primary" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'approve\')">Approve</button> <button class="btn" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'reject\')">Reject</button>' : '';
     return '<li><strong>'+esc(c.requirement)+'</strong> · '+esc(state)+(links?'<div>'+links+'</div>':'')+(result.output?'<details><summary>Verifier output</summary><pre>'+esc(_projectClip(result.output,4000))+'</pre></details>':'')+review+'</li>';
   }).join('');
   const produced=Array.isArray(acc.review_assets)?acc.review_assets:[];
-  const artifacts=produced.map((x,i)=>x?.asset?.source?.path&&/\.(md|json|png|webm)$/.test(x.asset.source.path)?'<button class="btn project-report-asset" onclick="_projectAcceptanceRetainedAsset('+i+')">'+esc(x.task+' · '+x.asset.source.path)+'</button>':'').join(' ');
+  const artifacts=produced.map((x,i)=>x?.asset?.source?.path?'<button class="btn project-report-asset" onclick="_projectAcceptanceRetainedAsset('+i+')">'+esc(x.task+' · '+x.asset.source.path)+'</button>':'').join(' ');
   const rerun=['failed','operational_failure'].includes(acc.state)?'<button class="btn" onclick="_projectAcceptanceRerun()">Rerun whole-project acceptance</button>':'';
   const hold=acc.state==='awaiting_human'?'<p class="project-wait">Completed executors are stopped. Their worker records, terminals and worktrees remain available until this review is approved.</p>':'';
   const retirement=acc.executor_retirement;
@@ -45401,14 +45470,15 @@ async function _projectAcceptanceRerun() {
 function _projectAcceptanceAsset(criterion,index) {
   const c=_projectsData?.acceptance?.criteria?.find(x=>x.id===criterion);
   const a=c?.result?.evidence?.[index];
-  if(a?.path && /\.(md|json|png|webm)$/.test(a.path)) openFilePreview(a.path,{readOnly:true});
+  _projectOpenArtifactPath(a?.path);
+}
+function _projectOpenArtifactPath(path) {
+  if(!path) return;
+  openFilePreview(path,{readOnly:true});
 }
 function _projectAcceptanceRetainedAsset(index) {
   const a=_projectsData?.acceptance?.review_assets?.[index]?.asset;
-  if(!a || !/\.(md|json|png|webm)$/.test(a.source?.path||'') || !/^[a-f0-9]{64}$/.test(a.source?.sha256||'')) return;
-  const ext=a.source.path.split('.').pop();
-  if(!a.path.endsWith('/artifacts/project-reports/'+a.source.sha256+'.'+ext)) return;
-  openFilePreview(a.path,{readOnly:true});
+  _projectOpenArtifactPath(a?.path);
 }
 function _projectSelectTask(id) {
   if(!_projectsData) return;
@@ -45500,15 +45570,12 @@ function _projectInspectorRender(data) {
 }
 function _projectAssetLinks(card) {
   const assets=card.execution_plan.execution.retained_assets || [];
-  return assets.map((a,i)=>/\.(md|json|png|webm)$/.test(a.source?.path || '') && /^[a-f0-9]{64}$/.test(a.source?.sha256 || '') ? '<button class="btn project-report-asset" data-asset="'+i+'" onclick="_projectAssetPreview(\''+escJs(card.id)+'\','+i+')">'+esc(a.source.path)+'</button>' : '').join('');
+  return assets.map((a,i)=>a.source?.path ? '<button class="btn project-report-asset" data-asset="'+i+'" onclick="_projectAssetPreview(\''+escJs(card.id)+'\','+i+')">'+esc(a.source.path)+'</button>' : '').join('');
 }
 function _projectAssetPreview(id,index) {
   const card=_projectsData?.cards?.find(c=>c.id===id);
   const a=card?.execution_plan.execution.retained_assets?.[index];
-  if(!a || !/\.(md|json|png|webm)$/.test(a.source?.path || '') || !/^[a-f0-9]{64}$/.test(a.source.sha256)) return;
-  const ext=a.source.path.split('.').pop();
-  if(!a.path.endsWith('/artifacts/project-reports/'+a.source.sha256+'.'+ext)) return;
-  openFilePreview(a.path,{readOnly:true});
+  _projectOpenArtifactPath(a?.path);
 }
 let _projectMigration = null;
 async function _projectMigrationPreview() {

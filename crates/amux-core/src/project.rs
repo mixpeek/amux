@@ -107,7 +107,7 @@ pub fn valid_evidence_path(path: &str) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
         && p.extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| matches!(e, "md" | "json" | "png" | "webm"))
+            .is_some_and(|e| matches!(e, "md" | "json" | "txt" | "png" | "webm"))
 }
 impl AcceptanceContract {
     pub fn validate(&self) -> Result<(), String> {
@@ -170,7 +170,7 @@ impl AcceptanceContract {
             }
             if c.evidence.len() > 8 || c.evidence.iter().any(|e| !valid_evidence_path(e)) {
                 return Err(format!(
-                    "{}: evidence must be at most 8 relative md/json/png/webm paths",
+                    "{}: evidence must be at most 8 relative md/json/txt/png/webm paths",
                     c.id
                 ));
             }
@@ -314,7 +314,11 @@ mod tests {
         for path in ["/etc/passwd", "../x.md", "a/../b.md", "x.sh", "", "x"] {
             assert!(!valid_evidence_path(path), "{path}");
         }
-        assert!(valid_evidence_path("out/report.md") && valid_evidence_path("shot.png"));
+        assert!(
+            valid_evidence_path("out/report.md")
+                && valid_evidence_path("notes/mobile.txt")
+                && valid_evidence_path("shot.png")
+        );
         let mut long = ok.clone();
         long.criteria[0].verifier = ContractVerifier::Command {
             id: "unit-tests".into(),

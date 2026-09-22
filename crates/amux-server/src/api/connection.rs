@@ -3,7 +3,7 @@
 use super::AppState;
 use axum::{
     extract::{OriginalUri, State},
-    http::{HeaderMap, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     Json,
 };
@@ -68,12 +68,11 @@ fn same_origin(headers: &HeaderMap, uri: &Uri) -> bool {
     uri.query().is_none()
 }
 fn owner(state: &AppState, headers: &HeaderMap) -> bool {
-    // No locality, worker identity, member cookie or query credential can
-    // authorize a certificate change. Reuse the existing credential/session.
+    // No locality, worker identity or member cookie can authorize a certificate
+    // change by itself. Explicit owner proof wins even when the same browser
+    // still carries an old local-member cookie from invite testing.
     super::auth::has_owner_token(state, headers, &Uri::from_static("/"))
-        || (!super::org::is_verified_local_member(headers)
-            && !super::org::has_local_member_cookie(headers)
-            && super::static_files::owner_session_status(state, headers) == "valid")
+        || super::static_files::owner_session_status(state, headers) == "valid"
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +108,10 @@ pub async fn sign_in(
     if let Some(cookie) = established.headers().get("set-cookie") {
         response.headers_mut().insert("set-cookie", cookie.clone());
     }
+    response.headers_mut().append(
+        "set-cookie",
+        HeaderValue::from_static("amux_member=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"),
+    );
     response
 }
 async fn status(
@@ -319,15 +322,28 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["reload"], "/api/_clear_sw");
-        let cookie = headers["set-cookie"].to_str().unwrap();
-        assert!(cookie.contains("HttpOnly; Secure; SameSite=Lax"));
-        assert!(!cookie.contains("owner-secret"));
+        let cookies: Vec<_> = headers
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(cookies.len(), 2);
+        let owner_cookie = cookies
+            .iter()
+            .find(|cookie| cookie.starts_with("__Host-amux_owner="))
+            .expect("owner session cookie");
+        assert!(owner_cookie.contains("HttpOnly; Secure; SameSite=Lax"));
+        assert!(!owner_cookie.contains("owner-secret"));
+        assert!(cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("amux_member=;")));
+        let both_cookies = format!("amux_member=revoked-member; {owner_cookie}");
         let (_, _, owner) = call(
             &router,
             "/api/connection/security",
             None,
             None,
-            Some(cookie),
+            Some(&both_cookies),
         )
         .await;
         assert_eq!(owner["auth"], "owner");
@@ -338,7 +354,7 @@ mod tests {
             "/api/connection/security",
             None,
             None,
-            Some(cookie),
+            Some(owner_cookie),
         )
         .await;
         assert_eq!(revoked["auth"], "sign_in_required");

@@ -25,7 +25,7 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -165,14 +165,56 @@ pub fn retirement_allowed(conn: &Connection, project: &str) -> anyhow::Result<Va
     )
 }
 
-fn review_assets(conn: &Connection, project: &str) -> anyhow::Result<Vec<Value>> {
+fn asset_key(asset: &Value) -> Option<String> {
+    asset
+        .get("path")
+        .and_then(Value::as_str)
+        .or_else(|| asset.pointer("/source/sha256").and_then(Value::as_str))
+        .or_else(|| asset.pointer("/source/path").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn review_assets(
+    conn: &Connection,
+    project: &str,
+    acceptance: Option<&Value>,
+) -> anyhow::Result<Vec<Value>> {
     let mut assets = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(acceptance) = acceptance {
+        for result in acceptance["results"].as_array().into_iter().flatten() {
+            let criterion = result["criterion"].as_str().unwrap_or("acceptance");
+            for asset in result["evidence"].as_array().into_iter().flatten() {
+                let Some(key) = asset_key(asset) else {
+                    continue;
+                };
+                if !seen.insert(key) {
+                    continue;
+                }
+                assets.push(json!({
+                    "task": format!("acceptance:{criterion}"),
+                    "title": result["criterion"].as_str().unwrap_or("Project acceptance evidence"),
+                    "worker": "project-acceptance",
+                    "criterion": criterion,
+                    "acceptance": true,
+                    "asset": asset,
+                }));
+            }
+        }
+        return Ok(assets);
+    }
     for row in bs::project_issues(conn, project)? {
         if row.item_type == "epic" {
             continue;
         }
         let execution = planner::execution(conn, &row.id)?;
         for asset in execution.retained_assets {
+            let asset = json!(asset);
+            if let Some(key) = asset_key(&asset) {
+                if !seen.insert(key) {
+                    continue;
+                }
+            }
             assets.push(
                 json!({"task":row.id,"title":row.title,"worker":execution.worker,"asset":asset}),
             );
@@ -266,14 +308,14 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         return Ok(
             json!({"measured":true,"n_considered":0,"state":"not_configured",
             "reason":"No acceptance contract is configured. Task Verified is per task and is not project acceptance.",
-            "review_assets":review_assets(conn,&p.name)?}),
+            "review_assets":review_assets(conn,&p.name,None)?}),
         );
     };
     let intent = intent_revision(conn, &p.name)?;
     let is_settled = settled(conn, &p.name)?;
     let main = observed_main(conn, &p.name)?.and_then(|o| o["main"].as_str().map(String::from));
     let mut view = json!({"measured":true,"n_considered":contract.criteria.len(),"contract_revision":contract.revision,"intent":intent,"main":main,
-        "review_assets":review_assets(conn,&p.name)?,
+        "review_assets":review_assets(conn,&p.name,None)?,
         "criteria":criteria_view(contract, None, &HashMap::new())});
     let pending = |view: &mut Value, reason: &str| {
         view["state"] = json!("pending");
@@ -332,6 +374,7 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         approvals.insert(a["criterion"].as_str().unwrap_or_default().to_string(), a);
     }
     view["criteria"] = json!(criteria_view(contract, Some(result), &approvals));
+    view["review_assets"] = json!(review_assets(conn, &p.name, Some(result))?);
     view["evaluated_main"] = result["main"].clone();
     view["finished"] = result["finished"].clone();
     let humans: Vec<&str> = contract
@@ -1113,6 +1156,50 @@ mod tests {
             assert!(!record(c, "p", &contract, &intent, &stale).unwrap().applied);
             assert_eq!(events(c, "p", "project.acceptance", None).unwrap().len(), 2);
             Ok(WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn review_assets_include_acceptance_evidence_not_declared_by_executor_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            let p = project(c, Some(two()));
+            let contract = p.policy.acceptance.clone().unwrap();
+            verified(c, "T-1");
+            observe(c, &p, "main1").unwrap();
+            let s = status(c, &p).unwrap();
+            let fp = s["fingerprint"].as_str().unwrap().to_string();
+            let intent = intent_revision(c, "p").unwrap();
+            let json_asset = json!({"path":"/retained/report.json","source":{"path":"artifacts/report.json","sha256":"b".repeat(64)},"head":"main1"});
+            let md_asset = json!({"path":"/retained/report.md","source":{"path":"artifacts/report.md","sha256":"a".repeat(64)},"head":"main1"});
+            let awaiting = result(
+                &fp,
+                "awaiting_human",
+                &contract,
+                "main1",
+                &intent,
+                json!([
+                    {"criterion":"unit","verifier":"unit-tests","type":"command","command":"cargo test","state":"passed","exit":0,"evidence":[md_asset.clone()]},
+                    {"criterion":"owner","verifier":"owner-review","type":"human","state":"pending_human","evidence":[md_asset,json_asset]}
+                ]),
+            );
+            assert!(record(c, "p", &contract, &intent, &awaiting)
+                .unwrap()
+                .applied);
+            let s = status(c, &p).unwrap();
+            let sources: Vec<_> = s["review_assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|entry| entry["asset"]["source"]["path"].as_str())
+                .collect();
+            assert_eq!(sources, vec!["artifacts/report.md", "artifacts/report.json"]);
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .unwrap();
     }
