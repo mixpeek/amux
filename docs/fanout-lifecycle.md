@@ -79,7 +79,7 @@ A fan-out starts only in its own durable `amux/fanout/<worker>` branch and `~/.a
 
 The worker configures its repository check through `PATCH /api/sessions/<worker>/config` with `worktree_verify` (a shell command). New children inherit their parent's configured command. No model is called to discover commands or poll for progress.
 
-At a confirmed turn boundary, integration becomes eligible when there is no active implementation and the completed candidates in Review/Done/Verified have evidence and resolved prerequisite edges. This allows completed prerequisites to be integrated and verified before their same-board successors run. Retirement still requires the entire board to reach its terminal gates. The harness then:
+At a confirmed turn boundary, integration becomes eligible when there is no active implementation and the completed candidates in Review/Done/Verified have evidence and resolved prerequisite edges. This allows completed prerequisites to be integrated and verified before their same-board successors run. Automatic decommissioning requires every non-archived card to be Verified, including epics and non-code tasks. Done alone does not authorize disposal. The harness then:
 
 1. Captures the board revisions and clean immutable branch head.
 2. Fetches main and creates a separate temporary merge candidate.
@@ -87,7 +87,35 @@ At a confirmed turn boundary, integration becomes eligible when there is no acti
 4. Rechecks lifecycle, board revisions, candidate and worker checkout.
 5. Uses a normal, non-force push to remote main and verifies ancestry by fetch.
 
-One candidate runs at a time. A remote race refuses the push and retains all work. Pause or changed board admission cancels validation and its subprocess group; validation output is bounded. Conflicts and failed checks return a deduplicated instruction to that same worker. Successful integration does not manufacture board evidence, acknowledge acceptance criteria, or bypass Verified gates. Retirement requires the whole board's terminal gates and an unchanged clean integrated head; the workspace is retained.
+One candidate runs at a time. A remote race refuses the push and retains all work. Pause or changed board admission cancels validation and its subprocess group; validation output is bounded. Conflicts and failed checks return a deduplicated instruction to that same worker. Successful integration does not manufacture board evidence, acknowledge acceptance criteria, or bypass Verified gates.
+## Automatic decommissioning
+
+After every non-archived card is Verified, the completion sweep checks for an
+idle provider boundary with no live child/background work or queued input. It
+requires an integration receipt for the exact clean worker head and fetches
+remote main again to prove that head is still included. Paused, archived and
+isolated workers remain excluded. Empty boards and Done-only boards do not
+qualify, and no model calls are used to decide retirement.
+
+The sweep stops the provider through the normal lifecycle path, rechecks the
+board/configuration and checkout, and removes only this worker's worktree using
+non-force Git removal. Both the directory and registration must be gone before
+the worker configuration becomes `.env.reaped` (Expired in Orchestrations).
+Board records, output references, integration evidence, conversation metadata
+and the branch ref remain available. Existing retired workers with leftover
+worktrees receive the same checks before cleanup.
+
+New tasks, queued input, drafts, unmerged commits, inaccessible main or failed
+cleanup defer retirement. A board change or failed finalization during cleanup
+restores the clean worktree instead of expiring a worker that received new work.
+Git/network operations stay outside the SQLite writer; the final board check,
+audit event and configuration rename are serialized against board/input writes.
+Logs expose `fanout_decommissioned`, `fanout_retirement_deferred`,
+`fanout_retirement_changed` and `fanout_retirement_scan_failed`. The board-drive
+report counts only completed disposal as `reaped_done`.
+
+Stop and pause continue to preserve worktrees. Automatic completion cleanup is
+conditional on these proofs; it is not the forceful manual-delete path.
 
 ## Existing workspaces
 
@@ -105,3 +133,5 @@ validation before mutation and full coordinator-board projection. It uses an
 isolated test home that refuses actual provider starts. `e2e/orchestration-roles.spec.ts`
 covers the form, partial launch/reload/retry and role rendering on desktop/phone
 with explicit API fixtures. These checks do not claim a paid live-model run.
+
+`fanout_retirement::tests` uses real local Git remotes/worktrees and a provider lifecycle seam to exercise disposal, idle stop, complete-board gates, stale main/receipts, protected and busy lanes, queued input, drafts, stop failures, finalization rollback and restart recovery. No paid models are started.

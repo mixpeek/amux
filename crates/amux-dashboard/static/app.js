@@ -3073,7 +3073,16 @@ async function _runSyncBanner(quiet = false) {
         }
       }
       if (!r.ok) {
-        if (!(r.status >= 500 || [401, 408, 429].includes(r.status))) q.state = 'blocked';
+        // 5xx is retryable because a server that FAILED may succeed next time.
+        // 501 and 505 are not that: they are the server saying the capability
+        // does not exist here, which no number of retries can change. Treating
+        // them as transient produced AMUX-4910 — one tick of a "Use worktree"
+        // checkbox, whose POST /api/sessions the server answers 501, replayed
+        // 845 times at a flat 4/min for over three hours, and generated enough
+        // 5xx on its own to trip the route.mounted_routes_answer invariant
+        // (AMUX-4900) where it was then filed as a server fault.
+        if (_outboxPermanentRefusal(r.status)
+          || !(r.status >= 500 || [401, 408, 429].includes(r.status))) q.state = 'blocked';
         throw new Error(await _apiErrText(r));
       }
       if (/\/api\/board\/[^/?]+$/.test(q.url) && (q.options.method || '').toUpperCase() === 'PATCH') {
@@ -3218,6 +3227,33 @@ function _outboxMessageId(q) {
 function _outboxUncertainMessage(q) {
   return !!_outboxMessageId(q) && (q.delivery_uncertain === true ||
     (q.state === 'blocked' && /acceptance is uncertain|delivery unconfirmed/i.test(q.error || '')));
+}
+// A 5xx the outbox must NOT retry, because it is a statement about the
+// CAPABILITY rather than about this attempt (AMUX-4910).
+//
+// 501 Not Implemented and 505 HTTP Version Not Supported both mean "this server
+// does not do that", so the same request gets the same answer forever. Every
+// other 5xx means an attempt failed and the next one may not.
+//
+// DELIBERATELY DEFINED HERE, between _outboxMessageId and the queue-modal
+// section, because e2e/outbox-acceptance-recovery.test.mjs slices app.js by
+// TEXT MARKERS and evaluates the slice in a vm. A name the slice calls but
+// does not define becomes a throwing stub, surfacing as a ReferenceError
+// blamed on the wrong place; that file records it costing eight consecutive
+// red `rust` runs on main and silently stopping every cloud deploy with them.
+// Defining this above _outboxMessageId reproduces that exactly.
+//
+// AND DO NOT QUOTE THE END MARKER IN A COMMENT HERE. Writing it out verbatim
+// makes THIS comment the first match, so the slice ends above instead of below
+// and the same nine tests go red. Cost me one iteration to find, which is the
+// whole hazard in miniature: a comment describing a text boundary became the
+// text boundary.
+//
+// A NAMED FUNCTION so the test drives the SHIPPED predicate. Inlining the
+// status check would leave a test free to restate it, and a restatement stays
+// green when the real rule changes (ethos rule 7).
+function _outboxPermanentRefusal(status) {
+  return status === 501 || status === 505;
 }
 // 10 minutes. After this, stop auto-checking and let the user decide.
 const _OUTBOX_CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
@@ -11579,7 +11615,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1005';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1006';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24091,6 +24127,24 @@ async function submitCreate() {
     let emsg = ''; try { emsg = (await r.json()).error || ''; } catch(e) {}
     showToast('Create failed: ' + (emsg || ('error ' + r.status)));
     return;   // dialog stays open
+  }
+  // A LOCALLY QUEUED CREATE IS NOT A CREATE (AMUX-4910). `_outboxAccepted()`
+  // synthesises a 202 that never left the browser, and its own comment warns
+  // that "a 202 is `ok`, so any caller treating 'response arrived' as 'server
+  // reachable' draws exactly the wrong conclusion from it". This was such a
+  // caller: it closed the dialog, then ran the follow-on below against a
+  // worker that does not exist, and `apiCall(.../start)` answered
+  //   404: session 'lc1-solo-haiku' not found
+  // So one failed create produced two contradicting messages — that 404 toast,
+  // and the sync panel's verbatim copy of the server's real reason — and the
+  // eye-catching one named the wrong cause.
+  //
+  // `_isLocallyQueued` already exists to answer exactly this question; the
+  // create path simply never asked it.
+  if (_isLocallyQueued(r)) {
+    showToast('Not created yet: “' + name + '” is queued in this browser and has not reached the server. '
+      + 'The sync panel at the bottom of the page carries the server’s own reason.');
+    return;   // dialog stays open, fields intact, and no follow-on chases a worker that does not exist
   }
   closeCreate();
   if (r && r.ok) {

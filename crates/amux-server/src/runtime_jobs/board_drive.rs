@@ -761,6 +761,11 @@ pub trait Fleet: Send + Sync {
     async fn start_for_dispatch(&self, lane: &str) -> Result<(), String> {
         Err(format!("fleet cannot start worker '{lane}' for board dispatch"))
     }
+    /// Called under the worker operation lock after a fully verified board.
+    /// Implementations must recheck current activity before stopping a provider.
+    async fn stop_for_retirement(&self, lane: &str) -> Result<(), String> {
+        Err(format!("fleet cannot retire worker '{lane}'"))
+    }
     /// Hand text to the lane. Durable queue + the existing delivery loop.
     async fn deliver(&self, lane: &str, text: &str);
     /// Work and reminder delivery report queue refusal so claims can be
@@ -883,6 +888,9 @@ impl Fleet for LiveFleet {
     async fn start_for_dispatch(&self, lane: &str) -> Result<(), String> {
         crate::api::session_verbs::start_for_board_dispatch(&self.state, lane).await
     }
+    async fn stop_for_retirement(&self, lane: &str) -> Result<(), String> {
+        crate::api::session_verbs::stop_verified_worker(&self.state, lane).await
+    }
     async fn deliver(&self, lane: &str, text: &str) {
         let _ = self.enqueue_work(lane, text).await;
     }
@@ -923,12 +931,21 @@ impl Fleet for LiveFleet {
         Ok(disposition)
     }
     async fn deliver_blocker_recovery(&self, lane: &str, text: &str, card: &str, rev: i64, identity: &str) -> Result<bool, String> {
+        if !self.nudge_budget_admits(lane, card, "blocker-recovery").await? {
+            return Ok(false);
+        }
         let queued = crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store, lane, text, GUARD, card, rev, identity).await?;
-        if queued { self.record_prompt(lane, text).await; }
+        if queued {
+            self.record_prompt(lane, text).await;
+            self.nudge_budget_spend(lane, card, "blocker-recovery").await;
+        }
         Ok(queued)
     }
     async fn deliver_about(&self, lane: &str, text: &str, card: &str, rev: i64) -> Result<bool, String> {
+        if !self.nudge_budget_admits(lane, card, "idle-with-card").await? {
+            return Ok(false);
+        }
         let identity={
             let c=self.state.store.read().map_err(|e|e.to_string())?;
             let row=bs::get_issue(&c,card).map_err(|e|e.to_string())?.ok_or("reminder card disappeared")?;
@@ -937,10 +954,131 @@ impl Fleet for LiveFleet {
         };
         let result=crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store,lane,text,GUARD,card,rev,&identity).await?;
-        if result { self.record_prompt(lane,text).await; }
+        if result {
+            self.record_prompt(lane,text).await;
+            self.nudge_budget_spend(lane, card, "idle-with-card").await;
+        }
         Ok(result)
     }
+}
 
+impl LiveFleet {
+    /// The MB-55 budget, read under the card's CURRENT status. Held and spent
+    /// both answer false and log why, so a lane that stops hearing about a
+    /// card is explained in the same log the delivery would have been.
+    async fn nudge_budget_admits(&self, lane: &str, card: &str, kind: &str) -> Result<bool, String> {
+        let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
+        let now = now_f64();
+        let verdict = self.state.store.read_async(move |conn| {
+            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
+            Ok(nudge_budget_check(conn, &l, &c, &k, &status, now)?)
+        }).await.map_err(|e| e.to_string())?;
+        match verdict {
+            NudgeBudget::Admit { .. } => Ok(true),
+            NudgeBudget::Held { n, next_at } => {
+                tracing::info!(target: "amux::board_drive", session = lane, card, kind, n,
+                    admitted_in_s = (next_at - now) as i64, measured = true, n_considered = 1,
+                    verdict = "nudge_budget_held", "board_drive: {kind} for {card} held by its per-card budget (MB-55)");
+                Ok(false)
+            }
+            NudgeBudget::Spent { n } => {
+                tracing::warn!(target: "amux::board_drive", session = lane, card, kind, n,
+                    measured = true, n_considered = 1, verdict = "nudge_budget_spent",
+                    "board_drive: {kind} for {card} spent its budget ({n} deliveries, no status change); silent until the card's status moves (MB-55)");
+                Ok(false)
+            }
+        }
+    }
+
+    async fn nudge_budget_spend(&self, lane: &str, card: &str, kind: &str) {
+        let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
+        let now = now_f64();
+        let _ = self.state.store.write_async(move |conn| {
+            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
+            // Best-effort: a budget row that fails to write must never stop a
+            // delivery that already happened from being reported.
+            let _ = nudge_budget_record(conn, &l, &c, &k, &status, now);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await;
+    }
+}
+
+/// A PER-CARD BUDGET FOR THE NUDGES THAT RE-ARM ON THEIR OWN DEMANDS (MB-55).
+///
+/// `reminder_identity` and the blocker-recovery signature both hash the
+/// fields their prompts tell the worker to write (next_action,
+/// acceptance_criteria, evidence, gate, desc), so compliance rotates the key
+/// and the same nudge re-delivers. That is by design for a CHANGED card. What
+/// was missing since the 09-17 flattening (7a56d2d4, 15b72193, e00fca78
+/// deleted the 3-per-24h budget) is any bound on how often a changed card may
+/// be nudged. Measured on the live db: board-drive nudges went from 91 a day
+/// on 09-16 to 649 on 09-19; MI-585x took 39 blocker reviews, MF-1238 13 plus
+/// 34 idle reminders.
+///
+/// Backoff 1h, 4h, 24h after each delivery, then SPENT after
+/// `NUDGE_BUDGET_SPENT_AT` deliveries: the lane is not told again until the
+/// card changes STATUS, which is the one write the prompt cannot ask for and a
+/// worker cannot make by accident. A status change resets the budget.
+pub(crate) const NUDGE_BUDGET_BACKOFF_S: [f64; 3] = [3600.0, 4.0 * 3600.0, 24.0 * 3600.0];
+pub(crate) const NUDGE_BUDGET_SPENT_AT: i64 = 4;
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum NudgeBudget {
+    /// Deliver; `n` deliveries have gone before under this status.
+    Admit { n: i64 },
+    /// Inside the backoff window after delivery `n`.
+    Held { n: i64, next_at: f64 },
+    /// `NUDGE_BUDGET_SPENT_AT` deliveries without a status change.
+    Spent { n: i64 },
+}
+
+pub(crate) fn nudge_budget_check(
+    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+) -> rusqlite::Result<NudgeBudget> {
+    let row: Option<(i64, f64, String)> = conn
+        .query_row(
+            "SELECT n, next_at, status_at_last FROM board_drive_nudge_budget \
+             WHERE session=?1 AND card=?2 AND kind=?3",
+            rusqlite::params![session, card, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => NudgeBudget::Admit { n: 0 },
+        Some((_, _, at_last)) if at_last != status => NudgeBudget::Admit { n: 0 },
+        Some((n, _, _)) if n >= NUDGE_BUDGET_SPENT_AT => NudgeBudget::Spent { n },
+        Some((n, next_at, _)) if now < next_at => NudgeBudget::Held { n, next_at },
+        Some((n, _, _)) => NudgeBudget::Admit { n },
+    })
+}
+
+/// Record a delivery. Returns the delivery count under the current status.
+pub(crate) fn nudge_budget_record(
+    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+) -> rusqlite::Result<i64> {
+    let prior: Option<(i64, String, f64)> = conn
+        .query_row(
+            "SELECT n, status_at_last, first_at FROM board_drive_nudge_budget \
+             WHERE session=?1 AND card=?2 AND kind=?3",
+            rusqlite::params![session, card, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (n_before, first_at) = match prior {
+        Some((n, ref at_last, first)) if at_last == status => (n, first),
+        _ => (0, now),
+    };
+    let n = n_before + 1;
+    let step = NUDGE_BUDGET_BACKOFF_S[(n_before as usize).min(NUDGE_BUDGET_BACKOFF_S.len() - 1)];
+    conn.execute(
+        "INSERT INTO board_drive_nudge_budget (session, card, kind, n, first_at, last_at, next_at, status_at_last) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+         ON CONFLICT(session, card, kind) DO UPDATE SET \
+           n=excluded.n, first_at=excluded.first_at, last_at=excluded.last_at, \
+           next_at=excluded.next_at, status_at_last=excluded.status_at_last",
+        rusqlite::params![session, card, kind, n, first_at, now, now + step, status],
+    )?;
+    Ok(n)
 }
 
 /// A reminder is a reaction to meaningful card state, not to a timer, log
@@ -1961,7 +2099,7 @@ fn blocked_card_is_releasable(conn: &Connection, row: &bs::IssueRow) -> bool {
         && row.archived == 0
         && !row.depends_on.is_empty()
         && row.blocked_on.as_deref().map(str::trim).unwrap_or("").is_empty()
-        && !parked_on_live_trigger(row)
+        && !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
         && deps_blocking(conn, row).is_empty()
 }
 
@@ -2016,11 +2154,33 @@ pub(crate) async fn unblock_resolved_blocked(state: &AppState) -> usize {
     moved
 }
 
-fn parked_on_live_trigger(row: &bs::IssueRow) -> bool {
-    row.source_ref
+/// A trigger holds a deps-cleared card only while the owner has verified it
+/// within `SOURCE_REF_STALE_S`. Until 2026-09-20 this tested only that
+/// `source_ref` was non-empty, so a ref nobody had looked at in weeks outranked
+/// "every dependency is done" forever. Measured on the live board that day: of
+/// the 13 backlog cards the store's own resolution rule called releasable, 10
+/// carried a source_ref, every one unverified for over 24h, and the promotion
+/// arm released none of them; fleet-wide 771 of the 837 backlog cards with a
+/// source_ref were stale, so the arm reached almost nothing (MB-53).
+///
+/// The MG-1388 protection survives: a deliberate re-park bumps
+/// `last_verified_at`, which makes the trigger fresh again and holds the card.
+fn parked_on_live_trigger(row: &bs::IssueRow, now: i64) -> bool {
+    fresh_source_ref_trigger(row, now)
+}
+
+/// Age in seconds of a source_ref the owner has NOT verified within
+/// `SOURCE_REF_STALE_S`, for the promotion log line. `None` when there is no
+/// trigger or it is fresh. A never-verified ref reports its age as `i64::MAX`.
+fn stale_trigger_age(row: &bs::IssueRow, now: i64) -> Option<i64> {
+    let has_ref = row
+        .source_ref
         .as_deref()
-        .map(str::trim)
-        .is_some_and(|s| !s.is_empty())
+        .is_some_and(|v| !v.trim().is_empty());
+    if !has_ref || fresh_source_ref_trigger(row, now) {
+        return None;
+    }
+    Some(row.last_verified_at.map_or(i64::MAX, |at| now - at))
 }
 
 /// Fleet-wide scan for the drive-to-verified pass: every agent-owned, live,
@@ -2083,7 +2243,8 @@ fn still_promotable(conn: &Connection, row: &bs::IssueRow, arm: PromoteArm) -> b
     }
     match arm {
         PromoteArm::DepsCleared => {
-            !parked_on_live_trigger(row) && promotable_deps(conn, row).is_some()
+            !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
+                && promotable_deps(conn, row).is_some()
         }
         // A REVISIT DATE OUTRANKS A `source_ref` TRIGGER, deliberately.
         //
@@ -2224,7 +2385,7 @@ fn backlog_due_promotions(conn: &Connection) -> (Vec<String>, usize) {
     (due_drain_plan(&pairs, &todo_depth, drain_todo_ceiling()), due_total)
 }
 
-fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usize) {
+fn backlog_dep_promotions(conn: &Connection, now: i64) -> (Vec<(String, Vec<String>)>, usize) {
     let rows = bs::list_issues(
         conn,
         &["backlog".to_string()],
@@ -2250,11 +2411,22 @@ fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usi
         let Some(deps) = promotable_deps(conn, &r) else {
             continue;
         };
-        // The owner's own trigger OVERRIDES terminal deps — hold the card, and
-        // count the hold so the promotion pass leaving it parked is visible.
-        if parked_on_live_trigger(&r) {
+        // The owner's own FRESH trigger OVERRIDES terminal deps — hold the card,
+        // and count the hold so the promotion pass leaving it parked is visible.
+        if parked_on_live_trigger(&r, now) {
             held_on_trigger += 1;
             continue;
+        }
+        // A stale trigger no longer holds the card. Say so, with the age, so a
+        // promotion past a ref the owner meant to keep is self-announcing.
+        if let Some(age) = stale_trigger_age(&r, now) {
+            let age_h = if age == i64::MAX { -1 } else { age / 3600 };
+            tracing::info!(
+                target: "amux::board_drive", card = %r.id, trigger_age_h = age_h,
+                measured = true, n_considered = 1, verdict = "trigger_stale_promoted",
+                "board_drive: source_ref unverified past {}h no longer holds a deps-cleared backlog card (MB-53)",
+                SOURCE_REF_STALE_S / 3600
+            );
         }
         promotions.push((r.id.clone(), deps));
     }
@@ -2275,8 +2447,9 @@ fn backlog_dep_promotions(conn: &Connection) -> (Vec<(String, Vec<String>)>, usi
 /// that cleared it (two-fixes: the next promotion — or a wrongful one — is
 /// self-announcing).
 pub(crate) async fn promote_ready_backlog(state: &AppState) -> (usize, usize) {
+    let now = crate::runtime_jobs::registry::unix_now() as i64;
     let (candidates, held_on_trigger) = match state.store.read() {
-        Ok(conn) => backlog_dep_promotions(&conn),
+        Ok(conn) => backlog_dep_promotions(&conn, now),
         Err(_) => return (0, 0),
     };
     let mut promoted = 0;
@@ -2530,9 +2703,8 @@ mod epic_completion_unit_tests {
 
 // ── Ephemeral worker reaper ──────────────────────────────────────────────
 //
-// Ephemeral workers retain their entire assigned board. Retirement requires
-// every type-specific terminal gate, a recorded integration of the unchanged
-// clean head, and a stopped provider. Workspaces survive retirement.
+// A fully Verified board retires only after its clean current head is on remote
+// main. Keep history and an Expired worker record; dispose the proven worktree.
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct EphemeralReaperReport {
@@ -2543,126 +2715,44 @@ pub struct EphemeralReaperReport {
     pub errors: usize,
 }
 
-pub(crate) async fn reap_ephemeral_workers(state: &AppState) -> EphemeralReaperReport {
+pub(crate) async fn reap_ephemeral_workers<F: Fleet>(state: &AppState, fleet: &F) -> EphemeralReaperReport {
     let home = crate::config::amux_home();
-    let sessions_dir = home.join("sessions");
     let mut report = EphemeralReaperReport { measured: true, ..Default::default() };
-
-    let entries = match std::fs::read_dir(&sessions_dir) {
-        Ok(rd) => rd,
-        Err(_) => return report,
+    let entries = match std::fs::read_dir(home.join("sessions")) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return report,
+        Err(error) => {
+            report.measured = false;
+            report.errors += 1;
+            tracing::warn!(%error,verdict="fanout_retirement_scan_failed", "could not scan workers for retirement");
+            return report;
+        }
     };
-
-    let mut ephemeral_sessions: Vec<(String, String)> = Vec::new(); // (name, parent)
+    let mut names = std::collections::BTreeSet::new();
     for entry in entries.flatten() {
-        let fname = entry.file_name();
-        let fname_s = fname.to_string_lossy();
-        if !fname_s.ends_with(".env") { continue; }
-        let name = fname_s.trim_end_matches(".env").to_string();
-        let env = crate::config::parse_env_file(&entry.path());
-        if env.get("CC_EPHEMERAL").map(|v| v == "1").unwrap_or(false)
-            && env.get("CC_PAUSED").is_none_or(|v| v != "1")
-            && env.get("CC_ARCHIVED").is_none_or(|v| v != "1") {
-            let parent = env.get("CC_PARENT").cloned().unwrap_or_default();
-            ephemeral_sessions.push((name, parent));
-        }
-    }
-
-    report.n_considered = ephemeral_sessions.len();
-    if ephemeral_sessions.is_empty() { return report; }
-
-    let cards_by_session: HashMap<String, Vec<(String, String, String)>> = match state.store.read() {
-        Ok(conn) => {
-            let mut map = HashMap::new();
-            let Ok(mut stmt) = conn.prepare("SELECT id,status,COALESCE(type,'code') FROM issues WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0") else {
-                report.errors += 1;
-                return report;
-            };
-            for (name, _) in &ephemeral_sessions {
-                match stmt.query_map([name], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
-                    .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>()) {
-                    Ok(rows) => { map.insert(name.clone(), rows); }
-                    Err(_) => { report.errors += 1; }
-                }
+        let file = entry.file_name();
+        let file = file.to_string_lossy();
+        if let Some(name) = file.strip_suffix(".env").or_else(||file.strip_suffix(".env.reaped")) {
+            if crate::config::parse_env_file(&entry.path()).get("CC_EPHEMERAL").is_some_and(|v|v=="1") {
+                names.insert(name.to_string());
             }
-            map
         }
-        Err(_) => return report,
-    };
-
-    for (name, parent) in &ephemeral_sessions {
-        let cards = cards_by_session.get(name.as_str());
-        let card_list = match cards {
-            Some(c) if !c.is_empty() => c,
-            _ => continue,
-        };
-
-        // An idle worker with queued work still owns that work. Reaping it and
-        // returning cards to the parent made an ordinary pause look like a handoff.
-        if !card_list.iter().all(|(_, status, kind)| bs::execution_is_terminal(status, kind)) { continue; }
-        // Completion cannot retire a branch before its integration is recorded.
-        if crate::fanout_workspace::integration_status(&home, name)["status"] != "integrated" {
-            crate::fanout_workspace::queue_integration(state, name).await;
-            continue;
-        }
-        let Some(workspace)=crate::fanout_workspace::load(&home,name) else { continue; };
-        let integration=crate::fanout_workspace::integration_status(&home,name);
-        if crate::fanout_workspace::git(&workspace.path,&["rev-parse","HEAD"]).await.ok().as_deref()!=integration["head"].as_str()
-            || crate::fanout_workspace::git(&workspace.path,&["status","--porcelain"]).await.map(|s|!s.is_empty()).unwrap_or(true) { continue; }
-        let action = "done";
-
-        let is_idle = !crate::api::session_verbs::is_running(name).await;
-        if !is_idle {
-            // Worker is actively processing (someone sent it a message).
-            // Let it finish before reaping, regardless of card state.
-            continue;
-        }
-
-        let card_summary = card_list.iter()
-            .map(|(id, st, _)| format!("{id}={st}"))
-            .collect::<Vec<_>>().join(", ");
-
-        tracing::info!(
-            target: "amux::board",
-            session = %name,
-            parent = %parent,
-            action = action,
-            cards = %card_summary,
-            verdict = "ephemeral_reap",
-            measured = true,
-            n_considered = card_list.len(),
-            "reaping ephemeral worker"
-        );
-
-        // Stop the tmux session
-        let stq = format!("={name}");
-        let _ = tokio::process::Command::new("tmux")
-            .args(["kill-session", "-t", &stq])
-            .output()
-            .await;
-
-        // Full decommission: remove all registration files so the worker
-        // disappears from the dashboard, not just shows as STOPPED. Archiving
-        // the env file alone left ghost entries in the fleet list (AMUX-5001).
-        let env_path = sessions_dir.join(format!("{name}.env"));
-        let _ = std::fs::remove_file(&env_path);
-        let _ = std::fs::remove_file(sessions_dir.join(format!("{name}.mem")));
-        let _ = std::fs::remove_file(sessions_dir.join(format!("{name}.meta")));
-        let _ = std::fs::remove_file(sessions_dir.join(format!("{name}.log")));
-        crate::api::sessions_legacy::invalidate_sessions_cache();
-
-        // Clean steering queue so no stale prompts accumulate
-        let n = name.to_string();
-        let _ = state.store.write_async(move |conn| {
-            let _ = conn.execute("DELETE FROM steering_queue WHERE session=?", [&n]);
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).await;
-
-        // Worktree disposal is owned by the worktree lifecycle. A terminal card
-        // is not proof that every untracked file is disposable.
-        report.reaped_done += 1;
     }
-
+    report.n_considered = names.len();
+    for name in names {
+        match crate::fanout_retirement::retire(state,fleet,&home,&name).await {
+            Ok(crate::fanout_retirement::Outcome::Expired) => report.reaped_done += 1,
+            Ok(crate::fanout_retirement::Outcome::NeedsIntegration) => {
+                crate::fanout_workspace::queue_integration(state,&name).await;
+            },
+            Ok(crate::fanout_retirement::Outcome::Deferred) => {},
+            Err(error) => {
+                report.errors += 1;
+                tracing::warn!(session=%name,%error,verdict="fanout_retirement_deferred",measured=true,
+                    "worker retirement incomplete; retained for retry instead of claiming cleanup");
+            }
+        }
+    }
     report
 }
 
@@ -5969,7 +6059,7 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     // Complete root epics before dispatch so the Messages chip and the board
     // agree that a command is finished as soon as all of its leaves are.
     report.completed_epics = complete_finished_epics(state).await;
-    report.ephemeral_reaper = reap_ephemeral_workers(state).await;
+    report.ephemeral_reaper = reap_ephemeral_workers(state, fleet).await;
     // DRIVE TO VERIFIED, BEFORE DISPATCH. A card parked in `backlog` on a
     // `depends_on` dependency re-activates to `todo` the moment every dependency
     // reaches a terminal status, so a "do B after A" command completes instead
@@ -9379,11 +9469,23 @@ mod tests {
         ins("FREE", "blocked", "[\"DONE-DEP\"]", None, None);
         ins("WATCHED", "blocked", "[\"DONE-DEP\"]", Some("vendor ships the fix"), None);
         ins("TRIGGERED", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        // A trigger holds only while the owner has verified it recently (MB-53).
+        conn.execute(
+            "UPDATE issues SET last_verified_at=?1 WHERE id='TRIGGERED'",
+            [now_f64() as i64],
+        )
+        .unwrap();
+        ins("STALE-TRIGGER", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        conn.execute(
+            "UPDATE issues SET last_verified_at=?1 WHERE id='STALE-TRIGGER'",
+            [now_f64() as i64 - 30 * 24 * 3600],
+        )
+        .unwrap();
         ins("STILL", "blocked", "[\"OPEN-DEP\"]", None, None);
         ins("PROSE", "blocked", "[]", None, None);
         let got: Vec<String> = blocked_dep_unblocks(&conn).into_iter().map(|(id, _)| id).collect();
-        assert_eq!(got, vec!["FREE".to_string()],
-            "only a card whose dependencies were the whole block is released");
+        assert_eq!(got, vec!["FREE".to_string(), "STALE-TRIGGER".to_string()],
+            "a card whose dependencies were the whole block is released, and a trigger nobody has verified in 30 days no longer counts as a block (MB-53)");
     }
 
     #[tokio::test]
@@ -11338,7 +11440,7 @@ mod tests {
         )
         .unwrap();
 
-        let (got, _held) = backlog_dep_promotions(&conn);
+        let (got, _held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
 
         assert!(ids.contains("P-all-terminal"), "all-terminal deps must promote: {ids:?}");
@@ -11372,10 +11474,27 @@ mod tests {
             [],
         )
         .unwrap();
-        // The MG-1388 shape: a terminal dep AND a live source_ref trigger.
+        // The MG-1388 shape: a terminal dep AND a live source_ref trigger, verified
+        // by the owner within the last 24h.
+        conn.execute(
+            "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,last_verified_at,updated,created) \
+             VALUES ('T-armed','T-armed','backlog','me','agent','investigation','[\"A-done\"]',\
+                     'some namespace holds both an archive- and a competitor-shaped collection',999_000,100,100)",
+            [],
+        )
+        .unwrap();
+        // The MB-53 shape: the same trigger, last verified 30 days ago -> promotes.
+        conn.execute(
+            "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,last_verified_at,updated,created) \
+             VALUES ('T-stale','T-stale','backlog','me','agent','investigation','[\"A-done\"]',\
+                     'some namespace holds both an archive- and a competitor-shaped collection',100,100,100)",
+            [],
+        )
+        .unwrap();
+        // And a trigger that was NEVER verified -> promotes.
         conn.execute(
             "INSERT INTO issues (id,title,status,session,owner_type,type,depends_on,source_ref,updated,created) \
-             VALUES ('T-armed','T-armed','backlog','me','agent','investigation','[\"A-done\"]',\
+             VALUES ('T-never','T-never','backlog','me','agent','investigation','[\"A-done\"]',\
                      'some namespace holds both an archive- and a competitor-shaped collection',100,100)",
             [],
         )
@@ -11395,9 +11514,17 @@ mod tests {
         )
         .unwrap();
 
-        let (got, held) = backlog_dep_promotions(&conn);
+        let (got, held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
         assert!(!ids.contains("T-armed"), "a live-trigger park must NOT be promoted: {ids:?}");
+        assert!(
+            ids.contains("T-stale"),
+            "a trigger unverified for 30 days no longer holds a deps-cleared card (MB-53): {ids:?}"
+        );
+        assert!(
+            ids.contains("T-never"),
+            "a trigger that was never verified is not a live trigger (MB-53): {ids:?}"
+        );
         assert!(
             ids.contains("T-plain"),
             "a no-trigger terminal-deps card still promotes (guard not vacuous): {ids:?}"
@@ -11406,7 +11533,7 @@ mod tests {
             ids.contains("T-blank"),
             "a whitespace-only source_ref is not a live trigger: {ids:?}"
         );
-        assert_eq!(held, 1, "exactly the one live-trigger card is counted as held");
+        assert_eq!(held, 1, "exactly the one FRESH live-trigger card is counted as held");
     }
 
     /// AMUX-3777: the HELD-CARD re-nag arm, which had NO coverage at all.
@@ -12442,6 +12569,33 @@ mod tests {
     ///
     /// A test that mints its own input can only ever pin ITSELF. This one runs
     /// the real producer into the real parser.
+    /// MB-55: the budget is keyed on (session, card, kind) and resets only on
+    /// a STATUS change, the one write the nudge cannot ask for.
+    #[test]
+    fn nudge_budget_backs_off_then_spends_and_a_status_change_resets_it() {
+        let conn = board_db();
+        let (s, c, k) = ("lane", "CARD-1", "blocker-recovery");
+        let t0 = 1_000_000.0;
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0).unwrap(), 1);
+        // 1h backoff after the first delivery.
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 10.0).unwrap(), NudgeBudget::Held { n: 1, .. }));
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), NudgeBudget::Admit { n: 1 });
+        // 4h after the second, 24h after the third.
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), 2);
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0 + 3.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 2, .. }));
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 20_000.0).unwrap(), 3);
+        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 20_000.0 + 23.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 3, .. }));
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 200_000.0).unwrap(), 4);
+        // Four deliveries with no status change: spent, whatever the clock says.
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 9_000_000.0).unwrap(), NudgeBudget::Spent { n: 4 });
+        // Another kind on the same card has its own budget.
+        assert_eq!(nudge_budget_check(&conn, s, c, "idle-with-card", "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        // A status change resets it.
+        assert_eq!(nudge_budget_check(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(nudge_budget_record(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), 1);
+    }
+
     #[test]
     fn reminder_identity_ignores_heartbeat_but_tracks_requirements_and_worker_lifetime() {
         let conn=board_db();add_card(&conn,"STATE-1","lane","doing","Report","Current report requirements");

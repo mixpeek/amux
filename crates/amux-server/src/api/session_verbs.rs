@@ -11390,6 +11390,25 @@ async fn kill_tmux_session(name: &str) {
     let _ = tmux(&["kill-session", "-t", &stq]).await;
 }
 
+/// Completion-only stop. Caller holds session_op_lock across validation and
+/// disposal, so sends/starts cannot reuse the provider being retired.
+pub(crate) async fn stop_verified_worker(state: &AppState, name: &str) -> Result<(), String> {
+    let signals = boundary_signals(state, Some(name)).await
+        .ok_or("could not measure worker activity before retirement")?;
+    let (_, explain) = signals.derive_status_explain(name, signals.agent_running(&format!("amux-{name}")));
+    if explain["subagents_working"] == true || explain["provider_background_working"] == true {
+        return Err("worker still has live child work".into());
+    }
+    if is_running(name).await && signals.turn_boundary_status(name).as_deref() != Some("idle") {
+        return Err("worker left its idle boundary before retirement".into());
+    }
+    let (ok, detail) = stop_session_process(name).await;
+    if !ok || is_running(name).await { return Err(detail); }
+    clear_stopped_report(state, name).await.map_err(|e| e.to_string())?;
+    kill_tmux_session(name).await;
+    Ok(())
+}
+
 /// py:25055 archive_session — scrollback→log, stop, kill tmux, CC_ARCHIVED=1,
 /// card cascade.
 async fn archive_session(state: &AppState, name: &str) -> (bool, String) {

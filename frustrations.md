@@ -3716,3 +3716,14 @@ COST: Two live fan-outs could pass checks against different bytes from their mai
 WANTED: Every integration check exercises the combined candidate; bad source-path configuration fails before it can publish an unverified merge.
 STATUS: fixed
 FIX: Reject literal original-checkout paths (including canonical and home aliases) at configuration write and at integration for persisted settings; explain candidate-relative source paths and emit fanout_verification_source_path. This catches the observed configuration error, not arbitrary shell-script behavior. A real bare-remote regression proves original/fallback commands cannot push and candidate-relative checks see both peer and child changes.
+
+## Fully completed fan-outs retain worktrees and wait indefinitely for an idle provider to exit
+AREA: board
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-20
+SESSION: codex-lifecycle-adherence
+CARD: CLA-11
+SYMPTOM: The ephemeral reaper explicitly retained workspaces and required the provider process to have already exited. A clean, fully Verified and merged board could therefore retain an idle provider indefinitely; retirement did not remove its worktree. Its type-specific terminal check also allowed Done-only non-code boards to retire without every card being Verified.
+COST: Completion did not reclaim worktree disk/registrations or consistently expire idle fan-outs; the user had to request another lifecycle repair.
+FIX: Require a nonempty fully Verified board, fresh remote-main ancestry of the clean integrated head and an idle boundary with no queued/child work. Stop the provider, remove only that worktree without force, and expire only after confirmed removal; preserve history and restore the clean worktree if finalization loses its board/config comparison. Real Git regression tests cover the failure paths.
