@@ -3448,20 +3448,24 @@ pub async fn create_session_legacy(
         )
             .into_response();
     }
-    // A worktree create needs `git worktree add` + branch bookkeeping that
-    // does not exist here yet. REFUSE loudly rather than create a plain
-    // worker and let the user believe they got an isolated checkout — a
-    // silently-ignored option is the failure mode this whole sweep is about.
-    if body.get("worktree").and_then(serde_json::Value::as_bool) == Some(true) {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "error": "worktree creation is not implemented on this server yet — \
-                          uncheck 'Use worktree' to create a normal worker"
-            })),
-        )
-            .into_response();
-    }
+    // WORKTREE AT CREATE TIME (AMUX-4911). This returned 501 on the stated
+    // grounds that "a worktree create needs `git worktree add` + branch
+    // bookkeeping that does not exist here yet". That premise was wrong:
+    // `session_verbs::start` computes
+    //     worktree_enabled = fanout || CC_WORKTREE == "1"
+    // and its NON-fanout arm already does the `git worktree add` into
+    // ~/.amux/worktrees/<name>, the stale-worktree cleanup and the
+    // unlock-before-remove handling AMUX-4767 added. The capability was fully
+    // present; only this endpoint refused to write the variable reaching it.
+    //
+    // The refusal's instinct was right and is kept in kind: a silently-ignored
+    // option is the failure that sweep was about. The fix is to stop ignoring
+    // the option, not to keep refusing something the server can already do.
+    //
+    // WHY IT MUST BE AT CREATE, exactly as CC_ISOLATED below: editing the env
+    // file afterwards is too late, because the lane has already started in the
+    // shared checkout by then.
+    let worktree = body.get("worktree").and_then(serde_json::Value::as_bool) == Some(true);
     let path = amux_home().join("sessions").join(format!("{name}.env"));
     if path.exists() {
         return (
@@ -3533,6 +3537,13 @@ pub async fn create_session_legacy(
     // explicit CC_ISOLATED=0 would add a second spelling of the default.
     if body.get("isolated").map(crate::api::py_truthy).unwrap_or(false) {
         pairs.push(("CC_ISOLATED", "1".to_string()));
+    }
+    // WORKTREE AT CREATE TIME (AMUX-4911), same reason as CC_ISOLATED directly
+    // above and written the same way: only when true, because absence already
+    // means "shared checkout" to the one reader that matters
+    // (`cfg.get_or("CC_WORKTREE", "") == "1"` in session_verbs::start).
+    if worktree {
+        pairs.push(("CC_WORKTREE", "1".to_string()));
     }
     // ACCEPT tags AS AN ARRAY, which is what the dashboard and API send
     // (AMUX-3114). `s("tags")` only matched a STRING, so `{"tags":["gtm"]}` read
