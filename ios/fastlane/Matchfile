@@ -1,5 +1,10 @@
 git_url ENV["MATCH_GIT_URL"] || "git@github.com:esteininger/amux-certs.git"
 storage_mode "git"
 type "appstore"
-app_identifier "com.EthanSteininger.nextup"
+# BOTH targets need a profile. The `beta` lane runs match with readonly: true,
+# so it FETCHES and never creates: a bundle id missing from this list fails the
+# nightly at signing rather than provisioning itself. The Share Extension also
+# needs the App Groups capability on both App IDs in the developer portal, and
+# `create_certs` (readonly: false, force: true) dispatched ONCE to mint them.
+app_identifier ["com.EthanSteininger.nextup", "com.EthanSteininger.nextup.Share"]
 username "esteininger21@gmail.com"
