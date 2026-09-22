@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2069,
+  "n_considered": 2072,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2368,6 +2368,12 @@
     },
     "_savePeekTabPrefs": {
       "kind": "command._savePeekTabPrefs",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_scheduleDeltaSyncRetry": {
+      "kind": "command._scheduleDeltaSyncRetry",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
