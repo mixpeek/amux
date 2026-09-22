@@ -17,11 +17,20 @@ pub(crate) enum Outcome {
     Expired,
 }
 
+fn flag(env: &std::collections::BTreeMap<String, String>, key: &str) -> bool {
+    env.get(key).is_some_and(|v| v == "1")
+}
+
 fn enabled(env: &std::collections::BTreeMap<String, String>) -> bool {
-    env.get("CC_EPHEMERAL").is_some_and(|v| v == "1")
-        && ["CC_PAUSED", "CC_ARCHIVED", "CC_ISOLATED"]
-            .iter()
-            .all(|k| env.get(*k).is_none_or(|v| v != "1"))
+    if !flag(env, "CC_EPHEMERAL") || flag(env, "CC_ARCHIVED") || flag(env, "CC_ISOLATED") {
+        return false;
+    }
+    // A project executor can be paused because it is held after verified work
+    // until human artifact review accepts the current project. Once accepted,
+    // retirement must still be able to remove the worktree and expire the
+    // worker; otherwise review-held executors accumulate forever in Paused.
+    // Ordinary paused work is preserved because it lacks CC_REVIEW_HELD.
+    !flag(env, "CC_PAUSED") || flag(env, "CC_REVIEW_HELD")
 }
 
 /// Done for another item type is deliberately insufficient for auto-disposal.
@@ -78,9 +87,19 @@ pub(crate) async fn retire<F: Fleet>(
     if !enabled(&env) || fleet.is_isolated(name) {
         return Ok(Outcome::Deferred);
     }
+    let review_held_while_paused = flag(&env, "CC_PAUSED") && flag(&env, "CC_REVIEW_HELD");
     let Some(snapshot) = board(state, name)? else {
         return Ok(Outcome::Deferred);
     };
+    if review_held_while_paused {
+        tracing::info!(
+            session = name,
+            verdict = "fanout_retirement_review_pause_allowed",
+            measured = true,
+            n_considered = 1,
+            "review-held paused project executor is eligible for retirement after acceptance"
+        );
+    }
     if fleet.active_child_work(name)
         || (fleet.is_running(name).await && !fleet.at_boundary(name).await)
     {
@@ -581,6 +600,16 @@ mod tests {
                 .map(String::as_str),
             Some("1")
         );
+        let held = std::fs::read_to_string(f.env()).unwrap();
+        std::fs::write(
+            f.env(),
+            format!(
+                "{held}CC_PROJECT_PAUSED=1
+CC_PAUSED=1
+"
+            ),
+        )
+        .unwrap();
         f.kept();
         assert!(
             Path::new(&f.w.path).exists(),

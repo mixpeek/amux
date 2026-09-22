@@ -1474,6 +1474,301 @@ mod command_tests {
         })
         .unwrap();
     }
+
+    #[test]
+    fn project_lifecycle_integrates_worktree_artifact_to_main_and_accepts_review() {
+        use super::*;
+        use crate::api::{
+            mdai::{ModelClient, ModelCompletion},
+            AppState,
+        };
+        use crate::project_execution::{planner, store};
+        use serde_json::json;
+        use sha2::Digest;
+
+        struct FakeIntake {
+            response: String,
+        }
+        impl ModelClient for FakeIntake {
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                Ok(self.response.clone())
+            }
+            fn complete_measured(&self, _: &str, _: &str) -> Result<ModelCompletion, String> {
+                Ok(ModelCompletion {
+                    text: self.response.clone(),
+                    usage: Some(json!({"input_tokens": 1, "output_tokens": 1})),
+                })
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let remote = home.path().join("origin.git");
+        let repo = home.path().join("project-repo");
+        let git = |cwd: &std::path::Path, args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(cwd)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?} failed\nstdout={}\nstderr={}",
+                args,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "--bare", "-q"]);
+        git(
+            home.path(),
+            &["clone", remote.to_str().unwrap(), repo.to_str().unwrap()],
+        );
+        git(&repo, &["config", "user.name", "Project Lifecycle Test"]);
+        git(
+            &repo,
+            &["config", "user.email", "project-lifecycle@example.invalid"],
+        );
+        git(&repo, &["config", "core.hooksPath", "/dev/null"]);
+        std::fs::write(repo.join("README.md"), "# project lifecycle fixture\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["branch", "-M", "main"]);
+        git(&repo, &["push", "-u", "origin", "main"]);
+
+        let gate = "test -f docs/lifecycle-report.md && grep -q 'complex lifecycle verified' docs/lifecycle-report.md";
+        let db = crate::db::Store::open(&home.path().join("amux.db")).unwrap();
+        let repo_for_policy = repo.to_string_lossy().into_owned();
+        let gate_for_policy = gate.to_string();
+        db.write(move |c| {
+            let policy: amux_core::project::ExecutionPolicy = serde_json::from_value(json!({
+                "repository": repo_for_policy,
+                "worktree": true,
+                "coordinator": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+                "executor": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+                "max_executors": 1,
+                "max_attempts": 1,
+                "enabled": true,
+                "verify_command": gate_for_policy,
+                "verification_timeout_secs": 60,
+                "acceptance": {"criteria": [
+                    {"id": "artifact", "requirement": "The integrated main branch contains the lifecycle report artifact.", "verifier": {"type": "command", "id": "artifact-check", "command": gate_for_policy, "timeout_secs": 60}, "evidence": ["docs/lifecycle-report.md"]},
+                    {"id": "owner", "requirement": "A human can inspect the retained report before executor retirement.", "verifier": {"type": "human", "id": "owner-review", "instructions": "Review docs/lifecycle-report.md and confirm the produced artifact is linkable and complete."}, "evidence": ["docs/lifecycle-report.md"]}
+                ]}
+            }))
+            .unwrap();
+            store::save(c, "lifecycle-e2e", 0, &policy, "test").map_err(store::sql_error)
+        })
+        .unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(db),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let plan = json!({
+            "kind": "tasks",
+            "reason": "one complex outcome with retained evidence",
+            "confidence": 0.99,
+            "tasks": [{
+                "key": "artifact",
+                "title": "Produce a verified lifecycle report artifact",
+                "description": "Create docs/lifecycle-report.md with a human-verifiable summary and commit it.",
+                "type": "doc",
+                "action": "create",
+                "existing_id": null,
+                "next_action": "Create the committed report artifact and report its retained asset.",
+                "acceptance_criteria": ["contract:artifact"],
+                "needs": [],
+                "dependency_reason": ""
+            }]
+        })
+        .to_string();
+        let receipt_id = std::sync::Arc::new(std::sync::Mutex::new(0_i64));
+        let receipt_out = receipt_id.clone();
+        state
+            .store
+            .write(move |c| {
+                let (id, out) = crate::project_execution::intake::receive(
+                    c,
+                    "lifecycle-e2e",
+                    "lifecycle-command",
+                    "Build a complex project lifecycle artifact, verify it, retain review evidence, integrate the worktree to main, and hold for human approval.",
+                )
+                .map_err(store::sql_error)?;
+                *receipt_out.lock().unwrap() = id;
+                Ok(out)
+            })
+            .unwrap();
+        let receipt = *receipt_id.lock().unwrap();
+        rt.block_on(crate::project_execution::intake::interpret(
+            &state,
+            receipt,
+            "lifecycle-e2e",
+            std::sync::Arc::new(FakeIntake { response: plan }),
+        ))
+        .unwrap();
+        let task_id = {
+            let c = state.store.read().unwrap();
+            crate::db::board_store::project_issues(&c, "lifecycle-e2e")
+                .unwrap()
+                .into_iter()
+                .find(|r| {
+                    r.acceptance_criteria
+                        .as_deref()
+                        .is_some_and(|v| v.contains("contract:artifact"))
+                })
+                .expect("intake must create the executable task")
+                .id
+        };
+        let task_for_claim = task_id.clone();
+        state
+            .store
+            .write(move |c| {
+                planner::claim(c, "lifecycle-e2e", &task_for_claim).map_err(store::sql_error)
+            })
+            .unwrap();
+        let mut execution = planner::execution(&state.store.read().unwrap(), &task_id).unwrap();
+        rt.block_on(crate::fanout_workspace::ensure(
+            home.path(),
+            &execution.worker,
+            repo.to_str().unwrap(),
+        ))
+        .unwrap();
+        let workspace = crate::fanout_workspace::load(home.path(), &execution.worker).unwrap();
+        let report_path = std::path::Path::new(&workspace.path).join("docs/lifecycle-report.md");
+        std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+        let body = format!(
+            "# Lifecycle E2E Report\n\ncomplex lifecycle verified\n\nworker: {}\ntask: {}\n",
+            execution.worker, task_id
+        );
+        std::fs::write(&report_path, body.as_bytes()).unwrap();
+        git(
+            std::path::Path::new(&workspace.path),
+            &["add", "docs/lifecycle-report.md"],
+        );
+        git(
+            std::path::Path::new(&workspace.path),
+            &["commit", "-m", "produce lifecycle report artifact"],
+        );
+        let head = git(
+            std::path::Path::new(&workspace.path),
+            &["rev-parse", "HEAD"],
+        );
+        let sha = hex::encode(sha2::Sha256::digest(body.as_bytes()));
+        let report = planner::Report {
+            head: head.clone(),
+            summary: "Produced committed lifecycle report artifact".into(),
+            checks: vec![planner::Check {
+                criterion: "contract:artifact".into(),
+                command: gate.into(),
+            }],
+            assets: vec![super::super::assets::Asset {
+                path: "docs/lifecycle-report.md".into(),
+                sha256: sha.clone(),
+            }],
+        };
+        let task_for_report = task_id.clone();
+        let worker_for_report = execution.worker.clone();
+        let generation_for_report = execution.generation;
+        let input_hash_for_report = execution.input_hash.clone();
+        let report_for_record = report.clone();
+        state
+            .store
+            .write(move |c| {
+                planner::record_report(
+                    c,
+                    "lifecycle-e2e",
+                    &task_for_report,
+                    &worker_for_report,
+                    generation_for_report,
+                    &input_hash_for_report,
+                    &report_for_record,
+                )
+                .map_err(store::sql_error)
+            })
+            .unwrap();
+        execution = planner::execution(&state.store.read().unwrap(), &task_id).unwrap();
+        let project = store::get(&state.store.read().unwrap(), "lifecycle-e2e")
+            .unwrap()
+            .unwrap();
+        rt.block_on(verify(&state, &project, &task_id, &execution))
+            .unwrap();
+        rt.block_on(drive_project(&state, "lifecycle-e2e")).unwrap();
+        let main = git(&repo, &["rev-parse", "origin/main"]);
+        assert!(git(
+            &repo,
+            &["merge-base", "--is-ancestor", &head, "origin/main"]
+        )
+        .is_empty());
+        assert_eq!(
+            git(&repo, &["show", "origin/main:docs/lifecycle-report.md"]),
+            body.trim()
+        );
+
+        let project = store::get(&state.store.read().unwrap(), "lifecycle-e2e")
+            .unwrap()
+            .unwrap();
+        rt.block_on(crate::project_execution::acceptance::tick(&state, &project))
+            .unwrap();
+        let status =
+            crate::project_execution::acceptance::status(&state.store.read().unwrap(), &project)
+                .unwrap();
+        assert_eq!(status["state"], "awaiting_human");
+        assert_eq!(status["main"], main);
+        assert!(status["review_assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|asset| asset["asset"]["source"]["sha256"] == sha));
+        assert!(status["criteria"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "owner" && c["result"]["state"] == "pending_human"));
+        let fingerprint = status["fingerprint"].as_str().unwrap().to_string();
+        let project_for_approval = project.clone();
+        let fingerprint_for_approval = fingerprint.clone();
+        state
+            .store
+            .write(move |c| {
+                crate::project_execution::acceptance::approve(
+                    c,
+                    &project_for_approval,
+                    &crate::project_execution::acceptance::Approval {
+                        criterion: "owner".into(),
+                        fingerprint: fingerprint_for_approval,
+                        decision: "approve".into(),
+                        note: "artifact reviewed in lifecycle e2e".into(),
+                    },
+                )
+                .map_err(store::sql_error)
+            })
+            .unwrap();
+        let accepted =
+            crate::project_execution::acceptance::status(&state.store.read().unwrap(), &project)
+                .unwrap();
+        assert_eq!(accepted["state"], "accepted");
+        let row = crate::db::board_store::get_issue(&state.store.read().unwrap(), &task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, "verified");
+        let final_execution = planner::execution(&state.store.read().unwrap(), &task_id).unwrap();
+        assert_eq!(final_execution.stage, "verified");
+        assert_eq!(final_execution.retained_assets.len(), 1);
+        assert!(std::path::Path::new(&final_execution.retained_assets[0].path).is_file());
+        assert_eq!(
+            crate::fanout_workspace::integration_status(home.path(), &execution.worker)["mode"],
+            "worktree"
+        );
+    }
+
     #[test]
     fn project_verification_deduplicates_only_identical_bytes() {
         use super::planner::{Check, Report};

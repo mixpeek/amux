@@ -3286,8 +3286,12 @@ fn race_verdict(
 /// 2026-09-18, n=6708, 78.2% of `GET /api/sessions` finished within 5s
 /// (27.7% served from cache under 100ms, 49.9% in the 1-5s build band), 95.2%
 /// within 10s, and 0.3% reached 30s at all.
+fn is_discovery_race(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<DiscoveryRaced>().is_some()
+}
+
 fn retry_after_hint(e: &anyhow::Error) -> Option<&'static str> {
-    if e.downcast_ref::<DiscoveryRaced>().is_some() {
+    if is_discovery_race(e) {
         Some("1")
     } else if e.downcast_ref::<BuilderBusy>().is_some() {
         Some("5")
@@ -3315,6 +3319,44 @@ pub(crate) fn discovery_failure(e: &anyhow::Error, message: String) -> Response 
             Json(json!({ "error": message })),
         )
             .into_response(),
+    }
+}
+
+fn dashboard_race_retry_delay(attempt: usize, e: &anyhow::Error) -> Option<std::time::Duration> {
+    if is_discovery_race(e) && attempt < 3 {
+        Some(std::time::Duration::from_millis(125 * attempt as u64))
+    } else {
+        None
+    }
+}
+
+async fn legacy_sessions_array_for_dashboard(
+    store: crate::db::SharedStore,
+) -> anyhow::Result<String> {
+    let mut attempt = 1usize;
+    loop {
+        let build_store = store.clone();
+        let built = tokio::task::spawn_blocking(move || legacy_sessions_array(&build_store)).await;
+        let result = built.unwrap_or_else(|e| Err(anyhow::anyhow!("sessions build panicked: {e}")));
+        match result {
+            Ok(json) => return Ok(json),
+            Err(e) => {
+                let Some(delay) = dashboard_race_retry_delay(attempt, &e) else {
+                    return Err(e);
+                };
+                tracing::info!(
+                    target: "amux::sessions",
+                    attempt,
+                    retry_ms = delay.as_millis(),
+                    verdict = "sessions_build_race_retried",
+                    measured = true,
+                    n_considered = 1,
+                    "session-list build raced a structural change; retrying inside the dashboard request"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+        }
     }
 }
 
@@ -3358,8 +3400,7 @@ pub async fn list_sessions_legacy(
     // `.output()` calls in this file are AF-301 — but it stops one client's slow
     // request from taking the server down for everyone else.
     let store = state.store.clone();
-    let built = tokio::task::spawn_blocking(move || legacy_sessions_array(&store)).await;
-    match built.unwrap_or_else(|e| Err(anyhow::anyhow!("sessions build panicked: {e}"))) {
+    match legacy_sessions_array_for_dashboard(store).await {
         Ok(json) => {
             let body = filter_isolated_for_peer(&json, &headers);
             let body = filter_for_local_member(&body, &headers);
@@ -8179,6 +8220,25 @@ mod discovery_race_tests {
             discovery_failure(&db, db.to_string()).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[test]
+    fn dashboard_retries_only_short_discovery_races_before_surfacing_failure() {
+        let raced: anyhow::Error = DiscoveryRaced.into();
+        assert_eq!(
+            dashboard_race_retry_delay(1, &raced),
+            Some(std::time::Duration::from_millis(125))
+        );
+        assert_eq!(
+            dashboard_race_retry_delay(2, &raced),
+            Some(std::time::Duration::from_millis(250))
+        );
+        assert_eq!(dashboard_race_retry_delay(3, &raced), None);
+
+        let busy: anyhow::Error = BuilderBusy { waited_s: 30.0 }.into();
+        assert_eq!(dashboard_race_retry_delay(1, &busy), None);
+        let untyped = anyhow::anyhow!("sessions list changed during discovery; retry");
+        assert_eq!(dashboard_race_retry_delay(1, &untyped), None);
     }
 
     /// AMUX-4838: an unreadable registry is NOT a changed registry.

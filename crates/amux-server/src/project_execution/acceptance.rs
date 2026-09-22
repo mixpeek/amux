@@ -45,8 +45,23 @@ fn tail(text: &str, n: usize) -> String {
     chars[chars.len().saturating_sub(n)..].iter().collect()
 }
 
-/// What the project was asked to do: every live task's requirements plus the newest request id.
-/// New or edited intent changes it; execution progress does not.
+fn task_intent_hash(row: &bs::IssueRow) -> String {
+    sha(&json!([
+        row.id,
+        row.item_type,
+        row.title,
+        row.desc,
+        row.acceptance_criteria,
+        row.depends_on
+    ])
+    .to_string())
+}
+
+/// What the project was asked to do: every live task's durable requirements plus the newest request
+/// id. New or edited intent changes it; execution progress, leases, pause/resume state, and
+/// delivery prompt bookkeeping do not. This is deliberately narrower than the planner input hash:
+/// executors still use `planner::input_hash` to reject stale packets, while project acceptance
+/// binds human review to the integrated artifact-producing requirements.
 pub fn intent_revision(conn: &Connection, project: &str) -> anyhow::Result<String> {
     let mut rows = bs::project_issues(conn, project)?;
     rows.sort_by(|a, b| a.id.cmp(&b.id));
@@ -57,7 +72,7 @@ pub fn intent_revision(conn: &Connection, project: &str) -> anyhow::Result<Strin
     )?;
     let parts: Vec<(String, String)> = rows
         .iter()
-        .map(|r| (r.id.clone(), planner::input_hash(r)))
+        .map(|r| (r.id.clone(), task_intent_hash(r)))
         .collect();
     Ok(sha(&json!([parts, newest]).to_string()))
 }
@@ -1098,6 +1113,79 @@ mod tests {
             assert!(!record(c, "p", &contract, &intent, &stale).unwrap().applied);
             assert_eq!(events(c, "p", "project.acceptance", None).unwrap().len(), 2);
             Ok(WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn acceptance_survives_pause_and_execution_bookkeeping_but_not_requirement_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            let p = project(c, Some(two()));
+            let contract = p.policy.acceptance.clone().unwrap();
+            verified(c, "T-1");
+            observe(c, &p, "main1").unwrap();
+            let fp = status(c, &p).unwrap()["fingerprint"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let intent = intent_revision(c, "p").unwrap();
+            let awaiting = result(
+                &fp,
+                "awaiting_human",
+                &contract,
+                "main1",
+                &intent,
+                json!([
+                    {"criterion":"unit","verifier":"unit-tests","type":"command","command":"cargo test","state":"passed","exit":0},
+                    {"criterion":"owner","verifier":"owner-review","type":"human","state":"pending_human"}
+                ]),
+            );
+            record(c, "p", &contract, &intent, &awaiting).unwrap();
+            approve(
+                c,
+                &p,
+                &Approval {
+                    criterion: "owner".into(),
+                    fingerprint: fp.clone(),
+                    decision: "approve".into(),
+                    note: "looks good".into(),
+                },
+            )
+            .unwrap();
+            let accepted = status(c, &p).unwrap();
+            assert_eq!(accepted["state"], "accepted");
+
+            let mut paused = p.policy.clone();
+            paused.paused = true;
+            store::save(c, "p", p.revision, &paused, "operator").unwrap();
+            c.execute(
+                "UPDATE issues SET session='px-p',evidence='retained review asset',next_action='resume/retirement bookkeeping only' WHERE id='T-1'",
+                [],
+            )
+            .unwrap();
+            let row = bs::get_issue(c, "T-1").unwrap().unwrap();
+            let mut execution = planner::execution(c, "T-1").unwrap();
+            execution.stage = "verified".into();
+            execution.worker = "px-p".into();
+            execution.suspended = true;
+            execution.input_hash = planner::input_hash(&row);
+            planner::save_execution(c, &row, &execution, "project.paused").unwrap();
+            let paused_project = store::get(c, "p").unwrap().unwrap();
+            let still_accepted = status(c, &paused_project).unwrap();
+            assert_eq!(still_accepted["state"], "accepted");
+            assert_eq!(still_accepted["fingerprint"], json!(fp));
+
+            c.execute("UPDATE issues SET desc='material new requirement' WHERE id='T-1'", [])
+                .unwrap();
+            let changed = status(c, &paused_project).unwrap();
+            assert_eq!(changed["state"], "pending");
+            assert_ne!(changed["fingerprint"], json!(fp));
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .unwrap();
     }
