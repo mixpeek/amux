@@ -35,6 +35,8 @@ targets:
         Release:
           CODE_SIGN_IDENTITY: "Apple Distribution"
           PROVISIONING_PROFILE_SPECIFIER: "match AppStore com.EthanSteininger.nextup"
+    dependencies:
+      - target: AmuxShare
     sources:
       - path: AmuxApp/Sources
       - path: AmuxApp/Assets.xcassets
@@ -56,4 +58,71 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         CFBundleIconName: AppIcon
     entitlements:
+      # XcodeGen GENERATES this file and overwrites hand edits, exactly like
+      # the `info:` plist above. Declaring the App Group here is what makes it
+      # survive `xcodegen generate`.
       path: AmuxApp/AmuxApp.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.EthanSteininger.nextup
+
+  # Share Extension: puts amux in the iOS share sheet (AMUX-4940).
+  #
+  # A PWA cannot do this. iOS Safari does not implement the Web Share Target
+  # API, so `share_target` in manifest.json reaches Android and desktop Chrome
+  # and never the iPhone. A native extension is the only route, and this app
+  # is what makes it available.
+  #
+  # AmuxStore.swift is compiled into BOTH targets deliberately: the extension
+  # is a separate process and needs the same App Group keys the app writes.
+  AmuxShare:
+    type: app-extension
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.EthanSteininger.nextup.Share
+        PRODUCT_NAME: AmuxShare
+        GENERATE_INFOPLIST_FILE: "NO"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Distribution"
+        PROVISIONING_PROFILE_SPECIFIER: "match AppStore com.EthanSteininger.nextup.Share"
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: "Apple Distribution"
+          PROVISIONING_PROFILE_SPECIFIER: "match AppStore com.EthanSteininger.nextup.Share"
+        Release:
+          CODE_SIGN_IDENTITY: "Apple Distribution"
+          PROVISIONING_PROFILE_SPECIFIER: "match AppStore com.EthanSteininger.nextup.Share"
+    sources:
+      - path: AmuxShare/Sources
+      - path: AmuxApp/Sources/AmuxStore.swift
+    info:
+      # XcodeGen GENERATES this plist from the properties below and overwrites
+      # whatever is at that path. A hand-written AmuxShare/Info.plist is
+      # silently discarded: the build still succeeds, and ships an extension
+      # with no NSExtension dict, which iOS never shows in the share sheet.
+      # Verified by doing exactly that once. Keep the NSExtension config HERE.
+      path: AmuxShare/Info.plist
+      properties:
+        CFBundleDisplayName: amux
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundlePackageType: XPC!
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 20
+              NSExtensionActivationSupportsMovieWithMaxCount: 5
+              NSExtensionActivationSupportsFileWithMaxCount: 20
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsWebPageWithMaxCount: 1
+    entitlements:
+      # The group MUST match the host app's, or the extension reads an empty
+      # suite and reports "no amux server selected" forever.
+      path: AmuxShare/AmuxShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.EthanSteininger.nextup

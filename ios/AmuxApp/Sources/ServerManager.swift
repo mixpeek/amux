@@ -12,20 +12,21 @@ class ServerManager: ObservableObject {
     @Published var savedServers: [SavedServer] {
         didSet {
             if let data = try? JSONEncoder().encode(savedServers) {
-                UserDefaults.standard.set(data, forKey: "savedServers")
+                AmuxStore.defaults.set(data, forKey: AmuxStore.savedServersKey)
             }
         }
     }
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: "savedServers"),
+        AmuxStore.migrateFromStandardIfNeeded()
+        if let data = AmuxStore.defaults.data(forKey: AmuxStore.savedServersKey),
            let servers = try? JSONDecoder().decode([SavedServer].self, from: data) {
             self.savedServers = servers
         } else {
             self.savedServers = []
         }
 
-        if let urlString = UserDefaults.standard.string(forKey: "serverURL"),
+        if let urlString = AmuxStore.defaults.string(forKey: AmuxStore.serverURLKey),
            let url = URL(string: urlString) {
             self.serverURL = url
             self.hasServer = true
@@ -36,7 +37,7 @@ class ServerManager: ObservableObject {
         guard let url = URL(string: urlString) else { return }
         serverURL = url
         hasServer = true
-        UserDefaults.standard.set(url.absoluteString, forKey: "serverURL")
+        AmuxStore.defaults.set(url.absoluteString, forKey: AmuxStore.serverURLKey)
         logger.info("Switched to server: \(urlString)")
     }
 
@@ -60,7 +61,7 @@ class ServerManager: ObservableObject {
     func resetServer() {
         serverURL = nil
         hasServer = false
-        UserDefaults.standard.removeObject(forKey: "serverURL")
+        AmuxStore.defaults.removeObject(forKey: AmuxStore.serverURLKey)
         logger.info("Reset to server picker")
     }
 
