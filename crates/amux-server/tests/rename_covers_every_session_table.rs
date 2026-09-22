@@ -58,7 +58,8 @@ fn every_session_keyed_table_declares_what_a_rename_does_with_it() {
         let cols: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({t})"))
             .and_then(|mut st| {
-                st.query_map([], |r| r.get::<_, String>(1)).map(|rows| rows.filter_map(Result::ok).collect())
+                st.query_map([], |r| r.get::<_, String>(1))
+                    .map(|rows| rows.filter_map(Result::ok).collect())
             })
             .unwrap_or_default();
         for column in cols.iter().filter(|c| is_session_column(c)) {
@@ -76,8 +77,10 @@ fn every_session_keyed_table_declares_what_a_rename_does_with_it() {
     );
 
     let declared: Vec<&str> = SESSION_SCOPED_FIELDS.iter().map(|(t, _)| *t).collect();
-    let undeclared: Vec<&String> =
-        session_fields.iter().filter(|field| !declared.contains(&field.as_str())).collect();
+    let undeclared: Vec<&String> = session_fields
+        .iter()
+        .filter(|field| !declared.contains(&field.as_str()))
+        .collect();
     assert!(
         undeclared.is_empty(),
         "session-name field(s) with NO declared rename disposition: {undeclared:?}.\n\
@@ -89,8 +92,10 @@ fn every_session_keyed_table_declares_what_a_rename_does_with_it() {
     // The reverse direction: a declared field that no longer exists is stale.
     // A Migrate declaration would make the cascade log an error forever; an
     // audit declaration would falsely claim that a historical field exists.
-    let stale: Vec<&&str> =
-        declared.iter().filter(|field| !session_fields.contains(&field.to_string())).collect();
+    let stale: Vec<&&str> = declared
+        .iter()
+        .filter(|field| !session_fields.contains(&field.to_string()))
+        .collect();
     assert!(
         stale.is_empty(),
         "SESSION_SCOPED_FIELDS names field(s) the schema does not have: {stale:?}. \
@@ -137,6 +142,9 @@ fn every_migrate_table_is_reachable_by_the_cascade() {
     // the schema test above would not see it.
     let declared: Vec<&str> = SESSION_SCOPED_FIELDS.iter().map(|(t, _)| *t).collect();
     for t in &simple {
-        assert!(declared.contains(t), "the cascade updates {t} but it is not declared");
+        assert!(
+            declared.contains(t),
+            "the cascade updates {t} but it is not declared"
+        );
     }
 }

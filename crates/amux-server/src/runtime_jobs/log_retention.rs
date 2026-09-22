@@ -496,7 +496,9 @@ mod tests {
                 // is bigger than the budget": tokio's `Elapsed`, matched by
                 // TYPE, and the producer's own truncation constant. Anything
                 // else is a defect and still fails.
-                let elapsed = error.downcast_ref::<tokio::time::error::Elapsed>().is_some();
+                let elapsed = error
+                    .downcast_ref::<tokio::time::error::Elapsed>()
+                    .is_some();
                 let truncated = error.to_string() == PROBE_TRUNCATED_REASON;
                 assert!(
                     elapsed || truncated,
@@ -551,7 +553,11 @@ mod tests {
             (8_565_894, 8 * 1024 * 1024, true),
             (8_565_894, PROBE_MAX_BYTES, false),
         ] {
-            assert_eq!(warn_on_thin_headroom(used, max), want, "used={used} max={max}");
+            assert_eq!(
+                warn_on_thin_headroom(used, max),
+                want,
+                "used={used} max={max}"
+            );
         }
         // No bare `assert!(PROBE_MAX_BYTES > ...)` here: clippy rejects it as a
         // constant assertion, and it is right — a comparison of two literals

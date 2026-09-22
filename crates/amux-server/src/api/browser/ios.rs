@@ -243,13 +243,15 @@ async fn prepare_reuse(
     }
     let d = owned(slot, session)?;
     if d.udid != udid {
-        return Err((StatusCode::CONFLICT,
-            "Stop your current iOS browser before changing simulator devices".into()));
+        return Err((
+            StatusCode::CONFLICT,
+            "Stop your current iOS browser before changing simulator devices".into(),
+        ));
     }
     match d.command(reqwest::Method::GET, "/url", None).await {
         Ok(_) => return Ok(false),
-        Err((status, error)) if status == StatusCode::BAD_GATEWAY
-            && error.ends_with(": invalid session id") => {}
+        Err((status, error))
+            if status == StatusCode::BAD_GATEWAY && error.ends_with(": invalid session id") => {}
         Err(error) => return Err(error),
     }
     match tokio::fs::remove_file(record).await {
@@ -309,12 +311,20 @@ async fn navigate(d: &Driver, url: &str) -> Result<()> {
             measured=true,n_considered=considered,"No visible Safari debugger tab after explicit Go");
         Err((StatusCode::CONFLICT,"Safari opened the URL but its visible tab is unavailable to WebDriver; inspect the simulator before retrying Go".into()))
     }).await;
-    result.unwrap_or_else(|_| Err((StatusCode::GATEWAY_TIMEOUT,
-        "Safari foreground alignment exceeded 35s; navigation outcome may be unknown".into())))
+    result.unwrap_or_else(|_| {
+        Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            "Safari foreground alignment exceeded 35s; navigation outcome may be unknown".into(),
+        ))
+    })
 }
 
 async fn require_visible_tab(d: &Driver) -> Result<()> {
-    if d.native && d.eval("document.visibilityState === 'visible'", json!([])).await? != true {
+    if d.native
+        && d.eval("document.visibilityState === 'visible'", json!([]))
+            .await?
+            != true
+    {
         tracing::warn!(target:"amux::browser_ios",session=%d.owner,verdict="hidden_native_tab",
             measured=true,n_considered=1,"Native input refused: debugger tab is not the visible Safari tab");
         return Err((StatusCode::CONFLICT,"The debugger tab is hidden; use Go to align Safari before native input. No input was dispatched".into()));
@@ -598,7 +608,13 @@ async fn clear_native_keyboard(d: &Driver) -> Result<bool> {
     // Always restore the web context, including native lookup/tap refusal.
     let restored = d.post("/context", json!({"name":context})).await;
     if let Err((status, error)) = dismissed {
-        return Err((status, format!("Keyboard dismissal failed: {error}; web context restored={}", restored.is_ok())));
+        return Err((
+            status,
+            format!(
+                "Keyboard dismissal failed: {error}; web context restored={}",
+                restored.is_ok()
+            ),
+        ));
     }
     restored?;
     if d.command(reqwest::Method::GET, path, None).await? != false {
@@ -612,7 +628,10 @@ async fn clear_native_keyboard(d: &Driver) -> Result<bool> {
 
 async fn perform(d: &Driver, body: &Value) -> Result<Value> {
     let action = body["action"].as_str().unwrap_or("");
-    if matches!(action, "back" | "scroll" | "click" | "key" | "type" | "input") {
+    if matches!(
+        action,
+        "back" | "scroll" | "click" | "key" | "type" | "input"
+    ) {
         require_visible_tab(d).await?;
     }
     match action {
@@ -747,33 +766,56 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn native_go_reuses_visible_tab_without_accumulating_tabs() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
         let navigations = Arc::new(AtomicUsize::new(0));
         let count = navigations.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let app = Router::new()
-            .route("/session/test/execute/sync", post(|Json(v): Json<Value>| async move {
-                // Any deep link here would open another native tab instead of
-                // reusing the visible one, retaining its streaming connections.
-                if v["script"] == "return (document.visibilityState === 'visible');" {
-                    Json(json!({"value":true}))
-                } else {
-                    Json(json!({"value":{"error":"unexpected native tab creation"}}))
-                }
-            }))
-            .route("/session/test/url", post(move |Json(v): Json<Value>| {
-                let count = count.clone();
-                async move {
-                    assert!(v["url"].as_str().unwrap().starts_with("https://example.test/"));
-                    count.fetch_add(1, Ordering::SeqCst);
-                    Json(json!({"value":null}))
-                }
-            }));
+            .route(
+                "/session/test/execute/sync",
+                post(|Json(v): Json<Value>| async move {
+                    // Any deep link here would open another native tab instead of
+                    // reusing the visible one, retaining its streaming connections.
+                    if v["script"] == "return (document.visibilityState === 'visible');" {
+                        Json(json!({"value":true}))
+                    } else {
+                        Json(json!({"value":{"error":"unexpected native tab creation"}}))
+                    }
+                }),
+            )
+            .route(
+                "/session/test/url",
+                post(move |Json(v): Json<Value>| {
+                    let count = count.clone();
+                    async move {
+                        assert!(v["url"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("https://example.test/"));
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"value":null}))
+                    }
+                }),
+            );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let d = Driver {owner:"test-owner".into(),port,pid:0,id:"test".into(),udid:"device".into(),capabilities:Value::Null,native:true,child:None};
+        let d = Driver {
+            owner: "test-owner".into(),
+            port,
+            pid: 0,
+            id: "test".into(),
+            udid: "device".into(),
+            capabilities: Value::Null,
+            native: true,
+            child: None,
+        };
         for n in 0..12 {
-            navigate(&d, &format!("https://example.test/{n}")).await.unwrap();
+            navigate(&d, &format!("https://example.test/{n}"))
+                .await
+                .unwrap();
         }
         assert_eq!(navigations.load(Ordering::SeqCst), 12);
         server.abort();
@@ -824,63 +866,144 @@ mod tests {
                         Json(json!({"value":null}))
                     }
                 }));
-            let server=tokio::spawn(async move {axum::serve(listener, app).await.unwrap()});
-            let d=Driver {owner:"test-owner".into(),port,pid:0,id:"test".into(),udid:"device".into(),capabilities:Value::Null,native:true,child:None};
-            let result=navigate(&d,"https://example.test/redirect").await;
-            assert_eq!(result.is_ok(),available);
-            let expected = if available { vec!["navigate","WEBVIEW_front"] }
-                else { vec!["navigate","WEBVIEW_front","WEBVIEW_newer","WEBVIEW_hidden"] };
-            assert_eq!(*calls.lock().unwrap(),expected, "Go must not touch unrelated stale contexts before its requested URL");
-            assert_eq!(require_visible_tab(&d).await.is_ok(),available);
-            *selected.lock().unwrap()="WEBVIEW_hidden".into();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let d = Driver {
+                owner: "test-owner".into(),
+                port,
+                pid: 0,
+                id: "test".into(),
+                udid: "device".into(),
+                capabilities: Value::Null,
+                native: true,
+                child: None,
+            };
+            let result = navigate(&d, "https://example.test/redirect").await;
+            assert_eq!(result.is_ok(), available);
+            let expected = if available {
+                vec!["navigate", "WEBVIEW_front"]
+            } else {
+                vec![
+                    "navigate",
+                    "WEBVIEW_front",
+                    "WEBVIEW_newer",
+                    "WEBVIEW_hidden",
+                ]
+            };
+            assert_eq!(
+                *calls.lock().unwrap(),
+                expected,
+                "Go must not touch unrelated stale contexts before its requested URL"
+            );
+            assert_eq!(require_visible_tab(&d).await.is_ok(), available);
+            *selected.lock().unwrap() = "WEBVIEW_hidden".into();
             // No input route is installed: a missing guard would dispatch and
             // return 404, instead of the required explicit pre-dispatch refusal.
-            for action in ["click","input","type","key","scroll","back"] {
-                let error=perform(&d,&json!({"action":action,"selector":"button","text":"x","key":"Enter","dy":1})).await.unwrap_err();
-                assert_eq!(error.0,StatusCode::CONFLICT);
+            for action in ["click", "input", "type", "key", "scroll", "back"] {
+                let error = perform(
+                    &d,
+                    &json!({"action":action,"selector":"button","text":"x","key":"Enter","dy":1}),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(error.0, StatusCode::CONFLICT);
                 assert!(error.1.contains("No input was dispatched"));
             }
-            assert_eq!(calls.lock().unwrap().len(),expected.len(),"No retry or input after hidden-tab refusal");
+            assert_eq!(
+                calls.lock().unwrap().len(),
+                expected.len(),
+                "No retry or input after hidden-tab refusal"
+            );
             server.abort();
         }
     }
 
     #[tokio::test]
     async fn go_releases_only_a_proven_expired_owned_session_without_replaying_actions() {
-        use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
         for mode in ["live", "expired", "unknown"] {
             let reads = Arc::new(AtomicUsize::new(0));
             let calls = reads.clone();
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
-            let app = Router::new().route("/session/test/url", get(move || {
-                let calls = calls.clone();
-                async move {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    match mode {
-                        "live" => (StatusCode::OK, Json(json!({"value":"about:blank"}))),
-                        "expired" => (StatusCode::NOT_FOUND, Json(json!({"value":{"error":"invalid session id"}}))),
-                        _ => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"value":{"error":"unknown error"}}))),
+            let app = Router::new().route(
+                "/session/test/url",
+                get(move || {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        match mode {
+                            "live" => (StatusCode::OK, Json(json!({"value":"about:blank"}))),
+                            "expired" => (
+                                StatusCode::NOT_FOUND,
+                                Json(json!({"value":{"error":"invalid session id"}})),
+                            ),
+                            _ => (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({"value":{"error":"unknown error"}})),
+                            ),
+                        }
                     }
-                }
-            }));
+                }),
+            );
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let mut slot = Some(Driver { owner:"test-owner".into(), port, pid:0,
-                id:"test".into(), udid:"test-device".into(), capabilities:Value::Null,
-                native:true, child:None });
+            let mut slot = Some(Driver {
+                owner: "test-owner".into(),
+                port,
+                pid: 0,
+                id: "test".into(),
+                udid: "test-device".into(),
+                capabilities: Value::Null,
+                native: true,
+                child: None,
+            });
             let temp = tempfile::tempdir().unwrap();
             let record = temp.path().join("browser-ios.json");
             let original = serde_json::to_vec(slot.as_ref().unwrap()).unwrap();
             std::fs::write(&record, &original).unwrap();
-            assert_eq!(prepare_reuse(&mut slot, "other-worker", "test-device", &record).await.unwrap_err().0, StatusCode::CONFLICT);
-            assert_eq!(prepare_reuse(&mut slot, "test-owner", "other-device", &record).await.unwrap_err().0, StatusCode::CONFLICT);
-            assert_eq!(reads.load(Ordering::SeqCst), 0, "ownership and device checks must precede driver access");
+            assert_eq!(
+                prepare_reuse(&mut slot, "other-worker", "test-device", &record)
+                    .await
+                    .unwrap_err()
+                    .0,
+                StatusCode::CONFLICT
+            );
+            assert_eq!(
+                prepare_reuse(&mut slot, "test-owner", "other-device", &record)
+                    .await
+                    .unwrap_err()
+                    .0,
+                StatusCode::CONFLICT
+            );
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                0,
+                "ownership and device checks must precede driver access"
+            );
             let result = prepare_reuse(&mut slot, "test-owner", "test-device", &record).await;
-            assert_eq!(reads.load(Ordering::SeqCst), 1, "only a read probe is sent; no navigation, click or command replay");
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                1,
+                "only a read probe is sent; no navigation, click or command replay"
+            );
             match mode {
-                "expired" => { assert!(result.unwrap()); assert!(slot.is_none()); assert!(!record.exists()); }
-                "live" => { assert!(!result.unwrap()); assert!(slot.is_some()); assert_eq!(std::fs::read(&record).unwrap(), original); }
-                _ => { assert!(result.is_err()); assert!(slot.is_some()); assert_eq!(std::fs::read(&record).unwrap(), original); }
+                "expired" => {
+                    assert!(result.unwrap());
+                    assert!(slot.is_none());
+                    assert!(!record.exists());
+                }
+                "live" => {
+                    assert!(!result.unwrap());
+                    assert!(slot.is_some());
+                    assert_eq!(std::fs::read(&record).unwrap(), original);
+                }
+                _ => {
+                    assert!(result.is_err());
+                    assert!(slot.is_some());
+                    assert_eq!(std::fs::read(&record).unwrap(), original);
+                }
             }
             server.abort();
         }
@@ -899,7 +1022,11 @@ mod tests {
                     assert_eq!(v["args"][0]["toY"], 100.0);
                     assert_eq!(v["args"][0]["duration"], 0.15);
                     Json(json!({"value":null}))
-                } else if v["script"].as_str().unwrap().contains("document.visibilityState") {
+                } else if v["script"]
+                    .as_str()
+                    .unwrap()
+                    .contains("document.visibilityState")
+                {
                     Json(json!({"value":true}))
                 } else {
                     Json(json!({"value":{"width":402,"height":874}}))
@@ -930,7 +1057,12 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
             Arc,
         };
-        for mode in ["refused", "still-visible", "dismissed", "dismiss-and-restore-refused"] {
+        for mode in [
+            "refused",
+            "still-visible",
+            "dismissed",
+            "dismiss-and-restore-refused",
+        ] {
             let refuse = mode != "dismissed";
             let visible = Arc::new(AtomicBool::new(true));
             let native_context = Arc::new(AtomicBool::new(false));
@@ -949,8 +1081,10 @@ mod tests {
                 .route(
                     "/session/test/elements",
                     post(|Json(v): Json<Value>| async move {
-                        assert_eq!(v["using"], "-ios class chain",
-                            "keyboard lookup must not serialize the entire live page as XPath XML");
+                        assert_eq!(
+                            v["using"], "-ios class chain",
+                            "keyboard lookup must not serialize the entire live page as XPath XML"
+                        );
                         assert!(v["value"]
                             .as_str()
                             .unwrap()
@@ -964,7 +1098,9 @@ mod tests {
                         move |Json(v): Json<Value>| {
                             let contexts = contexts.clone();
                             async move {
-                                if mode == "dismiss-and-restore-refused" && v["name"] != "NATIVE_APP" {
+                                if mode == "dismiss-and-restore-refused"
+                                    && v["name"] != "NATIVE_APP"
+                                {
                                     return Json(json!({"value":{"error":"restoration refused"}}));
                                 }
                                 contexts.store(v["name"] == "NATIVE_APP", Ordering::SeqCst);
@@ -1024,12 +1160,21 @@ mod tests {
                 child: None,
             };
             let result = perform(&d, &json!({"action":"click","selector":"#save"})).await;
-            assert_eq!(native_context.load(Ordering::SeqCst), mode == "dismiss-and-restore-refused",
-                "restore is attempted even after dismissal refusal");
+            assert_eq!(
+                native_context.load(Ordering::SeqCst),
+                mode == "dismiss-and-restore-refused",
+                "restore is attempted even after dismissal refusal"
+            );
             if mode == "dismiss-and-restore-refused" {
                 let error = &result.as_ref().unwrap_err().1;
-                assert!(error.contains("invalid element state"), "original failure must survive: {error}");
-                assert!(error.contains("web context restored=false"), "restore failure must remain explicit: {error}");
+                assert!(
+                    error.contains("invalid element state"),
+                    "original failure must survive: {error}"
+                );
+                assert!(
+                    error.contains("web context restored=false"),
+                    "restore failure must remain explicit: {error}"
+                );
             }
             if refuse {
                 assert!(

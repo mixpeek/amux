@@ -575,9 +575,7 @@ mod tests {
                 CommandTransition::Dispatch,
                 CommandTransition::Deliver,
                 CommandTransition::Confirm,
-                CommandTransition::Fail {
-                    reason: "x".into(),
-                },
+                CommandTransition::Fail { reason: "x".into() },
                 CommandTransition::Retry,
             ] {
                 assert!(
@@ -641,7 +639,11 @@ mod tests {
             assert_eq!(c.attempts, round);
             c.apply(CommandTransition::Retry, 3).unwrap();
             if round < 3 {
-                assert_eq!(c.state, CommandState::Queued, "round {round} should requeue");
+                assert_eq!(
+                    c.state,
+                    CommandState::Queued,
+                    "round {round} should requeue"
+                );
             }
         }
         assert_eq!(
@@ -663,7 +665,9 @@ mod tests {
         let mut q = vec![a.clone(), c.clone(), b.clone()];
         fifo_sort(&mut q);
         assert_eq!(
-            q.iter().map(|x| x.idempotency_key.as_str()).collect::<Vec<_>>(),
+            q.iter()
+                .map(|x| x.idempotency_key.as_str())
+                .collect::<Vec<_>>(),
             vec!["kb", "kc", "ka"]
         );
     }
@@ -674,9 +678,7 @@ mod tests {
         oldest.apply(CommandTransition::Dispatch, 3).unwrap(); // in flight
         let mut dead = cmd("01JGXV0000000000000000BBBB", "kb", t(1));
         dead.apply(
-            CommandTransition::Fail {
-                reason: "x".into(),
-            },
+            CommandTransition::Fail { reason: "x".into() },
             0, // budget already spent -> retry dead-letters
         )
         .unwrap();
@@ -769,9 +771,8 @@ mod tests {
 
     #[test]
     fn command_and_event_serialize_tagged() {
-        let cmd = WorkerCommand::DeliverMessage(MessageId::from_ulid(ulid(
-            "01JGXV0000000000000000TEST",
-        )));
+        let cmd =
+            WorkerCommand::DeliverMessage(MessageId::from_ulid(ulid("01JGXV0000000000000000TEST")));
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"kind\":\"deliver_message\""), "{json}");
         let back: WorkerCommand = serde_json::from_str(&json).unwrap();

@@ -114,7 +114,10 @@ async fn git_output(repo: &str, args: &[&str]) -> Option<std::process::Output> {
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    tokio::time::timeout(GIT_TIMEOUT, cmd.output()).await.ok()?.ok()
+    tokio::time::timeout(GIT_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()
 }
 
 /// Word-boundary match for a card id inside a commit message.
@@ -145,10 +148,7 @@ fn ids_in_text(text: &str, known: &BTreeSet<&str>) -> BTreeSet<String> {
 }
 
 /// One bounded `git log` per repo. Returns (sha, subject, ids).
-async fn scan_repo(
-    repo: &str,
-    ids: &BTreeSet<&str>,
-) -> (Vec<CommitHit>, bool) {
+async fn scan_repo(repo: &str, ids: &BTreeSet<&str>) -> (Vec<CommitHit>, bool) {
     let mut hits: Vec<CommitHit> = Vec::new();
     let fmt = format!("--format=%H{UNIT}%s{UNIT}%B{REC}");
     let max = format!("--max-count={MAX_SCANNED_COMMITS}");
@@ -167,8 +167,7 @@ async fn scan_repo(
         }
         scanned += 1;
         let mut parts = rec.splitn(3, UNIT);
-        let (Some(sha), Some(subject), Some(body)) =
-            (parts.next(), parts.next(), parts.next())
+        let (Some(sha), Some(subject), Some(body)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
         };
@@ -285,17 +284,16 @@ async fn mentions_payload_with(state: &AppState, p: Params) -> (StatusCode, Valu
         let resolution_failed = tops.iter().any(Option::is_none);
         let repos: BTreeSet<String> = tops.into_iter().flatten().collect();
 
-        let scans: Vec<RepoScan> =
-            stream::iter(repos.iter().cloned().map(|repo| {
-                let known = &known;
-                async move {
-                    let (hits, truncated) = scan_repo(&repo, known).await;
-                    (repo, hits, truncated)
-                }
-            }))
-            .buffer_unordered(GIT_CONCURRENCY)
-            .collect()
-            .await;
+        let scans: Vec<RepoScan> = stream::iter(repos.iter().cloned().map(|repo| {
+            let known = &known;
+            async move {
+                let (hits, truncated) = scan_repo(&repo, known).await;
+                (repo, hits, truncated)
+            }
+        }))
+        .buffer_unordered(GIT_CONCURRENCY)
+        .collect()
+        .await;
 
         let mut by_card: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut truncated_any = dirs_truncated || resolution_failed;

@@ -88,8 +88,7 @@ fn rewrite_legacy_uri(uri: &Uri) -> Option<Uri> {
         } else {
             // Only a real sub-path counts: the char after the prefix must be
             // '/', otherwise "/api/sessionsfoo" would silently alias.
-            path.strip_prefix(legacy)
-                .filter(|r| r.starts_with('/'))
+            path.strip_prefix(legacy).filter(|r| r.starts_with('/'))
         };
         let Some(rest) = rest else { continue };
         let new_pq = match uri.query() {
@@ -402,7 +401,10 @@ mod tests {
         assert!(rewrite_legacy_uri(&u("/api/sessions")).is_none());
         // Session SUBPATHS proxy to the Python fleet owner, never rewrite.
         assert!(rewrite_legacy_uri(&u("/api/sessions/abc/peek?lines=600")).is_none());
-        assert_eq!(rewrite_legacy_uri(&u("/api/issues/5")).unwrap().path(), "/api/tasks/5");
+        assert_eq!(
+            rewrite_legacy_uri(&u("/api/issues/5")).unwrap().path(),
+            "/api/tasks/5"
+        );
         // Not legacy: canonical paths and prefix near-misses pass through.
         assert!(rewrite_legacy_uri(&u("/api/workers")).is_none());
         assert!(rewrite_legacy_uri(&u("/api/sessionsfoo")).is_none());
@@ -431,7 +433,12 @@ mod tests {
     async fn fetch(app: &Router, path: &str) -> (StatusCode, Option<String>, String) {
         let res = app
             .clone()
-            .oneshot(HttpRequest::builder().uri(path).body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = res.status();
@@ -439,8 +446,14 @@ mod tests {
             .headers()
             .get("deprecated")
             .map(|v| v.to_str().unwrap().to_string());
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-        (status, deprecated, String::from_utf8_lossy(&body).into_owned())
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            deprecated,
+            String::from_utf8_lossy(&body).into_owned(),
+        )
     }
 
     #[tokio::test]
@@ -471,9 +484,14 @@ mod tests {
     fn only_a_routed_bare_path_loses_its_slash() {
         let u = |s: &str| s.parse::<Uri>().unwrap();
         // A real nested root: the whole subject of the card.
-        assert_eq!(trim_trailing_slash(&u("/api/board/")).unwrap().path(), "/api/board");
         assert_eq!(
-            trim_trailing_slash(&u("/api/board-lifecycle/")).unwrap().path(),
+            trim_trailing_slash(&u("/api/board/")).unwrap().path(),
+            "/api/board"
+        );
+        assert_eq!(
+            trim_trailing_slash(&u("/api/board-lifecycle/"))
+                .unwrap()
+                .path(),
             "/api/board-lifecycle"
         );
         // Query survives.
@@ -496,8 +514,14 @@ mod tests {
         let (bare, _, bare_body) = fetch(&app, "/api/workers").await;
         let (slash, _, slash_body) = fetch(&app, "/api/workers/").await;
         assert_eq!(bare, StatusCode::OK);
-        assert_eq!(slash, bare, "the slash form 404'd while the bare path answered");
-        assert_eq!(slash_body, bare_body, "the two spellings must reach one handler");
+        assert_eq!(
+            slash, bare,
+            "the slash form 404'd while the bare path answered"
+        );
+        assert_eq!(
+            slash_body, bare_body,
+            "the two spellings must reach one handler"
+        );
 
         // An unrouted path keeps its 404: the fix is not "never 404 on a slash".
         let (st, _, _) = fetch(&app, "/api/nope/").await;
@@ -516,7 +540,10 @@ mod tests {
         let u = |s: &str| s.parse::<Uri>().unwrap();
         // The alias carries a trailing slash through rather than eating it, so
         // there is still something for the strip to do afterwards.
-        assert_eq!(rewrite_legacy_uri(&u("/api/issues/5/")).unwrap().path(), "/api/tasks/5/");
+        assert_eq!(
+            rewrite_legacy_uri(&u("/api/issues/5/")).unwrap().path(),
+            "/api/tasks/5/"
+        );
         // And the strip refuses a path ROUTE_TABLE does not declare. Running it
         // first would therefore find nothing routed at the LEGACY spelling and
         // leave a legacy-plus-slash request 404ing, whichever way round the
@@ -527,7 +554,12 @@ mod tests {
     async fn canonical_header(app: &Router, path: &str) -> Option<String> {
         let res = app
             .clone()
-            .oneshot(HttpRequest::builder().uri(path).body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         res.headers()

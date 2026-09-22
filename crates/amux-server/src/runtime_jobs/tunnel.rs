@@ -41,7 +41,10 @@ pub fn gateway() -> String {
 }
 
 pub fn token() -> String {
-    std::env::var("AMUX_TUNNEL_TOKEN").unwrap_or_default().trim().to_string()
+    std::env::var("AMUX_TUNNEL_TOKEN")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 pub fn configured() -> bool {
@@ -49,7 +52,11 @@ pub fn configured() -> bool {
 }
 
 fn env_u32(key: &str, default: u32) -> u32 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default)
 }
 
 pub fn rate_per_min() -> u32 {
@@ -65,12 +72,19 @@ pub fn max_concurrent() -> u32 {
 /// port would tunnel amux itself, and rule 1 above is exactly why that must
 /// never be the default.
 pub fn boot_target_port() -> Option<u16> {
-    std::env::var("AMUX_TUNNEL_PORT").ok()?.trim().parse::<u16>().ok().filter(|p| *p > 0)
+    std::env::var("AMUX_TUNNEL_PORT")
+        .ok()?
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)
 }
 
 fn allow_self() -> bool {
     matches!(
-        std::env::var("AMUX_TUNNEL_ALLOW_SELF").unwrap_or_default().trim(),
+        std::env::var("AMUX_TUNNEL_ALLOW_SELF")
+            .unwrap_or_default()
+            .trim(),
         "1" | "true" | "yes"
     )
 }
@@ -176,7 +190,9 @@ pub async fn start(target_port: Option<u16>) -> Result<TunnelState, String> {
     }
     let token = token();
     if token.is_empty() {
-        return Err("no tunnel token — set AMUX_TUNNEL_TOKEN (from your amux cloud account)".into());
+        return Err(
+            "no tunnel token — set AMUX_TUNNEL_TOKEN (from your amux cloud account)".into(),
+        );
     }
     let self_port = crate::legacy_port::canonical_port();
     let port = target_port.unwrap_or(self_port);
@@ -203,13 +219,19 @@ pub async fn start(target_port: Option<u16>) -> Result<TunnelState, String> {
         s.gen
     };
     DROPPED.store(0, Ordering::Relaxed);
-    rl_window().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    rl_window()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 
     // Registered so a dead relay is visible on /api/system-jobs rather than
     // silently absent. `None` interval: this is a long-poll, not a tick, so a
     // staleness verdict computed from an interval would be meaningless.
     let _handle = super::registry::spawn_loop(
-        super::registry::ids::TUNNEL, None, run(token, gateway(), target_base, generation));
+        super::registry::ids::TUNNEL,
+        None,
+        run(token, gateway(), target_base, generation),
+    );
 
     // Wait briefly for the first registration so the caller's response can
     // carry the URL instead of a null the UI has to poll for.
@@ -287,7 +309,14 @@ async fn serve_one(
     let b64 = base64::engine::general_purpose::STANDARD;
     let path = req.get("path").and_then(|v| v.as_str()).unwrap_or("/");
     let qs = req.get("qs").and_then(|v| v.as_str()).unwrap_or("");
-    let url = format!("{target_base}{path}{}", if qs.is_empty() { String::new() } else { format!("?{qs}") });
+    let url = format!(
+        "{target_base}{path}{}",
+        if qs.is_empty() {
+            String::new()
+        } else {
+            format!("?{qs}")
+        }
+    );
     let method = req
         .get("method")
         .and_then(|v| v.as_str())
@@ -305,7 +334,11 @@ async fn serve_one(
             }
         }
     }
-    if let Some(body) = req.get("body").and_then(|v| v.as_str()).filter(|b| !b.is_empty()) {
+    if let Some(body) = req
+        .get("body")
+        .and_then(|v| v.as_str())
+        .filter(|b| !b.is_empty())
+    {
         match b64.decode(body) {
             Ok(raw) => rb = rb.body(raw),
             Err(e) => return reply_payload(400, &format!("tunnel body decode error: {e}"), 0),
@@ -339,7 +372,13 @@ async fn serve_one(
     }
 }
 
-async fn reply(client: &reqwest::Client, gw: &str, token: &str, rid: &str, payload: serde_json::Value) {
+async fn reply(
+    client: &reqwest::Client,
+    gw: &str,
+    token: &str,
+    rid: &str,
+    payload: serde_json::Value,
+) {
     let r = client
         .post(format!("{gw}/tunnel/reply?rid={rid}"))
         .bearer_auth(token)
@@ -442,7 +481,14 @@ async fn run(token: String, gw: String, target_base: String, generation: u64) {
             // queue without the flood ever reaching the app.
             if !rate_ok() {
                 DROPPED.fetch_add(1, Ordering::Relaxed);
-                reply(&gwc, &gw, &token, &rid, reply_payload(429, "rate limited", 10)).await;
+                reply(
+                    &gwc,
+                    &gw,
+                    &token,
+                    &rid,
+                    reply_payload(429, "rate limited", 10),
+                )
+                .await;
                 continue;
             }
             {
@@ -468,8 +514,14 @@ async fn run(token: String, gw: String, target_base: String, generation: u64) {
                     tokio::time::timeout(Duration::from_secs(8), sem.acquire_owned()).await;
                 let Ok(Ok(_permit)) = permit else {
                     DROPPED.fetch_add(1, Ordering::Relaxed);
-                    reply(&gwc2, &gw2, &token2, &rid, reply_payload(503, "server busy, retry", 3))
-                        .await;
+                    reply(
+                        &gwc2,
+                        &gw2,
+                        &token2,
+                        &rid,
+                        reply_payload(503, "server busy, retry", 3),
+                    )
+                    .await;
                     return;
                 };
                 let payload = serve_one(&localc2, &item2, &target2).await;
@@ -524,15 +576,27 @@ mod tests {
     /// removed by the next person who needs it (ethos rule 3).
     #[test]
     fn the_self_port_is_refused_unless_explicitly_allowed() {
-        assert!(refuses_self_port(8824, 8824, false), "amux's own port must be refused");
-        assert!(!refuses_self_port(8824, 8824, true), "AMUX_TUNNEL_ALLOW_SELF must work");
+        assert!(
+            refuses_self_port(8824, 8824, false),
+            "amux's own port must be refused"
+        );
+        assert!(
+            !refuses_self_port(8824, 8824, true),
+            "AMUX_TUNNEL_ALLOW_SELF must work"
+        );
         // The controls: any OTHER port is the normal case and must pass, or the
         // check would refuse everything and pass its first assertion anyway.
         assert!(!refuses_self_port(3000, 8824, false));
-        assert!(!refuses_self_port(8825, 8824, false), "adjacent, not the same");
+        assert!(
+            !refuses_self_port(8825, 8824, false),
+            "adjacent, not the same"
+        );
         // And it follows the canonical port rather than a hardcoded 8822: the
         // retired port would be refused while the LIVE one sailed through.
-        assert!(refuses_self_port(9999, 9999, false), "whatever the self port is");
+        assert!(
+            refuses_self_port(9999, 9999, false),
+            "whatever the self port is"
+        );
     }
 
     /// Sliding 60s window, exercised without a clock.
@@ -540,11 +604,20 @@ mod tests {
     fn the_rate_limiter_sheds_over_the_cap_and_recovers_as_the_window_slides() {
         let mut w = VecDeque::new();
         for i in 0..3 {
-            assert!(rate_ok_in(&mut w, 100.0, 3), "under the cap, hit {i} must pass");
+            assert!(
+                rate_ok_in(&mut w, 100.0, 3),
+                "under the cap, hit {i} must pass"
+            );
         }
-        assert!(!rate_ok_in(&mut w, 100.0, 3), "the 4th in the same second is over");
+        assert!(
+            !rate_ok_in(&mut w, 100.0, 3),
+            "the 4th in the same second is over"
+        );
         // CONTROL 1: still refused 59s later — the window is 60s, not per-call.
-        assert!(!rate_ok_in(&mut w, 159.0, 3), "59s later the window still holds all three");
+        assert!(
+            !rate_ok_in(&mut w, 159.0, 3),
+            "59s later the window still holds all three"
+        );
         // CONTROL 2: once they age out it recovers. A limiter that latches is a
         // limiter that takes the tunnel down for good on one burst.
         assert!(rate_ok_in(&mut w, 161.0, 3), "past 60s the oldest expires");
@@ -563,10 +636,16 @@ mod tests {
     #[test]
     fn hop_headers_are_stripped_in_both_directions() {
         for h in ["Host", "HOST", "content-length", "Accept-Encoding"] {
-            assert!(HOP_REQ_HEADERS.contains(&h.to_lowercase().as_str()), "{h} must not be forwarded");
+            assert!(
+                HOP_REQ_HEADERS.contains(&h.to_lowercase().as_str()),
+                "{h} must not be forwarded"
+            );
         }
         for h in ["Transfer-Encoding", "content-encoding", "Connection"] {
-            assert!(HOP_RESP_HEADERS.contains(&h.to_lowercase().as_str()), "{h} must not come back");
+            assert!(
+                HOP_RESP_HEADERS.contains(&h.to_lowercase().as_str()),
+                "{h} must not come back"
+            );
         }
         // CONTROLS: the headers that MUST survive. A list that stripped these
         // would pass every assertion above and break every tunneled app.
@@ -599,6 +678,10 @@ mod tests {
         }
         // And the port must be explicit: an unset AMUX_TUNNEL_PORT means the
         // target would be amux itself, which rule 1 forbids.
-        assert_eq!(boot_target_port(), None, "no port configured in the test env");
+        assert_eq!(
+            boot_target_port(),
+            None,
+            "no port configured in the test env"
+        );
     }
 }

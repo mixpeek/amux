@@ -177,14 +177,20 @@ mod tests {
     fn unknown_usage_passes_through_to_primary() {
         // Zero-window unknown usage AND a completely absent snapshot both
         // route Primary: no invented exhaustion (Invariant 20).
-        let usages =
-            BTreeMap::from([(pid("claude-code"), ProviderUsage::unknown(pid("claude-code")))]);
+        let usages = BTreeMap::from([(
+            pid("claude-code"),
+            ProviderUsage::unknown(pid("claude-code")),
+        )]);
         assert_eq!(
             route(&pid("claude-code"), &usages, &policy(true, &["codex"])),
             RouteDecision::Primary
         );
         assert_eq!(
-            route(&pid("never-probed"), &BTreeMap::new(), &policy(true, &["codex"])),
+            route(
+                &pid("never-probed"),
+                &BTreeMap::new(),
+                &policy(true, &["codex"])
+            ),
             RouteDecision::Primary
         );
     }
@@ -196,8 +202,7 @@ mod tests {
         // routing must not trust them even if one shows up malformed; Stale
         // numbers have drifted.)
         for confidence in [UsageConfidence::Unknown, UsageConfidence::Stale] {
-            let usages =
-                BTreeMap::from([usage("claude-code", vec![window(100, 100, confidence)])]);
+            let usages = BTreeMap::from([usage("claude-code", vec![window(100, 100, confidence)])]);
             assert_eq!(
                 route(&pid("claude-code"), &usages, &policy(true, &["codex"])),
                 RouteDecision::Primary,
@@ -209,7 +214,10 @@ mod tests {
     #[test]
     fn approximate_confidence_does_count() {
         let usages = BTreeMap::from([
-            usage("claude-code", vec![window(100, 100, UsageConfidence::Approximate)]),
+            usage(
+                "claude-code",
+                vec![window(100, 100, UsageConfidence::Approximate)],
+            ),
             usage("codex", vec![window(10, 100, UsageConfidence::Exact)]),
         ]);
         let d = route(&pid("claude-code"), &usages, &policy(true, &["codex"]));
@@ -220,7 +228,10 @@ mod tests {
     fn over_limit_counts_as_exhausted() {
         // used > limit is a legal, real state — and it is exhausted.
         let usages = BTreeMap::from([
-            usage("claude-code", vec![window(130, 100, UsageConfidence::Exact)]),
+            usage(
+                "claude-code",
+                vec![window(130, 100, UsageConfidence::Exact)],
+            ),
             usage("codex", vec![]),
         ]);
         let d = route(&pid("claude-code"), &usages, &policy(true, &["codex"]));
@@ -251,7 +262,10 @@ mod tests {
     #[test]
     fn failover_picks_first_non_exhausted_in_chain_order() {
         let usages = BTreeMap::from([
-            usage("claude-code", vec![window(100, 100, UsageConfidence::Exact)]),
+            usage(
+                "claude-code",
+                vec![window(100, 100, UsageConfidence::Exact)],
+            ),
             usage("gemini", vec![window(100, 100, UsageConfidence::Exact)]),
             usage("codex", vec![window(50, 100, UsageConfidence::Exact)]),
             usage("ollama", vec![]),
@@ -291,7 +305,10 @@ mod tests {
         // Common config shape: chain lists every provider incl. the primary.
         // The exhausted primary never matches itself back in.
         let usages = BTreeMap::from([
-            usage("claude-code", vec![window(100, 100, UsageConfidence::Exact)]),
+            usage(
+                "claude-code",
+                vec![window(100, 100, UsageConfidence::Exact)],
+            ),
             usage("codex", vec![window(0, 100, UsageConfidence::Exact)]),
         ]);
         let d = route(
@@ -305,7 +322,10 @@ mod tests {
     #[test]
     fn everything_exhausted_blocks_with_the_full_story() {
         let usages = BTreeMap::from([
-            usage("claude-code", vec![window(100, 100, UsageConfidence::Exact)]),
+            usage(
+                "claude-code",
+                vec![window(100, 100, UsageConfidence::Exact)],
+            ),
             usage("codex", vec![window(200, 100, UsageConfidence::Exact)]),
         ]);
         let d = route(&pid("claude-code"), &usages, &policy(true, &["codex"]));

@@ -151,19 +151,15 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
         seed_cursor(&conn);
     }
 
-    super::spawn_periodic_every(
-        JOB,
-        std::time::Duration::from_millis(200),
-        move || {
-            let state = state.clone();
-            async move {
-                let _ = tokio::task::spawn_blocking(move || {
-                    poll(&state);
-                })
-                .await;
-            }
-        },
-    )
+    super::spawn_periodic_every(JOB, std::time::Duration::from_millis(200), move || {
+        let state = state.clone();
+        async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                poll(&state);
+            })
+            .await;
+        }
+    })
 }
 
 /// Query rows from board_change_log for the catch-up endpoint.

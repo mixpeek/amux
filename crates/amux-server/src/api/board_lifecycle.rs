@@ -27,15 +27,24 @@ fn setting(session: &str, key: &str) -> Option<String> {
         .or_else(|| std::env::var(key).ok())
 }
 pub(crate) fn enabled(session: &str) -> bool {
-    !session_verbs::parse_env(session).get("CC_PROJECT").is_some() && policy_enabled(setting(session, POLICY_KEY).as_deref())
+    !session_verbs::parse_env(session)
+        .get("CC_PROJECT")
+        .is_some()
+        && policy_enabled(setting(session, POLICY_KEY).as_deref())
 }
 
 fn policy_enabled(value: Option<&str>) -> bool {
-    !value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+    !value.is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
 }
 
 pub(crate) fn stage_owner_command(session: &str, text: &str) -> bool {
-    enabled(session) && board_intake::model_client().is_some()
+    enabled(session)
+        && board_intake::model_client().is_some()
         && !session_verbs::session_is_isolated(session)
         && amux_core::board::title_from_prompt(text).is_some()
         && !amux_core::board::is_informational_query(text)
@@ -103,35 +112,71 @@ struct Prepared {
 /// A heartbeat/revision bump alone must not buy another semantic interpretation.
 fn refresh_prepared(conn: &Connection, p: &mut Prepared) -> rusqlite::Result<bool> {
     for task in &p.decision.tasks {
-        let Some(id) = &task.existing_id else { continue };
-        let Some(before) = p.candidates.iter_mut().find(|c| &c.id == id) else { return Ok(false) };
-        let Some(now) = bs::get_issue(conn, id)? else { return Ok(false) };
-        let criteria: Vec<String> = now.acceptance_criteria.as_deref().and_then(|s|serde_json::from_str(s).ok()).unwrap_or_default();
-        let desc = session_verbs::redact_prompt_secrets(&now.desc.chars().take(700).collect::<String>());
-        if now.archived != 0 || now.title != before.title || now.status != before.status
-            || intake_owner(&now) != before.session || desc != before.description
-            || criteria != before.acceptance_criteria { return Ok(false); }
+        let Some(id) = &task.existing_id else {
+            continue;
+        };
+        let Some(before) = p.candidates.iter_mut().find(|c| &c.id == id) else {
+            return Ok(false);
+        };
+        let Some(now) = bs::get_issue(conn, id)? else {
+            return Ok(false);
+        };
+        let criteria: Vec<String> = now
+            .acceptance_criteria
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let desc =
+            session_verbs::redact_prompt_secrets(&now.desc.chars().take(700).collect::<String>());
+        if now.archived != 0
+            || now.title != before.title
+            || now.status != before.status
+            || intake_owner(&now) != before.session
+            || desc != before.description
+            || criteria != before.acceptance_criteria
+        {
+            return Ok(false);
+        }
         before.rev = now.rev;
     }
     Ok(true)
 }
 fn intake_owner(row: &bs::IssueRow) -> String {
-    row.project_group.as_ref().map(|p|format!("project:{p}")).unwrap_or_else(||row.session.clone().unwrap_or_default())
+    row.project_group
+        .as_ref()
+        .map(|p| format!("project:{p}"))
+        .unwrap_or_else(|| row.session.clone().unwrap_or_default())
 }
 fn project_for_message(conn: &Connection, id: i64) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT project_group FROM cmd_history WHERE id=?1",[id],|r|r.get(0))
+    conn.query_row(
+        "SELECT project_group FROM cmd_history WHERE id=?1",
+        [id],
+        |r| r.get(0),
+    )
 }
-fn own_project_issue(conn: &Connection, row: &mut bs::IssueRow, project: Option<&str>) -> rusqlite::Result<()> {
-    if let Some(project)=project {
-        if row.project_group.as_deref().is_some_and(|p|p!=project) {
+fn own_project_issue(
+    conn: &Connection,
+    row: &mut bs::IssueRow,
+    project: Option<&str>,
+) -> rusqlite::Result<()> {
+    if let Some(project) = project {
+        if row.project_group.as_deref().is_some_and(|p| p != project) {
             return Err(rusqlite::Error::InvalidQuery);
         }
         if row.project_group.is_none() {
-            bs::validate_owner_changes(conn,&[(row.id.clone(),bs::BoardOwner::new(Some(project),None))])?;
+            bs::validate_owner_changes(
+                conn,
+                &[(row.id.clone(), bs::BoardOwner::new(Some(project), None))],
+            )?;
         }
-        conn.execute("UPDATE issues SET project_group=?2,session=NULL WHERE id=?1 AND project_group IS NULL",rusqlite::params![row.id,project])?;
-        if row.project_group.is_none() {row.session=None;}
-        row.project_group=Some(project.into());
+        conn.execute(
+            "UPDATE issues SET project_group=?2,session=NULL WHERE id=?1 AND project_group IS NULL",
+            rusqlite::params![row.id, project],
+        )?;
+        if row.project_group.is_none() {
+            row.session = None;
+        }
+        row.project_group = Some(project.into());
     }
     Ok(())
 }
@@ -169,7 +214,10 @@ fn candidates(
                     status: r.get(4)?,
                     item_type: r.get(5)?,
                     rev: r.get(6)?,
-                    acceptance_criteria: r.get::<_, Option<String>>(9)?.and_then(|v|serde_json::from_str(&v).ok()).unwrap_or_default(),
+                    acceptance_criteria: r
+                        .get::<_, Option<String>>(9)?
+                        .and_then(|v| serde_json::from_str(&v).ok())
+                        .unwrap_or_default(),
                     evidence: r
                         .get::<_, Option<String>>(7)?
                         .map(|s| s.chars().take(240).collect()),
@@ -200,9 +248,18 @@ fn candidates(
             })
             .take(limit)
             .map(|(mut c, _)| {
-                c.workspace = if let Some(name)=session.strip_prefix("project:") {
-                    crate::project_execution::store::get(conn,name).ok().flatten().map(|p|p.policy.repository).unwrap_or_default()
-                } else {session_verbs::parse_env(&c.session).get("CC_DIR").unwrap_or("").to_string()};
+                c.workspace = if let Some(name) = session.strip_prefix("project:") {
+                    crate::project_execution::store::get(conn, name)
+                        .ok()
+                        .flatten()
+                        .map(|p| p.policy.repository)
+                        .unwrap_or_default()
+                } else {
+                    session_verbs::parse_env(&c.session)
+                        .get("CC_DIR")
+                        .unwrap_or("")
+                        .to_string()
+                };
                 c.description = session_verbs::redact_prompt_secrets(&c.description);
                 c
             })
@@ -257,7 +314,8 @@ fn validate(d: &Decision, rows: &[Candidate], session: &str) -> Result<(), Strin
             return Err("duplicate/empty plan key or outcome title".into());
         }
         if session.starts_with("project:") {
-            let admin = format!("{} {} {}", task.title, task.description, task.next_action).to_ascii_lowercase();
+            let admin = format!("{} {} {}", task.title, task.description, task.next_action)
+                .to_ascii_lowercase();
             let is_harness_step = admin.contains("commit ")
                 || admin.contains("git commit")
                 || admin.contains("report retained")
@@ -308,7 +366,9 @@ fn validate(d: &Decision, rows: &[Candidate], session: &str) -> Result<(), Strin
                 if !targets.insert(id.clone()) {
                     return Err("same canonical task proposed twice".into());
                 }
-                if c.item_type == "epic" { return Err("match concrete outcomes, not the containing epic".into()); }
+                if c.item_type == "epic" {
+                    return Err("match concrete outcomes, not the containing epic".into());
+                }
                 // Search is fleet-wide; mutation remains within the caller's
                 // ownership. A foreign match is a link, never an ownership theft.
                 if c.session != session && task.action != "verify" {
@@ -396,9 +456,15 @@ fn apply(
             .map_err(crate::project_execution::store::sql_error)?
             .and_then(|p| p.policy.acceptance)
         {
-            let task_criteria: Vec<Vec<String>> = d.tasks.iter().map(|t| t.acceptance_criteria.clone()).collect();
+            let task_criteria: Vec<Vec<String>> = d
+                .tasks
+                .iter()
+                .map(|t| t.acceptance_criteria.clone())
+                .collect();
             crate::project_execution::acceptance::check_plan_refs(&contract, &task_criteria)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e))))?;
+                .map_err(|e| {
+                    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(e)))
+                })?;
         }
     }
     let pending: bool = conn.query_row(
@@ -419,8 +485,20 @@ fn apply(
                 .iter()
                 .find(|c| &c.id == id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            let project_active = project.is_some() && matches!(crate::project_execution::planner::execution(conn,id).map_err(crate::project_execution::store::sql_error)?.stage.as_str(), "reserved"|"working"|"reported"|"verifying");
-            if current.rev != expected.rev || current.archived != 0 || (project.is_some() && current.project_group != project) || (project.is_some() && current.status == "doing") || project_active {
+            let project_active = project.is_some()
+                && matches!(
+                    crate::project_execution::planner::execution(conn, id)
+                        .map_err(crate::project_execution::store::sql_error)?
+                        .stage
+                        .as_str(),
+                    "reserved" | "working" | "reported" | "verifying"
+                );
+            if current.rev != expected.rev
+                || current.archived != 0
+                || (project.is_some() && current.project_group != project)
+                || (project.is_some() && current.status == "doing")
+                || project_active
+            {
                 return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
                     std::io::Error::other(
                         "canonical task changed during interpretation; replan required",
@@ -443,22 +521,36 @@ fn apply(
         .filter_map(|r| r.epic)
         .collect();
     let reusable_parent = if parent_ids.len() == 1 {
-        bs::get_issue(conn, parent_ids.first().expect("one parent"))?.filter(|p| {
-            p.source.as_deref() == Some("command")
-        })
+        bs::get_issue(conn, parent_ids.first().expect("one parent"))?
+            .filter(|p| p.source.as_deref() == Some("command"))
     } else {
         None
     };
     let parent_created = reusable_parent.is_none();
     let mut parent = if let Some(parent) = reusable_parent {
         if bs::is_terminal_status(&parent.status) {
-            let opts=crate::db::advance::AdvanceOpts{expected_from:Some(parent.status.clone()),reason:Some("changed command requires current-output verification".into()),skip_continuation:true,..Default::default()};
-            match crate::db::advance::advance(conn,&parent.id,"backlog","command-lifecycle",&opts)? {
-                Ok(out)=>events.extend(out.events),
-                Err(why)=>return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("epic reopen refused: {why:?}"))))),
+            let opts = crate::db::advance::AdvanceOpts {
+                expected_from: Some(parent.status.clone()),
+                reason: Some("changed command requires current-output verification".into()),
+                skip_continuation: true,
+                ..Default::default()
+            };
+            match crate::db::advance::advance(
+                conn,
+                &parent.id,
+                "backlog",
+                "command-lifecycle",
+                &opts,
+            )? {
+                Ok(out) => events.extend(out.events),
+                Err(why) => {
+                    return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                        std::io::Error::other(format!("epic reopen refused: {why:?}")),
+                    )))
+                }
             }
         }
-        bs::get_issue(conn,&parent.id)?
+        bs::get_issue(conn, &parent.id)?
     } else if d.tasks.len() > 1 {
         let mut p = bs::create_issue(
             conn,
@@ -511,8 +603,14 @@ fn apply(
         let original_hash = crate::project_execution::planner::input_hash(&row);
         if !created && matches!(task.action.as_str(), "update" | "verify") {
             row.title = task.title.clone();
-            row.log = Some(bs::append_log(row.log.as_deref(), &stamp,
-                &format!("MSG-{message_id} superseded prior requirements: {}", row.desc)));
+            row.log = Some(bs::append_log(
+                row.log.as_deref(),
+                &stamp,
+                &format!(
+                    "MSG-{message_id} superseded prior requirements: {}",
+                    row.desc
+                ),
+            ));
             row.desc = task.description.clone();
         }
         if !created && !matches!(task.action.as_str(), "update" | "verify") {
@@ -529,7 +627,9 @@ fn apply(
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
-        if matches!(task.action.as_str(), "update" | "verify") { criteria.clear(); }
+        if matches!(task.action.as_str(), "update" | "verify") {
+            criteria.clear();
+        }
         for c in &task.acceptance_criteria {
             if !criteria.contains(c) {
                 criteria.push(c.clone());
@@ -584,27 +684,51 @@ fn apply(
                 }
             }
         }
-        if project.is_some() && !created && (original_hash != crate::project_execution::planner::input_hash(&row) || task.action == "verify") {
+        if project.is_some()
+            && !created
+            && (original_hash != crate::project_execution::planner::input_hash(&row)
+                || task.action == "verify")
+        {
             // New requirements invalidate prior verification, not task identity.
-            let mut execution = crate::project_execution::planner::execution(conn,&row.id).map_err(crate::project_execution::store::sql_error)?;
-            execution.stage.clear(); execution.input_hash.clear(); execution.attempt=0;
-            execution.last_failure=execution.waiting.take().or(execution.last_failure);
-            execution.report=None;
+            let mut execution = crate::project_execution::planner::execution(conn, &row.id)
+                .map_err(crate::project_execution::store::sql_error)?;
+            execution.stage.clear();
+            execution.input_hash.clear();
+            execution.attempt = 0;
+            execution.last_failure = execution.waiting.take().or(execution.last_failure);
+            execution.report = None;
             conn.execute("UPDATE issues SET status='backlog',execution_state=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",rusqlite::params![row.id,serde_json::to_string(&execution).expect("execution checkpoint")])?;
         }
         // Publish the independent frontier together, within the existing To Do
         // ceiling. The dispatcher still owns execution leases and pause gates.
         // Dependent work stays in backlog until its required outputs succeed.
-        if project.is_none() && created && row.status == "backlog"
-            && row.depends_on.iter().all(|id|bs::dependency_resolved(conn,id).unwrap_or(false))
+        if project.is_none()
+            && created
+            && row.status == "backlog"
+            && row
+                .depends_on
+                .iter()
+                .all(|id| bs::dependency_resolved(conn, id).unwrap_or(false))
         {
-            let cap=bs::todo_wip_limit(Some(session));
+            let cap = bs::todo_wip_limit(Some(session));
             let queued:i64=conn.query_row("SELECT count(*) FROM issues WHERE session=?1 AND status='todo' AND archived=0 AND deleted IS NULL",[session],|r|r.get(0))?;
-            if cap==0 || queued<cap {
-                let opts=crate::db::advance::AdvanceOpts{expected_from:Some("backlog".into()),reason:Some("independent command outcome ready".into()),..Default::default()};
-                match crate::db::advance::advance(conn,&row.id,"todo","command-lifecycle",&opts)? {
-                    Ok(out)=>events.extend(out.events),
-                    Err(why)=>tracing::info!(card=%row.id,?why,verdict="command_frontier_gate_held","task retained in backlog under its effective gate"),
+            if cap == 0 || queued < cap {
+                let opts = crate::db::advance::AdvanceOpts {
+                    expected_from: Some("backlog".into()),
+                    reason: Some("independent command outcome ready".into()),
+                    ..Default::default()
+                };
+                match crate::db::advance::advance(
+                    conn,
+                    &row.id,
+                    "todo",
+                    "command-lifecycle",
+                    &opts,
+                )? {
+                    Ok(out) => events.extend(out.events),
+                    Err(why) => {
+                        tracing::info!(card=%row.id,?why,verdict="command_frontier_gate_held","task retained in backlog under its effective gate")
+                    }
                 }
             }
         }
@@ -615,9 +739,14 @@ fn apply(
     // required canonical outcomes, independent of the one-parent display link.
     if let Some(p) = parent.as_mut() {
         if !parent_created {
-            p.desc.push_str(&format!("\n\nRequest MSG-{message_id}: {}", session_verbs::redact_prompt_secrets(text)));
+            p.desc.push_str(&format!(
+                "\n\nRequest MSG-{message_id}: {}",
+                session_verbs::redact_prompt_secrets(text)
+            ));
         }
-        p.rev += 1; p.version += 1; p.updated = now;
+        p.rev += 1;
+        p.version += 1;
+        p.updated = now;
         for id in &children {
             if !p.depends_on.contains(id) {
                 p.depends_on.push(id.clone());
@@ -630,9 +759,18 @@ fn apply(
     // is written; an invalid plan rolls the whole commit back and is retried as a repairable error.
     if let Some(project) = project.as_deref() {
         let mut touched = children.clone();
-        if let Some(p) = parent.as_ref() { touched.push(p.id.clone()); }
-        if let Err((task, error)) = crate::project_execution::graph::validate_tasks(conn, project, &touched, "intake_commit") {
-            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("plan dependency refused for {task}: {error}")))));
+        if let Some(p) = parent.as_ref() {
+            touched.push(p.id.clone());
+        }
+        if let Err((task, error)) = crate::project_execution::graph::validate_tasks(
+            conn,
+            project,
+            &touched,
+            "intake_commit",
+        ) {
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::other(format!("plan dependency refused for {task}: {error}")),
+            )));
         }
     }
     let root = parent
@@ -685,10 +823,17 @@ pub(crate) async fn capture(state: &AppState, id: i64, session: &str) -> bool {
 /// not an immortal pending receipt or a fabricated implementation task. The
 /// normal dispatcher/lease/gates own recovery, so there is no second retry loop.
 async fn hand_intake_to_worker(
-    state: &AppState, id: i64, session: &str, text: &str, saved: Option<&str>,
+    state: &AppState,
+    id: i64,
+    session: &str,
+    text: &str,
+    saved: Option<&str>,
 ) -> anyhow::Result<()> {
-    let previous: Value = saved.and_then(|v| serde_json::from_str(v).ok()).unwrap_or(Value::Null);
-    let label = amux_core::board::title_from_prompt(text).unwrap_or_else(|| format!("request MSG-{id}"));
+    let previous: Value = saved
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or(Value::Null);
+    let label =
+        amux_core::board::title_from_prompt(text).unwrap_or_else(|| format!("request MSG-{id}"));
     let plan = Decision {
         kind: "tasks".into(), confidence: 1.0,
         reason: "Automatic interpretation exhausted its two attempts; the owning worker must reconcile the request before implementation".into(),
@@ -704,19 +849,33 @@ async fn hand_intake_to_worker(
             ], needs: vec![], dependency_reason: String::new(),
         }],
     };
-    let session = session.to_string(); let text = text.to_string();
-    state.store.write_async(move |conn| {
-        let mut telemetry = previous.get("telemetry").filter(|v| v.is_object()).cloned().unwrap_or_else(|| json!({}));
-        telemetry["cache"] = json!("worker_intake_recovery");
-        telemetry["recovery_model_calls"] = json!(0);
-        telemetry["prior_interpretation"] = previous;
-        let out = apply(conn, id, &session, &text, &plan, &[], &telemetry)?;
-        if out.applied {
-            tracing::warn!(message_id=id,session,measured=true,n_considered=1,
-                verdict="command_intake_owned_recovery", "bounded interpretation failure handed to the normal board lifecycle");
-        }
-        Ok(out)
-    }).await?;
+    let session = session.to_string();
+    let text = text.to_string();
+    state
+        .store
+        .write_async(move |conn| {
+            let mut telemetry = previous
+                .get("telemetry")
+                .filter(|v| v.is_object())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            telemetry["cache"] = json!("worker_intake_recovery");
+            telemetry["recovery_model_calls"] = json!(0);
+            telemetry["prior_interpretation"] = previous;
+            let out = apply(conn, id, &session, &text, &plan, &[], &telemetry)?;
+            if out.applied {
+                tracing::warn!(
+                    message_id = id,
+                    session,
+                    measured = true,
+                    n_considered = 1,
+                    verdict = "command_intake_owned_recovery",
+                    "bounded interpretation failure handed to the normal board lifecycle"
+                );
+            }
+            Ok(out)
+        })
+        .await?;
     Ok(())
 }
 
@@ -727,10 +886,17 @@ pub(crate) async fn capture_inner(
     client: Arc<dyn mdai::ModelClient>,
 ) -> anyhow::Result<()> {
     let project = {
-        let c=state.store.read()?;
-        project_for_message(&c,id)?.map(|name|crate::project_execution::store::get(&c,&name)).transpose()?.flatten()
+        let c = state.store.read()?;
+        project_for_message(&c, id)?
+            .map(|name| crate::project_execution::store::get(&c, &name))
+            .transpose()?
+            .flatten()
     };
-    if project.as_ref().is_some_and(|p|p.policy.paused) || (project.is_none() && session_verbs::lane_is_paused(session)) { return Ok(()); }
+    if project.as_ref().is_some_and(|p| p.policy.paused)
+        || (project.is_none() && session_verbs::lane_is_paused(session))
+    {
+        return Ok(());
+    }
     let now = chrono::Utc::now().timestamp();
     let (text, kind, attempts, retry, saved, attempt_limit) = {
         let c = state.store.read()?;
@@ -738,10 +904,25 @@ pub(crate) async fn capture_inner(
         let Some(r) = row else { return Ok(()) };
         r
     };
-    let waiting_on = saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok()).and_then(|v|v["waiting_on"].as_i64());
+    let waiting_on = saved
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| v["waiting_on"].as_i64());
     if let Some(prior) = waiting_on {
-        let completed = { let c = state.store.read()?;
-            c.query_row("SELECT card_id,intake_result FROM cmd_history WHERE id=?1 AND capture_pending=0",[prior],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?))).optional()? };
+        let completed = {
+            let c = state.store.read()?;
+            c.query_row(
+                "SELECT card_id,intake_result FROM cmd_history WHERE id=?1 AND capture_pending=0",
+                [prior],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?
+        };
         if let Some((root, raw)) = completed {
             state.store.write_async(move |c| {
                 let original: Value = raw.and_then(|v|serde_json::from_str(&v).ok()).unwrap_or(Value::Null);
@@ -751,23 +932,46 @@ pub(crate) async fn capture_inner(
         }
         return Ok(());
     }
-    let prepared = saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok())
+    let prepared = saved
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .and_then(|v| {
-            if v["state"] == "prepared" { return serde_json::from_value::<Prepared>(v["plan"].clone()).ok(); }
-            if v["state"] != "received" || v.get("error").is_some() { return None; }
-            let raw=v["response"].as_str()?;
-            let decision: Decision=serde_json::from_str(board_intake::extract_json_object(raw)?).ok()?;
-            let candidates: Vec<Candidate>=serde_json::from_value(v["candidates"].clone()).ok()?;
-            validate(&decision,&candidates,session).ok()?;
-            Some(Prepared{decision,candidates,telemetry:v["telemetry"].clone()})
+            if v["state"] == "prepared" {
+                return serde_json::from_value::<Prepared>(v["plan"].clone()).ok();
+            }
+            if v["state"] != "received" || v.get("error").is_some() {
+                return None;
+            }
+            let raw = v["response"].as_str()?;
+            let decision: Decision =
+                serde_json::from_str(board_intake::extract_json_object(raw)?).ok()?;
+            let candidates: Vec<Candidate> =
+                serde_json::from_value(v["candidates"].clone()).ok()?;
+            validate(&decision, &candidates, session).ok()?;
+            Some(Prepared {
+                decision,
+                candidates,
+                telemetry: v["telemetry"].clone(),
+            })
         });
     if let Some(mut plan) = prepared {
-        let reusable = { let conn = state.store.read()?; refresh_prepared(&conn, &mut plan)? };
+        let reusable = {
+            let conn = state.store.read()?;
+            refresh_prepared(&conn, &mut plan)?
+        };
         if reusable {
             let sess = session.to_string();
             let text = text.clone();
-            commit_plan(state,id,&sess,&text,plan).await?;
-            tracing::info!(message_id=id,session,model_calls=0,measured=true,n_considered=1,verdict="command_plan_recovered","reused durable interpretation without a model call");
+            commit_plan(state, id, &sess, &text, plan).await?;
+            tracing::info!(
+                message_id = id,
+                session,
+                model_calls = 0,
+                measured = true,
+                n_considered = 1,
+                verdict = "command_plan_recovered",
+                "reused durable interpretation without a model call"
+            );
             return Ok(());
         }
         state.store.write_async(move |c| {
@@ -777,10 +981,14 @@ pub(crate) async fn capture_inner(
     }
     if attempts >= attempt_limit {
         // Do not race a live second attempt; its lease lasts until retry.
-        if retry <= now && project.is_none() { hand_intake_to_worker(state, id, session, &text, saved.as_deref()).await?; }
+        if retry <= now && project.is_none() {
+            hand_intake_to_worker(state, id, session, &text, saved.as_deref()).await?;
+        }
         return Ok(());
     }
-    if retry > now { return Ok(()); }
+    if retry > now {
+        return Ok(());
+    }
     if kind == "session" && !amux_core::board::peer_message_wants_action(&text)
         || amux_core::board::is_conversational_ack(&text)
         || amux_core::board::is_informational_query(&text)
@@ -811,10 +1019,12 @@ pub(crate) async fn capture_inner(
         return Ok(());
     }
     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
-    let prior_pending = { let c = state.store.read()?;
+    let prior_pending = {
+        let c = state.store.read()?;
         // A second receipt may arrive before the first planner has claimed its
         // hash. The durable text and receipt order already identify the original.
-        c.query_row("SELECT id FROM cmd_history WHERE session=?1 AND (intake_hash=?2 OR text=?4) AND id<?3 AND capture_pending!=0 ORDER BY id LIMIT 1",rusqlite::params![session,hash,id,text],|r|r.get::<_,i64>(0)).optional()? };
+        c.query_row("SELECT id FROM cmd_history WHERE session=?1 AND (intake_hash=?2 OR text=?4) AND id<?3 AND capture_pending!=0 ORDER BY id LIMIT 1",rusqlite::params![session,hash,id,text],|r|r.get::<_,i64>(0)).optional()?
+    };
     if let Some(prior) = prior_pending {
         state.store.write_async(move |c| {
             c.execute("UPDATE cmd_history SET intake_hash=?2,intake_result=?3 WHERE id=?1",rusqlite::params![id,hash,json!({"state":"waiting","waiting_on":prior,"cache":"identical_pending_request"}).to_string()])?;
@@ -827,7 +1037,10 @@ pub(crate) async fn capture_inner(
         c.query_row("SELECT card_id,intake_result FROM cmd_history WHERE session=?1 AND intake_hash=?2 AND id!=?3 AND capture_pending=0 AND card_id IN (SELECT id FROM issues WHERE archived=0 AND deleted IS NULL AND status NOT IN ('done','verified','discarded','quarantined','cancelled')) ORDER BY id DESC LIMIT 1",rusqlite::params![session,hash,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?
     };
     if let Some((root, raw)) = cached {
-        let previous_telemetry=saved.as_deref().and_then(|v|serde_json::from_str::<Value>(v).ok()).and_then(|v|v.get("telemetry").cloned());
+        let previous_telemetry = saved
+            .as_deref()
+            .and_then(|v| serde_json::from_str::<Value>(v).ok())
+            .and_then(|v| v.get("telemetry").cloned());
         state.store.write_async(move|c|{
             c.execute("UPDATE cmd_history SET card_id=?2,capture_pending=0,intake_hash=?3,intake_result=?4 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,root,hash,json!({"state":"committed","cache":"identical_active_request","model_calls":0,"telemetry":previous_telemetry,"task_ids":serde_json::from_str::<Value>(&raw).ok().and_then(|v|v.get("task_ids").cloned()),"root":root}).to_string()])?;
             Ok(WriteOutcome{applied:true,events:vec![]})
@@ -835,8 +1048,8 @@ pub(crate) async fn capture_inner(
         return Ok(());
     }
     if let Some(project) = &project {
-        let c=state.store.read()?;
-        if let Some(reason)=crate::project_execution::usage::waiting(&c,project)? {
+        let c = state.store.read()?;
+        if let Some(reason) = crate::project_execution::usage::waiting(&c, project)? {
             anyhow::bail!("{reason}");
         }
     }
@@ -886,35 +1099,57 @@ pub(crate) async fn capture_inner(
         &context,
         &rows,
     );
-    if let Some(previous) = saved.as_deref().and_then(|v|serde_json::from_str::<Value>(v).ok()) {
+    if let Some(previous) = saved
+        .as_deref()
+        .and_then(|v| serde_json::from_str::<Value>(v).ok())
+    {
         if let Some(error) = previous["error"].as_str() {
             prompt.push_str(&format!("\nPrevious response was rejected: {error}. Correct that error; no tasks from it were committed.\nPrevious JSON: {}", previous["response"].as_str().unwrap_or("").chars().take(6000).collect::<String>()));
         }
     }
     let prompt_chars = prompt.chars().count();
-    if let Some(project)=&project {
+    if let Some(project) = &project {
         prompt.push_str(&format!("\nProject repository: {}. All outcomes belong to this project, never to an executor. Do not modify a working task; defer such refinements with a clear reason. No outside dependency edges. Dependencies are exceptional: use needs only for a concrete same-project output that is unavailable and cannot be produced inside the same executor task. Commit, report, retained artifact, and verification work are part of the producing task's acceptance protocol, never separate dependent board tasks. Dependencies wait for Verified outputs in this project; never encode unavailable outputs only as prose operational waits.",project.policy.repository));
         if let Some(contract) = &project.policy.acceptance {
             prompt.push_str(&crate::project_execution::acceptance::catalogue(contract));
         }
     }
-    let model = project.as_ref().map(|p|p.policy.coordinator.model.clone()).unwrap_or_else(||mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref()));
+    let model = project
+        .as_ref()
+        .map(|p| p.policy.coordinator.model.clone())
+        .unwrap_or_else(|| mdai::resolve_model(setting(session, "AMUX_INTAKE_MODEL").as_deref()));
     let started = std::time::Instant::now();
-    let provider = project.as_ref().map(|p|p.policy.coordinator.provider.clone()).unwrap_or_else(||"claude".into());
+    let provider = project
+        .as_ref()
+        .map(|p| p.policy.coordinator.provider.clone())
+        .unwrap_or_else(|| "claude".into());
     let m = model.clone();
     let p = provider.clone();
-    let measured = tokio::task::spawn_blocking(move || client.complete_for_provider(&p, &m, &prompt)).await?;
-    let completion=match measured {
-        Ok(value)=>value,
-        Err(error)=>{
-            let mut previous:Value=saved.as_deref().and_then(|s|serde_json::from_str(s).ok()).filter(Value::is_object).unwrap_or(json!({}));
-            let mut usage=previous.pointer("/telemetry/attempt_usage").and_then(Value::as_array).cloned().unwrap_or_default();
+    let measured =
+        tokio::task::spawn_blocking(move || client.complete_for_provider(&p, &m, &prompt)).await?;
+    let completion = match measured {
+        Ok(value) => value,
+        Err(error) => {
+            let mut previous: Value = saved
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .filter(Value::is_object)
+                .unwrap_or(json!({}));
+            let mut usage = previous
+                .pointer("/telemetry/attempt_usage")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             usage.push(error.usage.clone().unwrap_or(Value::Null));
-            previous["state"]=json!("pending");previous["error"]=json!(error.message);
-            let mut failures=previous["attempt_errors"].as_array().cloned().unwrap_or_default();
+            previous["state"] = json!("pending");
+            previous["error"] = json!(error.message);
+            let mut failures = previous["attempt_errors"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             failures.push(json!({"attempt":attempts+1,"error":error.message,"usage":error.usage}));
-            previous["attempt_errors"]=json!(failures);
-            previous["telemetry"]=json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"attempt_usage":usage,"usage":error.usage,"token_usage_measured":error.usage.is_some()});
+            previous["attempt_errors"] = json!(failures);
+            previous["telemetry"] = json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"attempt_usage":usage,"usage":error.usage,"token_usage_measured":error.usage.is_some()});
             state.store.write_async(move |c| {
                 c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,previous.to_string()])?;
                 Ok(WriteOutcome{applied:true,events:vec![]})
@@ -922,25 +1157,50 @@ pub(crate) async fn capture_inner(
             return Err(anyhow::Error::msg(error.message));
         }
     };
-    let raw = completion.text
+    let raw = completion
+        .text
         .trim()
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
-    let mut attempt_usage = saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok())
-        .and_then(|v|v.pointer("/telemetry/attempt_usage").and_then(Value::as_array).cloned()).unwrap_or_default();
+    let mut attempt_usage = saved
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| {
+            v.pointer("/telemetry/attempt_usage")
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default();
     attempt_usage.push(completion.usage.clone().unwrap_or(Value::Null));
-    let mut attempt_responses = saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok())
-        .and_then(|v|v.get("attempt_responses").and_then(Value::as_array).cloned()).unwrap_or_default();
+    let mut attempt_responses = saved
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| {
+            v.get("attempt_responses")
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default();
     attempt_responses.push(json!(raw));
     let telemetry = json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"prompt_chars":prompt_chars,"response_chars":raw.chars().count(),"token_usage_measured":completion.usage.is_some(),"usage":completion.usage,"attempt_usage":attempt_usage,"model_ms":started.elapsed().as_millis() as u64,"n_considered":rows.len(),"n_available":available});
     let received = json!({"state":"received","response":raw,"attempt_responses":attempt_responses,"attempt_errors":saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok()).and_then(|v|v.get("attempt_errors").cloned()),"candidates":rows,"telemetry":telemetry}).to_string();
-    state.store.write_async(move |c| {
-        c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,received])?;
-        Ok(WriteOutcome{applied:true,events:vec![]})
-    }).await?;
-    let object = board_intake::extract_json_object(raw).ok_or_else(||anyhow::anyhow!("interpretation returned no JSON object"))?;
+    state
+        .store
+        .write_async(move |c| {
+            c.execute(
+                "UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",
+                rusqlite::params![id, received],
+            )?;
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .await?;
+    let object = board_intake::extract_json_object(raw)
+        .ok_or_else(|| anyhow::anyhow!("interpretation returned no JSON object"))?;
     let decision: Decision = serde_json::from_str(object)?;
     validate(&decision, &rows, session).map_err(anyhow::Error::msg)?;
     let sess = session.to_string();
@@ -948,12 +1208,36 @@ pub(crate) async fn capture_inner(
     let disposition = decision.kind.clone();
     // Persist the expensive result before graph mutation. Crashes or transient
     // write failures after this boundary recover from data, not another call.
-    let prepared = Prepared { decision: decision.clone(), candidates: rows.clone(), telemetry: telemetry.clone() };
-    state.store.write_async(move |c| {
-        c.execute("UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",rusqlite::params![id,json!({"state":"prepared","plan":prepared}).to_string()])?;
-        Ok(WriteOutcome{applied:true,events:vec![]})
-    }).await?;
-    commit_plan(state,id,&sess,&text,Prepared{decision,candidates:rows,telemetry}).await?;
+    let prepared = Prepared {
+        decision: decision.clone(),
+        candidates: rows.clone(),
+        telemetry: telemetry.clone(),
+    };
+    state
+        .store
+        .write_async(move |c| {
+            c.execute(
+                "UPDATE cmd_history SET intake_result=?2 WHERE id=?1 AND capture_pending!=0",
+                rusqlite::params![id, json!({"state":"prepared","plan":prepared}).to_string()],
+            )?;
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .await?;
+    commit_plan(
+        state,
+        id,
+        &sess,
+        &text,
+        Prepared {
+            decision,
+            candidates: rows,
+            telemetry,
+        },
+    )
+    .await?;
     tracing::info!(
         message_id = id,
         session,
@@ -969,20 +1253,50 @@ pub(crate) async fn capture_inner(
     Ok(())
 }
 
-async fn commit_plan(state: &AppState, id: i64, session: &str, text: &str, plan: Prepared) -> anyhow::Result<()> {
+async fn commit_plan(
+    state: &AppState,
+    id: i64,
+    session: &str,
+    text: &str,
+    plan: Prepared,
+) -> anyhow::Result<()> {
     let board_conversation = !session.starts_with("project:") && plan.decision.kind != "tasks" && {
-        let c=state.store.read()?;
-        c.query_row("SELECT delivery='board' FROM cmd_history WHERE id=?1",[id],|r|r.get::<_,bool>(0)).unwrap_or(false)
+        let c = state.store.read()?;
+        c.query_row(
+            "SELECT delivery='board' FROM cmd_history WHERE id=?1",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
     };
     if board_conversation {
-        session_verbs::enqueue_board_conversation(state,session,id,text).await.map_err(anyhow::Error::msg)?;
+        session_verbs::enqueue_board_conversation(state, session, id, text)
+            .await
+            .map_err(anyhow::Error::msg)?;
     }
-    let session=session.to_string(); let text=text.to_string();
-    state.store.write_async(move |c| {
-        let result=apply(c,id,&session,&text,&plan.decision,&plan.candidates,&plan.telemetry)?;
-        if board_conversation { c.execute("UPDATE cmd_history SET delivery='queued',submit_verdict='queued' WHERE id=?1",[id])?; }
-        Ok(result)
-    }).await?;
+    let session = session.to_string();
+    let text = text.to_string();
+    state
+        .store
+        .write_async(move |c| {
+            let result = apply(
+                c,
+                id,
+                &session,
+                &text,
+                &plan.decision,
+                &plan.candidates,
+                &plan.telemetry,
+            )?;
+            if board_conversation {
+                c.execute(
+                    "UPDATE cmd_history SET delivery='queued',submit_verdict='queued' WHERE id=?1",
+                    [id],
+                )?;
+            }
+            Ok(result)
+        })
+        .await?;
     Ok(())
 }
 
@@ -998,23 +1312,44 @@ async fn diagnostics(State(state): State<AppState>, Query(p): Query<Params>) -> 
         let c = state.store.read()?;
         let mut stmt=c.prepare("SELECT id,session,capture_pending,intake_attempts,intake_retry_at,intake_result FROM cmd_history WHERE (?1 IS NULL OR session=?1) AND (intake_attempts>0 OR intake_result IS NOT NULL OR capture_pending!=0) ORDER BY id DESC LIMIT 100")?;
         let rows=stmt.query_map([p.session],|r|Ok(json!({"message_id":r.get::<_,i64>(0)?,"session":r.get::<_,String>(1)?,"pending":r.get::<_,i64>(2)?!=0,"model_calls":r.get::<_,i64>(3)?,"retry_at":r.get::<_,i64>(4)?,"result":r.get::<_,Option<String>>(5)?.and_then(|s|serde_json::from_str::<Value>(&s).ok())})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let called = rows.iter().map(|r|r["model_calls"].as_u64().unwrap_or(0)).sum::<u64>();
-        let usage: Vec<&Value> = rows.iter().flat_map(|r| {
-            let telemetry=r.pointer("/result/telemetry").or_else(||r.pointer("/result/plan/telemetry"));
-            match telemetry.and_then(|t|t.get("attempt_usage")).and_then(Value::as_array) {
-                Some(calls) => calls.iter().collect::<Vec<_>>(),
-                None => telemetry.and_then(|t|t.get("usage")).into_iter().collect(),
-            }
-        }).filter(|v|v.get("input_tokens").and_then(Value::as_u64).is_some()
-            && v.get("output_tokens").and_then(Value::as_u64).is_some()).collect();
-        let sum = |key:&str| usage.iter().filter_map(|v|v.get(key).and_then(Value::as_u64)).sum::<u64>();
-        Ok(json!({"measured":true,"n_considered":rows.len(),"limit":100,
+        let called = rows
+            .iter()
+            .map(|r| r["model_calls"].as_u64().unwrap_or(0))
+            .sum::<u64>();
+        let usage: Vec<&Value> = rows
+            .iter()
+            .flat_map(|r| {
+                let telemetry = r
+                    .pointer("/result/telemetry")
+                    .or_else(|| r.pointer("/result/plan/telemetry"));
+                match telemetry
+                    .and_then(|t| t.get("attempt_usage"))
+                    .and_then(Value::as_array)
+                {
+                    Some(calls) => calls.iter().collect::<Vec<_>>(),
+                    None => telemetry.and_then(|t| t.get("usage")).into_iter().collect(),
+                }
+            })
+            .filter(|v| {
+                v.get("input_tokens").and_then(Value::as_u64).is_some()
+                    && v.get("output_tokens").and_then(Value::as_u64).is_some()
+            })
+            .collect();
+        let sum = |key: &str| {
+            usage
+                .iter()
+                .filter_map(|v| v.get(key).and_then(Value::as_u64))
+                .sum::<u64>()
+        };
+        Ok(
+            json!({"measured":true,"n_considered":rows.len(),"limit":100,
             "token_usage_measured":called>0 && usage.len() as u64==called,
             "usage_coverage":{"called_calls":called,"measured_calls":usage.len(),
                 "input_tokens":sum("input_tokens"),"output_tokens":sum("output_tokens"),
                 "cache_read_input_tokens":sum("cache_read_input_tokens"),"cache_creation_input_tokens":sum("cache_creation_input_tokens")},
             "requests":rows,"cost_scope":"returned interpretation receipts only",
-            "note":"Missing usage is unmeasured, not zero. Worker execution and continuation costs are recorded separately in the worker token ledger."}))
+            "note":"Missing usage is unmeasured, not zero. Worker execution and continuation costs are recorded separately in the worker token ledger."}),
+        )
     })();
     match result {
         Ok(v) => Json(v).into_response(),
@@ -1031,15 +1366,21 @@ mod tests {
     use super::*;
     #[test]
     fn command_intake_is_default_with_explicit_opt_out() {
-        for value in [None, Some("1"), Some("true"), Some("on")] { assert!(policy_enabled(value)); }
-        for value in ["0", "false", "no", "OFF", " off "] { assert!(!policy_enabled(Some(value))); }
+        for value in [None, Some("1"), Some("true"), Some("on")] {
+            assert!(policy_enabled(value));
+        }
+        for value in ["0", "false", "no", "OFF", " off "] {
+            assert!(!policy_enabled(Some(value)));
+        }
     }
 
     #[tokio::test]
     async fn exhausted_intake_becomes_one_structured_owned_recovery_without_more_model_calls() {
         struct Never;
         impl mdai::ModelClient for Never {
-            fn complete(&self, _: &str, _: &str) -> Result<String,String> { panic!("exhausted receipt bought another interpretation") }
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                panic!("exhausted receipt bought another interpretation")
+            }
         }
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::db::Store::open(&temp.path().join("recovery.db")).unwrap());
@@ -1051,141 +1392,347 @@ mod tests {
             c.execute("UPDATE cmd_history SET intake_result=?1 WHERE id=2", [json!({"state":"waiting","waiting_on":1}).to_string()])?;
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).await.unwrap();
-        let state = AppState { store, started:std::time::Instant::now(), build_hash:"test".into(), auth_token:None,
-            reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true)) };
-        for id in [1,1,2] { capture_inner(&state,id,"fixture",Arc::new(Never)).await.unwrap(); }
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        for id in [1, 1, 2] {
+            capture_inner(&state, id, "fixture", Arc::new(Never))
+                .await
+                .unwrap();
+        }
         let c = state.store.read().unwrap();
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),1);
-        assert_eq!(c.query_row("SELECT COUNT(DISTINCT card_id) FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),1);
-        let id:String=c.query_row("SELECT card_id FROM cmd_history WHERE id=1",[],|r|r.get(0)).unwrap();
-        let row=bs::get_issue(&c,&id).unwrap().unwrap();
-        assert_eq!(row.session.as_deref(),Some("fixture"));
-        assert_eq!(row.item_type,"investigation");
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(DISTINCT card_id) FROM cmd_history", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let id: String = c
+            .query_row("SELECT card_id FROM cmd_history WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let row = bs::get_issue(&c, &id).unwrap().unwrap();
+        assert_eq!(row.session.as_deref(), Some("fixture"));
+        assert_eq!(row.item_type, "investigation");
         assert!(row.title.starts_with("Structure request:"));
         assert!(bs::has_execution_details(&row));
         assert!(!bs::is_capture_shell(&row));
         assert!(row.depends_on.is_empty());
         assert!(row.evidence.is_none());
-        let raw:String=c.query_row("SELECT intake_result FROM cmd_history WHERE id=1",[],|r|r.get(0)).unwrap();
-        assert!(raw.contains("invalid canonical identity") && raw.contains("input_tokens"), "failed attempt evidence survives fallback");
-        assert_eq!(c.query_row("SELECT sum(capture_pending) FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let raw: String = c
+            .query_row(
+                "SELECT intake_result FROM cmd_history WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw.contains("invalid canonical identity") && raw.contains("input_tokens"),
+            "failed attempt evidence survives fallback"
+        );
+        assert_eq!(
+            c.query_row("SELECT sum(capture_pending) FROM cmd_history", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
     async fn pending_duplicate_waits_for_the_original_and_never_calls_a_model() {
         struct Never;
         impl mdai::ModelClient for Never {
-            fn complete(&self,_:&str,_:&str)->Result<String,String>{panic!("duplicate bought interpretation")}
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                panic!("duplicate bought interpretation")
+            }
         }
-        let temp=tempfile::tempdir().unwrap();
-        let store=Arc::new(crate::db::Store::open(&temp.path().join("pending.db")).unwrap());
-        store.write_async(|c| {
-            for id in [1,2] { receipt(c,id,"Produce the fixture reports and check them"); }
-            let hash=format!("{:x}",Sha256::digest(b"Produce the fixture reports and check them"));
-            c.execute("UPDATE cmd_history SET intake_hash=?1,intake_attempts=1 WHERE id=1",[hash])?;
-            Ok(WriteOutcome{applied:true,events:vec![]})
-        }).await.unwrap();
-        let state=AppState{store,started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-        capture_inner(&state,2,"fixture",Arc::new(Never)).await.unwrap();
-        { let c=state.store.read().unwrap();
-          let saved:String=c.query_row("SELECT intake_result FROM cmd_history WHERE id=2",[],|r|r.get(0)).unwrap();
-          assert_eq!(serde_json::from_str::<Value>(&saved).unwrap()["waiting_on"],1);
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::db::Store::open(&temp.path().join("pending.db")).unwrap());
+        store
+            .write_async(|c| {
+                for id in [1, 2] {
+                    receipt(c, id, "Produce the fixture reports and check them");
+                }
+                let hash = format!(
+                    "{:x}",
+                    Sha256::digest(b"Produce the fixture reports and check them")
+                );
+                c.execute(
+                    "UPDATE cmd_history SET intake_hash=?1,intake_attempts=1 WHERE id=1",
+                    [hash],
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        capture_inner(&state, 2, "fixture", Arc::new(Never))
+            .await
+            .unwrap();
+        {
+            let c = state.store.read().unwrap();
+            let saved: String = c
+                .query_row(
+                    "SELECT intake_result FROM cmd_history WHERE id=2",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&saved).unwrap()["waiting_on"],
+                1
+            );
         }
-        state.store.write_async(|c| {
-            let out=apply(c,1,"fixture","Produce the fixture reports and check them",&plan(),&[],&json!({"model_calls":1}))?;
-            c.execute("UPDATE issues SET status='done'",[])?;
-            Ok(out)
-        }).await.unwrap();
-        capture_inner(&state,2,"fixture",Arc::new(Never)).await.unwrap();
-        let c=state.store.read().unwrap();
-        assert_eq!(c.query_row("SELECT count(distinct card_id) FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),1);
-        assert_eq!(c.query_row("SELECT capture_pending+intake_attempts FROM cmd_history WHERE id=2",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        state
+            .store
+            .write_async(|c| {
+                let out = apply(
+                    c,
+                    1,
+                    "fixture",
+                    "Produce the fixture reports and check them",
+                    &plan(),
+                    &[],
+                    &json!({"model_calls":1}),
+                )?;
+                c.execute("UPDATE issues SET status='done'", [])?;
+                Ok(out)
+            })
+            .await
+            .unwrap();
+        capture_inner(&state, 2, "fixture", Arc::new(Never))
+            .await
+            .unwrap();
+        let c = state.store.read().unwrap();
+        assert_eq!(
+            c.query_row("SELECT count(distinct card_id) FROM cmd_history", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT capture_pending+intake_attempts FROM cmd_history WHERE id=2",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
     async fn rejected_model_output_keeps_measured_usage_and_raw_response_for_repair() {
         struct Invalid;
         impl mdai::ModelClient for Invalid {
-            fn complete(&self,_:&str,_:&str)->Result<String,String>{unreachable!()}
-            fn complete_measured(&self,_:&str,_:&str)->Result<mdai::ModelCompletion,String>{
-                Ok(mdai::ModelCompletion{text:"not JSON".into(),usage:Some(json!({"input_tokens":120,"output_tokens":9}))})
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn complete_measured(&self, _: &str, _: &str) -> Result<mdai::ModelCompletion, String> {
+                Ok(mdai::ModelCompletion {
+                    text: "not JSON".into(),
+                    usage: Some(json!({"input_tokens":120,"output_tokens":9})),
+                })
             }
         }
-        let temp=tempfile::tempdir().unwrap();
-        let store=Arc::new(crate::db::Store::open(&temp.path().join("invalid.db")).unwrap());
-        store.write_async(|c|{receipt(c,1,"Produce the fixture reports and check them");Ok(WriteOutcome{applied:true,events:vec![]})}).await.unwrap();
-        let state=AppState{store,started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-        assert!(capture_inner(&state,1,"fixture",Arc::new(Invalid)).await.is_err());
-        let c=state.store.read().unwrap();
-        let raw:String=c.query_row("SELECT intake_result FROM cmd_history WHERE id=1",[],|r|r.get(0)).unwrap();
-        let saved:Value=serde_json::from_str(&raw).unwrap();
-        assert_eq!(saved["response"],"not JSON");
-        assert_eq!(saved["telemetry"]["attempt_usage"][0]["input_tokens"],120);
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::db::Store::open(&temp.path().join("invalid.db")).unwrap());
+        store
+            .write_async(|c| {
+                receipt(c, 1, "Produce the fixture reports and check them");
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        assert!(capture_inner(&state, 1, "fixture", Arc::new(Invalid))
+            .await
+            .is_err());
+        let c = state.store.read().unwrap();
+        let raw: String = c
+            .query_row(
+                "SELECT intake_result FROM cmd_history WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let saved: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(saved["response"], "not JSON");
+        assert_eq!(saved["telemetry"]["attempt_usage"][0]["input_tokens"], 120);
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
     async fn simultaneous_receipt_waits_even_before_original_hash_is_claimed() {
         struct Never;
         impl mdai::ModelClient for Never {
-            fn complete(&self, _: &str, _: &str) -> Result<String,String> {
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
                 panic!("duplicate receipt bought another interpretation")
             }
         }
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::db::Store::open(&temp.path().join("duplicate.db")).unwrap());
-        store.write_async(|c| {
-            receipt(c,1,"Produce the fixture reports and check them");
-            receipt(c,2,"Produce the fixture reports and check them");
-            Ok(WriteOutcome{applied:true,events:vec![]})
-        }).await.unwrap();
-        let state = AppState { store, started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true)) };
-        capture_inner(&state,2,"fixture",Arc::new(Never)).await.unwrap();
-        let c=state.store.read().unwrap();
-        let raw:String=c.query_row("SELECT intake_result FROM cmd_history WHERE id=2",[],|r|r.get(0)).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["waiting_on"],1);
-        assert_eq!(c.query_row("SELECT SUM(intake_attempts) FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        store
+            .write_async(|c| {
+                receipt(c, 1, "Produce the fixture reports and check them");
+                receipt(c, 2, "Produce the fixture reports and check them");
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        capture_inner(&state, 2, "fixture", Arc::new(Never))
+            .await
+            .unwrap();
+        let c = state.store.read().unwrap();
+        let raw: String = c
+            .query_row(
+                "SELECT intake_result FROM cmd_history WHERE id=2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["waiting_on"],
+            1
+        );
+        assert_eq!(
+            c.query_row("SELECT SUM(intake_attempts) FROM cmd_history", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
     fn identity_repair_names_every_bad_step_and_distinguishes_new_tests() {
-        let mut d=plan();
-        d.tasks[0].existing_id=Some("invented-a".into());
-        d.tasks[1].action="verify".into();
-        d.tasks[1].existing_id=None;
-        let error=validate(&d,&[],"fixture").unwrap_err();
-        assert!(error.contains("invented-a"),"{error}");
-        assert!(error.contains(&format!("{}:",d.tasks[1].key)),"{error}");
-        assert!(error.contains("new verification/test task"),"{error}");
-        assert!(error.contains("existing_id=null"),"{error}");
-        d.tasks[0].existing_id=None;
-        d.tasks[1].action="create".into();
-        validate(&d,&[],"fixture").unwrap();
+        let mut d = plan();
+        d.tasks[0].existing_id = Some("invented-a".into());
+        d.tasks[1].action = "verify".into();
+        d.tasks[1].existing_id = None;
+        let error = validate(&d, &[], "fixture").unwrap_err();
+        assert!(error.contains("invented-a"), "{error}");
+        assert!(error.contains(&format!("{}:", d.tasks[1].key)), "{error}");
+        assert!(error.contains("new verification/test task"), "{error}");
+        assert!(error.contains("existing_id=null"), "{error}");
+        d.tasks[0].existing_id = None;
+        d.tasks[1].action = "create".into();
+        validate(&d, &[], "fixture").unwrap();
     }
 
     #[test]
     fn completed_command_is_reopened_for_refinement_without_a_duplicate_epic() {
-        let c=crate::db::migrate::test_memdb();
-        receipt(&c,1,"Build fixture reports");
-        apply(&c,1,"fixture","Build fixture reports",&plan(),&[],&json!({})).unwrap();
-        let root:String=c.query_row("SELECT card_id FROM cmd_history WHERE id=1",[],|r|r.get(0)).unwrap();
-        c.execute("UPDATE issues SET status='done', evidence='fixture outputs checked: PASS'",[]).unwrap();
-        let (rows,_)=candidates(&c,"fixture","Produce a report",24).unwrap();
-        let old=rows.iter().find(|r|r.title=="Produce a report").unwrap();
-        let mut d=plan();d.tasks.truncate(1);d.tasks[0].existing_id=Some(old.id.clone());d.tasks[0].action="verify".into();
-        receipt(&c,2,"Refine the a report");
-        apply(&c,2,"fixture","Refine the a report",&d,&rows,&json!({})).unwrap();
-        assert_eq!(bs::get_issue(&c,&root).unwrap().unwrap().status,"backlog");
-        assert_eq!(bs::get_issue(&c,&old.id).unwrap().unwrap().status,"backlog");
-        assert_eq!(c.query_row("SELECT card_id FROM cmd_history WHERE id=2",[],|r|r.get::<_,String>(0)).unwrap(),root);
-        assert_eq!(c.query_row("SELECT count(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),4);
+        let c = crate::db::migrate::test_memdb();
+        receipt(&c, 1, "Build fixture reports");
+        apply(
+            &c,
+            1,
+            "fixture",
+            "Build fixture reports",
+            &plan(),
+            &[],
+            &json!({}),
+        )
+        .unwrap();
+        let root: String = c
+            .query_row("SELECT card_id FROM cmd_history WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        c.execute(
+            "UPDATE issues SET status='done', evidence='fixture outputs checked: PASS'",
+            [],
+        )
+        .unwrap();
+        let (rows, _) = candidates(&c, "fixture", "Produce a report", 24).unwrap();
+        let old = rows.iter().find(|r| r.title == "Produce a report").unwrap();
+        let mut d = plan();
+        d.tasks.truncate(1);
+        d.tasks[0].existing_id = Some(old.id.clone());
+        d.tasks[0].action = "verify".into();
+        receipt(&c, 2, "Refine the a report");
+        apply(
+            &c,
+            2,
+            "fixture",
+            "Refine the a report",
+            &d,
+            &rows,
+            &json!({}),
+        )
+        .unwrap();
+        assert_eq!(bs::get_issue(&c, &root).unwrap().unwrap().status, "backlog");
+        assert_eq!(
+            bs::get_issue(&c, &old.id).unwrap().unwrap().status,
+            "backlog"
+        );
+        assert_eq!(
+            c.query_row("SELECT card_id FROM cmd_history WHERE id=2", [], |r| r
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            root
+        );
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
     }
     #[tokio::test]
     async fn crash_after_interpretation_recovers_even_at_attempt_limit_without_calling_model() {
         struct Never;
         impl mdai::ModelClient for Never {
-            fn complete(&self, _: &str, _: &str) -> Result<String,String> { panic!("cached recovery spent a model call") }
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                panic!("cached recovery spent a model call")
+            }
         }
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::db::Store::open(&temp.path().join("recovery.db")).unwrap());
@@ -1195,46 +1742,104 @@ mod tests {
             c.execute("UPDATE cmd_history SET intake_attempts=2,intake_retry_at=9999999999,intake_result=?1",[json!({"state":"prepared","plan":p}).to_string()])?;
             Ok(WriteOutcome{applied:true,events:vec![]})
         }).await.unwrap();
-        let state = AppState { store, started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true)) };
-        capture_inner(&state,1,"fixture",Arc::new(Never)).await.unwrap();
-        capture_inner(&state,1,"fixture",Arc::new(Never)).await.unwrap();
-        let c=state.store.read().unwrap();
-        assert_eq!(c.query_row("SELECT count(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),4);
-        assert_eq!(c.query_row("SELECT capture_pending FROM cmd_history",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        capture_inner(&state, 1, "fixture", Arc::new(Never))
+            .await
+            .unwrap();
+        capture_inner(&state, 1, "fixture", Arc::new(Never))
+            .await
+            .unwrap();
+        let c = state.store.read().unwrap();
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            c.query_row("SELECT capture_pending FROM cmd_history", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
     fn refinement_replaces_superseded_criteria_and_preserves_history() {
-        let c=crate::db::migrate::test_memdb();
-        let mut old=bs::create_issue(&c,&new_issue("fixture","Produce names file","Write alpha and beta only","chore"),1).unwrap();
-        old.acceptance_criteria=Some(json!(["exactly alpha and beta"]).to_string());
-        bs::save_patched(&c,&mut old).unwrap();
-        receipt(&c,1,"Add gamma to the existing names file");
-        let (rows,_)=candidates(&c,"fixture","Add gamma to names",24).unwrap();
-        let mut d=plan(); d.tasks.truncate(1);
-        d.tasks[0].existing_id=Some(old.id.clone()); d.tasks[0].action="update".into();
-        d.tasks[0].description="Write alpha beta and gamma".into();
-        d.tasks[0].acceptance_criteria=vec!["exactly alpha beta and gamma".into()];
-        apply(&c,1,"fixture","Add gamma",&d,&rows,&json!({})).unwrap();
-        let row=bs::get_issue(&c,&old.id).unwrap().unwrap();
-        assert_eq!(row.acceptance_criteria,Some(json!(["exactly alpha beta and gamma"]).to_string()));
-        assert_eq!(row.desc,"Write alpha beta and gamma");
+        let c = crate::db::migrate::test_memdb();
+        let mut old = bs::create_issue(
+            &c,
+            &new_issue(
+                "fixture",
+                "Produce names file",
+                "Write alpha and beta only",
+                "chore",
+            ),
+            1,
+        )
+        .unwrap();
+        old.acceptance_criteria = Some(json!(["exactly alpha and beta"]).to_string());
+        bs::save_patched(&c, &mut old).unwrap();
+        receipt(&c, 1, "Add gamma to the existing names file");
+        let (rows, _) = candidates(&c, "fixture", "Add gamma to names", 24).unwrap();
+        let mut d = plan();
+        d.tasks.truncate(1);
+        d.tasks[0].existing_id = Some(old.id.clone());
+        d.tasks[0].action = "update".into();
+        d.tasks[0].description = "Write alpha beta and gamma".into();
+        d.tasks[0].acceptance_criteria = vec!["exactly alpha beta and gamma".into()];
+        apply(&c, 1, "fixture", "Add gamma", &d, &rows, &json!({})).unwrap();
+        let row = bs::get_issue(&c, &old.id).unwrap().unwrap();
+        assert_eq!(
+            row.acceptance_criteria,
+            Some(json!(["exactly alpha beta and gamma"]).to_string())
+        );
+        assert_eq!(row.desc, "Write alpha beta and gamma");
         assert!(row.log.unwrap().contains("Write alpha and beta only"));
-        assert_eq!(c.query_row("SELECT count(*) FROM issues",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
     fn cached_plan_only_rebases_a_revision_when_requirements_are_unchanged() {
-        let c=crate::db::migrate::test_memdb();
-        let mut row=bs::create_issue(&c,&new_issue("fixture","Produce report","Write the output report","chore"),1).unwrap();
-        let (rows,_)=candidates(&c,"fixture","report",24).unwrap();
-        let mut d=plan(); d.tasks.truncate(1); d.tasks[0].existing_id=Some(row.id.clone()); d.tasks[0].action="update".into();
-        let mut p=Prepared{decision:d,candidates:rows,telemetry:json!({})};
-        row.rev+=1; bs::save_patched(&c,&mut row).unwrap();
-        assert!(refresh_prepared(&c,&mut p).unwrap());
-        assert_eq!(p.candidates[0].rev,row.rev);
-        row.desc="A different required output now".into(); row.rev+=1; bs::save_patched(&c,&mut row).unwrap();
-        assert!(!refresh_prepared(&c,&mut p).unwrap());
+        let c = crate::db::migrate::test_memdb();
+        let mut row = bs::create_issue(
+            &c,
+            &new_issue(
+                "fixture",
+                "Produce report",
+                "Write the output report",
+                "chore",
+            ),
+            1,
+        )
+        .unwrap();
+        let (rows, _) = candidates(&c, "fixture", "report", 24).unwrap();
+        let mut d = plan();
+        d.tasks.truncate(1);
+        d.tasks[0].existing_id = Some(row.id.clone());
+        d.tasks[0].action = "update".into();
+        let mut p = Prepared {
+            decision: d,
+            candidates: rows,
+            telemetry: json!({}),
+        };
+        row.rev += 1;
+        bs::save_patched(&c, &mut row).unwrap();
+        assert!(refresh_prepared(&c, &mut p).unwrap());
+        assert_eq!(p.candidates[0].rev, row.rev);
+        row.desc = "A different required output now".into();
+        row.rev += 1;
+        bs::save_patched(&c, &mut row).unwrap();
+        assert!(!refresh_prepared(&c, &mut p).unwrap());
     }
     fn step(key: &str) -> Step {
         Step {
@@ -1293,8 +1898,12 @@ mod tests {
             tasks: vec![step("a"), step("b"), step("c")],
         };
         p.tasks[0].title = "Create visible smoke markdown artifact".into();
-        p.tasks[0].acceptance_criteria.push("commit contains the artifact".into());
-        p.tasks[0].acceptance_criteria.push("report declares the retained artifact".into());
+        p.tasks[0]
+            .acceptance_criteria
+            .push("commit contains the artifact".into());
+        p.tasks[0]
+            .acceptance_criteria
+            .push("report declares the retained artifact".into());
         p.tasks[1].title = "Commit visible smoke artifact".into();
         p.tasks[1].description = "Commit the artifact to git".into();
         p.tasks[1].next_action = "Create a git commit containing the artifact".into();
@@ -1306,7 +1915,10 @@ mod tests {
         p.tasks[2].needs = vec!["b".into()];
         p.tasks[2].dependency_reason = "requires the committed artifact from b".into();
         let error = validate(&p, &[], "project:visible").unwrap_err();
-        assert!(error.contains("commit/report/verification are harness protocol"), "{error}");
+        assert!(
+            error.contains("commit/report/verification are harness protocol"),
+            "{error}"
+        );
         p.tasks.truncate(1);
         assert!(validate(&p, &[], "project:visible").is_ok());
     }
@@ -1321,10 +1933,23 @@ mod tests {
         let p = plan();
         let out = apply(&c, 1, "fixture", &body, &p, &[], &json!({"model_calls":1})).unwrap();
         assert!(out.applied);
-        assert_eq!(c.query_row("SELECT count(*) FROM issues WHERE status='todo'",[],|r|r.get::<_,i64>(0)).unwrap(),2,
-            "independent outputs must be visible together on the ready frontier");
-        assert_eq!(c.query_row("SELECT count(*) FROM issues WHERE status='backlog' AND type!='epic'",[],|r|r.get::<_,i64>(0)).unwrap(),1,
-            "the dependent output must wait for its actual prerequisite");
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM issues WHERE status='todo'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "independent outputs must be visible together on the ready frontier"
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM issues WHERE status='backlog' AND type!='epic'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the dependent output must wait for its actual prerequisite"
+        );
         let root: String = c
             .query_row("SELECT card_id FROM cmd_history WHERE id=1", [], |r| {
                 r.get(0)

@@ -183,9 +183,7 @@ async fn observe_with_evidence(capture: bool) -> Observation {
         Err(e) => Some(e),
     };
     let (owners, error) = match sockets {
-        Ok(o) if lsof_enumerated(&o) => {
-            (parse_owners(&String::from_utf8_lossy(&o.stdout)), None)
-        }
+        Ok(o) if lsof_enumerated(&o) => (parse_owners(&String::from_utf8_lossy(&o.stdout)), None),
         Ok(o) => (
             vec![],
             Some(format!(
@@ -226,16 +224,23 @@ pub(crate) fn capture_after_probe_timeout(probe: serde_json::Value) {
         if !crate::log_dedupe::first_this_bucket("tmux-timeout-sample", (now / 60.0) as i64) {
             return;
         }
-        if let Err(error) = std::thread::Builder::new().name("tmux-timeout-evidence".into()).spawn(move || {
-            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(runtime) => runtime.block_on(async {
-                    let observation = observe_with_evidence(false).await;
-                    capture_stall_evidence(&observation, "fleet_probe_timeout", Some(probe)).await;
-                }),
-                Err(error) => tracing::warn!(target: "amux::tmux", %error,
+        if let Err(error) = std::thread::Builder::new()
+            .name("tmux-timeout-evidence".into())
+            .spawn(move || {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(async {
+                        let observation = observe_with_evidence(false).await;
+                        capture_stall_evidence(&observation, "fleet_probe_timeout", Some(probe))
+                            .await;
+                    }),
+                    Err(error) => tracing::warn!(target: "amux::tmux", %error,
                     verdict = "stall_evidence_runtime_failed", "timeout evidence was not measured"),
-            }
-        }) {
+                }
+            })
+        {
             tracing::warn!(target: "amux::tmux", %error,
                 verdict = "stall_evidence_thread_failed", "timeout evidence was not measured");
         }
@@ -256,19 +261,28 @@ fn top_size_bytes(field: &str) -> Option<u64> {
         '0'..='9' => (field, 1),
         _ => return None,
     };
-    num.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(|v| (v * mult as f64) as u64)
+    num.parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(|v| (v * mult as f64) as u64)
 }
 
 /// (CC_DIR, lane) for every worker env file. Read once per evidence capture,
 /// not per process.
 fn lane_dirs() -> Vec<(String, String)> {
     let dir = crate::api::session_verbs::home().join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("env") { continue; }
-        let Some(lane) = path.file_stem().and_then(|x| x.to_str()) else { continue };
+        if path.extension().and_then(|x| x.to_str()) != Some("env") {
+            continue;
+        }
+        let Some(lane) = path.file_stem().and_then(|x| x.to_str()) else {
+            continue;
+        };
         let cfg = crate::api::session_verbs::EnvFile::load(&path);
         if let Some(d) = cfg.get("CC_DIR").filter(|d| !d.is_empty()) {
             out.push((d.to_string(), lane.to_string()));
@@ -300,9 +314,15 @@ fn owner_from_exe_path<'a>(exe: &str, lanes: &'a [(String, String)]) -> Option<&
     let mut best: Option<(&str, usize)> = None;
     for (dir, lane) in lanes {
         let d = dir.trim_end_matches('/');
-        if d.is_empty() { continue; }
-        let under = exe.strip_prefix(d).is_some_and(|rest| rest.starts_with('/'));
-        if !under { continue; }
+        if d.is_empty() {
+            continue;
+        }
+        let under = exe
+            .strip_prefix(d)
+            .is_some_and(|rest| rest.starts_with('/'));
+        if !under {
+            continue;
+        }
         if best.is_none_or(|(_, n)| d.len() > n) {
             best = Some((lane.as_str(), d.len()));
         }
@@ -333,7 +353,9 @@ fn footprint_summary(top_raw: &str, ps_raw: &str, lanes: &[(String, String)]) ->
     let mut exe_by_pid: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
     for line in ps_raw.lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 6 { continue; }
+        if f.len() < 6 {
+            continue;
+        }
         if let Ok(pid) = f[0].parse::<u32>() {
             exe_by_pid.insert(pid, f[5..].join(" "));
         }
@@ -341,12 +363,21 @@ fn footprint_summary(top_raw: &str, ps_raw: &str, lanes: &[(String, String)]) ->
     let mut rows = Vec::new();
     for line in top_raw.lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 5 { continue; }
+        if f.len() < 5 {
+            continue;
+        }
         // top marks the sampling process with a trailing `*`.
-        let pid = match f[0].trim_end_matches('*').parse::<u32>() { Ok(p) => p, Err(_) => continue };
-        let (Some(mem), Some(cmprs)) = (top_size_bytes(f[1]), top_size_bytes(f[2])) else { continue };
+        let pid = match f[0].trim_end_matches('*').parse::<u32>() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let (Some(mem), Some(cmprs)) = (top_size_bytes(f[1]), top_size_bytes(f[2])) else {
+            continue;
+        };
         let cpu = f[3].parse::<f64>().unwrap_or(0.0);
-        if !cpu.is_finite() { continue; }
+        if !cpu.is_finite() {
+            continue;
+        }
         let exe = exe_by_pid.get(&pid).cloned().unwrap_or_default();
         let owner = owner_from_exe_path(&exe, lanes);
         rows.push(serde_json::json!({
@@ -377,16 +408,36 @@ fn host_process_summary(raw: &str) -> serde_json::Value {
     let mut rows = Vec::new();
     for line in raw.lines() {
         let mut fields = line.split_whitespace();
-        let (Some(pid), Some(ppid), Some(state), Some(cpu), Some(rss)) =
-            (fields.next(), fields.next(), fields.next(), fields.next(), fields.next()) else { continue };
-        let (Ok(pid), Ok(ppid), Ok(cpu), Ok(rss)) =
-            (pid.parse::<u32>(), ppid.parse::<u32>(), cpu.parse::<f64>(), rss.parse::<u64>()) else { continue };
-        if !cpu.is_finite() { continue; }
+        let (Some(pid), Some(ppid), Some(state), Some(cpu), Some(rss)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid), Ok(cpu), Ok(rss)) = (
+            pid.parse::<u32>(),
+            ppid.parse::<u32>(),
+            cpu.parse::<f64>(),
+            rss.parse::<u64>(),
+        ) else {
+            continue;
+        };
+        if !cpu.is_finite() {
+            continue;
+        }
         rows.push(serde_json::json!({"pid": pid, "ppid": ppid, "state": state,
             "cpu_pct": cpu, "rss_kib": rss, "executable": fields.collect::<Vec<_>>().join(" ")}));
     }
     let count = rows.len();
-    rows.sort_by(|a,b| b["cpu_pct"].as_f64().partial_cmp(&a["cpu_pct"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| {
+        b["cpu_pct"]
+            .as_f64()
+            .partial_cmp(&a["cpu_pct"].as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let cpu: Vec<_> = rows.iter().take(20).cloned().collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row["rss_kib"].as_u64()));
     serde_json::json!({"measured": count > 0, "n_considered": count,
@@ -394,17 +445,24 @@ fn host_process_summary(raw: &str) -> serde_json::Value {
         "top_cpu": cpu, "top_rss": rows.into_iter().take(20).collect::<Vec<_>>()})
 }
 
-async fn capture_stall_evidence(observation: &Observation, trigger: &str, probe: Option<serde_json::Value>) {
+async fn capture_stall_evidence(
+    observation: &Observation,
+    trigger: &str,
+    probe: Option<serde_json::Value>,
+) {
     let now = crate::config::now_f64();
     let key = format!("tmux-stall-evidence:{trigger}:{:?}", observation.owners);
-    let bucket = if trigger == "fleet_probe_timeout" { (now / 60.0) as i64 } else { crate::log_dedupe::hour_bucket(now) };
+    let bucket = if trigger == "fleet_probe_timeout" {
+        (now / 60.0) as i64
+    } else {
+        crate::log_dedupe::hour_bucket(now)
+    };
     if !crate::log_dedupe::first_this_bucket(&key, bucket) {
         return;
     }
     let dir = crate::api::session_verbs::home().join("logs");
     let receipt = dir.join(format!("tmux-stall-{}-{trigger}.json", now as u64));
-    let mut evidence =
-        serde_json::json!({"at": now, "trigger": trigger, "probe": probe, "socket_ownership": observation, "samples": []});
+    let mut evidence = serde_json::json!({"at": now, "trigger": trigger, "probe": probe, "socket_ownership": observation, "samples": []});
     let (processes, uptime) = tokio::join!(
         output("ps", &["-A", "-o", "pid=,ppid=,stat=,pcpu=,rss=,comm="]),
         output("uptime", &[]),
@@ -417,7 +475,9 @@ async fn capture_stall_evidence(observation: &Observation, trigger: &str, probe:
         _ => String::new(),
     };
     evidence["host_processes"] = match processes {
-        Ok(out) if out.status.success() => host_process_summary(&String::from_utf8_lossy(&out.stdout)),
+        Ok(out) if out.status.success() => {
+            host_process_summary(&String::from_utf8_lossy(&out.stdout))
+        }
         result => serde_json::json!({"measured": false, "n_considered": 0,
             "why_unmeasured": match result { Ok(out) => out.status.to_string(), Err(error) => error }}),
     };
@@ -430,7 +490,14 @@ async fn capture_stall_evidence(observation: &Observation, trigger: &str, probe:
     let lanes = lane_dirs();
     evidence["host_footprint"] = match output(
         "top",
-        &["-l", "1", "-n", "200", "-stats", "pid,mem,cmprs,cpu,command"],
+        &[
+            "-l",
+            "1",
+            "-n",
+            "200",
+            "-stats",
+            "pid,mem,cmprs,cpu,command",
+        ],
     )
     .await
     {
@@ -467,7 +534,8 @@ async fn capture_stall_evidence(observation: &Observation, trigger: &str, probe:
             ));
             let path_str = path.to_string_lossy().into_owned();
             let result = output("/usr/bin/sample", &[&pid, "1", "-file", &path_str]).await;
-            let has_stacks = std::fs::read_to_string(&path).is_ok_and(|text| text.contains("Thread_"));
+            let has_stacks =
+                std::fs::read_to_string(&path).is_ok_and(|text| text.contains("Thread_"));
             sample["stack_sample"] = serde_json::json!({"path": path,
                 "measured": result.as_ref().is_ok_and(|o| o.status.success()) && has_stacks,
                 "has_sampled_threads": has_stacks, "error": result.err()});
@@ -533,7 +601,12 @@ pub const SPAWN_OVERRIDE: &str = "AMUX_ALLOW_TMUX_SPAWN_FROM_TEST_HOME";
 ///
 /// `/tmp` and `/private/tmp` are the same volume on macOS and either spelling
 /// can reach the caller, so both are listed rather than resolved.
-const THROWAWAY_PREFIXES: &[&str] = &["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
+const THROWAWAY_PREFIXES: &[&str] = &[
+    "/tmp/",
+    "/private/tmp/",
+    "/var/folders/",
+    "/private/var/folders/",
+];
 
 /// Whether a worker may be spawned given the AMUX_HOME it would be spawned from.
 ///
@@ -566,7 +639,11 @@ pub(crate) fn spawn_allowed_from(home: &std::path::Path, override_on: bool) -> R
     let h = home.to_string_lossy();
     // Trailing separator matters: `/tmp/x` is a throwaway and a hypothetical
     // `/tmpdata/amux` is not.
-    let h_slash = if h.ends_with('/') { h.to_string() } else { format!("{h}/") };
+    let h_slash = if h.ends_with('/') {
+        h.to_string()
+    } else {
+        format!("{h}/")
+    };
     for p in THROWAWAY_PREFIXES {
         if h_slash.starts_with(p) {
             return Err(format!(
@@ -581,7 +658,9 @@ pub(crate) fn spawn_allowed_from(home: &std::path::Path, override_on: bool) -> R
 
 /// `spawn_allowed_from` against the live environment.
 pub(crate) fn spawn_allowed_here() -> Result<(), String> {
-    let on = std::env::var(SPAWN_OVERRIDE).map(|v| v == "1").unwrap_or(false);
+    let on = std::env::var(SPAWN_OVERRIDE)
+        .map(|v| v == "1")
+        .unwrap_or(false);
     let r = spawn_allowed_from(&crate::api::session_verbs::home(), on);
     if let Err(error) = &r {
         tracing::warn!(target: "amux::tmux", verdict = "spawn_refused_throwaway_home", %error,
@@ -660,8 +739,14 @@ mod tests {
 
         // And the refusal has to SAY so, or the next author reads it as a wall.
         let msg = spawn_allowed_from(std::path::Path::new("/tmp/h"), false).unwrap_err();
-        assert!(msg.contains(SPAWN_OVERRIDE), "refusal must name its override: {msg}");
-        assert!(msg.contains("/tmp/h"), "refusal must name the home it refused: {msg}");
+        assert!(
+            msg.contains(SPAWN_OVERRIDE),
+            "refusal must name its override: {msg}"
+        );
+        assert!(
+            msg.contains("/tmp/h"),
+            "refusal must name the home it refused: {msg}"
+        );
     }
 
     /// AMUX-4617. RSS is the wrong discriminator on a host with memory
@@ -696,12 +781,21 @@ bogus  1G 1G 1.0 unparseable
         let v = footprint_summary(raw, ps, &lanes);
         assert_eq!(v["measured"], true);
         // The header, the non-numeric pid and the NaN row are all dropped.
-        assert_eq!(v["n_considered"], 3, "only parseable process rows count: {v}");
+        assert_eq!(
+            v["n_considered"], 3,
+            "only parseable process rows count: {v}"
+        );
 
         let top = &v["top_footprint"];
-        assert_eq!(top[0]["pid"], 101, "the compressed hog must rank FIRST: {top}");
+        assert_eq!(
+            top[0]["pid"], 101,
+            "the compressed hog must rank FIRST: {top}"
+        );
         assert_eq!(top[0]["footprint_bytes"], 26u64 * 1024 * 1024 * 1024 + 4096);
-        assert_eq!(top[0]["resident_bytes"], 4096, "and it is tiny resident, which is why RSS missed it");
+        assert_eq!(
+            top[0]["resident_bytes"], 4096,
+            "and it is tiny resident, which is why RSS missed it"
+        );
 
         // POSITIVE CONTROL: a genuinely resident process still ranks by its real
         // size, so this is a better ranking rather than one that simply prefers
@@ -712,8 +806,17 @@ bogus  1G 1G 1.0 unparseable
         // THE ORDER IS THE CLAIM. Under the old RSS ranking 101 would be LAST of
         // the three; asserting only that it appears would pass for a ranking
         // that never changed.
-        let order: Vec<u64> = top.as_array().unwrap().iter().map(|r| r["pid"].as_u64().unwrap()).collect();
-        assert_eq!(order, vec![101, 202, 303], "ranked by footprint, not residency: {top}");
+        let order: Vec<u64> = top
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["pid"].as_u64().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            vec![101, 202, 303],
+            "ranked by footprint, not residency: {top}"
+        );
 
         // Unit suffixes carry the magnitude: a numeric parse alone reads 16G as
         // sixteen and would sort it below a 900M row.
@@ -728,28 +831,45 @@ bogus  1G 1G 1.0 unparseable
         // host. The longest matching CC_DIR wins: pid 101 is under both
         // /Users/e/Dev and /Users/e/Dev/smb, and naming the broad one would
         // blame the wrong lane.
-        assert_eq!(top[0]["owner_lane"], "smb-lane", "longest CC_DIR prefix must win: {top}");
+        assert_eq!(
+            top[0]["owner_lane"], "smb-lane",
+            "longest CC_DIR prefix must win: {top}"
+        );
         // A process outside every lane tree has NO owner, which is null rather
         // than a guess or the string "unknown".
-        assert!(top[1]["owner_lane"].is_null(), "/usr/bin/honest belongs to no lane: {top}");
+        assert!(
+            top[1]["owner_lane"].is_null(),
+            "/usr/bin/honest belongs to no lane: {top}"
+        );
         // BOUNDARY, not substring: /Users/e/Dev/other must not match a lane
         // rooted at /Users/e/Dev/oth.
-        assert_eq!(top[2]["owner_lane"], "broad-lane", "decoy-lane is a prefix of the string, not of the path: {top}");
+        assert_eq!(
+            top[2]["owner_lane"], "broad-lane",
+            "decoy-lane is a prefix of the string, not of the path: {top}"
+        );
 
         let none = footprint_summary("", "", &lanes);
         assert_eq!(none["measured"], false);
         assert_eq!(none["n_considered"], 0);
-        assert!(none["why_unmeasured"].is_string(), "silence must say why: {none}");
+        assert!(
+            none["why_unmeasured"].is_string(),
+            "silence must say why: {none}"
+        );
     }
 
     #[test]
     fn tmux_host_evidence_ranks_cpu_and_memory_independently() {
-        let summary = host_process_summary("11 1 R 150.0 1024 /usr/bin/busy\n22 1 S 0.1 999999 /Applications/Memory User\n");
+        let summary = host_process_summary(
+            "11 1 R 150.0 1024 /usr/bin/busy\n22 1 S 0.1 999999 /Applications/Memory User\n",
+        );
         assert_eq!(summary["measured"], true);
         assert_eq!(summary["n_considered"], 2);
         assert_eq!(summary["top_cpu"][0]["pid"], 11);
         assert_eq!(summary["top_rss"][0]["pid"], 22);
-        assert_eq!(summary["top_rss"][0]["executable"], "/Applications/Memory User");
+        assert_eq!(
+            summary["top_rss"][0]["executable"],
+            "/Applications/Memory User"
+        );
         let invalid = host_process_summary("ps failed\n11 1 R NaN 5 bad\n");
         assert_eq!(invalid["measured"], false);
         assert_eq!(invalid["n_considered"], 0);
@@ -830,17 +950,34 @@ lsof: WARNING: can't stat() fuse.portal file system /run/user/<uid>/doc
     #[test]
     fn lsof_no_owners_with_mount_stat_warnings_is_measured() {
         let o = lsof_output(1, "", DOCKER_HOST_STDERR);
-        assert!(lsof_enumerated(&o), "stat warnings about unrelated mounts must not make an empty result unmeasured");
+        assert!(
+            lsof_enumerated(&o),
+            "stat warnings about unrelated mounts must not make an empty result unmeasured"
+        );
         assert!(lsof_enumerated(&lsof_output(1, "", "")));
-        assert!(lsof_enumerated(&lsof_output(0, "p1\nctmux\nn/tmp/tmux-1000/default\n", DOCKER_HOST_STDERR)));
+        assert!(lsof_enumerated(&lsof_output(
+            0,
+            "p1\nctmux\nn/tmp/tmux-1000/default\n",
+            DOCKER_HOST_STDERR
+        )));
     }
 
     #[test]
     fn lsof_real_failures_stay_unmeasured() {
         let real = format!("{DOCKER_HOST_STDERR}lsof: can't open /proc: Permission denied\n");
-        assert!(!lsof_enumerated(&lsof_output(1, "", &real)), "a genuine error beside benign warnings is still a failure");
-        assert!(!lsof_enumerated(&lsof_output(1, "", "lsof: illegal option character: Z\n")));
-        assert!(!lsof_enumerated(&lsof_output(1, "p1\n", DOCKER_HOST_STDERR)), "exit 1 with output is not the no-match case");
+        assert!(
+            !lsof_enumerated(&lsof_output(1, "", &real)),
+            "a genuine error beside benign warnings is still a failure"
+        );
+        assert!(!lsof_enumerated(&lsof_output(
+            1,
+            "",
+            "lsof: illegal option character: Z\n"
+        )));
+        assert!(
+            !lsof_enumerated(&lsof_output(1, "p1\n", DOCKER_HOST_STDERR)),
+            "exit 1 with output is not the no-match case"
+        );
         assert!(!lsof_enumerated(&lsof_output(2, "", DOCKER_HOST_STDERR)));
     }
 }

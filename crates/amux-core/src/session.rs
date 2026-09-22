@@ -227,7 +227,9 @@ mod tests {
             None,
             t("2026-08-09T12:00:00Z"),
         );
-        let ended = s.end(ExitReason::ContextExhausted, t("2026-08-09T13:00:00Z")).unwrap();
+        let ended = s
+            .end(ExitReason::ContextExhausted, t("2026-08-09T13:00:00Z"))
+            .unwrap();
         assert!(!ended.is_live());
         assert_eq!(ended.ended_at, Some(t("2026-08-09T13:00:00Z")));
         assert_eq!(ended.exit_reason, Some(ExitReason::ContextExhausted));
@@ -242,7 +244,9 @@ mod tests {
             None,
             t("2026-08-09T12:00:00Z"),
         );
-        let ended = s.end(ExitReason::Completed, t("2026-08-09T13:00:00Z")).unwrap();
+        let ended = s
+            .end(ExitReason::Completed, t("2026-08-09T13:00:00Z"))
+            .unwrap();
         let err = ended
             .clone()
             .end(ExitReason::Killed, t("2026-08-09T14:00:00Z"))
@@ -261,8 +265,14 @@ mod tests {
         // Invariant 8: BackendId is open — built-ins serialize as their bare
         // string values and an unknown backend must round-trip untouched
         // (registering a new backend never requires recompiling amux-core).
-        assert_eq!(serde_json::to_string(&BackendId::herdr()).unwrap(), "\"herdr\"");
-        assert_eq!(serde_json::to_string(&BackendId::tmux()).unwrap(), "\"tmux\"");
+        assert_eq!(
+            serde_json::to_string(&BackendId::herdr()).unwrap(),
+            "\"herdr\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackendId::tmux()).unwrap(),
+            "\"tmux\""
+        );
         assert_eq!(BackendId::default(), BackendId::herdr());
 
         let future = BackendId::new("native-pty");

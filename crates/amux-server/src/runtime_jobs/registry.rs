@@ -773,7 +773,9 @@ pub fn is_triggerable(id: &str) -> bool {
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    g.get(id).map(|j| j.kind == "periodic" && j.disabled.is_none()).unwrap_or(false)
+    g.get(id)
+        .map(|j| j.kind == "periodic" && j.disabled.is_none())
+        .unwrap_or(false)
 }
 
 /// Record a job at its spawn. Called by [`super::spawn_periodic_every`] and by
@@ -800,12 +802,7 @@ pub fn register(
 /// job must be inert-but-visible, or a live hazard reads as a silent skip (the
 /// exact failure ethos rule 4 and this module's own docs cite). No abort handle:
 /// there is no loop to stop.
-pub fn register_disabled(
-    id: &str,
-    kind: &'static str,
-    interval: Option<Duration>,
-    reason: String,
-) {
+pub fn register_disabled(id: &str, kind: &'static str, interval: Option<Duration>, reason: String) {
     register_inner(id, kind, interval, None, Some(reason));
 }
 
@@ -891,7 +888,9 @@ pub struct Snapshot {
 
 /// Every job that has actually been spawned in this process.
 pub fn snapshot() -> Vec<Snapshot> {
-    let Ok(m) = reg().lock() else { return Vec::new() };
+    let Ok(m) = reg().lock() else {
+        return Vec::new();
+    };
     m.iter()
         .map(|(id, j)| Snapshot {
             id: id.clone(),
@@ -931,7 +930,11 @@ pub fn tick_every(id: &str, interval: Duration) {
 
 /// Spawn a long-lived internal loop AND register it in one call. The point is
 /// that there is no way to do the first without the second.
-pub fn spawn_loop<F>(id: &'static str, interval: Option<Duration>, fut: F) -> tokio::task::JoinHandle<()>
+pub fn spawn_loop<F>(
+    id: &'static str,
+    interval: Option<Duration>,
+    fut: F,
+) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -1113,8 +1116,7 @@ pub fn health_issues(now: f64) -> Vec<HealthIssue> {
         let f = Facts {
             spawned: l.is_some(),
             dead: l.map(|x| x.dead).unwrap_or(false),
-            disabled: disabled_by_control
-                || l.and_then(|x| x.disabled_reason.as_ref()).is_some(),
+            disabled: disabled_by_control || l.and_then(|x| x.disabled_reason.as_ref()).is_some(),
             interval_s: l.and_then(|x| x.interval_s),
             spawned_at: l.map(|x| x.spawned_at),
             last_tick_at: l.and_then(|x| x.last_tick_at),
@@ -1217,11 +1219,10 @@ fn human_bytes(n: u64) -> String {
 /// that it is live: the job re-reads it every tick, so the value shown here is
 /// the value in force.
 fn pref(state: &AppState, key: &str) -> Option<String> {
-    state
-        .store
-        .read()
-        .ok()
-        .and_then(|c| c.query_row("SELECT value FROM prefs WHERE key=?1", [key], |r| r.get(0)).ok())
+    state.store.read().ok().and_then(|c| {
+        c.query_row("SELECT value FROM prefs WHERE key=?1", [key], |r| r.get(0))
+            .ok()
+    })
 }
 
 /// Every env READOUT for this job, plus whether one of them says a human
@@ -1260,7 +1261,15 @@ fn env_json(d: &Doc) -> (Vec<Value>, bool) {
 
 /// Env vars whose NAME says the value is a credential. Matched as substrings of
 /// the uppercased name, so a var nobody has written yet is covered too.
-const SECRET_ENV_MARKERS: &[&str] = &["TOKEN", "SECRET", "PASSWORD", "PASSWD", "_KEY", "APIKEY", "CREDENTIAL"];
+const SECRET_ENV_MARKERS: &[&str] = &[
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "_KEY",
+    "APIKEY",
+    "CREDENTIAL",
+];
 
 /// Is this env var's VALUE a credential that must never be rendered?
 pub fn is_secret_env(var: &str) -> bool {
@@ -1304,7 +1313,10 @@ fn redact_env(var: &str, val: Option<&str>) -> Value {
 fn pref_json(state: &AppState, d: &Doc) -> Option<Value> {
     let p = d.pref?;
     let val = pref(state, p.key);
-    let off = matches!(val.as_deref().map(str::trim), Some("0") | Some("false") | Some("off"));
+    let off = matches!(
+        val.as_deref().map(str::trim),
+        Some("0") | Some("false") | Some("off")
+    );
     Some(json!({
         "kind": "pref",
         "key": p.key,
@@ -1492,7 +1504,10 @@ pub async fn system_jobs(
 pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/system-jobs", axum::routing::get(system_jobs))
-        .route("/api/system-jobs/{id}/run", axum::routing::post(run_system_job))
+        .route(
+            "/api/system-jobs/{id}/run",
+            axum::routing::post(run_system_job),
+        )
 }
 
 #[cfg(test)]
@@ -1513,18 +1528,39 @@ mod tests {
         // SET, not absent. Blanking it to null would make a configured token
         // indistinguishable from a missing one and send someone to set a var
         // that is already set (ethos rule 4).
-        assert!(s.contains("set"), "a configured secret must still read as configured: {r}");
-        assert!(s.contains("16"), "length is a useful, non-disclosing fact: {r}");
+        assert!(
+            s.contains("set"),
+            "a configured secret must still read as configured: {r}"
+        );
+        assert!(
+            s.contains("16"),
+            "length is a useful, non-disclosing fact: {r}"
+        );
 
         // Every shape of name that carries a credential.
-        for v in ["AMUX_TUNNEL_TOKEN", "OPENAI_API_KEY", "DB_PASSWORD", "x_secret", "MY_CREDENTIAL"] {
+        for v in [
+            "AMUX_TUNNEL_TOKEN",
+            "OPENAI_API_KEY",
+            "DB_PASSWORD",
+            "x_secret",
+            "MY_CREDENTIAL",
+        ] {
             assert!(is_secret_env(v), "{v} names a credential");
         }
         // THE CONTROLS. A matcher that flagged everything would pass the whole
         // block above and blank the readouts this endpoint exists for.
-        for v in ["AMUX_TUNNEL_PORT", "AMUX_RS_SCHEDULER", "AMUX_BOARD_DRIVE_SECS", "AMUX_TUNNEL_GATEWAY"] {
+        for v in [
+            "AMUX_TUNNEL_PORT",
+            "AMUX_RS_SCHEDULER",
+            "AMUX_BOARD_DRIVE_SECS",
+            "AMUX_TUNNEL_GATEWAY",
+        ] {
             assert!(!is_secret_env(v), "{v} is a knob, not a secret");
-            assert_eq!(redact_env(v, Some("180")), json!("180"), "{v} must render its value");
+            assert_eq!(
+                redact_env(v, Some("180")),
+                json!("180"),
+                "{v} must render its value"
+            );
         }
         // Unset stays null and empty stays empty, for both kinds: `off_now` is
         // computed from the real value, and these two are what the UI reads to
@@ -1574,20 +1610,29 @@ mod tests {
     #[test]
     fn stall_budget_scales_with_the_interval() {
         // The hourly storage sweep must not read as stalled at 10 minutes...
-        let f = Facts { interval_s: Some(3600.0), ..base() };
+        let f = Facts {
+            interval_s: Some(3600.0),
+            ..base()
+        };
         assert_eq!(classify(&f, T + 600.0), "ok");
         // ...but does after 2.5 hours.
         assert_eq!(classify(&f, T + 9100.0), "stalled");
         // A 5s loop is stalled in well under a minute — the same rule, not a
         // special case.
-        let g = Facts { interval_s: Some(5.0), ..base() };
+        let g = Facts {
+            interval_s: Some(5.0),
+            ..base()
+        };
         assert_eq!(classify(&g, T + 20.0), "ok");
         assert_eq!(classify(&g, T + 40.0), "stalled");
     }
 
     #[test]
     fn never_ticked_is_starting_then_stalled() {
-        let f = Facts { last_tick_at: None, ..base() };
+        let f = Facts {
+            last_tick_at: None,
+            ..base()
+        };
         assert_eq!(classify(&f, T + 10.0), "starting");
         assert_eq!(classify(&f, T + 100.0), "stalled");
     }
@@ -1596,15 +1641,27 @@ mod tests {
     /// human switched off. Both are "not running"; only one is a bug.
     #[test]
     fn unspawned_is_loud_unless_a_human_turned_it_off() {
-        let f = Facts { spawned: false, ..Default::default() };
+        let f = Facts {
+            spawned: false,
+            ..Default::default()
+        };
         assert_eq!(classify(&f, T), "not_spawned");
-        let g = Facts { spawned: false, disabled: true, ..Default::default() };
+        let g = Facts {
+            spawned: false,
+            disabled: true,
+            ..Default::default()
+        };
         assert_eq!(classify(&g, T), "disabled");
         // A job whose loop was spawned and immediately returned because its
         // env var says 0 is OFF, not dead — commit-nudge's exact shape. Red
         // for a switch someone deliberately flipped teaches people to ignore
         // red.
-        let h = Facts { spawned: true, dead: true, disabled: true, ..base() };
+        let h = Facts {
+            spawned: true,
+            dead: true,
+            disabled: true,
+            ..base()
+        };
         assert_eq!(classify(&h, T + 1.0), "disabled");
     }
 
@@ -1614,8 +1671,11 @@ mod tests {
     /// cannot express at all.
     #[test]
     fn a_tick_that_never_ends_reads_as_hung_not_ok() {
-        let f = Facts { in_flight_since: Some(T), ..base() }; // 65s budget
-        // NEGATIVE CONTROL: a tick in flight for 30s is just a slow tick.
+        let f = Facts {
+            in_flight_since: Some(T),
+            ..base()
+        }; // 65s budget
+           // NEGATIVE CONTROL: a tick in flight for 30s is just a slow tick.
         assert_eq!(classify(&f, T + 30.0), "ok");
         assert_eq!(classify(&f, T + 70.0), "hung");
     }
@@ -1624,7 +1684,10 @@ mod tests {
     fn dead_outranks_freshness() {
         // A task that panicked keeps its last (fresh) tick timestamp forever,
         // so freshness alone would report it healthy.
-        let f = Facts { dead: true, ..base() };
+        let f = Facts {
+            dead: true,
+            ..base()
+        };
         assert_eq!(classify(&f, T + 1.0), "dead");
     }
 
@@ -1667,9 +1730,15 @@ mod tests {
         let t = super::super::spawn_periodic_every(id, Duration::from_millis(20), || async {});
         tokio::time::sleep(Duration::from_millis(120)).await;
         let m = reg().lock().unwrap();
-        let j = m.get(id).expect("spawn_periodic_every must register the job");
+        let j = m
+            .get(id)
+            .expect("spawn_periodic_every must register the job");
         assert_eq!(j.interval, Some(Duration::from_millis(20)));
-        assert!(j.ticks >= 2, "ticks recorded by the spawner, got {}", j.ticks);
+        assert!(
+            j.ticks >= 2,
+            "ticks recorded by the spawner, got {}",
+            j.ticks
+        );
         assert!(j.last_end.is_some());
         drop(m);
         t.abort();
@@ -1708,7 +1777,10 @@ mod tests {
             (SPAWNED, "AMUX_AF69_ISOLATED_SPAWN_LOOP_PROBE_SECS=0"),
             (ADOPTED, "AMUX_AF69_ISOLATED_ADOPT_LOOP_PROBE_SECS=0"),
         ] {
-            let row = snapshot().into_iter().find(|s| s.id == id).expect("suppressed loop visible");
+            let row = snapshot()
+                .into_iter()
+                .find(|s| s.id == id)
+                .expect("suppressed loop visible");
             assert_eq!(row.disabled_reason.as_deref(), Some(reason));
             assert_eq!(row.ticks, 0);
         }
@@ -1728,7 +1800,11 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for d in CATALOG {
             assert!(!d.id.is_empty(), "catalog row with empty id");
-            assert!(!d.purpose.is_empty(), "{}: purpose is the whole point", d.id);
+            assert!(
+                !d.purpose.is_empty(),
+                "{}: purpose is the whole point",
+                d.id
+            );
             assert!(seen.insert(d.id), "duplicate catalog id {}", d.id);
         }
     }
@@ -1743,7 +1819,13 @@ mod tests {
         let docs: std::collections::BTreeSet<&str> = CATALOG.iter().map(|d| d.id).collect();
         let undocumented: Vec<_> = ids.difference(&docs).collect();
         let phantom: Vec<_> = docs.difference(&ids).collect();
-        assert!(undocumented.is_empty(), "job ids with no CATALOG row: {undocumented:?}");
-        assert!(phantom.is_empty(), "CATALOG rows with no id constant: {phantom:?}");
+        assert!(
+            undocumented.is_empty(),
+            "job ids with no CATALOG row: {undocumented:?}"
+        );
+        assert!(
+            phantom.is_empty(),
+            "CATALOG rows with no id constant: {phantom:?}"
+        );
     }
 }

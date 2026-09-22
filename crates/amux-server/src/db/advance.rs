@@ -51,11 +51,26 @@ pub struct AdvanceOpts {
 pub enum AdvanceRefusal {
     NotFound,
     NoOp,
-    Stale { actual: String, expected: String },
-    GateBlocked { criteria: Vec<String>, source: String },
-    ContinuationMissing { verdict: bs::ContinuationVerdict },
-    WipLimitReached { limit: i64, current: i64 },
-    InvalidTransition { from: String, to: String, reason: String },
+    Stale {
+        actual: String,
+        expected: String,
+    },
+    GateBlocked {
+        criteria: Vec<String>,
+        source: String,
+    },
+    ContinuationMissing {
+        verdict: bs::ContinuationVerdict,
+    },
+    WipLimitReached {
+        limit: i64,
+        current: i64,
+    },
+    InvalidTransition {
+        from: String,
+        to: String,
+        reason: String,
+    },
     ArchivedImmutable,
 }
 
@@ -96,7 +111,11 @@ pub fn advance(
     }
 
     if row.project_group.is_some() && actor != "command-lifecycle" {
-        return Ok(Err(AdvanceRefusal::InvalidTransition {from:row.status.clone(),to:destination.to_string(),reason:"project planner owns this task lifecycle".into()}));
+        return Ok(Err(AdvanceRefusal::InvalidTransition {
+            from: row.status.clone(),
+            to: destination.to_string(),
+            reason: "project planner owns this task lifecycle".into(),
+        }));
     }
     let from_raw = row.status.clone();
     let prev_holder = row.lease_owner.clone();
@@ -153,9 +172,21 @@ fn advance_typed(
     opts: &AdvanceOpts,
     workflow: &Option<BoardWorkflow>,
 ) -> Result<Result<(), AdvanceRefusal>, rusqlite::Error> {
-    if target == TaskStatus::NeedsYou && !bs::approval_type_allowed(row.session.as_deref(),row.ask_type.as_deref().unwrap_or("")) {
+    if target == TaskStatus::NeedsYou
+        && !bs::approval_type_allowed(
+            row.session.as_deref(),
+            row.ask_type.as_deref().unwrap_or(""),
+        )
+    {
         tracing::warn!(card=%row.id,verdict="approval_category_refused","transition refused by standing approval policy");
-        return Ok(Err(AdvanceRefusal::InvalidTransition{from:row.status.clone(),to:"needsyou".into(),reason:format!("approval category outside policy; allowed: {}",bs::approval_types(row.session.as_deref()).join(","))}));
+        return Ok(Err(AdvanceRefusal::InvalidTransition {
+            from: row.status.clone(),
+            to: "needsyou".into(),
+            reason: format!(
+                "approval category outside policy; allowed: {}",
+                bs::approval_types(row.session.as_deref()).join(",")
+            ),
+        }));
     }
     // Gate check: workflow gates are the authority when present, otherwise
     // the five-tier precedence trail.
@@ -207,7 +238,13 @@ fn advance_typed(
         }));
     }
 
-    apply_common(conn, row, &bs::status_to_db(target, &row.status), actor, opts)?;
+    apply_common(
+        conn,
+        row,
+        &bs::status_to_db(target, &row.status),
+        actor,
+        opts,
+    )?;
 
     // Gap 4: populate waiting_on when entering NeedsYou.
     if target == TaskStatus::NeedsYou && row.waiting_on.is_none() {
@@ -479,9 +516,7 @@ pub fn apply_status_side_effects(row: &mut IssueRow, destination: &str) {
         row.waiting_on = Some(waiting.to_string());
     }
     // Clear waiting_on when leaving NeedsYou.
-    if from_parsed == Some(TaskStatus::NeedsYou)
-        && target_typed != Some(TaskStatus::NeedsYou)
-    {
+    if from_parsed == Some(TaskStatus::NeedsYou) && target_typed != Some(TaskStatus::NeedsYou) {
         row.waiting_on = None;
     }
 }

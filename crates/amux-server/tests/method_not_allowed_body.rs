@@ -30,7 +30,7 @@ fn app() -> axum::Router {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     })
 }
 
@@ -52,7 +52,9 @@ async fn call(method: Method, path: &str) -> (StatusCode, String, String) {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, allow, String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -64,10 +66,14 @@ async fn a_wrong_method_explains_itself_instead_of_returning_nothing() {
 
     // The whole point: a body exists at all. This is the assertion that was
     // false before the fix, and `curl -sk` shows exactly this.
-    assert!(!body.is_empty(), "a 405 with an empty body is what AF-211 is about");
+    assert!(
+        !body.is_empty(),
+        "a 405 with an empty body is what AF-211 is about"
+    );
 
-    let v: serde_json::Value = serde_json::from_str(&body)
-        .unwrap_or_else(|e| panic!("405 body must be JSON like every other error here: {e}: {body}"));
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|e| {
+        panic!("405 body must be JSON like every other error here: {e}: {body}")
+    });
     assert_eq!(v["ok"], false);
     assert_eq!(v["method"], "GET");
     assert_eq!(v["path"], "/api/git/staged-guard");
@@ -83,14 +89,20 @@ async fn a_wrong_method_explains_itself_instead_of_returning_nothing() {
         "the human-readable line must name it too, not just a machine field: {body}"
     );
     assert!(
-        v["hint"].as_str().unwrap_or("").contains("/api/debug/routes"),
+        v["hint"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/api/debug/routes"),
         "route it to the instrument that answers 'what IS mounted here': {body}"
     );
 
     // The header a correct HTTP client reads must SURVIVE the rewrite — the
     // body is reconstructed from parts, and dropping `allow` would trade one
     // audience's answer for the other's.
-    assert!(allow.contains("POST"), "allow header lost in the rewrite: {allow:?}");
+    assert!(
+        allow.contains("POST"),
+        "allow header lost in the rewrite: {allow:?}"
+    );
 }
 
 /// THE CONTROL THAT ACTUALLY DISCRIMINATES: a 304 is empty ON PURPOSE.
@@ -110,7 +122,12 @@ async fn a_304_stays_empty_because_it_is_empty_on_purpose() {
     let app = app();
     let first = app
         .clone()
-        .oneshot(Request::builder().uri("/api/board").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/board")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::OK, "fixture precondition");
@@ -136,7 +153,9 @@ async fn a_304_stays_empty_because_it_is_empty_on_purpose() {
         StatusCode::NOT_MODIFIED,
         "fixture precondition: the conditional GET must actually 304"
     );
-    let bytes = axum::body::to_bytes(second.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert!(
         bytes.is_empty(),
         "a 304 must stay empty — synthesizing a body here violates the spec and \

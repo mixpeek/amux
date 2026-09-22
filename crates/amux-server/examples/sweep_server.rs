@@ -89,7 +89,9 @@ async fn main() {
     };
     let app = router(state);
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.expect("bind");
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .expect("bind");
     eprintln!(
         "sweep_server: http://127.0.0.1:{port}  db={}  AMUX_HOME={}",
         canon.display(),

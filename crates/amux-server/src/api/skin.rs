@@ -65,7 +65,11 @@ pub fn merge_skin(base: &Value, over: &Value) -> Value {
 
 fn read_layer(conn: &rusqlite::Connection, key: &str) -> Option<Value> {
     let raw: String = conn
-        .query_row("SELECT value FROM prefs WHERE key=?1", rusqlite::params![key], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM prefs WHERE key=?1",
+            rusqlite::params![key],
+            |r| r.get(0),
+        )
         .ok()?;
     serde_json::from_str(&raw).ok()
 }

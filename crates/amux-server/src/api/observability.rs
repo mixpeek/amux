@@ -69,7 +69,10 @@ async fn rollup(State(state): State<AppState>, RawQuery(q): RawQuery) -> Respons
     let conn = match state.store.read() {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": e.to_string()})))
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": e.to_string()})),
+            )
                 .into_response()
         }
     };

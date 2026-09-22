@@ -69,12 +69,18 @@ fn history_json(name: &str) -> Vec<Value> {
     cache()
         .lock()
         .ok()
-        .and_then(|c| c.get(name).map(|v| v.iter().rev().map(|e| e.to_json()).collect()))
+        .and_then(|c| {
+            c.get(name)
+                .map(|v| v.iter().rev().map(|e| e.to_json()).collect())
+        })
         .unwrap_or_default()
 }
 
 fn newest_span_key(name: &str) -> Option<u64> {
-    cache().lock().ok().and_then(|c| c.get(name).and_then(|v| v.last().map(|e| e.span_key)))
+    cache()
+        .lock()
+        .ok()
+        .and_then(|c| c.get(name).and_then(|v| v.last().map(|e| e.span_key)))
 }
 
 fn push_entry(name: &str, entry: SimpleEntry) {
@@ -101,7 +107,9 @@ fn extract_text(content: &Value) -> String {
     if let Some(s) = content.as_str() {
         return s.to_string();
     }
-    let Some(arr) = content.as_array() else { return String::new() };
+    let Some(arr) = content.as_array() else {
+        return String::new();
+    };
     let mut out = String::new();
     for b in arr {
         if b["type"].as_str() == Some("text") {
@@ -138,7 +146,10 @@ fn work_since_last_human(name: &str) -> Option<String> {
     use std::io::Read;
     let mut buf = String::new();
     let _ = rdr.read_to_string(&mut buf);
-    let recs: Vec<Value> = buf.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
+    let recs: Vec<Value> = buf
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
 
     let role_of = |v: &Value| -> String {
         v["message"]["role"]
@@ -221,13 +232,20 @@ pub async fn simple_response(name: &str, prompt: Option<&str>, generate: bool) -
         Ok((via, summary)) => {
             push_entry(
                 name,
-                SimpleEntry { generated_at: now_unix(), summary, via, span_key },
+                SimpleEntry {
+                    generated_at: now_unix(),
+                    summary,
+                    via,
+                    span_key,
+                },
             );
             Json(json!({ "entries": history_json(name), "cached": false })).into_response()
         }
-        Err((code, msg)) => {
-            (code, Json(json!({ "entries": history_json(name), "error": msg }))).into_response()
-        }
+        Err((code, msg)) => (
+            code,
+            Json(json!({ "entries": history_json(name), "error": msg })),
+        )
+            .into_response(),
     }
 }
 
@@ -244,7 +262,10 @@ mod tests {
             {"type":"text","text":"second"}
         ]);
         assert_eq!(extract_text(&blocks), "first\nsecond");
-        assert_eq!(extract_text(&json!([{"type":"tool_result","content":"x"}])), "");
+        assert_eq!(
+            extract_text(&json!([{"type":"tool_result","content":"x"}])),
+            ""
+        );
     }
 
     #[test]
@@ -253,13 +274,21 @@ mod tests {
         for i in 0..(HISTORY_MAX + 5) {
             push_entry(
                 s,
-                SimpleEntry { generated_at: i as i64, summary: format!("n{i}"), via: "t".into(), span_key: i as u64 },
+                SimpleEntry {
+                    generated_at: i as i64,
+                    summary: format!("n{i}"),
+                    via: "t".into(),
+                    span_key: i as u64,
+                },
             );
         }
         let list = history_json(s);
         assert_eq!(list.len(), HISTORY_MAX, "history is capped");
         // newest first
-        assert_eq!(list[0]["generated_at"].as_i64(), Some((HISTORY_MAX + 4) as i64));
+        assert_eq!(
+            list[0]["generated_at"].as_i64(),
+            Some((HISTORY_MAX + 4) as i64)
+        );
         assert_eq!(newest_span_key(s), Some((HISTORY_MAX + 4) as u64));
     }
 }

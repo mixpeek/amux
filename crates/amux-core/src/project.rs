@@ -91,7 +91,9 @@ impl ContractVerifier {
 pub const MAX_CONTRACT_CRITERIA: usize = 32;
 pub fn valid_contract_id(id: &str) -> bool {
     let mut chars = id.chars();
-    chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && id.len() <= 48
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
@@ -101,7 +103,8 @@ pub fn valid_evidence_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 240
         && p.is_relative()
-        && p.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+        && p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
         && p.extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| matches!(e, "md" | "json" | "png" | "webm"))
@@ -113,13 +116,18 @@ impl AcceptanceContract {
             return Err("acceptance contract needs at least one criterion".into());
         }
         if self.criteria.len() > MAX_CONTRACT_CRITERIA {
-            return Err(format!("acceptance contract allows at most {MAX_CONTRACT_CRITERIA} criteria"));
+            return Err(format!(
+                "acceptance contract allows at most {MAX_CONTRACT_CRITERIA} criteria"
+            ));
         }
         let mut ids = std::collections::HashSet::new();
         let mut verifiers = std::collections::HashSet::new();
         for c in &self.criteria {
             if !valid_contract_id(&c.id) {
-                return Err(format!("criterion id {:?} must match [a-z0-9][a-z0-9_-]{{0,47}}", c.id));
+                return Err(format!(
+                    "criterion id {:?} must match [a-z0-9][a-z0-9_-]{{0,47}}",
+                    c.id
+                ));
             }
             if !ids.insert(c.id.as_str()) {
                 return Err(format!("duplicate criterion id {}", c.id));
@@ -128,25 +136,43 @@ impl AcceptanceContract {
                 return Err(format!("{}: requirement must be 1..500 characters", c.id));
             }
             if !valid_contract_id(c.verifier.id()) || !verifiers.insert(c.verifier.id()) {
-                return Err(format!("{}: verifier id must be a valid, unique identity", c.id));
+                return Err(format!(
+                    "{}: verifier id must be a valid, unique identity",
+                    c.id
+                ));
             }
             match &c.verifier {
-                ContractVerifier::Command { command, timeout_secs, .. } => {
+                ContractVerifier::Command {
+                    command,
+                    timeout_secs,
+                    ..
+                } => {
                     if command.trim().is_empty() || command.len() > 4000 {
                         return Err(format!("{}: command must be 1..4000 characters", c.id));
                     }
-                    if timeout_secs.is_some_and(|t| !(1..=MAX_VERIFICATION_TIMEOUT_SECS).contains(&t)) {
-                        return Err(format!("{}: timeout_secs must be 1..{MAX_VERIFICATION_TIMEOUT_SECS}", c.id));
+                    if timeout_secs
+                        .is_some_and(|t| !(1..=MAX_VERIFICATION_TIMEOUT_SECS).contains(&t))
+                    {
+                        return Err(format!(
+                            "{}: timeout_secs must be 1..{MAX_VERIFICATION_TIMEOUT_SECS}",
+                            c.id
+                        ));
                     }
                 }
                 ContractVerifier::Human { instructions, .. } => {
                     if instructions.trim().is_empty() || instructions.len() > 2000 {
-                        return Err(format!("{}: human review needs 1..2000 characters of instructions", c.id));
+                        return Err(format!(
+                            "{}: human review needs 1..2000 characters of instructions",
+                            c.id
+                        ));
                     }
                 }
             }
             if c.evidence.len() > 8 || c.evidence.iter().any(|e| !valid_evidence_path(e)) {
-                return Err(format!("{}: evidence must be at most 8 relative md/json/png/webm paths", c.id));
+                return Err(format!(
+                    "{}: evidence must be at most 8 relative md/json/png/webm paths",
+                    c.id
+                ));
             }
         }
         Ok(())
@@ -157,7 +183,9 @@ impl AcceptanceContract {
 }
 
 pub const MAX_VERIFICATION_TIMEOUT_SECS: u64 = 3600;
-pub fn verification_timeout_default() -> u64 { 600 }
+pub fn verification_timeout_default() -> u64 {
+    600
+}
 fn one() -> usize {
     1
 }
@@ -184,7 +212,9 @@ impl ExecutionPolicy {
                         "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
                     )
             }) {
-                return Err("effort must be one of none, minimal, low, medium, high, xhigh, max, ultra");
+                return Err(
+                    "effort must be one of none, minimal, low, medium, high, xhigh, max, ultra",
+                );
             }
         }
         if !(1..=3).contains(&self.max_executors) {
@@ -258,15 +288,23 @@ mod tests {
     #[test]
     fn acceptance_contract_is_stable_bounded_and_never_vacuous() {
         let good = |v: serde_json::Value| serde_json::from_value::<AcceptanceContract>(v).unwrap();
-        let ok = good(serde_json::json!({"criteria":[{"id":"unit","requirement":"unit tests pass","verifier":{"type":"command","id":"unit-tests","command":"cargo test"},"evidence":["report.md"]},{"id":"review","requirement":"owner reviews","verifier":{"type":"human","id":"owner","instructions":"look"}}]}));
+        let ok = good(
+            serde_json::json!({"criteria":[{"id":"unit","requirement":"unit tests pass","verifier":{"type":"command","id":"unit-tests","command":"cargo test"},"evidence":["report.md"]},{"id":"review","requirement":"owner reviews","verifier":{"type":"human","id":"owner","instructions":"look"}}]}),
+        );
         assert_eq!(ok.validate(), Ok(()));
         assert!(ok.criterion("unit").is_some() && ok.criterion("nope").is_none());
-        assert!(good(serde_json::json!({"criteria":[]})).validate().is_err(), "empty criteria never pass");
+        assert!(
+            good(serde_json::json!({"criteria":[]})).validate().is_err(),
+            "empty criteria never pass"
+        );
         let mut dup = ok.clone();
         dup.criteria[1].id = "unit".into();
         assert!(dup.validate().unwrap_err().contains("duplicate"));
         let mut same_verifier = ok.clone();
-        same_verifier.criteria[1].verifier = ContractVerifier::Human { id: "unit-tests".into(), instructions: "x".into() };
+        same_verifier.criteria[1].verifier = ContractVerifier::Human {
+            id: "unit-tests".into(),
+            instructions: "x".into(),
+        };
         assert!(same_verifier.validate().is_err());
         for bad in ["Unit", "", "-x", "a b", &"a".repeat(49)] {
             let mut c = ok.clone();
@@ -278,21 +316,45 @@ mod tests {
         }
         assert!(valid_evidence_path("out/report.md") && valid_evidence_path("shot.png"));
         let mut long = ok.clone();
-        long.criteria[0].verifier = ContractVerifier::Command { id: "unit-tests".into(), command: "  ".into(), timeout_secs: None };
+        long.criteria[0].verifier = ContractVerifier::Command {
+            id: "unit-tests".into(),
+            command: "  ".into(),
+            timeout_secs: None,
+        };
         assert!(long.validate().is_err());
-        long.criteria[0].verifier = ContractVerifier::Command { id: "unit-tests".into(), command: "true".into(), timeout_secs: Some(3601) };
+        long.criteria[0].verifier = ContractVerifier::Command {
+            id: "unit-tests".into(),
+            command: "true".into(),
+            timeout_secs: Some(3601),
+        };
         assert!(long.validate().is_err());
-        assert!(serde_json::from_value::<AcceptanceContract>(serde_json::json!({"criteria":[],"extra":1})).is_err());
+        assert!(serde_json::from_value::<AcceptanceContract>(
+            serde_json::json!({"criteria":[],"extra":1})
+        )
+        .is_err());
         // A legacy policy without a contract still parses and reads as unconfigured.
         assert!(policy().acceptance.is_none());
     }
     #[test]
     fn project_verification_timeout_is_defaulted_positive_and_bounded() {
-        let mut p=policy();assert_eq!(p.verification_timeout_secs,600);
-        for n in [1,600,3600] {p.verification_timeout_secs=n;assert!(p.validate().is_ok());}
-        for n in [0,3601,u64::MAX] {p.verification_timeout_secs=n;assert!(p.validate().is_err());}
-        for n in [serde_json::json!(-1),serde_json::json!(1.5),serde_json::json!("Infinity"),serde_json::Value::Null] {
-            let mut v=serde_json::to_value(policy()).unwrap();v["verification_timeout_secs"]=n;
+        let mut p = policy();
+        assert_eq!(p.verification_timeout_secs, 600);
+        for n in [1, 600, 3600] {
+            p.verification_timeout_secs = n;
+            assert!(p.validate().is_ok());
+        }
+        for n in [0, 3601, u64::MAX] {
+            p.verification_timeout_secs = n;
+            assert!(p.validate().is_err());
+        }
+        for n in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("Infinity"),
+            serde_json::Value::Null,
+        ] {
+            let mut v = serde_json::to_value(policy()).unwrap();
+            v["verification_timeout_secs"] = n;
             assert!(serde_json::from_value::<ExecutionPolicy>(v).is_err());
         }
     }

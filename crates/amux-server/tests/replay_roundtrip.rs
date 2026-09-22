@@ -41,7 +41,7 @@ fn rig() -> Rig {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     Rig {
         // Pinned: the rig starts a worker, and the live admission check would
@@ -53,7 +53,12 @@ fn rig() -> Rig {
     }
 }
 
-async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let b = Request::builder()
         .method(method)
         .uri(path)
@@ -67,7 +72,9 @@ async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>)
     };
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let v = if bytes.is_empty() {
         Value::Null
     } else {
@@ -123,7 +130,9 @@ async fn write_then_replay_round_trip() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{patched}");
-    let desc_rev = patched["global_rev"].as_u64().expect("applied PATCH carries global_rev");
+    let desc_rev = patched["global_rev"]
+        .as_u64()
+        .expect("applied PATCH carries global_rev");
     let (st, body) = send(
         &r.app,
         "PATCH",
@@ -152,7 +161,10 @@ async fn write_then_replay_round_trip() {
         .query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |x| x.get(0))
         .unwrap();
     let rs = replay::replay_state(&conn, head).unwrap();
-    assert!(rs.pre_payload_horizon.is_none(), "every event carried its snapshot");
+    assert!(
+        rs.pre_payload_horizon.is_none(),
+        "every event carried its snapshot"
+    );
 
     let live_card = board_store::get_issue(&conn, &cid).unwrap().unwrap();
     let replayed_card = &rs.entities["task"][&cid];
@@ -218,7 +230,8 @@ async fn divergence_detection_names_the_corrupted_rows() {
     // Corruption: direct writes that bypass the store, the journal, and the
     // revision counter entirely.
     let conn = rusqlite::Connection::open(&r.db_path).unwrap();
-    conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
     conn.execute(
         "UPDATE issues SET title = 'corrupted-by-hand' WHERE id = ?1",
         rusqlite::params![cid],
@@ -238,19 +251,25 @@ async fn divergence_detection_names_the_corrupted_rows() {
             .divergences
             .iter()
             .find_map(|d| match d {
-                Divergence::FieldMismatch { entity_type, entity_id, fields, .. }
-                    if entity_type == etype && entity_id == eid =>
-                {
-                    Some(
-                        fields
-                            .iter()
-                            .map(|f| (f.field.clone(), f.replayed.clone(), f.live.clone()))
-                            .collect(),
-                    )
-                }
+                Divergence::FieldMismatch {
+                    entity_type,
+                    entity_id,
+                    fields,
+                    ..
+                } if entity_type == etype && entity_id == eid => Some(
+                    fields
+                        .iter()
+                        .map(|f| (f.field.clone(), f.replayed.clone(), f.live.clone()))
+                        .collect(),
+                ),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("no FieldMismatch for {etype}/{eid}: {:?}", report.divergences))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no FieldMismatch for {etype}/{eid}: {:?}",
+                    report.divergences
+                )
+            })
     };
 
     // The card divergence names the field AND both values.
@@ -310,7 +329,10 @@ async fn horizon_honesty_reports_instead_of_fabricating() {
     assert_eq!(report.horizon_entities_total, 1);
     assert_eq!(report.horizon_entities[0].entity_id, "GHOST-9");
     assert_eq!(report.horizon_entities[0].last_rev, ghost_rev);
-    let h = report.pre_payload_horizon.as_ref().expect("horizon block present");
+    let h = report
+        .pre_payload_horizon
+        .as_ref()
+        .expect("horizon block present");
     assert_eq!(h.payloadless_events, 1);
     assert_eq!(h.first_full_replay_rev, ghost_rev + 1);
     assert_eq!(report.divergences_total, 0, "{:?}", report.divergences);
@@ -321,7 +343,12 @@ async fn horizon_honesty_reports_instead_of_fabricating() {
     let rs = replay::replay_state(&conn, report.head_rev).unwrap();
     assert_eq!(
         rs.entities["task"][&cid].state.as_ref(),
-        Some(&board_store::get_issue(&conn, &cid).unwrap().unwrap().snapshot())
+        Some(
+            &board_store::get_issue(&conn, &cid)
+                .unwrap()
+                .unwrap()
+                .snapshot()
+        )
     );
     // The ghost's replayed state is honestly unknown.
     assert_eq!(rs.entities["task"]["GHOST-9"].state, None);

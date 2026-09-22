@@ -77,7 +77,9 @@ pub(crate) fn prices(home: &Path) -> Vec<(String, [f64; 4])> {
     let Ok(user) = serde_json::from_str::<serde_json::Value>(&text) else {
         return table;
     };
-    let Some(obj) = user.as_object() else { return table };
+    let Some(obj) = user.as_object() else {
+        return table;
+    };
     for (k, v) in obj {
         let Some(arr) = v.as_array() else { continue };
         if arr.len() != 4 {
@@ -189,13 +191,19 @@ pub(crate) struct LedgerFileBatch {
 pub(crate) fn read_cursors(store: &SharedStore) -> anyhow::Result<HashMap<String, u64>> {
     let conn = store.read()?;
     let mut stmt = conn.prepare("SELECT conversation, offset FROM ledger_cursor")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+    })?;
     Ok(rows.flatten().collect())
 }
 
 /// Warn about rows that took the default price because no table entry names
 /// their model. Duplicated in codex and gemini before this was extracted.
-pub(crate) fn warn_unpriced(provider: &str, table: &[(String, [f64; 4])], batches: &[LedgerFileBatch]) {
+pub(crate) fn warn_unpriced(
+    provider: &str,
+    table: &[(String, [f64; 4])],
+    batches: &[LedgerFileBatch],
+) {
     let models: std::collections::BTreeSet<String> = batches
         .iter()
         .flat_map(|b| b.rows.iter())
@@ -329,7 +337,13 @@ pub static LEDGER_DUPLICATE_MESSAGES: std::sync::atomic::AtomicU64 =
 /// preceding line (py:18133) — deliberately not a set, because two genuinely
 /// distinct turns can carry identical counts and a set would silently drop the
 /// second.
-fn parse_from(path: &Path, offset: u64, fallback_ts: i64, owner: &str, table: &[(String, [f64; 4])]) -> (u64, Vec<Turn>) {
+fn parse_from(
+    path: &Path,
+    offset: u64,
+    fallback_ts: i64,
+    owner: &str,
+    table: &[(String, [f64; 4])],
+) -> (u64, Vec<Turn>) {
     let conversation = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -382,7 +396,10 @@ fn parse_from(path: &Path, offset: u64, fallback_ts: i64, owner: &str, table: &[
         // response several times. The id cannot merge two real turns: they have
         // different ids even when their counts match. Lines without an id keep
         // the adjacent-signature rule, which is still right for them.
-        let message_id = msg["id"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+        let message_id = msg["id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         if let Some(id) = message_id.as_deref() {
             if !seen_ids.insert(id.to_string()) {
                 LEDGER_DUPLICATE_MESSAGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -411,7 +428,10 @@ fn parse_from(path: &Path, offset: u64, fallback_ts: i64, owner: &str, table: &[
             tokens,
             cost: turn_cost_usd(table, &model, tokens),
             message_id,
-            request_id: e["requestId"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            request_id: e["requestId"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         });
     }
     (new_off, out)
@@ -457,7 +477,10 @@ pub async fn index_once_at(
         let conn = store.read()?;
         let mut stmt = conn.prepare("SELECT conversation, offset, mtime FROM ledger_cursor")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)?),
+            ))
         })?;
         rows.flatten().collect()
     };
@@ -489,7 +512,9 @@ pub async fn index_once_at(
         if !p.is_dir() {
             continue;
         }
-        let Ok(files) = std::fs::read_dir(&p) else { continue };
+        let Ok(files) = std::fs::read_dir(&p) else {
+            continue;
+        };
         for f in files.flatten() {
             let path = f.path();
             // Two shapes under a project dir:
@@ -524,7 +549,10 @@ pub async fn index_once_at(
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
-                let conv = jf.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let conv = jf
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 let (off, cmt) = cursors.get(&conv).copied().unwrap_or((0, 0));
                 // Both halves matter. Size alone misses an in-place rewrite;
                 // mtime alone re-reads an untouched file after any `touch`.
@@ -553,7 +581,9 @@ pub async fn index_once_at(
     }
     if skipped_for_cap > 0 {
         tracing::info!(
-            indexed = pending.len(), deferred = skipped_for_cap, cap,
+            indexed = pending.len(),
+            deferred = skipped_for_cap,
+            cap,
             "token-ledger: capped this pass; the rest are picked up next tick"
         );
     }
@@ -712,7 +742,12 @@ fn claim_windows(
             .filter(|(s, _, _)| s == session)
             .map(|(_, _, t)| *t)
             .unwrap_or(now);
-        wins.push((card, session.clone(), *ts, next.min(ts + MAX_CLAIM_WINDOW_S)));
+        wins.push((
+            card,
+            session.clone(),
+            *ts,
+            next.min(ts + MAX_CLAIM_WINDOW_S),
+        ));
     }
     // Oldest first, so the earliest claim covering a turn wins it; the UPDATE
     // only touches rows still unattributed.
@@ -829,7 +864,10 @@ pub async fn attribute_tasks(store: &SharedStore) -> anyhow::Result<()> {
                     }
                 }
                 counter.store(n, std::sync::atomic::Ordering::Relaxed);
-                Ok(WriteOutcome { applied: n > 0, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: n > 0,
+                    events: vec![],
+                })
             })
             .await?;
         let n = consumed.load(std::sync::atomic::Ordering::Relaxed);
@@ -864,41 +902,47 @@ pub fn spawn(state: crate::api::AppState) -> Option<super::PeriodicTask> {
         return None;
     }
     let home = crate::api::settings::amux_home();
-    Some(super::spawn_periodic(super::registry::ids::TOKEN_LEDGER, secs, move || {
-        let store = state.store.clone();
-        let home = home.clone();
-        async move {
-            match index_once(&store, &home).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(rows = n, "token-ledger indexed"),
-                // LOUD. The whole reason this job exists is that a silent gap
-                // between writer and readers served a confident zero for
-                // 36 hours; a failing indexer must not reproduce that quietly.
-                Err(e) => tracing::warn!(error = %e, "token-ledger index failed"),
-            }
-            // AMUX-4583: codex lanes spend through a different file tree, and
-            // their turns were in no ledger at all. Same tick, same table,
-            // counted separately so "0 codex rows" is readable as a state.
-            match super::codex_ledger::index_once(&store, &home).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(rows = n, provider = "codex", "token-ledger indexed"),
-                Err(e) => tracing::warn!(error = %e, provider = "codex", "token-ledger index failed"),
-            }
-            // AMUX-4679, the same shape a third time. The gemini ADAPTER
-            // declares it reports no usage, which is true of the provider
-            // interface and says nothing about the CLI, which writes per-turn
-            // counts to ~/.gemini/tmp/<project>/chats. Counted separately for
-            // the reason codex is: "0 gemini rows" has to be readable as a
-            // state rather than as an absent provider.
-            match super::gemini_ledger::index_once(&store, &home).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(rows = n, provider = "gemini", "token-ledger indexed"),
-                Err(e) => {
-                    tracing::warn!(error = %e, provider = "gemini", "token-ledger index failed")
+    Some(super::spawn_periodic(
+        super::registry::ids::TOKEN_LEDGER,
+        secs,
+        move || {
+            let store = state.store.clone();
+            let home = home.clone();
+            async move {
+                match index_once(&store, &home).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(rows = n, "token-ledger indexed"),
+                    // LOUD. The whole reason this job exists is that a silent gap
+                    // between writer and readers served a confident zero for
+                    // 36 hours; a failing indexer must not reproduce that quietly.
+                    Err(e) => tracing::warn!(error = %e, "token-ledger index failed"),
+                }
+                // AMUX-4583: codex lanes spend through a different file tree, and
+                // their turns were in no ledger at all. Same tick, same table,
+                // counted separately so "0 codex rows" is readable as a state.
+                match super::codex_ledger::index_once(&store, &home).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(rows = n, provider = "codex", "token-ledger indexed"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, provider = "codex", "token-ledger index failed")
+                    }
+                }
+                // AMUX-4679, the same shape a third time. The gemini ADAPTER
+                // declares it reports no usage, which is true of the provider
+                // interface and says nothing about the CLI, which writes per-turn
+                // counts to ~/.gemini/tmp/<project>/chats. Counted separately for
+                // the reason codex is: "0 gemini rows" has to be readable as a
+                // state rather than as an absent provider.
+                match super::gemini_ledger::index_once(&store, &home).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(rows = n, provider = "gemini", "token-ledger indexed"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, provider = "gemini", "token-ledger index failed")
+                    }
                 }
             }
-        }
-    }))
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -906,7 +950,10 @@ mod tests {
     use super::*;
 
     fn table() -> Vec<(String, [f64; 4])> {
-        MODEL_PRICES_DEFAULT.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+        MODEL_PRICES_DEFAULT
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect()
     }
 
     // ---- claim windows (AMUX-4750) --------------------------------------
@@ -941,7 +988,12 @@ mod tests {
                 .find(|(s, _, _)| s == session)
                 .map(|(_, _, t)| *t)
                 .unwrap_or(now);
-            wins.push((card, session.clone(), *ts, next.min(ts + MAX_CLAIM_WINDOW_S)));
+            wins.push((
+                card,
+                session.clone(),
+                *ts,
+                next.min(ts + MAX_CLAIM_WINDOW_S),
+            ));
         }
         wins.sort_by_key(|(_, _, from, _)| *from);
         wins
@@ -976,7 +1028,10 @@ mod tests {
     fn the_window_is_capped_even_when_the_lane_never_claims_again() {
         let now = 10 * MAX_CLAIM_WINDOW_S;
         let got = claim_windows(Vec::new(), vec![claim("alpha", "A-1", 0)], now);
-        assert_eq!(got, vec![("A-1".into(), "alpha".into(), 0, MAX_CLAIM_WINDOW_S)]);
+        assert_eq!(
+            got,
+            vec![("A-1".into(), "alpha".into(), 0, MAX_CLAIM_WINDOW_S)]
+        );
     }
 
     #[test]
@@ -1001,7 +1056,14 @@ mod tests {
         // one, runs of several, adjacent lanes whose names sort next to each
         // other, and a gap wider than the cap.
         let mut claims: Vec<(String, String, i64)> = Vec::new();
-        for (lane, count) in [("a", 1), ("aa", 5), ("ab", 2), ("b", 7), ("c", 1), ("cc", 3)] {
+        for (lane, count) in [
+            ("a", 1),
+            ("aa", 5),
+            ("ab", 2),
+            ("b", 7),
+            ("c", 1),
+            ("cc", 3),
+        ] {
             for k in 0..count {
                 claims.push(claim(lane, &format!("{lane}-{k}"), 100 + (k as i64) * 250));
             }
@@ -1050,7 +1112,10 @@ mod tests {
     #[test]
     fn a_rate_is_applied_only_where_one_is_known() {
         let t = table();
-        assert_eq!(price_for_model(&t, "claude-opus-5"), Some([15.0, 1.50, 18.75, 75.0]));
+        assert_eq!(
+            price_for_model(&t, "claude-opus-5"),
+            Some([15.0, 1.50, 18.75, 75.0])
+        );
         assert_eq!(
             price_for_model(&t, "claude-haiku-4-5-20251001"),
             Some([0.80, 0.08, 1.00, 4.0])
@@ -1063,16 +1128,27 @@ mod tests {
         assert_eq!(price_for_model(&t, "claude-nova-1"), Some(PRICE_DEFAULT));
         assert!(model_is_priced(&t, "claude-nova-1"));
         for fam in ["opus", "sonnet", "haiku", "fable"] {
-            assert!(!"claude-nova-1".contains(fam), "fixture must not match {fam}");
+            assert!(
+                !"claude-nova-1".contains(fam),
+                "fixture must not match {fam}"
+            );
         }
 
         // DIFFERENT VENDOR, no rate: UNMETERED. Not Sonnet's price, which is
         // the live defect, and the cost is 0 because the column is NOT NULL —
         // `model_is_priced` is what says this zero is "withheld", not "free".
         for m in ["gpt-5.5", "gpt-6-astra", "gemini-3.5-flash", "gpt-5-codex"] {
-            assert_eq!(price_for_model(&t, m), None, "{m} must not take a Claude rate");
+            assert_eq!(
+                price_for_model(&t, m),
+                None,
+                "{m} must not take a Claude rate"
+            );
             assert!(!model_is_priced(&t, m), "{m} must read as unmetered");
-            assert_eq!(turn_cost_usd(&t, m, [1_000_000, 0, 0, 1_000_000]), 0.0, "{m}");
+            assert_eq!(
+                turn_cost_usd(&t, m, [1_000_000, 0, 0, 1_000_000]),
+                0.0,
+                "{m}"
+            );
         }
 
         // LOCAL: a known rate that happens to be zero. $0 is a FACT here, so it
@@ -1080,7 +1156,11 @@ mod tests {
         for m in ["qwen3.8:27b", "qwen3-coder:30b-65k", "llama3.3:70b"] {
             assert_eq!(price_for_model(&t, m), Some([0.0; 4]), "{m}");
             assert!(model_is_priced(&t, m), "{m} is free, not unknown");
-            assert_eq!(turn_cost_usd(&t, m, [9_000_000, 0, 0, 9_000_000]), 0.0, "{m}");
+            assert_eq!(
+                turn_cost_usd(&t, m, [9_000_000, 0, 0, 9_000_000]),
+                0.0,
+                "{m}"
+            );
         }
 
         // 1M output tokens on opus = $75 exactly.
@@ -1096,8 +1176,14 @@ mod tests {
         )
         .unwrap();
         let t = prices(dir.path());
-        assert_eq!(price_for_model(&t, "claude-opus-5"), Some([1.0, 2.0, 3.0, 4.0]));
-        assert_eq!(price_for_model(&t, "newmodel-x"), Some([9.0, 9.0, 9.0, 9.0]));
+        assert_eq!(
+            price_for_model(&t, "claude-opus-5"),
+            Some([1.0, 2.0, 3.0, 4.0])
+        );
+        assert_eq!(
+            price_for_model(&t, "newmodel-x"),
+            Some([9.0, 9.0, 9.0, 9.0])
+        );
         // A malformed row is ignored, not fatal, and must not shadow anything.
         assert_eq!(price_for_model(&t, "sonnet"), Some([3.0, 0.30, 3.75, 15.0]));
     }
@@ -1112,10 +1198,16 @@ mod tests {
         assert_eq!(price_for_model(&t, "gpt-5.5"), None);
         assert!(!model_is_priced(&t, "gpt-5.5"));
 
-        std::fs::write(dir.path().join("prices.json"), r#"{"gpt-5.5": [1.25, 0.125, 1.5, 10.0]}"#)
-            .unwrap();
+        std::fs::write(
+            dir.path().join("prices.json"),
+            r#"{"gpt-5.5": [1.25, 0.125, 1.5, 10.0]}"#,
+        )
+        .unwrap();
         let t = prices(dir.path());
-        assert_eq!(price_for_model(&t, "gpt-5.5"), Some([1.25, 0.125, 1.5, 10.0]));
+        assert_eq!(
+            price_for_model(&t, "gpt-5.5"),
+            Some([1.25, 0.125, 1.5, 10.0])
+        );
         assert!(model_is_priced(&t, "gpt-5.5"));
         // 1M in + 1M out at those rates.
         assert!((turn_cost_usd(&t, "gpt-5.5", [1_000_000, 0, 0, 1_000_000]) - 11.25).abs() < 1e-9);
@@ -1124,10 +1216,16 @@ mod tests {
 
         // An explicit `_default` is the owner saying "price the unknowns like
         // this", which is theirs to decide and still honoured.
-        std::fs::write(dir.path().join("prices.json"), r#"{"_default": [2.0, 2.0, 2.0, 2.0]}"#)
-            .unwrap();
+        std::fs::write(
+            dir.path().join("prices.json"),
+            r#"{"_default": [2.0, 2.0, 2.0, 2.0]}"#,
+        )
+        .unwrap();
         let t = prices(dir.path());
-        assert_eq!(price_for_model(&t, "gpt-6-astra"), Some([2.0, 2.0, 2.0, 2.0]));
+        assert_eq!(
+            price_for_model(&t, "gpt-6-astra"),
+            Some([2.0, 2.0, 2.0, 2.0])
+        );
     }
 
     fn line(model: &str, ts: &str, inp: i64, cr: i64, cw: i64, out: i64) -> String {
@@ -1136,7 +1234,15 @@ mod tests {
         )
     }
 
-    fn line_with_id(model: &str, ts: &str, id: &str, inp: i64, cr: i64, cw: i64, out: i64) -> String {
+    fn line_with_id(
+        model: &str,
+        ts: &str,
+        id: &str,
+        inp: i64,
+        cr: i64,
+        cw: i64,
+        out: i64,
+    ) -> String {
         format!(
             r#"{{"timestamp":"{ts}","requestId":"req_{id}","message":{{"id":"{id}","model":"{model}","usage":{{"input_tokens":{inp},"cache_read_input_tokens":{cr},"cache_creation_input_tokens":{cw},"output_tokens":{out}}}}}}}"#
         )
@@ -1159,9 +1265,15 @@ mod tests {
             + "\n";
         std::fs::write(&path, &body).unwrap();
         let (_, turns) = parse_from(&path, 0, 1_786_000_000, "lane", &table());
-        let ids: Vec<_> = turns.iter().map(|t| t.message_id.clone().unwrap()).collect();
-        assert_eq!(ids, vec!["msg_A".to_string(), "msg_B".to_string()],
-            "msg_A billed once despite non-adjacent repeats; msg_B kept though its counts match");
+        let ids: Vec<_> = turns
+            .iter()
+            .map(|t| t.message_id.clone().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["msg_A".to_string(), "msg_B".to_string()],
+            "msg_A billed once despite non-adjacent repeats; msg_B kept though its counts match"
+        );
         assert_eq!(turns[0].request_id.as_deref(), Some("req_msg_A"));
     }
 
@@ -1188,7 +1300,10 @@ mod tests {
 
         let (off, turns) = parse_from(&jf, 0, 0, "alpha", &table());
         assert_eq!(turns.len(), 3, "2 distinct + 1 repeat-after-gap");
-        assert_eq!(turns.iter().map(|t| t.tokens[0]).collect::<Vec<_>>(), vec![100, 5, 100]);
+        assert_eq!(
+            turns.iter().map(|t| t.tokens[0]).collect::<Vec<_>>(),
+            vec![100, 5, 100]
+        );
         assert_eq!(off, body.len() as u64, "cursor must land exactly at EOF");
         assert_eq!(turns[0].conversation, "conv1");
         assert!(turns[0].cost > 0.0);
@@ -1208,7 +1323,11 @@ mod tests {
         let second = line("sonnet", "2026-08-11T10:05:00Z", 20, 0, 0, 4) + "\n";
         std::fs::write(&jf, first.clone() + &second).unwrap();
         let (off2, turns2) = parse_from(&jf, off, 0, "", &table());
-        assert_eq!(turns2.len(), 1, "the already-indexed line must not be re-billed");
+        assert_eq!(
+            turns2.len(),
+            1,
+            "the already-indexed line must not be re-billed"
+        );
         assert_eq!(turns2[0].tokens[0], 20);
         assert_eq!(off2, (first.len() + second.len()) as u64);
     }
@@ -1294,9 +1413,11 @@ mod tests {
         let task_of = |conv: &str| -> String {
             st.read()
                 .unwrap()
-                .query_row("SELECT task FROM token_ledger WHERE conversation=?1", [conv], |r| {
-                    r.get::<_, String>(0)
-                })
+                .query_row(
+                    "SELECT task FROM token_ledger WHERE conversation=?1",
+                    [conv],
+                    |r| r.get::<_, String>(0),
+                )
                 .unwrap()
         };
         assert_eq!(
@@ -1347,13 +1468,23 @@ mod tests {
         let task_of = |conv: &str| -> String {
             st.read()
                 .unwrap()
-                .query_row("SELECT task FROM token_ledger WHERE conversation=?1", [conv], |r| {
-                    r.get::<_, String>(0)
-                })
+                .query_row(
+                    "SELECT task FROM token_ledger WHERE conversation=?1",
+                    [conv],
+                    |r| r.get::<_, String>(0),
+                )
                 .unwrap()
         };
-        assert_eq!(task_of("conv-a"), "AMUX-9001", "a running attempt attributes its lane's turn");
-        assert_eq!(task_of("conv-b"), "AMUX-9002", "a task.claimed event still attributes historical turns");
+        assert_eq!(
+            task_of("conv-a"),
+            "AMUX-9001",
+            "a running attempt attributes its lane's turn"
+        );
+        assert_eq!(
+            task_of("conv-b"),
+            "AMUX-9002",
+            "a task.claimed event still attributes historical turns"
+        );
         assert_eq!(
             task_of("conv-old"),
             "",
@@ -1394,15 +1525,21 @@ mod tests {
         // Parent conversation: carries the owning session.
         std::fs::write(
             proj.join(format!("{conv}.jsonl")),
-            format!("{}\n{}\n", r#"{"customTitle":"gtm-videos"}"#,
-                    line("claude-opus-5", "2026-08-11T10:00:00Z", 11, 0, 0, 1)),
+            format!(
+                "{}\n{}\n",
+                r#"{"customTitle":"gtm-videos"}"#,
+                line("claude-opus-5", "2026-08-11T10:00:00Z", 11, 0, 0, 1)
+            ),
         )
         .unwrap();
         // Delegated transcript: NO owner of its own.
         std::fs::write(
             proj.join(conv).join("subagents").join("agent-abc123.jsonl"),
-            format!("{}\n{}\n", r#"{"type":"user"}"#,
-                    line("claude-opus-5", "2026-08-11T10:01:00Z", 22, 0, 0, 2)),
+            format!(
+                "{}\n{}\n",
+                r#"{"type":"user"}"#,
+                line("claude-opus-5", "2026-08-11T10:01:00Z", 22, 0, 0, 2)
+            ),
         )
         .unwrap();
 
@@ -1411,12 +1548,16 @@ mod tests {
         // is testing under instead of inheriting whatever is on the machine.
         // Empty = no meta claim, so the owner resolves from the title record.
         let claims = BTreeMap::new();
-        let n = index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap();
+        let n = index_once_at(&st, home.path(), projects.path(), &claims)
+            .await
+            .unwrap();
         assert_eq!(n, 2, "one parent turn + one delegated turn");
 
         let rows = ledger(&st).await;
-        let by_conv: std::collections::HashMap<_, _> =
-            rows.iter().map(|(s, c, i)| (c.clone(), (s.clone(), *i))).collect();
+        let by_conv: std::collections::HashMap<_, _> = rows
+            .iter()
+            .map(|(s, c, i)| (c.clone(), (s.clone(), *i)))
+            .collect();
         assert_eq!(by_conv[conv], ("gtm-videos".into(), 11));
         assert_eq!(
             by_conv["agent-abc123"],
@@ -1439,9 +1580,14 @@ mod tests {
         let proj = projects.path().join("-proj");
         std::fs::create_dir_all(proj.join("dead-uuid").join("subagents")).unwrap();
         std::fs::write(
-            proj.join("dead-uuid").join("subagents").join("agent-zzz.jsonl"),
-            format!("{}\n{}\n", r#"{"type":"user"}"#,
-                    line("sonnet", "2026-08-11T10:00:00Z", 5, 0, 0, 1)),
+            proj.join("dead-uuid")
+                .join("subagents")
+                .join("agent-zzz.jsonl"),
+            format!(
+                "{}\n{}\n",
+                r#"{"type":"user"}"#,
+                line("sonnet", "2026-08-11T10:00:00Z", 5, 0, 0, 1)
+            ),
         )
         .unwrap();
 
@@ -1449,8 +1595,16 @@ mod tests {
         // No claim for this conversation: the owner must come from the
         // transcript, which is what this cell is about.
         let claims = BTreeMap::new();
-        assert_eq!(index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(), 1);
-        assert_eq!(ledger(&st).await, vec![(String::new(), "agent-zzz".into(), 5)]);
+        assert_eq!(
+            index_once_at(&st, home.path(), projects.path(), &claims)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            ledger(&st).await,
+            vec![(String::new(), "agent-zzz".into(), 5)]
+        );
     }
 
     /// THE CLAIMS MAP MUST REACH THE INDEXER (AF-209).
@@ -1476,15 +1630,23 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(
             proj.join(format!("{conv}.jsonl")),
-            format!("{}\n{}\n", r#"{"customTitle":"gtm-videos"}"#,
-                    line("sonnet", "2026-08-11T10:00:00Z", 7, 0, 0, 1)),
+            format!(
+                "{}\n{}\n",
+                r#"{"customTitle":"gtm-videos"}"#,
+                line("sonnet", "2026-08-11T10:00:00Z", 7, 0, 0, 1)
+            ),
         )
         .unwrap();
 
         let st = store();
         let mut claims = BTreeMap::new();
         claims.insert(conv.to_string(), "claiming-lane".to_string());
-        assert_eq!(index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(), 1);
+        assert_eq!(
+            index_once_at(&st, home.path(), projects.path(), &claims)
+                .await
+                .unwrap(),
+            1
+        );
         assert_eq!(
             ledger(&st).await,
             vec![("claiming-lane".to_string(), conv.to_string(), 7)],
@@ -1503,14 +1665,20 @@ mod tests {
         std::fs::create_dir_all(proj.join("u1").join("subagents")).unwrap();
         std::fs::write(
             proj.join("u1.jsonl"),
-            format!("{}\n{}\n", r#"{"customTitle":"amux"}"#,
-                    line("sonnet", "2026-08-11T10:00:00Z", 9, 0, 0, 1)),
+            format!(
+                "{}\n{}\n",
+                r#"{"customTitle":"amux"}"#,
+                line("sonnet", "2026-08-11T10:00:00Z", 9, 0, 0, 1)
+            ),
         )
         .unwrap();
         std::fs::write(
             proj.join("u1").join("subagents").join("agent-q.jsonl"),
-            format!("{}\n{}\n", r#"{"type":"user"}"#,
-                    line("sonnet", "2026-08-11T10:01:00Z", 3, 0, 0, 1)),
+            format!(
+                "{}\n{}\n",
+                r#"{"type":"user"}"#,
+                line("sonnet", "2026-08-11T10:01:00Z", 3, 0, 0, 1)
+            ),
         )
         .unwrap();
 
@@ -1518,9 +1686,16 @@ mod tests {
         // No claim for this conversation: the owner must come from the
         // transcript, which is what this cell is about.
         let claims = BTreeMap::new();
-        assert_eq!(index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(), 2);
         assert_eq!(
-            index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(),
+            index_once_at(&st, home.path(), projects.path(), &claims)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            index_once_at(&st, home.path(), projects.path(), &claims)
+                .await
+                .unwrap(),
             0,
             "an unchanged tree must be a no-op"
         );
@@ -1536,8 +1711,11 @@ mod tests {
     fn owner_comes_from_the_last_title_record_and_is_empty_for_ad_hoc_conversations() {
         let dir = tempfile::tempdir().unwrap();
         let named = dir.path().join("a.jsonl");
-        std::fs::write(&named, "{\"customTitle\":\"amux-rust\"}\n{\"customTitle\":\"amux\"}\n")
-            .unwrap();
+        std::fs::write(
+            &named,
+            "{\"customTitle\":\"amux-rust\"}\n{\"customTitle\":\"amux\"}\n",
+        )
+        .unwrap();
         assert_eq!(jsonl_owner_title(&named, &BTreeMap::new()), "amux");
 
         let anon = dir.path().join("b.jsonl");

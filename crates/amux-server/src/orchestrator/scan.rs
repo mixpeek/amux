@@ -23,8 +23,8 @@ use crate::backend::{ProcessRef, SessionBackend};
 use crate::db::SharedStore;
 use crate::opencode::AgentProtocol;
 use amux_core::ids::{TurnId, WorkerId};
-use amux_core::provider::ProviderId;
 use amux_core::protocol::{ExitStatus, WaitReason, WorkerEvent};
+use amux_core::provider::ProviderId;
 use amux_core::worker::WorkerState;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::Digest;
@@ -176,7 +176,9 @@ impl ScanLoop {
         }
 
         for (wid_str, backend_name, backend_ref, provider, session_id) in targets {
-            let Ok(worker) = WorkerId::parse(&wid_str) else { continue };
+            let Ok(worker) = WorkerId::parse(&wid_str) else {
+                continue;
+            };
 
             // DEMOTION: a live structured session means the worker speaks
             // for itself. Skip — and SAY so.
@@ -230,8 +232,7 @@ impl ScanLoop {
                 continue;
             }
 
-            let Some(backend) = self.backends.iter().find(|b| b.name() == backend_name)
-            else {
+            let Some(backend) = self.backends.iter().find(|b| b.name() == backend_name) else {
                 continue;
             };
             let proc = ProcessRef {
@@ -376,12 +377,7 @@ impl ScanLoop {
                 let applied = self
                     .store
                     .write_async(move |conn| {
-                        crate::orchestrator::events::apply_event(
-                            conn,
-                            &w,
-                            &ev,
-                            chrono::Utc::now(),
-                        )
+                        crate::orchestrator::events::apply_event(conn, &w, &ev, chrono::Utc::now())
                     })
                     .await;
                 match applied {
@@ -420,7 +416,8 @@ impl ScanLoop {
             // AMUX-4828: bracket the pass; the one-shot records no duration.
             crate::runtime_jobs::registry::tick_start(crate::runtime_jobs::registry::ids::SCAN);
             match self.scan_once().await {
-                Ok(r) if !r.scanned.is_empty()
+                Ok(r)
+                    if !r.scanned.is_empty()
                         || !r.capture_failures.is_empty()
                         || !r.demoted_native.is_empty()
                         || !r.process_exits.is_empty()
@@ -443,10 +440,14 @@ impl ScanLoop {
                     // BOTH Ok arms stamp: this is the BUSY one, and stamping
                     // only the quiet arm would make an actively-working
                     // scanner the one that reads as stalled.
-                    crate::runtime_jobs::registry::tick_end(crate::runtime_jobs::registry::ids::SCAN);
+                    crate::runtime_jobs::registry::tick_end(
+                        crate::runtime_jobs::registry::ids::SCAN,
+                    );
                 }
                 Ok(_) => {
-                    crate::runtime_jobs::registry::tick_end(crate::runtime_jobs::registry::ids::SCAN);
+                    crate::runtime_jobs::registry::tick_end(
+                        crate::runtime_jobs::registry::ids::SCAN,
+                    );
                 }
                 Err(e) => tracing::warn!(error = %e, "terminal scan pass failed"),
             }
@@ -506,10 +507,12 @@ fn native_status_event(
         },
         "idle" | "done" => match prior {
             Some(WorkerState::Idle { .. }) => None,
-            _ => Some(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
-                turn_id: open_turn.unwrap_or_else(|| TurnId::from_ulid(ulid::Ulid::new())),
-                outcome: "herdr agent idle".into(),
-            })),
+            _ => Some(WorkerEvent::TurnCompleted(
+                amux_core::protocol::TurnResult {
+                    turn_id: open_turn.unwrap_or_else(|| TurnId::from_ulid(ulid::Ulid::new())),
+                    outcome: "herdr agent idle".into(),
+                },
+            )),
         },
         // `parse_workspace_statuses` never routes anything else here; a
         // future herdr status word falls through to the scrape rather than
@@ -555,7 +558,9 @@ mod tests {
             Ok(BackendStatus::Running)
         }
         async fn attach_info(&self, _p: &ProcessRef) -> crate::backend::Result<AttachInfo> {
-            Ok(AttachInfo { command: "true".into() })
+            Ok(AttachInfo {
+                command: "true".into(),
+            })
         }
         async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> {
             Ok(vec![])
@@ -568,8 +573,12 @@ mod tests {
         }
         async fn process_exits(&self) -> crate::backend::Result<BTreeMap<String, ExitStatus>> {
             if self.exit_probe_fails {
-                Err(BackendError::CommandFailed("controlled unreadable exit census".into()))
-            } else { Ok(self.exits.clone()) }
+                Err(BackendError::CommandFailed(
+                    "controlled unreadable exit census".into(),
+                ))
+            } else {
+                Ok(self.exits.clone())
+            }
         }
     }
 
@@ -608,7 +617,10 @@ mod tests {
                      VALUES (?1, ?2, 'tmux', 'amux-cx', 'now')",
                     params![sid, id],
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -628,7 +640,10 @@ mod tests {
                      VALUES (?1, ?2, ?3, ?4, 'now')",
                     params![sid, id, backend, backend_ref],
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -643,7 +658,8 @@ mod tests {
 
     // A frame the Claude adapter flags: the weekly limit banner (fixture
     // shape from adapter.rs's corpus).
-    const LIMIT_FRAME: &str = "\n\u{23fa} did things\nYou've reached your weekly limit \u{00b7} resets 3pm\n\u{276f} \n";
+    const LIMIT_FRAME: &str =
+        "\n\u{23fa} did things\nYou've reached your weekly limit \u{00b7} resets 3pm\n\u{276f} \n";
 
     #[tokio::test]
     async fn exit_probe_absence_failure_or_another_worker_cannot_stop_a_live_worker() {
@@ -652,25 +668,51 @@ mod tests {
             let w = wid(100 + n);
             seed_terminal_worker(&store, &w);
             let id = w.to_string();
-            store.write(move |conn| {
-                let now = chrono::Utc::now();
-                crate::db::queries::update_worker_state(conn, &id,
-                    &WorkerState::Idle { since: now }, &now.to_rfc3339())?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
-            }).unwrap();
-            let scan = ScanLoop::new(store.clone(), vec![Arc::new(ScriptedBackend {
-                name: "tmux", frame: String::new(), exit_probe_fails: fails,
-                exits: if foreign { BTreeMap::from([("amux-other".into(),
-                    ExitStatus { code: Some(1), signal: None })]) } else { BTreeMap::new() },
-                ..Default::default()
-            })], None);
+            store
+                .write(move |conn| {
+                    let now = chrono::Utc::now();
+                    crate::db::queries::update_worker_state(
+                        conn,
+                        &id,
+                        &WorkerState::Idle { since: now },
+                        &now.to_rfc3339(),
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+            let scan = ScanLoop::new(
+                store.clone(),
+                vec![Arc::new(ScriptedBackend {
+                    name: "tmux",
+                    frame: String::new(),
+                    exit_probe_fails: fails,
+                    exits: if foreign {
+                        BTreeMap::from([(
+                            "amux-other".into(),
+                            ExitStatus {
+                                code: Some(1),
+                                signal: None,
+                            },
+                        )])
+                    } else {
+                        BTreeMap::new()
+                    },
+                    ..Default::default()
+                })],
+                None,
+            );
             let report = scan.scan_once().await.unwrap();
             assert!(matches!(worker_state(&store, &w), WorkerState::Idle { .. }));
             assert_eq!(report.events_applied, 0);
             assert!(report.process_exits.is_empty());
             assert_eq!(report.process_exit_failures.len(), usize::from(fails));
             let conn = store.read().unwrap();
-            assert!(crate::db::queries::live_session_for(&conn, w.as_str()).unwrap().is_some());
+            assert!(crate::db::queries::live_session_for(&conn, w.as_str())
+                .unwrap()
+                .is_some());
         }
     }
 
@@ -687,7 +729,13 @@ mod tests {
                 name: "tmux",
                 frame: LIMIT_FRAME.into(),
                 native: BTreeMap::new(),
-                exits: BTreeMap::from([("amux-x".into(), ExitStatus { code: Some(1), signal: None })]),
+                exits: BTreeMap::from([(
+                    "amux-x".into(),
+                    ExitStatus {
+                        code: Some(1),
+                        signal: None,
+                    },
+                )]),
                 ..Default::default()
             })],
             Some(protocol),
@@ -726,18 +774,26 @@ mod tests {
         struct FailingBackend;
         #[async_trait]
         impl SessionBackend for FailingBackend {
-            fn name(&self) -> &'static str { "tmux" }
+            fn name(&self) -> &'static str {
+                "tmux"
+            }
             async fn spawn(&self, _s: &SessionSpec) -> crate::backend::Result<ProcessRef> {
                 Err(BackendError::SpawnFailed("x".into()))
             }
-            async fn terminate(&self, _p: &ProcessRef) -> crate::backend::Result<()> { Ok(()) }
+            async fn terminate(&self, _p: &ProcessRef) -> crate::backend::Result<()> {
+                Ok(())
+            }
             async fn status(&self, _p: &ProcessRef) -> crate::backend::Result<BackendStatus> {
                 Ok(BackendStatus::NotFound)
             }
             async fn attach_info(&self, _p: &ProcessRef) -> crate::backend::Result<AttachInfo> {
-                Ok(AttachInfo { command: "true".into() })
+                Ok(AttachInfo {
+                    command: "true".into(),
+                })
             }
-            async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> { Ok(vec![]) }
+            async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> {
+                Ok(vec![])
+            }
             async fn capture(&self, _p: &ProcessRef, _l: u32) -> crate::backend::Result<String> {
                 Err(BackendError::CommandFailed("pane gone".into()))
             }
@@ -776,7 +832,10 @@ mod tests {
         assert_eq!(r.demoted_native, vec![w.to_string()]);
         assert!(r.scanned.is_empty(), "native answer must demote the scrape");
         assert_eq!(r.events_applied, 1, "TurnStarted: {r:?}");
-        assert!(matches!(worker_state(&store, &w), WorkerState::Active { .. }));
+        assert!(matches!(
+            worker_state(&store, &w),
+            WorkerState::Active { .. }
+        ));
     }
 
     #[tokio::test]
@@ -821,7 +880,10 @@ mod tests {
         assert_eq!(r1.events_applied, 1, "working -> TurnStarted");
         // Same working report again: equilibrium, no event, no revision churn.
         let r2 = scan.scan_once().await.unwrap();
-        assert_eq!(r2.events_applied, 0, "equilibrium must apply nothing: {r2:?}");
+        assert_eq!(
+            r2.events_applied, 0,
+            "equilibrium must apply nothing: {r2:?}"
+        );
         // The backend now reports idle (a fresh backend answers the same
         // lane — the store, not the loop, carries the prior state).
         let scan = ScanLoop::new(
@@ -869,18 +931,26 @@ mod tests {
         struct FlakyNativeBackend;
         #[async_trait]
         impl SessionBackend for FlakyNativeBackend {
-            fn name(&self) -> &'static str { "herdr" }
+            fn name(&self) -> &'static str {
+                "herdr"
+            }
             async fn spawn(&self, _s: &SessionSpec) -> crate::backend::Result<ProcessRef> {
                 Err(BackendError::SpawnFailed("x".into()))
             }
-            async fn terminate(&self, _p: &ProcessRef) -> crate::backend::Result<()> { Ok(()) }
+            async fn terminate(&self, _p: &ProcessRef) -> crate::backend::Result<()> {
+                Ok(())
+            }
             async fn status(&self, _p: &ProcessRef) -> crate::backend::Result<BackendStatus> {
                 Ok(BackendStatus::Running)
             }
             async fn attach_info(&self, _p: &ProcessRef) -> crate::backend::Result<AttachInfo> {
-                Ok(AttachInfo { command: "true".into() })
+                Ok(AttachInfo {
+                    command: "true".into(),
+                })
             }
-            async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> { Ok(vec![]) }
+            async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> {
+                Ok(vec![])
+            }
             async fn capture(&self, _p: &ProcessRef, _l: u32) -> crate::backend::Result<String> {
                 Ok(LIMIT_FRAME.to_string())
             }
@@ -928,8 +998,12 @@ mod tests {
     fn native_status_event_mapping_table() {
         let turn = || Some(TurnId::from_ulid(ulid::Ulid::from_parts(1, 1)));
         let active = WorkerState::Active { turn: None };
-        let idle = WorkerState::Idle { since: chrono::Utc::now() };
-        let waiting = WorkerState::Waiting { reason: "herdr_agent_blocked".into() };
+        let idle = WorkerState::Idle {
+            since: chrono::Utc::now(),
+        };
+        let waiting = WorkerState::Waiting {
+            reason: "herdr_agent_blocked".into(),
+        };
 
         // Unknown status words never guess.
         assert!(native_status_event(Some(&idle), "unknown", turn()).is_none());
@@ -977,7 +1051,8 @@ mod tests {
 
     // The pane the live incident showed: a working ollama lane that read
     // running=false the whole time because nothing emitted its active state.
-    const CODEX_WORKING: &str = "\u{203a} do the thing\n\n\u{2022} Working (12s \u{2022} esc to interrupt)";
+    const CODEX_WORKING: &str =
+        "\u{203a} do the thing\n\n\u{2022} Working (12s \u{2022} esc to interrupt)";
     // The idle model bar — must NOT mark the lane active.
     const CODEX_IDLE: &str = "\u{203a} implement {feature}\n\n  gpt-5.5 xhigh \u{b7} ~/Dev/amux";
 
@@ -1007,8 +1082,14 @@ mod tests {
         // Still working next pass: EDGE-gated, so no new turn / StatusChanged
         // churn (Invariant 37) even though the fresh scan is not deduped.
         let r2 = scan.scan_once().await.unwrap();
-        assert_eq!(r2.events_applied, 0, "already-Active must not re-fire: {r2:?}");
-        assert!(matches!(worker_state(&store, &w), WorkerState::Active { .. }));
+        assert_eq!(
+            r2.events_applied, 0,
+            "already-Active must not re-fire: {r2:?}"
+        );
+        assert!(matches!(
+            worker_state(&store, &w),
+            WorkerState::Active { .. }
+        ));
     }
 
     #[tokio::test]

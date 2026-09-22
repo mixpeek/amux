@@ -60,7 +60,10 @@ pub enum EventKind {
     /// happened (ethos rule 4). Strings, not the board enum, because an
     /// audit row must stay readable even after the status vocabulary
     /// evolves — history outlives schemas.
-    TaskTransitioned { from: String, to: String },
+    TaskTransitioned {
+        from: String,
+        to: String,
+    },
     CommandQueued,
     CommandDelivered,
     /// A dead letter is a system failure (something the orchestrator wanted
@@ -262,17 +265,14 @@ mod tests {
         let worker = Actor::Worker {
             id: WorkerId::from_ulid(ulid("01JGXV0000000000000000TEST")),
         };
-        let back: Actor =
-            serde_json::from_str(&serde_json::to_string(&worker).unwrap()).unwrap();
+        let back: Actor = serde_json::from_str(&serde_json::to_string(&worker).unwrap()).unwrap();
         assert_eq!(worker, back);
     }
 
     #[test]
     fn correlation_defaults_to_none() {
         let c = Correlation::none();
-        assert!(
-            c.task.is_none() && c.worker.is_none() && c.session.is_none() && c.turn.is_none()
-        );
+        assert!(c.task.is_none() && c.worker.is_none() && c.session.is_none() && c.turn.is_none());
     }
 
     #[test]

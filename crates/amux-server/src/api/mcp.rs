@@ -70,8 +70,8 @@ fn referenced_vars(cfg: &Value) -> Vec<String> {
             // and JSON supplies a later `}` — capturing `VAR"` and reporting a
             // credential that does not exist, which marks a working server
             // "needs credentials" forever. Caught by this module's own test.
-            let valid = !name.is_empty()
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            let valid =
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
             if j < bytes.len() && valid && !out.contains(&name) {
                 out.push(name);
             }
@@ -85,8 +85,9 @@ fn referenced_vars(cfg: &Value) -> Vec<String> {
 }
 
 fn env_keys() -> Vec<String> {
-    let mut v: Vec<String> =
-        crate::config::parse_env_file(&env_path()).into_keys().collect();
+    let mut v: Vec<String> = crate::config::parse_env_file(&env_path())
+        .into_keys()
+        .collect();
     v.sort();
     v
 }
@@ -106,7 +107,13 @@ async fn list_mcp() -> Response {
                 .get("type")
                 .and_then(Value::as_str)
                 .map(String::from)
-                .unwrap_or_else(|| if cfg.get("url").is_some() { "http".into() } else { "stdio".into() });
+                .unwrap_or_else(|| {
+                    if cfg.get("url").is_some() {
+                        "http".into()
+                    } else {
+                        "stdio".into()
+                    }
+                });
             json!({
                 "name": name,
                 "type": kind,
@@ -139,7 +146,10 @@ fn write_registry(servers: &Map<String, Value>) -> std::io::Result<()> {
     // Write-then-rename: a half-written registry is the file every worker is
     // launched with, so a torn write would break session spawn fleet-wide.
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&body).unwrap_or_default())?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&body).unwrap_or_default(),
+    )?;
     std::fs::rename(&tmp, &p)
 }
 
@@ -175,14 +185,21 @@ async fn import_mcp(Json(body): Json<Value>) -> Response {
     }
     match write_registry(&servers) {
         Ok(()) => Json(json!({ "ok": true, "imported": added })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
             .into_response(),
     }
 }
 
 async fn delete_mcp(Path(name): Path<String>) -> Response {
     if name.is_empty() || name.contains('/') {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid name" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid name" })),
+        )
+            .into_response();
     }
     let mut servers = read_registry();
     let removed = servers.remove(&name).is_some();
@@ -194,7 +211,10 @@ async fn delete_mcp(Path(name): Path<String>) -> Response {
     }
     match write_registry(&servers) {
         Ok(()) => Json(json!({ "ok": true, "removed": true, "name": name })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
             .into_response(),
     }
 }
@@ -210,7 +230,10 @@ mod tests {
             "headers": { "Authorization": "Bearer ${MIXPEEK_API_KEY}" },
             "env": { "TOKEN": "${GH_TOKEN}" }
         });
-        assert_eq!(referenced_vars(&cfg), vec!["GH_TOKEN", "MIXPEEK_API_KEY", "TENANT"]);
+        assert_eq!(
+            referenced_vars(&cfg),
+            vec!["GH_TOKEN", "MIXPEEK_API_KEY", "TENANT"]
+        );
     }
 
     #[test]

@@ -45,7 +45,11 @@ pub struct Tallies {
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
     Allow,
-    Freeze { dimension: &'static str, limit_cents: i64, would_be_cents: i64 },
+    Freeze {
+        dimension: &'static str,
+        limit_cents: i64,
+        would_be_cents: i64,
+    },
 }
 
 /// Pure four-dimension budget decision. A refund (negative `amount_cents`) can
@@ -71,7 +75,11 @@ impl BudgetGuard {
         }
         if let Some(limit) = self.limits.per_txn {
             if amount_cents > limit {
-                return Verdict::Freeze { dimension: "per_transaction", limit_cents: limit, would_be_cents: amount_cents };
+                return Verdict::Freeze {
+                    dimension: "per_transaction",
+                    limit_cents: limit,
+                    would_be_cents: amount_cents,
+                };
             }
         }
         for (limit, spent, dim) in [
@@ -82,7 +90,11 @@ impl BudgetGuard {
             if let Some(limit) = limit {
                 let would_be = spent.saturating_add(amount_cents);
                 if would_be > limit {
-                    return Verdict::Freeze { dimension: dim, limit_cents: limit, would_be_cents: would_be };
+                    return Verdict::Freeze {
+                        dimension: dim,
+                        limit_cents: limit,
+                        would_be_cents: would_be,
+                    };
                 }
             }
         }
@@ -113,11 +125,17 @@ fn env_bool(key: &str, default: bool) -> bool {
 }
 
 fn env_cents(key: &str) -> Option<i64> {
-    std::env::var(key).ok().and_then(|v| v.trim().parse::<i64>().ok()).filter(|n| *n > 0)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|n| *n > 0)
 }
 
 fn env_str(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 impl BrexConfig {
@@ -182,13 +200,22 @@ impl BrexClient {
         if !self.cfg.enabled {
             anyhow::bail!("brex integration disabled (set AMUX_BREX_ENABLED=1)");
         }
-        self.cfg.token.as_deref().ok_or_else(|| anyhow::anyhow!("brex token missing (set AMUX_BREX_TOKEN)"))
+        self.cfg
+            .token
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("brex token missing (set AMUX_BREX_TOKEN)"))
     }
 
     async fn post(&self, path: &str, body: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let token = self.preflight()?;
         let url = format!("{}{}", self.cfg.base_url(), path);
-        let resp = self.http.post(&url).bearer_auth(token).json(&body).send().await?;
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await?;
         let status = resp.status();
         let value: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
         if !status.is_success() {
@@ -200,7 +227,11 @@ impl BrexClient {
     /// Create a virtual (tokenized) card. VERIFY the path and body against Brex's
     /// Team/Cards API. Kept minimal on purpose: this scaffolding never issues a
     /// live card in tests, and the owner reviews the body before enabling.
-    pub async fn create_virtual_card(&self, holder_name: &str, monthly_cap_cents: Option<i64>) -> anyhow::Result<serde_json::Value> {
+    pub async fn create_virtual_card(
+        &self,
+        holder_name: &str,
+        monthly_cap_cents: Option<i64>,
+    ) -> anyhow::Result<serde_json::Value> {
         let mut body = serde_json::json!({
             "card_type": "VIRTUAL",
             "card_name": format!("amux-{holder_name}"),
@@ -218,48 +249,110 @@ impl BrexClient {
     /// Freeze (lock) the managed card. This is the enforcement action the budget
     /// guard triggers. VERIFY the path: Brex uses a lock/terminate action on the
     /// card resource.
-    pub async fn freeze_card(&self, card_id: &str, reason: &str) -> anyhow::Result<serde_json::Value> {
-        self.post(&format!("/v2/cards/{card_id}/lock"), serde_json::json!({"reason": reason})).await
+    pub async fn freeze_card(
+        &self,
+        card_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.post(
+            &format!("/v2/cards/{card_id}/lock"),
+            serde_json::json!({"reason": reason}),
+        )
+        .await
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cents(dollars: i64) -> i64 { dollars * 100 }
+    fn cents(dollars: i64) -> i64 {
+        dollars * 100
+    }
 
     #[test]
     fn no_limits_always_allows() {
         let g = BudgetGuard::new(Limits::default());
-        assert_eq!(g.evaluate(Tallies { today: cents(9999), week: cents(9999), month: cents(9999) }, cents(5000)), Verdict::Allow);
+        assert_eq!(
+            g.evaluate(
+                Tallies {
+                    today: cents(9999),
+                    week: cents(9999),
+                    month: cents(9999)
+                },
+                cents(5000)
+            ),
+            Verdict::Allow
+        );
     }
 
     #[test]
     fn a_refund_never_freezes_even_over_a_limit() {
-        let g = BudgetGuard::new(Limits { per_txn: Some(cents(50)), daily: Some(cents(100)), ..Default::default() });
-        assert_eq!(g.evaluate(Tallies { today: cents(90), ..Default::default() }, -cents(500)), Verdict::Allow);
+        let g = BudgetGuard::new(Limits {
+            per_txn: Some(cents(50)),
+            daily: Some(cents(100)),
+            ..Default::default()
+        });
+        assert_eq!(
+            g.evaluate(
+                Tallies {
+                    today: cents(90),
+                    ..Default::default()
+                },
+                -cents(500)
+            ),
+            Verdict::Allow
+        );
     }
 
     #[test]
     fn per_transaction_cap_is_the_charge_alone() {
-        let g = BudgetGuard::new(Limits { per_txn: Some(cents(100)), ..Default::default() });
+        let g = BudgetGuard::new(Limits {
+            per_txn: Some(cents(100)),
+            ..Default::default()
+        });
         assert_eq!(g.evaluate(Tallies::default(), cents(100)), Verdict::Allow); // exactly at the cap is fine
         assert_eq!(
             g.evaluate(Tallies::default(), cents(101)),
-            Verdict::Freeze { dimension: "per_transaction", limit_cents: cents(100), would_be_cents: cents(101) }
+            Verdict::Freeze {
+                dimension: "per_transaction",
+                limit_cents: cents(100),
+                would_be_cents: cents(101)
+            }
         );
     }
 
     #[test]
     fn a_slow_drip_trips_the_daily_window_not_the_per_txn() {
         // Each charge is under the per-txn cap, but their sum crosses daily.
-        let g = BudgetGuard::new(Limits { per_txn: Some(cents(100)), daily: Some(cents(250)), ..Default::default() });
-        assert_eq!(g.evaluate(Tallies { today: cents(200), ..Default::default() }, cents(50)), Verdict::Allow); // 250 == cap
+        let g = BudgetGuard::new(Limits {
+            per_txn: Some(cents(100)),
+            daily: Some(cents(250)),
+            ..Default::default()
+        });
         assert_eq!(
-            g.evaluate(Tallies { today: cents(200), ..Default::default() }, cents(51)),
-            Verdict::Freeze { dimension: "daily", limit_cents: cents(250), would_be_cents: cents(251) }
+            g.evaluate(
+                Tallies {
+                    today: cents(200),
+                    ..Default::default()
+                },
+                cents(50)
+            ),
+            Verdict::Allow
+        ); // 250 == cap
+        assert_eq!(
+            g.evaluate(
+                Tallies {
+                    today: cents(200),
+                    ..Default::default()
+                },
+                cents(51)
+            ),
+            Verdict::Freeze {
+                dimension: "daily",
+                limit_cents: cents(250),
+                would_be_cents: cents(251)
+            }
         );
     }
 
@@ -267,27 +360,63 @@ mod tests {
     fn the_tightest_window_wins_and_is_named() {
         // Under daily and weekly, but the monthly window is what this charge crosses.
         let g = BudgetGuard::new(Limits {
-            per_txn: Some(cents(1000)), daily: Some(cents(1000)), weekly: Some(cents(5000)), monthly: Some(cents(10000)),
+            per_txn: Some(cents(1000)),
+            daily: Some(cents(1000)),
+            weekly: Some(cents(5000)),
+            monthly: Some(cents(10000)),
         });
-        let v = g.evaluate(Tallies { today: cents(100), week: cents(1000), month: cents(9950) }, cents(60));
-        assert_eq!(v, Verdict::Freeze { dimension: "monthly", limit_cents: cents(10000), would_be_cents: cents(10010) });
+        let v = g.evaluate(
+            Tallies {
+                today: cents(100),
+                week: cents(1000),
+                month: cents(9950),
+            },
+            cents(60),
+        );
+        assert_eq!(
+            v,
+            Verdict::Freeze {
+                dimension: "monthly",
+                limit_cents: cents(10000),
+                would_be_cents: cents(10010)
+            }
+        );
     }
 
     #[test]
     fn per_transaction_is_checked_before_the_windows() {
         // A charge over BOTH per-txn and daily is reported as per-transaction,
         // the most specific and actionable dimension.
-        let g = BudgetGuard::new(Limits { per_txn: Some(cents(100)), daily: Some(cents(100)), ..Default::default() });
+        let g = BudgetGuard::new(Limits {
+            per_txn: Some(cents(100)),
+            daily: Some(cents(100)),
+            ..Default::default()
+        });
         assert_eq!(
-            g.evaluate(Tallies { today: cents(90), ..Default::default() }, cents(500)),
-            Verdict::Freeze { dimension: "per_transaction", limit_cents: cents(100), would_be_cents: cents(500) }
+            g.evaluate(
+                Tallies {
+                    today: cents(90),
+                    ..Default::default()
+                },
+                cents(500)
+            ),
+            Verdict::Freeze {
+                dimension: "per_transaction",
+                limit_cents: cents(100),
+                would_be_cents: cents(500)
+            }
         );
     }
 
     #[test]
     fn disabled_config_is_not_live_and_client_refuses() {
         let cfg = BrexConfig {
-            enabled: false, sandbox: true, token: Some("t".into()), card_id: None, webhook_secret: None, limits: Limits::default(),
+            enabled: false,
+            sandbox: true,
+            token: Some("t".into()),
+            card_id: None,
+            webhook_secret: None,
+            limits: Limits::default(),
         };
         assert!(!cfg.live());
         assert!(BrexClient::new(cfg).preflight().is_err());
@@ -295,15 +424,35 @@ mod tests {
 
     #[test]
     fn live_requires_both_flag_and_token() {
-        let base = BrexConfig { enabled: true, sandbox: true, token: None, card_id: None, webhook_secret: None, limits: Limits::default() };
+        let base = BrexConfig {
+            enabled: true,
+            sandbox: true,
+            token: None,
+            card_id: None,
+            webhook_secret: None,
+            limits: Limits::default(),
+        };
         assert!(!base.live(), "enabled without a token is not live");
-        let with_token = BrexConfig { token: Some("t".into()), ..base };
+        let with_token = BrexConfig {
+            token: Some("t".into()),
+            ..base
+        };
         assert!(with_token.live());
     }
 
     #[test]
     fn sandbox_is_the_default_host() {
-        let cfg = BrexConfig { enabled: true, sandbox: true, token: Some("t".into()), card_id: None, webhook_secret: None, limits: Limits::default() };
-        assert!(cfg.base_url().contains("staging"), "a misconfiguration must not reach production Brex");
+        let cfg = BrexConfig {
+            enabled: true,
+            sandbox: true,
+            token: Some("t".into()),
+            card_id: None,
+            webhook_secret: None,
+            limits: Limits::default(),
+        };
+        assert!(
+            cfg.base_url().contains("staging"),
+            "a misconfiguration must not reach production Brex"
+        );
     }
 }

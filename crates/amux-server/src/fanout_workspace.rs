@@ -14,7 +14,8 @@ pub struct Workspace {
 /// Configured repository aliases and Git's recorded canonical root share identity.
 /// Failed resolution never makes different paths equivalent.
 pub(crate) fn same_repository(left: &str, right: &str) -> bool {
-    left == right || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)),
+    left == right
+        || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)),
         (Ok(left), Ok(right)) if left == right)
 }
 
@@ -118,8 +119,15 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
             let reference = format!("refs/heads/{branch}");
             if let Ok(existing_head) = git(&repo, &["rev-parse", "--verify", &reference]).await {
                 let worktrees = git(&repo, &["worktree", "list", "--porcelain"]).await?;
-                if existing_head != head || worktrees.lines().any(|line| line == format!("branch {reference}")) {
-                    return Err("workspace branch already belongs to another head or checkout; preserved".into());
+                if existing_head != head
+                    || worktrees
+                        .lines()
+                        .any(|line| line == format!("branch {reference}"))
+                {
+                    return Err(
+                        "workspace branch already belongs to another head or checkout; preserved"
+                            .into(),
+                    );
                 }
             } else {
                 git(&repo, &["branch", &branch, &head]).await?;
@@ -169,10 +177,14 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
     };
     save(home, name, &workspace)?;
     if integration_status(home, name)["status"] == "workspace_requires_recovery" {
-        write_integration_status(home, name, &serde_json::json!({
-            "status":"workspace_ready","detail":"Workspace recovered; continuing its owned board",
-            "at":crate::config::now_f64(),"worktree":workspace.path,"branch":workspace.branch
-        }));
+        write_integration_status(
+            home,
+            name,
+            &serde_json::json!({
+                "status":"workspace_ready","detail":"Workspace recovered; continuing its owned board",
+                "at":crate::config::now_f64(),"worktree":workspace.path,"branch":workspace.branch
+            }),
+        );
     }
     tracing::info!(session=name,worktree=%workspace.path,branch=%workspace.branch,reused=existing,
         verdict="fanout_workspace_ready","durable fan-out workspace ready");
@@ -284,7 +296,10 @@ const MAIN_ADVANCED_RETRY: &str = "Remote main advanced through three integratio
 /// Catch source-checkout references that accidentally validate stale bytes.
 /// This is a configuration guard, not a shell sandbox: validation scripts must
 /// still use candidate-relative source paths, including inside invoked scripts.
-pub(crate) fn validate_verification_command(workspace: &Workspace, command: &str) -> Result<(), String> {
+pub(crate) fn validate_verification_command(
+    workspace: &Workspace,
+    command: &str,
+) -> Result<(), String> {
     for source in [&workspace.path, &workspace.repo] {
         let mut spellings = vec![source.clone()];
         if let Ok(path) = std::fs::canonicalize(source) {
@@ -297,7 +312,11 @@ pub(crate) fn validate_verification_command(workspace: &Workspace, command: &str
                 }
             }
         }
-        if spellings.iter().filter(|s| !s.is_empty()).any(|s| command.contains(s.as_str())) {
+        if spellings
+            .iter()
+            .filter(|s| !s.is_empty())
+            .any(|s| command.contains(s.as_str()))
+        {
             tracing::warn!(session=%workspace.branch.trim_start_matches("amux/fanout/"),
                 verdict="fanout_verification_source_path", "validation references the original source checkout");
             return Err("worktree_verify references the original worker or shared checkout. Use source paths relative to the merged candidate (for example: cd server && python -m pytest tests); remove fallback cd commands. Use a runtime installed outside those source checkouts if needed.".into());
@@ -308,31 +327,66 @@ pub(crate) fn validate_verification_command(workspace: &Workspace, command: &str
 
 /// Shared semantics for source and merged candidates: preflight ALL distinct
 /// commands before any process, then run each with its own bounded timeout.
-pub(crate) fn distinct_verification_commands<'a>(commands: impl IntoIterator<Item=&'a str>) -> Vec<&'a str> {
-    let mut seen=std::collections::HashSet::new();
-    commands.into_iter().filter(|c|seen.insert(*c)).collect()
+pub(crate) fn distinct_verification_commands<'a>(
+    commands: impl IntoIterator<Item = &'a str>,
+) -> Vec<&'a str> {
+    let mut seen = std::collections::HashSet::new();
+    commands.into_iter().filter(|c| seen.insert(*c)).collect()
 }
-pub(crate) async fn verify_commands<F: Fn() -> Result<(),String>>(
-    workspace:&Workspace, candidate:&str, commands:&[&str], timeout:Duration, permit:&F,
-) -> Result<(),String> {
-    if !(Duration::from_secs(1)..=Duration::from_secs(amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS)).contains(&timeout) {
+pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
+    workspace: &Workspace,
+    candidate: &str,
+    commands: &[&str],
+    timeout: Duration,
+    permit: &F,
+) -> Result<(), String> {
+    if !(Duration::from_secs(1)
+        ..=Duration::from_secs(amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS))
+        .contains(&timeout)
+    {
         return Err("verification timeout must be 1..3600 seconds".into());
     }
-    let commands=distinct_verification_commands(commands.iter().copied());
-    if commands.is_empty() || commands.iter().any(|c|c.trim().is_empty()) {return Err("verification command is required".into());}
-    for command in &commands {validate_verification_command(workspace,command)?;}
+    let commands = distinct_verification_commands(commands.iter().copied());
+    if commands.is_empty() || commands.iter().any(|c| c.trim().is_empty()) {
+        return Err("verification command is required".into());
+    }
+    for command in &commands {
+        validate_verification_command(workspace, command)?;
+    }
     permit()?;
-    let head=git(candidate,&["rev-parse","HEAD"]).await?;
-    if !git(candidate,&["status","--porcelain"]).await?.is_empty() {return Err("worktree has uncommitted changes".into());}
+    let head = git(candidate, &["rev-parse", "HEAD"]).await?;
+    if !git(candidate, &["status", "--porcelain"]).await?.is_empty() {
+        return Err("worktree has uncommitted changes".into());
+    }
     for command in commands {
-        let mut cmd=tokio::process::Command::new("sh");
-        cmd.args(["-c",command]).current_dir(candidate).env("AMUX_SESSION",workspace.branch.trim_start_matches("amux/fanout/"));
-        let started=std::time::Instant::now();
-        let result=checked_command(cmd,permit,timeout).await;
-        tracing::info!(candidate,command,timeout_secs=timeout.as_secs(),elapsed_ms=started.elapsed().as_millis() as u64,measured=true,n_considered=1,ok=result.as_ref().is_ok_and(|(s,_)|s.success()),verdict="candidate_verification_command","bounded candidate check completed");
-        let (status,output)=result?;
-        if !status.success() {return Err(format!("verification failed ({command}): candidate validation exited {}. {output}",status.code().unwrap_or(-1)));}
-        if git(candidate,&["rev-parse","HEAD"]).await?!=head || !git(candidate,&["status","--porcelain"]).await?.is_empty() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", command]).current_dir(candidate).env(
+            "AMUX_SESSION",
+            workspace.branch.trim_start_matches("amux/fanout/"),
+        );
+        let started = std::time::Instant::now();
+        let result = checked_command(cmd, permit, timeout).await;
+        tracing::info!(
+            candidate,
+            command,
+            timeout_secs = timeout.as_secs(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            measured = true,
+            n_considered = 1,
+            ok = result.as_ref().is_ok_and(|(s, _)| s.success()),
+            verdict = "candidate_verification_command",
+            "bounded candidate check completed"
+        );
+        let (status, output) = result?;
+        if !status.success() {
+            return Err(format!(
+                "verification failed ({command}): candidate validation exited {}. {output}",
+                status.code().unwrap_or(-1)
+            ));
+        }
+        if git(candidate, &["rev-parse", "HEAD"]).await? != head
+            || !git(candidate, &["status", "--porcelain"]).await?.is_empty()
+        {
             return Err("verification changed the reported worktree".into());
         }
     }
@@ -340,9 +394,17 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(),String>>(
 }
 
 pub async fn integrate<F: Fn() -> Result<(), String>>(
-    workspace: &Workspace, verification: &str, permit: F,
+    workspace: &Workspace,
+    verification: &str,
+    permit: F,
 ) -> Result<String, String> {
-    integrate_checks(workspace,&[verification],Duration::from_secs(amux_core::project::verification_timeout_default()),permit).await
+    integrate_checks(
+        workspace,
+        &[verification],
+        Duration::from_secs(amux_core::project::verification_timeout_default()),
+        permit,
+    )
+    .await
 }
 
 pub(crate) async fn integrate_checks<F: Fn() -> Result<(), String>>(
@@ -357,7 +419,9 @@ pub(crate) async fn integrate_checks<F: Fn() -> Result<(), String>>(
         if git(&workspace.path, &["rev-parse", "HEAD"]).await? != head {
             return Err("Worker workspace changed during integration; integration deferred".into());
         }
-        if let Some(merged) = integrate_attempt(workspace, verification, timeout, &head, &permit).await? {
+        if let Some(merged) =
+            integrate_attempt(workspace, verification, timeout, &head, &permit).await?
+        {
             return Ok(merged);
         }
         tracing::info!(session=%workspace.branch.trim_start_matches("amux/fanout/"), attempt,
@@ -403,10 +467,12 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
         "Workspace history no longer descends from its recorded base; reconcile it locally"
             .to_string()
     })?;
-    if verification.is_empty() || verification.iter().any(|c|c.trim().is_empty()) {
+    if verification.is_empty() || verification.iter().any(|c| c.trim().is_empty()) {
         return Err("Set CC_WORKTREE_VERIFY to the repository's validation command; the harness will run it on the merged candidate".into());
     }
-    for command in verification {validate_verification_command(workspace, command)?;}
+    for command in verification {
+        validate_verification_command(workspace, command)?;
+    }
     let temp = tempfile::Builder::new()
         .prefix("amux-integrate-")
         .tempdir()
@@ -475,19 +541,27 @@ pub fn integration_status(home: &Path, name: &str) -> serde_json::Value {
 
 /// Stable output identity for verification, independent of retries and receipt
 /// timestamps. Failed or in-flight integration never replaces a successful head.
-pub(crate) fn integrated_head(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<Option<String>> {
+pub(crate) fn integrated_head(
+    conn: &rusqlite::Connection,
+    name: &str,
+) -> rusqlite::Result<Option<String>> {
     use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT json_extract(data,'$.head') FROM session_events WHERE session=?1 \
          AND type='fanout.integrated' ORDER BY id DESC LIMIT 1",
-        [name], |row| row.get(0),
-    ).optional().map(Option::flatten)
+        [name],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 /// Backfill an existing successful receipt as well as recording new integrations.
 /// Restart/retry of the same head is a no-op; a new head re-arms verification.
 pub(crate) async fn record_integrated_head(store: &crate::db::SharedStore, name: &str, head: &str) {
-    if head.is_empty() { return; }
+    if head.is_empty() {
+        return;
+    }
     let (worker, head) = (name.to_string(), head.to_string());
     let result = store.write_async(move |conn| {
         if integrated_head(conn, &worker)?.as_deref() == Some(head.as_str()) {
@@ -533,16 +607,25 @@ pub(crate) async fn verification_ready(name: &str) -> Result<(), String> {
         return Ok(());
     }
     let home = crate::config::amux_home();
-    let workspace = load(&home, name).ok_or("Fan-out workspace is not recorded; recover this worker's own workspace first")?;
+    let workspace = load(&home, name)
+        .ok_or("Fan-out workspace is not recorded; recover this worker's own workspace first")?;
     let record = integration_status(&home, name);
     if record["status"] != "integrated" {
-        return Err(format!("Fan-out integration is not complete: {}", record["detail"].as_str().unwrap_or("no successful integration receipt")));
+        return Err(format!(
+            "Fan-out integration is not complete: {}",
+            record["detail"]
+                .as_str()
+                .unwrap_or("no successful integration receipt")
+        ));
     }
     let head = git(&workspace.path, &["rev-parse", "HEAD"]).await?;
     if record["head"].as_str() != Some(head.as_str()) {
         return Err("The integration receipt covers an older worktree head; integrate the current commit first".into());
     }
-    if !git(&workspace.path, &["status", "--porcelain"]).await?.is_empty() {
+    if !git(&workspace.path, &["status", "--porcelain"])
+        .await?
+        .is_empty()
+    {
         return Err("The worktree has uncommitted changes; preserve, commit and integrate them before verification".into());
     }
     Ok(())
@@ -589,11 +672,16 @@ fn board_snapshot(
     // work still owns the workspace; containers/held captures use the same WIP
     // predicate as pickup. Git independently refuses a dirty candidate.
     if !crate::runtime_jobs::board_drive::wip_holding_ids(conn, name, None)
-        .map_err(|e| e.to_string())?.is_empty() {
+        .map_err(|e| e.to_string())?
+        .is_empty()
+    {
         return Err("worker still owns active implementation work".into());
     }
-    let candidates: Vec<_> = tasks.iter().copied()
-        .filter(|r| matches!(r.2.as_str(), "review" | "done" | "verified")).collect();
+    let candidates: Vec<_> = tasks
+        .iter()
+        .copied()
+        .filter(|r| matches!(r.2.as_str(), "review" | "done" | "verified"))
+        .collect();
     if candidates.is_empty() || candidates.iter().any(|r| r.4.trim().is_empty()) {
         return Err("worker has no fully evidenced integration candidate".into());
     }
@@ -685,15 +773,17 @@ pub async fn queue_integration(state: &crate::api::AppState, name: &str) -> bool
             if current.0 != board {
                 return Err("Board changed during integration; work the new state first".into());
             }
-            if crate::api::session_verbs::parse_env(&name)
-                .get_or("CC_WORKTREE_VERIFY", "") != verify
+            if crate::api::session_verbs::parse_env(&name).get_or("CC_WORKTREE_VERIFY", "")
+                != verify
                 || load(&home, &name).is_none_or(|current| {
                     current.base != workspace.base
                         || current.path != workspace.path
                         || current.repo != workspace.repo
                 })
             {
-                return Err("Integration configuration changed; validate the new contract first".into());
+                return Err(
+                    "Integration configuration changed; validate the new contract first".into(),
+                );
             }
             Ok(())
         };
@@ -705,7 +795,10 @@ pub async fn queue_integration(state: &crate::api::AppState, name: &str) -> bool
             record_integrated_head(&state.store, &name, &head).await;
         }
         tracing::info!(session=%name,verdict="fanout_integration",%status,%detail,"fan-out integration outcome");
-        if status != "retrying" && previous["detail"] != detail && ready_board(&state, &name).is_ok() {
+        if status != "retrying"
+            && previous["detail"] != detail
+            && ready_board(&state, &name).is_ok()
+        {
             let text=format!("[amux fan-out integration] {detail}. Continue on your own board and durable worktree {}. Configure the relevant repository test/lint command with PATCH /api/sessions/{name}/config {{\"worktree_verify\":\"<command>\"}}; the harness runs it on the exact merged candidate. For a legacy workspace, first inspect your unmerged history and then set worktree_base to the exact reviewed common ancestor of HEAD and origin/main through the same configuration endpoint. Resolve conflicts and test failures locally, commit the fix, and continue every remaining outcome through its gates. Do not create cross-worker dependencies or ordinary Needs You asks. Integration is evidence, not permission to acknowledge unverified criteria.",workspace.path);
             let key = format!("fanout-integration:{name}:{head}:{status}:{detail}");
             let _ = crate::api::session_verbs::enqueue_state_reminder(
@@ -800,18 +893,37 @@ mod tests {
         std::fs::remove_file(record_path(&d.path().join("home"), "child-a")).unwrap();
         std::fs::write(Path::new(&w.path).join("app.txt"), "uncommitted work\n").unwrap();
         let hook = Path::new(&w.repo).join(".git/hooks/post-checkout");
-        std::fs::write(&hook, "#!/bin/sh\nprintf 'checkout must not run during adoption' >&2\nexit 1\n").unwrap();
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nprintf 'checkout must not run during adoption' >&2\nexit 1\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         let head = git(&w.path, &["rev-parse", "HEAD"]).await.unwrap();
         let index = git(&w.path, &["ls-files", "--stage"]).await.unwrap();
-        write_integration_status(&d.path().join("home"), "child-a", &serde_json::json!({"status":"workspace_requires_recovery"}));
-        let adopted = ensure(&d.path().join("home"), "child-a", &w.repo).await.unwrap();
+        write_integration_status(
+            &d.path().join("home"),
+            "child-a",
+            &serde_json::json!({"status":"workspace_requires_recovery"}),
+        );
+        let adopted = ensure(&d.path().join("home"), "child-a", &w.repo)
+            .await
+            .unwrap();
         assert!(adopted.base.is_empty());
-        assert_eq!(integration_status(&d.path().join("home"), "child-a")["status"], "workspace_ready");
+        assert_eq!(
+            integration_status(&d.path().join("home"), "child-a")["status"],
+            "workspace_ready"
+        );
         assert_eq!(git(&w.path, &["rev-parse", "HEAD"]).await.unwrap(), head);
         assert_eq!(git(&w.path, &["ls-files", "--stage"]).await.unwrap(), index);
-        assert_eq!(git(&w.path, &["branch", "--show-current"]).await.unwrap(), w.branch);
-        assert_eq!(std::fs::read_to_string(Path::new(&w.path).join("app.txt")).unwrap(), "uncommitted work\n");
+        assert_eq!(
+            git(&w.path, &["branch", "--show-current"]).await.unwrap(),
+            w.branch
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&w.path).join("app.txt")).unwrap(),
+            "uncommitted work\n"
+        );
     }
 
     async fn fixture() -> (tempfile::TempDir, Workspace) {
@@ -946,20 +1058,32 @@ mod tests {
             format!("cd '{}' && test -f peer.txt", w.repo),
         ] {
             let error = integrate(&w, &command, || Ok(())).await.unwrap_err();
-            assert!(error.contains("original worker or shared checkout"), "{error}");
-            assert_eq!(git(&w.repo, &["rev-parse", "origin/main"]).await.unwrap(), before);
+            assert!(
+                error.contains("original worker or shared checkout"),
+                "{error}"
+            );
+            assert_eq!(
+                git(&w.repo, &["rev-parse", "origin/main"]).await.unwrap(),
+                before
+            );
         }
         // Independent positive control: only the actual combined candidate
         // has both files. Rejecting every command is not a passing guard.
-        let merged = integrate(&w, "test -f child.txt && test -f peer.txt", || Ok(())).await.unwrap();
+        let merged = integrate(&w, "test -f child.txt && test -f peer.txt", || Ok(()))
+            .await
+            .unwrap();
         assert_ne!(merged, before);
         assert!(!Path::new(&w.path).join("peer.txt").exists());
     }
     async fn peer_checkout(d: &Path, w: &Workspace) -> String {
         let peer = d.join("peer").to_string_lossy().into_owned();
-        let remote = git(&w.repo, &["remote", "get-url", "origin"]).await.unwrap();
+        let remote = git(&w.repo, &["remote", "get-url", "origin"])
+            .await
+            .unwrap();
         git(&w.repo, &["clone", &remote, &peer]).await.unwrap();
-        git(&peer, &["config", "user.email", "peer@example.invalid"]).await.unwrap();
+        git(&peer, &["config", "user.email", "peer@example.invalid"])
+            .await
+            .unwrap();
         git(&peer, &["config", "user.name", "Peer"]).await.unwrap();
         peer
     }
@@ -981,9 +1105,22 @@ mod tests {
         let child = git(&w.path, &["rev-parse", "HEAD"]).await.unwrap();
         let verify = format!("set -eu\ntest -f child.txt\nif test -f '{marker}'; then test -f peer.txt; else\n{}fi\nprintf 'checked\\n' >> '{marker}'\n", peer_push_script(&peer));
         let merged = integrate(&w, &verify, || Ok(())).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "checked\nchecked\n");
-        assert_eq!(git(&w.repo, &["show", &format!("{merged}:peer.txt")]).await.unwrap(), "peer");
-        assert_eq!(git(&w.repo, &["show", &format!("{merged}:child.txt")]).await.unwrap(), "child");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "checked\nchecked\n"
+        );
+        assert_eq!(
+            git(&w.repo, &["show", &format!("{merged}:peer.txt")])
+                .await
+                .unwrap(),
+            "peer"
+        );
+        assert_eq!(
+            git(&w.repo, &["show", &format!("{merged}:child.txt")])
+                .await
+                .unwrap(),
+            "child"
+        );
         assert_eq!(git(&w.repo, &["rev-parse", "HEAD"]).await.unwrap(), local);
         assert_eq!(git(&w.path, &["rev-parse", "HEAD"]).await.unwrap(), child);
     }
@@ -1002,15 +1139,29 @@ mod tests {
         let verify = format!("test -f child.txt && printf 'checked\\n' >> '{checks}'");
         let merged = integrate(&w, &verify, || Ok(())).await.unwrap();
         assert_eq!(std::fs::read_to_string(&hooks).unwrap(), "hook\nhook\n");
-        assert_eq!(std::fs::read_to_string(&checks).unwrap(), "checked\nchecked\n");
-        assert_eq!(git(&w.repo, &["show", &format!("{merged}:peer.txt")]).await.unwrap(), "peer");
+        assert_eq!(
+            std::fs::read_to_string(&checks).unwrap(),
+            "checked\nchecked\n"
+        );
+        assert_eq!(
+            git(&w.repo, &["show", &format!("{merged}:peer.txt")])
+                .await
+                .unwrap(),
+            "peer"
+        );
 
         commit(&w, "later.txt", "unmerged\n").await;
         std::fs::write(&hook, format!("#!/bin/sh\nprintf 'refused\\n' >> '{hooks}'\necho real-content-gate-refusal >&2\nexit 1\n")).unwrap();
         let error = integrate(&w, &verify, || Ok(())).await.unwrap_err();
         assert!(error.contains("real-content-gate-refusal"), "{error}");
-        assert_eq!(std::fs::read_to_string(&hooks).unwrap(), "hook\nhook\nrefused\n");
-        assert_eq!(git(&w.repo, &["rev-parse", "origin/main"]).await.unwrap(), merged);
+        assert_eq!(
+            std::fs::read_to_string(&hooks).unwrap(),
+            "hook\nhook\nrefused\n"
+        );
+        assert_eq!(
+            git(&w.repo, &["rev-parse", "origin/main"]).await.unwrap(),
+            merged
+        );
         assert!(Path::new(&w.path).join("later.txt").exists());
     }
 
@@ -1020,16 +1171,29 @@ mod tests {
         commit(&w, "child.txt", "child\n").await;
         let peer = peer_checkout(d.path(), &w).await;
         let checks = d.path().join("checks").to_string_lossy().into_owned();
-        let verify = format!("set -eu\n{}printf 'checked\\n' >> '{checks}'\n", peer_push_script(&peer));
-        assert_eq!(integrate(&w, &verify, || Ok(())).await.unwrap_err(), MAIN_ADVANCED_RETRY);
-        assert_eq!(std::fs::read_to_string(&checks).unwrap(), "checked\nchecked\nchecked\n");
-        assert!(git(&w.repo, &["show", "origin/main:child.txt"]).await.is_err());
+        let verify = format!(
+            "set -eu\n{}printf 'checked\\n' >> '{checks}'\n",
+            peer_push_script(&peer)
+        );
+        assert_eq!(
+            integrate(&w, &verify, || Ok(())).await.unwrap_err(),
+            MAIN_ADVANCED_RETRY
+        );
+        assert_eq!(
+            std::fs::read_to_string(&checks).unwrap(),
+            "checked\nchecked\nchecked\n"
+        );
+        assert!(git(&w.repo, &["show", "origin/main:child.txt"])
+            .await
+            .is_err());
 
         let once = d.path().join("once").to_string_lossy().into_owned();
         let fail = format!("set -eu\nif test -f '{once}'; then echo combined-regression >&2; exit 9; fi\ntouch '{once}'\n{}", peer_push_script(&peer));
         let error = integrate(&w, &fail, || Ok(())).await.unwrap_err();
         assert!(error.contains("combined-regression"), "{error}");
-        assert!(git(&w.repo, &["show", "origin/main:child.txt"]).await.is_err());
+        assert!(git(&w.repo, &["show", "origin/main:child.txt"])
+            .await
+            .is_err());
     }
     #[test]
     fn integration_admits_completed_prerequisites_before_their_successors() {
@@ -1040,10 +1204,21 @@ mod tests {
             ('B','followup','backlog','code','child',1,1,'');",
         )
         .unwrap();
-        c.execute("UPDATE issues SET depends_on='[\"A\"]' WHERE id='B'", []).unwrap();
-        assert!(board_snapshot(&c, "child").is_ok(), "completed prerequisite can integrate before its queued successor");
-        c.execute("UPDATE issues SET status='doing',depends_on='[]' WHERE id='B'", []).unwrap();
-        assert!(board_snapshot(&c, "child").is_err(), "active implementation still owns the worktree");
+        c.execute("UPDATE issues SET depends_on='[\"A\"]' WHERE id='B'", [])
+            .unwrap();
+        assert!(
+            board_snapshot(&c, "child").is_ok(),
+            "completed prerequisite can integrate before its queued successor"
+        );
+        c.execute(
+            "UPDATE issues SET status='doing',depends_on='[]' WHERE id='B'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            board_snapshot(&c, "child").is_err(),
+            "active implementation still owns the worktree"
+        );
         c.execute("UPDATE issues SET status='review' WHERE id='B'", [])
             .unwrap();
         assert!(
@@ -1072,39 +1247,74 @@ mod tests {
     }
     #[tokio::test]
     async fn project_verification_source_and_merged_use_distinct_per_command_timeouts() {
-        let (d,w)=fixture().await;commit(&w,"done.txt","done\n").await;
-        let log=d.path().join("checked-paths");
-        let a=format!("sleep 3; printf '%s\\n' \"$PWD\" >> '{}'",log.display());
-        let b=format!("sleep 3; printf '%s\\n' \"$PWD\" >> '{}'",log.display());
+        let (d, w) = fixture().await;
+        commit(&w, "done.txt", "done\n").await;
+        let log = d.path().join("checked-paths");
+        let a = format!("sleep 3; printf '%s\\n' \"$PWD\" >> '{}'", log.display());
+        let b = format!("sleep 3; printf '%s\\n' \"$PWD\" >> '{}'", log.display());
         // A byte-distinct command also runs. Combined wall time exceeds the
         // five-second bound (6s total); each command has 2s scheduling slack.
-        let b=format!("{b}; true");let commands=[a.as_str(),a.as_str(),b.as_str()];
-        verify_commands(&w,&w.path,&commands,Duration::from_secs(5),&||Ok(())).await.unwrap();
-        integrate_checks(&w,&commands,Duration::from_secs(5),||Ok(())).await.unwrap();
-        let text=std::fs::read_to_string(log).unwrap();let paths:Vec<_>=text.lines().collect();
-        assert_eq!(paths.len(),4,"two distinct commands, once per immutable phase");
-        let source=std::fs::canonicalize(&w.path).unwrap();
-        assert_eq!(std::fs::canonicalize(paths[0]).unwrap(),source);
-        assert_eq!(std::fs::canonicalize(paths[1]).unwrap(),source);
+        let b = format!("{b}; true");
+        let commands = [a.as_str(), a.as_str(), b.as_str()];
+        verify_commands(&w, &w.path, &commands, Duration::from_secs(5), &|| Ok(()))
+            .await
+            .unwrap();
+        integrate_checks(&w, &commands, Duration::from_secs(5), || Ok(()))
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(log).unwrap();
+        let paths: Vec<_> = text.lines().collect();
+        assert_eq!(
+            paths.len(),
+            4,
+            "two distinct commands, once per immutable phase"
+        );
+        let source = std::fs::canonicalize(&w.path).unwrap();
+        assert_eq!(std::fs::canonicalize(paths[0]).unwrap(), source);
+        assert_eq!(std::fs::canonicalize(paths[1]).unwrap(), source);
         // Integration has disposed its temporary candidate; compare its recorded
         // physical paths without resolving a directory that no longer exists.
-        assert_ne!(paths[2],paths[0]);assert_ne!(paths[2],paths[1]);
-        assert_eq!(paths[2],paths[3]);
-        let err=verify_commands(&w,&w.path,&["true","exit 9"],Duration::from_secs(1),&||Ok(())).await.unwrap_err();
+        assert_ne!(paths[2], paths[0]);
+        assert_ne!(paths[2], paths[1]);
+        assert_eq!(paths[2], paths[3]);
+        let err = verify_commands(
+            &w,
+            &w.path,
+            &["true", "exit 9"],
+            Duration::from_secs(1),
+            &|| Ok(()),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("verification failed (exit 9)"));
     }
     #[tokio::test]
     async fn project_verification_timeout_kills_children_in_both_candidate_phases() {
-        for merged in [false,true] {
-            let (d,w)=fixture().await;commit(&w,"done.txt","done\n").await;
-            let marker=d.path().join("leaked-child");
-            let command=format!("(sleep 2; echo leaked > '{}') & wait",marker.display());
-            let result=if merged {integrate_checks(&w,&[&command],Duration::from_secs(1),||Ok(())).await.map(|_|())}
-                else {verify_commands(&w,&w.path,&[&command],Duration::from_secs(1),&||Ok(())).await};
-            assert!(result.unwrap_err().contains("timed out after 1 seconds"),"merged={merged}");
+        for merged in [false, true] {
+            let (d, w) = fixture().await;
+            commit(&w, "done.txt", "done\n").await;
+            let marker = d.path().join("leaked-child");
+            let command = format!("(sleep 2; echo leaked > '{}') & wait", marker.display());
+            let result = if merged {
+                integrate_checks(&w, &[&command], Duration::from_secs(1), || Ok(()))
+                    .await
+                    .map(|_| ())
+            } else {
+                verify_commands(&w, &w.path, &[&command], Duration::from_secs(1), &|| Ok(())).await
+            };
+            assert!(
+                result.unwrap_err().contains("timed out after 1 seconds"),
+                "merged={merged}"
+            );
             tokio::time::sleep(Duration::from_millis(2200)).await;
-            assert!(!marker.exists(),"timeout leaked verification descendant, merged={merged}");
-            assert!(git(&w.path,&["status","--porcelain"]).await.unwrap().is_empty());
+            assert!(
+                !marker.exists(),
+                "timeout leaked verification descendant, merged={merged}"
+            );
+            assert!(git(&w.path, &["status", "--porcelain"])
+                .await
+                .unwrap()
+                .is_empty());
         }
     }
     #[tokio::test]

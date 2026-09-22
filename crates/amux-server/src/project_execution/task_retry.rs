@@ -108,8 +108,10 @@ pub fn grant(
 
 /// Explicitly rerun the retained candidate checks, never authorize model work.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all="snake_case")]
-pub enum VerificationAction { Verify }
+#[serde(rename_all = "snake_case")]
+pub enum VerificationAction {
+    Verify,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VerificationRequest {
@@ -124,36 +126,95 @@ pub struct VerificationGrant {
 }
 #[derive(Deserialize)]
 #[serde(untagged)]
-pub enum RetryRequest { Verification(VerificationRequest), Repair(Request) }
+pub enum RetryRequest {
+    Verification(VerificationRequest),
+    Repair(Request),
+}
 
-pub fn verification_eligible(c:&Connection,p:&store::Project,row:&bs::IssueRow,e:&planner::Execution)->anyhow::Result<()> {
-    eligible(c,p,row,e)?;
-    anyhow::ensure!(row.status=="review" && !e.suspended && e.wait_category.is_none(),"only a failed review without holds may rerun checks");
-    anyhow::ensure!(super::outputs::ready(c,row)?,"required outputs are not verified");
-    planner::validate_report(row,e.report.as_ref().ok_or_else(||anyhow::anyhow!("no retained report to verify"))?)?;
+pub fn verification_eligible(
+    c: &Connection,
+    p: &store::Project,
+    row: &bs::IssueRow,
+    e: &planner::Execution,
+) -> anyhow::Result<()> {
+    eligible(c, p, row, e)?;
+    anyhow::ensure!(
+        row.status == "review" && !e.suspended && e.wait_category.is_none(),
+        "only a failed review without holds may rerun checks"
+    );
+    anyhow::ensure!(
+        super::outputs::ready(c, row)?,
+        "required outputs are not verified"
+    );
+    planner::validate_report(
+        row,
+        e.report
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no retained report to verify"))?,
+    )?;
     Ok(())
 }
 
-pub fn grant_verification(c:&Connection,project:&str,id:&str,body:&VerificationRequest)->anyhow::Result<WriteOutcome> {
-    let p=store::get(c,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
-    let row=bs::get_issue(c,id)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
-    anyhow::ensure!(row.project_group.as_deref()==Some(project),"outside project");
-    let mut e=planner::execution(c,id)?;
-    let request=&body.request;
-    anyhow::ensure!(e.input_hash==planner::input_hash(&row) && request.input_hash==e.input_hash,"requirements changed");
-    anyhow::ensure!(e.report.as_ref()==Some(&body.report),"retained report changed");
-    if let Some(old)=e.verification_retries.iter().find(|g|g.request.request.idempotency_key==request.idempotency_key) {
-        anyhow::ensure!(old.request==*body,"verification retry key belongs to another request");
-        return Ok(WriteOutcome{applied:false,events:vec![]});
+pub fn grant_verification(
+    c: &Connection,
+    project: &str,
+    id: &str,
+    body: &VerificationRequest,
+) -> anyhow::Result<WriteOutcome> {
+    let p = store::get(c, project)?.ok_or_else(|| anyhow::anyhow!("project missing"))?;
+    let row = bs::get_issue(c, id)?.ok_or_else(|| anyhow::anyhow!("task missing"))?;
+    anyhow::ensure!(
+        row.project_group.as_deref() == Some(project),
+        "outside project"
+    );
+    let mut e = planner::execution(c, id)?;
+    let request = &body.request;
+    anyhow::ensure!(
+        e.input_hash == planner::input_hash(&row) && request.input_hash == e.input_hash,
+        "requirements changed"
+    );
+    anyhow::ensure!(
+        e.report.as_ref() == Some(&body.report),
+        "retained report changed"
+    );
+    if let Some(old) = e
+        .verification_retries
+        .iter()
+        .find(|g| g.request.request.idempotency_key == request.idempotency_key)
+    {
+        anyhow::ensure!(
+            old.request == *body,
+            "verification retry key belongs to another request"
+        );
+        return Ok(WriteOutcome {
+            applied: false,
+            events: vec![],
+        });
     }
-    anyhow::ensure!(!request.idempotency_key.trim().is_empty() && request.idempotency_key.len()<=160,"bounded idempotency key required");
-    anyhow::ensure!(row.rev==request.expect_revision && e.generation==request.expect_generation,"stale retry revision or generation");
-    verification_eligible(c,&p,&row,&e)?;
+    anyhow::ensure!(
+        !request.idempotency_key.trim().is_empty() && request.idempotency_key.len() <= 160,
+        "bounded idempotency key required"
+    );
+    anyhow::ensure!(
+        row.rev == request.expect_revision && e.generation == request.expect_generation,
+        "stale retry revision or generation"
+    );
+    verification_eligible(c, &p, &row, &e)?;
     e.verification_retries.push(VerificationGrant{request:body.clone(),previous_result:json!({"waiting":e.waiting,"last_failure":e.last_failure,"attempt":e.attempt,"generation":e.generation})});
-    e.last_failure=e.waiting.take().or(e.last_failure);
-    e.stage="reported".into();e.verification_retry_pending=true;
-    tracing::info!(project,task=id,generation=e.generation,attempt=e.attempt,measured=true,n_considered=1,verdict="project.verification_retry_granted","operator reruns retained report checks; no executor attempt or delivery granted");
-    planner::save_execution(c,&row,&e,"project.verification_retry_granted")
+    e.last_failure = e.waiting.take().or(e.last_failure);
+    e.stage = "reported".into();
+    e.verification_retry_pending = true;
+    tracing::info!(
+        project,
+        task = id,
+        generation = e.generation,
+        attempt = e.attempt,
+        measured = true,
+        n_considered = 1,
+        verdict = "project.verification_retry_granted",
+        "operator reruns retained report checks; no executor attempt or delivery granted"
+    );
+    planner::save_execution(c, &row, &e, "project.verification_retry_granted")
 }
 
 #[cfg(test)]
@@ -167,74 +228,200 @@ mod tests {
     }
     #[test]
     fn project_verification_retry_preserves_report_attempt_history_and_delivery() {
-        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
         db.write(|c| {
-            c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
-            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
-            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained candidate".into(),assets:vec![fixture_asset()],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
-            e.waiting=Some("Command timed out after 600 seconds".into());
-            planner::save_execution(c,&row,&e,"project.execution").unwrap();
-            let row=bs::get_issue(c,"A")?.unwrap();
-            let body=VerificationRequest{action:VerificationAction::Verify,request:Request{idempotency_key:"checks-once".into(),expect_generation:e.generation,expect_revision:row.rev,input_hash:e.input_hash.clone()},report:e.report.clone().unwrap()};
-            let attempts=serde_json::to_value(crate::db::attempts::list_for_card(c,"A")?).unwrap();
-            let before=e.clone();
-            for variant in ["foreign","generation","revision","input","report"] {
-                let mut bad=body.clone();let project=if variant=="foreign"{"other"}else{"sample"};
-                match variant {"generation"=>bad.request.expect_generation+=1,"revision"=>bad.request.expect_revision+=1,"input"=>bad.request.input_hash="different".into(),"report"=>bad.report.head="b".repeat(40),_=>{}}
-                assert!(grant_verification(c,project,"A",&bad).is_err(),"{variant}");
+            c.execute("UPDATE issues SET status='review' WHERE id='A'", [])?;
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = planner::execution(c, "A").unwrap();
+            e.report = Some(planner::Report {
+                head: "a".repeat(40),
+                summary: "retained candidate".into(),
+                assets: vec![fixture_asset()],
+                checks: vec![planner::Check {
+                    criterion: "Output passes".into(),
+                    command: "true".into(),
+                }],
+            });
+            e.waiting = Some("Command timed out after 600 seconds".into());
+            planner::save_execution(c, &row, &e, "project.execution").unwrap();
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let body = VerificationRequest {
+                action: VerificationAction::Verify,
+                request: Request {
+                    idempotency_key: "checks-once".into(),
+                    expect_generation: e.generation,
+                    expect_revision: row.rev,
+                    input_hash: e.input_hash.clone(),
+                },
+                report: e.report.clone().unwrap(),
+            };
+            let attempts =
+                serde_json::to_value(crate::db::attempts::list_for_card(c, "A")?).unwrap();
+            let before = e.clone();
+            for variant in ["foreign", "generation", "revision", "input", "report"] {
+                let mut bad = body.clone();
+                let project = if variant == "foreign" {
+                    "other"
+                } else {
+                    "sample"
+                };
+                match variant {
+                    "generation" => bad.request.expect_generation += 1,
+                    "revision" => bad.request.expect_revision += 1,
+                    "input" => bad.request.input_hash = "different".into(),
+                    "report" => bad.report.head = "b".repeat(40),
+                    _ => {}
+                }
+                assert!(
+                    grant_verification(c, project, "A", &bad).is_err(),
+                    "{variant}"
+                );
             }
-            assert!(grant_verification(c,"sample","A",&body).unwrap().applied);
-            assert!(!grant_verification(c,"sample","A",&body).unwrap().applied);
-            let current=planner::execution(c,"A").unwrap();
-            assert_eq!(current.stage,"reported");assert!(current.verification_retry_pending);
-            assert_eq!(current.attempt,before.attempt);assert_eq!(current.generation,before.generation);assert_eq!(current.delivery_id,before.delivery_id);assert_eq!(current.report,before.report);
-            assert!(current.retry_grants.is_empty());assert_eq!(current.verification_retries.len(),1);
-            assert_eq!(current.verification_retries[0].previous_result["waiting"],json!(before.waiting));
-            assert_eq!(serde_json::to_value(crate::db::attempts::list_for_card(c,"A")?).unwrap(),attempts);
-            assert!(!planner::claim(c,"sample","A").unwrap().applied);
-            assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue",[],|r|r.get::<_,i64>(0))?,0);
-            assert_eq!(c.query_row("SELECT COUNT(*) FROM cmd_history",[],|r|r.get::<_,i64>(0))?,0);
-            let mut another=body.clone();another.request.idempotency_key="no-loop".into();another.request.expect_revision=bs::get_issue(c,"A")?.unwrap().rev;
-            assert!(grant_verification(c,"sample","A",&another).is_err(),"reported is not another retry opportunity");
-            Ok(WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
+            assert!(grant_verification(c, "sample", "A", &body).unwrap().applied);
+            assert!(!grant_verification(c, "sample", "A", &body).unwrap().applied);
+            let current = planner::execution(c, "A").unwrap();
+            assert_eq!(current.stage, "reported");
+            assert!(current.verification_retry_pending);
+            assert_eq!(current.attempt, before.attempt);
+            assert_eq!(current.generation, before.generation);
+            assert_eq!(current.delivery_id, before.delivery_id);
+            assert_eq!(current.report, before.report);
+            assert!(current.retry_grants.is_empty());
+            assert_eq!(current.verification_retries.len(), 1);
+            assert_eq!(
+                current.verification_retries[0].previous_result["waiting"],
+                json!(before.waiting)
+            );
+            assert_eq!(
+                serde_json::to_value(crate::db::attempts::list_for_card(c, "A")?).unwrap(),
+                attempts
+            );
+            assert!(!planner::claim(c, "sample", "A").unwrap().applied);
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM steering_queue", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM cmd_history", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            let mut another = body.clone();
+            another.request.idempotency_key = "no-loop".into();
+            another.request.expect_revision = bs::get_issue(c, "A")?.unwrap().rev;
+            assert!(
+                grant_verification(c, "sample", "A", &another).is_err(),
+                "reported is not another retry opportunity"
+            );
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     }
     #[test]
     fn project_verification_retry_refuses_holds_active_and_changed_candidates() {
-        for variant in ["paused","disabled","budget","working","reported","verified","repair","no-report","no-review","spend","customer_outbound","required_outputs","operational","suspended","requirements","dependency"] {
-            let (_dir,db,_)=super::super::outputs::tests::fixture();
-            db.write(move|c| {
-                c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
-                let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
-                e.report=Some(planner::Report{head:"a".repeat(40),summary:"candidate".into(),assets:vec![fixture_asset()],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
+        for variant in [
+            "paused",
+            "disabled",
+            "budget",
+            "working",
+            "reported",
+            "verified",
+            "repair",
+            "no-report",
+            "no-review",
+            "spend",
+            "customer_outbound",
+            "required_outputs",
+            "operational",
+            "suspended",
+            "requirements",
+            "dependency",
+        ] {
+            let (_dir, db, _) = super::super::outputs::tests::fixture();
+            db.write(move |c| {
+                c.execute("UPDATE issues SET status='review' WHERE id='A'", [])?;
+                let row = bs::get_issue(c, "A")?.unwrap();
+                let mut e = planner::execution(c, "A").unwrap();
+                e.report = Some(planner::Report {
+                    head: "a".repeat(40),
+                    summary: "candidate".into(),
+                    assets: vec![fixture_asset()],
+                    checks: vec![planner::Check {
+                        criterion: "Output passes".into(),
+                        command: "true".into(),
+                    }],
+                });
                 match variant {
-                    "paused"|"disabled"|"budget"=>{let mut p=store::get(c,"sample").unwrap().unwrap();match variant {"paused"=>p.policy.paused=true,"disabled"=>p.policy.enabled=false,_=>p.policy.token_budget=Some(1)};store::save(c,"sample",p.revision,&p.policy,"test").unwrap();},
-                    "working"|"reported"|"verified"|"repair"=>e.stage=variant.into(),
-                    "no-report"=>e.report=None,
-                    "no-review"=>{c.execute("UPDATE issues SET status='doing' WHERE id='A'",[])?;},
-                    "suspended"=>e.suspended=true,
-                    "requirements"=>{c.execute("UPDATE issues SET title='changed' WHERE id='A'",[])?;},
-                    "dependency"=>{c.execute("UPDATE issues SET depends_on='[\"B\"]' WHERE id='A'",[])?;e.input_hash=planner::input_hash(&bs::get_issue(c,"A")?.unwrap());},
-                    _=>e.wait_category=Some(variant.into())
+                    "paused" | "disabled" | "budget" => {
+                        let mut p = store::get(c, "sample").unwrap().unwrap();
+                        match variant {
+                            "paused" => p.policy.paused = true,
+                            "disabled" => p.policy.enabled = false,
+                            _ => p.policy.token_budget = Some(1),
+                        };
+                        store::save(c, "sample", p.revision, &p.policy, "test").unwrap();
+                    }
+                    "working" | "reported" | "verified" | "repair" => e.stage = variant.into(),
+                    "no-report" => e.report = None,
+                    "no-review" => {
+                        c.execute("UPDATE issues SET status='doing' WHERE id='A'", [])?;
+                    }
+                    "suspended" => e.suspended = true,
+                    "requirements" => {
+                        c.execute("UPDATE issues SET title='changed' WHERE id='A'", [])?;
+                    }
+                    "dependency" => {
+                        c.execute("UPDATE issues SET depends_on='[\"B\"]' WHERE id='A'", [])?;
+                        e.input_hash = planner::input_hash(&bs::get_issue(c, "A")?.unwrap());
+                    }
+                    _ => e.wait_category = Some(variant.into()),
                 }
-                planner::save_execution(c,&row,&e,"project.execution").unwrap();
-                let row=bs::get_issue(c,"A")?.unwrap();
-                let report=e.report.clone().unwrap_or(planner::Report{head:"a".repeat(40),summary:String::new(),checks:vec![],assets:vec![]});
-                let body=VerificationRequest{action:VerificationAction::Verify,request:Request{idempotency_key:"refused".into(),expect_generation:e.generation,expect_revision:row.rev,input_hash:e.input_hash.clone()},report};
-                assert!(grant_verification(c,"sample","A",&body).is_err(),"{variant}");
-                assert!(planner::execution(c,"A").unwrap().verification_retries.is_empty());
-                Ok(WriteOutcome{applied:true,events:vec![]})
-            }).unwrap();
+                planner::save_execution(c, &row, &e, "project.execution").unwrap();
+                let row = bs::get_issue(c, "A")?.unwrap();
+                let report = e.report.clone().unwrap_or(planner::Report {
+                    head: "a".repeat(40),
+                    summary: String::new(),
+                    checks: vec![],
+                    assets: vec![],
+                });
+                let body = VerificationRequest {
+                    action: VerificationAction::Verify,
+                    request: Request {
+                        idempotency_key: "refused".into(),
+                        expect_generation: e.generation,
+                        expect_revision: row.rev,
+                        input_hash: e.input_hash.clone(),
+                    },
+                    report,
+                };
+                assert!(
+                    grant_verification(c, "sample", "A", &body).is_err(),
+                    "{variant}"
+                );
+                assert!(planner::execution(c, "A")
+                    .unwrap()
+                    .verification_retries
+                    .is_empty());
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         }
     }
     #[test]
     fn project_failed_review_retry_preserves_report_and_reports_new_generation() {
         let (_dir, db, _) = super::super::outputs::tests::fixture();
-        let _home=crate::api::settings::test_env::set_home(_dir.path());
+        let _home = crate::api::settings::test_env::set_home(_dir.path());
         db.write(|c| {
             let row = bs::get_issue(c, "A")?.unwrap();
             let mut e = planner::execution(c, "A").unwrap();
-            planner::register_test_workspace(&e.worker,"/repo");
+            planner::register_test_workspace(&e.worker, "/repo");
             e.stage = "working".into();
             e.waiting = None;
             planner::save_execution(c, &row, &e, "project.execution").unwrap();

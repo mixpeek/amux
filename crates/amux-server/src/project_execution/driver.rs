@@ -39,8 +39,13 @@ fn permit(state: &AppState, project: &str, id: &str, expected: &Execution) -> Re
         return Err("claim or requirements changed".into());
     }
     if expected.verification_retry_pending {
-        if let Some(reason)=super::usage::waiting(&c,&p).map_err(|e|e.to_string())? {return Err(reason);}
-        if actual.suspended || actual.wait_category.is_some() || super::outputs::authorization_hold(&c,&row).map_err(|e|e.to_string())? {
+        if let Some(reason) = super::usage::waiting(&c, &p).map_err(|e| e.to_string())? {
+            return Err(reason);
+        }
+        if actual.suspended
+            || actual.wait_category.is_some()
+            || super::outputs::authorization_hold(&c, &row).map_err(|e| e.to_string())?
+        {
             return Err("verification retry held by current authorization".into());
         }
     }
@@ -95,9 +100,13 @@ async fn prepare(
 
 // Only diagnostic history is previewed; requirements and criteria stay exact.
 fn previous_result(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> serde_json::Value {
-    let Some(failure) = e.last_failure.as_deref() else { return serde_json::Value::Null; };
-    let chars=failure.chars().count();
-    if chars<=2048 { return json!(failure); }
+    let Some(failure) = e.last_failure.as_deref() else {
+        return serde_json::Value::Null;
+    };
+    let chars = failure.chars().count();
+    if chars <= 2048 {
+        return json!(failure);
+    }
     tracing::info!(project=%p.name,task=%row.id,generation=e.generation,measured=true,n_considered=chars,preview_chars=2048,verdict="project.retry_diagnostic_preview","retry packet elides diagnostic middle; full failure retained in project read");
     json!({"preview":crate::api::board::chars_elide_middle(failure,1024,1024),"truncated":true,"original_chars":chars,"original_bytes":failure.len(),"full_diagnostic":{"method":"GET","path":format!("/api/projects/{}",p.name),"card_id":row.id,"field":"cards[id == card_id].execution_plan.execution.last_failure","instruction":"Read the matching card's last_failure for full exact diagnostics before inspecting omitted details."}})
 }
@@ -159,13 +168,21 @@ async fn transition(
 }
 
 fn verification_commands<'a>(gate: &'a str, report: &'a planner::Report) -> Vec<&'a str> {
-    workspace::distinct_verification_commands(std::iter::once(gate).chain(report.checks.iter().map(|c|c.command.as_str())))
+    workspace::distinct_verification_commands(
+        std::iter::once(gate).chain(report.checks.iter().map(|c| c.command.as_str())),
+    )
 }
 
 /// One source-path policy, applied to the entire set before any shell command.
-pub(crate) fn validated_verification_commands<'a>(w: &workspace::Workspace, gate: &'a str, report: &'a planner::Report) -> Result<Vec<&'a str>,String> {
-    let commands=verification_commands(gate,report);
-    for command in &commands { workspace::validate_verification_command(w,command)?; }
+pub(crate) fn validated_verification_commands<'a>(
+    w: &workspace::Workspace,
+    gate: &'a str,
+    report: &'a planner::Report,
+) -> Result<Vec<&'a str>, String> {
+    let commands = verification_commands(gate, report);
+    for command in &commands {
+        workspace::validate_verification_command(w, command)?;
+    }
     Ok(commands)
 }
 
@@ -229,8 +246,14 @@ fn configure_executor_env(env: &mut sv::EnvFile, p: &store::Project, row: &bs::I
 
 async fn sync_shared_checkout(repo: &str) -> Result<(), String> {
     let root = workspace::git(repo, &["rev-parse", "--show-toplevel"]).await?;
-    if !workspace::git(&root, &["status", "--porcelain"]).await?.is_empty() {
-        return Err("shared checkout has uncommitted changes; clean it or enable dedicated worktrees".into());
+    if !workspace::git(&root, &["status", "--porcelain"])
+        .await?
+        .is_empty()
+    {
+        return Err(
+            "shared checkout has uncommitted changes; clean it or enable dedicated worktrees"
+                .into(),
+        );
     }
     let branch = workspace::git(&root, &["branch", "--show-current"]).await?;
     if branch != "main" {
@@ -251,7 +274,9 @@ async fn sync_shared_checkout(repo: &str) -> Result<(), String> {
         .map_err(|_| "shared checkout has local commits not contained in origin/main; reconcile it or enable dedicated worktrees".to_string())?;
     workspace::git(&root, &["merge", "--ff-only", "origin/main"]).await?;
     if workspace::git(&root, &["rev-parse", "HEAD"]).await? != main
-        || !workspace::git(&root, &["status", "--porcelain"]).await?.is_empty()
+        || !workspace::git(&root, &["status", "--porcelain"])
+            .await?
+            .is_empty()
     {
         return Err("shared checkout did not fast-forward cleanly to origin/main".into());
     }
@@ -262,7 +287,10 @@ async fn integrate_shared_checkout(w: &workspace::Workspace, head: &str) -> Resu
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != head {
         return Err("shared checkout changed after verification".into());
     }
-    if !workspace::git(&w.path, &["status", "--porcelain"]).await?.is_empty() {
+    if !workspace::git(&w.path, &["status", "--porcelain"])
+        .await?
+        .is_empty()
+    {
         return Err("shared checkout has uncommitted changes".into());
     }
     let main = match workspace::git(&w.repo, &["fetch", "origin", "main"]).await {
@@ -277,7 +305,10 @@ async fn integrate_shared_checkout(w: &workspace::Workspace, head: &str) -> Resu
         }
     };
     if let Some(main) = main.as_deref() {
-        if workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, main]).await.is_ok() {
+        if workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, main])
+            .await
+            .is_ok()
+        {
             return Ok(main.to_string());
         }
     }
@@ -289,7 +320,9 @@ async fn integrate_shared_checkout(w: &workspace::Workspace, head: &str) -> Resu
     let main = workspace::git(&w.repo, &["rev-parse", "origin/main"]).await?;
     workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, &main])
         .await
-        .map_err(|_| "shared-checkout head is not contained in origin/main after push".to_string())?;
+        .map_err(|_| {
+            "shared-checkout head is not contained in origin/main after push".to_string()
+        })?;
     Ok(main)
 }
 
@@ -299,12 +332,18 @@ async fn verify(
     id: &str,
     e: &Execution,
 ) -> Result<(), String> {
-    let verification_permit=|| {
-        permit(state,&p.name,id,e)?;
-        let c=state.store.read().map_err(|e|e.to_string())?;
-        let current=store::get(&c,&p.name).map_err(|e|e.to_string())?.ok_or("project disappeared")?;
-        if current.policy.repository!=p.policy.repository || current.policy.verify_command!=p.policy.verify_command
-            || current.policy.verification_timeout_secs!=p.policy.verification_timeout_secs {return Err("verification policy changed; rerun checks with current policy".into());}
+    let verification_permit = || {
+        permit(state, &p.name, id, e)?;
+        let c = state.store.read().map_err(|e| e.to_string())?;
+        let current = store::get(&c, &p.name)
+            .map_err(|e| e.to_string())?
+            .ok_or("project disappeared")?;
+        if current.policy.repository != p.policy.repository
+            || current.policy.verify_command != p.policy.verify_command
+            || current.policy.verification_timeout_secs != p.policy.verification_timeout_secs
+        {
+            return Err("verification policy changed; rerun checks with current policy".into());
+        }
         Ok(())
     };
     let report = e.report.as_ref().ok_or("no report")?;
@@ -312,7 +351,11 @@ async fn verify(
     let home = crate::config::amux_home();
     let w = if p.policy.worktree {
         let w = workspace::load(&home, &e.worker).ok_or("workspace missing")?;
-        if !workspace::same_repository(&w.repo,&p.policy.repository) || w.branch!=format!("amux/fanout/{}",e.worker) {return Err("registered workspace does not match project executor".into());}
+        if !workspace::same_repository(&w.repo, &p.policy.repository)
+            || w.branch != format!("amux/fanout/{}", e.worker)
+        {
+            return Err("registered workspace does not match project executor".into());
+        }
         w
     } else {
         let repo = workspace::git(&p.policy.repository, &["rev-parse", "--show-toplevel"]).await?;
@@ -338,8 +381,8 @@ async fn verify(
     }
     let commands = validated_verification_commands(&w, &p.policy.verify_command, report)?;
     tracing::info!(task=id,measured=true,n_considered=report.checks.len()+1,distinct=commands.len(),verdict="project.verification_commands","byte-identical commands run once per immutable candidate phase; criterion mappings retained");
-    let timeout=std::time::Duration::from_secs(p.policy.verification_timeout_secs);
-    workspace::verify_commands(&w,&w.path,&commands,timeout,&verification_permit).await?;
+    let timeout = std::time::Duration::from_secs(p.policy.verification_timeout_secs);
+    workspace::verify_commands(&w, &w.path, &commands, timeout, &verification_permit).await?;
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
         || !workspace::git(&w.path, &["status", "--porcelain"])
             .await?
@@ -351,7 +394,7 @@ async fn verify(
         .await
         .map_err(|e| e.to_string())?;
     let merged = if p.policy.worktree {
-        workspace::integrate_checks(&w,&commands,timeout,&verification_permit).await?
+        workspace::integrate_checks(&w, &commands, timeout, &verification_permit).await?
     } else {
         integrate_shared_checkout(&w, &report.head).await?
     };
@@ -368,7 +411,7 @@ async fn verify(
         &e.worker,
         &json!({"status":"integrated","head":report.head,"merged":merged,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
     );
-    let expected_policy=p.policy.clone();
+    let expected_policy = p.policy.clone();
     let (id, expected, project) = (id.to_string(), e.clone(), p.name.clone());
     state.store.write_async(move|c| {
         let row=bs::get_issue(c,&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
@@ -393,38 +436,87 @@ struct TurnObservation {
     report: serde_json::Value,
 }
 
-fn turn_observation(signals:&crate::api::sessions_legacy::FleetSignals,worker:&str)->TurnObservation {
-    let running=signals.agent_running(&format!("amux-{worker}"));
-    let (_,explain)=signals.derive_status_explain(worker,running);
-    let idle=signals.turn_boundary_status(worker).as_deref()==Some("idle")
-        && explain["subagents_working"]!=true && explain["provider_background_working"]!=true;
-    let report=signals.reports.get(worker).cloned().unwrap_or(serde_json::Value::Null);
-    let ended_at=if explain["decided_by"]=="report" && report["state"]=="idle" {
+fn turn_observation(
+    signals: &crate::api::sessions_legacy::FleetSignals,
+    worker: &str,
+) -> TurnObservation {
+    let running = signals.agent_running(&format!("amux-{worker}"));
+    let (_, explain) = signals.derive_status_explain(worker, running);
+    let idle = signals.turn_boundary_status(worker).as_deref() == Some("idle")
+        && explain["subagents_working"] != true
+        && explain["provider_background_working"] != true;
+    let report = signals
+        .reports
+        .get(worker)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let ended_at = if explain["decided_by"] == "report" && report["state"] == "idle" {
         report["ts"].as_f64()
-    } else if let Some(turn)=signals.codex_turns.get(worker).filter(|s|s.state=="idle") {
+    } else if let Some(turn) = signals
+        .codex_turns
+        .get(worker)
+        .filter(|s| s.state == "idle")
+    {
         Some(turn.ts)
     } else if signals.hookless_workers.contains(worker) && idle {
-        signals.activity.get(&format!("amux-{worker}")).map(|ts|*ts as f64)
-    } else {None};
-    TurnObservation{running,idle,ended_at,report}
+        signals
+            .activity
+            .get(&format!("amux-{worker}"))
+            .map(|ts| *ts as f64)
+    } else {
+        None
+    };
+    TurnObservation {
+        running,
+        idle,
+        ended_at,
+        report,
+    }
 }
 
 /// Receipt first, fresh boundary second, compare-and-transition last. Never pair
 /// a pre-delivery idle snapshot with a newly written terminal delivery receipt.
-async fn observe_with<F,Fut>(state:&AppState,project:&str,id:&str,expected:&Execution,probe:F)->anyhow::Result<()>
-where F:FnOnce()->Fut,Fut:std::future::Future<Output=Option<TurnObservation>> {
-    if chrono::Utc::now().timestamp()-expected.observed_at<=30 {return Ok(())}
-    let receipt={let c=state.store.read()?;planner::settled_delivery(&c,expected)?};
-    let Some(observation)=probe().await else {return Ok(())};
-    let interrupted=receipt.as_ref().is_some_and(|r|r.outcome.starts_with("interrupted:"));
-    let ended=observation.idle && receipt.as_ref().is_some_and(|r|interrupted || observation.ended_at.is_some_and(|ts|ts>=r.submitted_at));
+async fn observe_with<F, Fut>(
+    state: &AppState,
+    project: &str,
+    id: &str,
+    expected: &Execution,
+    probe: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<TurnObservation>>,
+{
+    if chrono::Utc::now().timestamp() - expected.observed_at <= 30 {
+        return Ok(());
+    }
+    let receipt = {
+        let c = state.store.read()?;
+        planner::settled_delivery(&c, expected)?
+    };
+    let Some(observation) = probe().await else {
+        return Ok(());
+    };
+    let interrupted = receipt
+        .as_ref()
+        .is_some_and(|r| r.outcome.starts_with("interrupted:"));
+    let ended = observation.idle
+        && receipt.as_ref().is_some_and(|r| {
+            interrupted || observation.ended_at.is_some_and(|ts| ts >= r.submitted_at)
+        });
     if observation.running && !ended {
-        if receipt.is_some() && observation.idle && crate::log_dedupe::first_this_bucket(&format!("project-stale-idle:{}",expected.delivery_id),chrono::Utc::now().timestamp()/3600) {
+        if receipt.is_some()
+            && observation.idle
+            && crate::log_dedupe::first_this_bucket(
+                &format!("project-stale-idle:{}", expected.delivery_id),
+                chrono::Utc::now().timestamp() / 3600,
+            )
+        {
             tracing::info!(task=id,delivery_id=%expected.delivery_id,measured=true,n_considered=1,verdict="project_stale_idle_held","idle evidence predates this delivery; attempt retained");
         }
         return Ok(());
     }
-    let (project,id,expected)=(project.to_string(),id.to_string(),expected.clone());
+    let (project, id, expected) = (project.to_string(), id.to_string(), expected.clone());
     state.store.write_async(move|c| {
         let row=bs::get_issue(c,&id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let mut current=planner::execution(c,&id).map_err(store::sql_error)?;
@@ -452,9 +544,14 @@ where F:FnOnce()->Fut,Fut:std::future::Future<Output=Option<TurnObservation>> {
     Ok(())
 }
 
-fn repair_after_failure(e:&Execution,max_attempts:u32,action:&str,error:&str)->bool {
-    !e.verification_retry_pending && e.attempt<e.attempt_limit(max_attempts)
-        && (action=="verify" || matches!(error,"executor_stopped_before_result"|"executor_returned_without_result"))
+fn repair_after_failure(e: &Execution, max_attempts: u32, action: &str, error: &str) -> bool {
+    !e.verification_retry_pending
+        && e.attempt < e.attempt_limit(max_attempts)
+        && (action == "verify"
+            || matches!(
+                error,
+                "executor_stopped_before_result" | "executor_returned_without_result"
+            ))
 }
 
 pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Result<()> {
@@ -531,9 +628,12 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                 verify(state, &p, &id, &e).await
             }
             "observe" => {
-                observe_with(state,name,&id,&e,||async {
-                    sv::boundary_signals(state,Some(&e.worker)).await.map(|signals|turn_observation(&signals,&e.worker))
-                }).await?;
+                observe_with(state, name, &id, &e, || async {
+                    sv::boundary_signals(state, Some(&e.worker))
+                        .await
+                        .map(|signals| turn_observation(&signals, &e.worker))
+                })
+                .await?;
                 Ok(())
             }
             "complete_epic" => {
@@ -554,7 +654,7 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             if paused {
                 continue;
             }
-            let repair = repair_after_failure(&e,p.policy.max_attempts,&plan.action,&error);
+            let repair = repair_after_failure(&e, p.policy.max_attempts, &plan.action, &error);
             transition(
                 state,
                 &id,
@@ -609,7 +709,11 @@ pub(crate) async fn tick(state: &AppState) {
             if let Err(error) = drive_project(&state, &project.name).await {
                 tracing::warn!(project=%project.name,%error,verdict="project_tick_failed",measured=true,n_considered=1,"durable project state retained for recovery");
             }
-            let current = state.store.read().ok().and_then(|c| store::get(&c, &project.name).ok().flatten());
+            let current = state
+                .store
+                .read()
+                .ok()
+                .and_then(|c| store::get(&c, &project.name).ok().flatten());
             if let Some(current) = current {
                 if let Err(error) = super::acceptance::tick(&state, &current).await {
                     tracing::warn!(project=%project.name,%error,verdict="project_acceptance_tick_failed",measured=true,n_considered=1,"project acceptance remains pending for bounded retry");
@@ -696,17 +800,23 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 #[cfg(test)]
 mod observation_tests {
     use super::*;
-    fn write_report(c:&rusqlite::Connection,worker:&str,ts:f64) {
+    fn write_report(c: &rusqlite::Connection, worker: &str, ts: f64) {
         c.execute("INSERT INTO prefs(key,value) VALUES('session_reports',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!({worker:{"state":"idle","source":"stop-hook","ts":ts}}).to_string()]).unwrap();
     }
-    fn observation(worker:&str,ts:f64)->TurnObservation {
-        let _=worker;
-        TurnObservation{running:true,idle:true,ended_at:Some(ts),report:json!({"state":"idle","source":"stop-hook","ts":ts})}
+    fn observation(worker: &str, ts: f64) -> TurnObservation {
+        let _ = worker;
+        TurnObservation {
+            running: true,
+            idle: true,
+            ended_at: Some(ts),
+            report: json!({"state":"idle","source":"stop-hook","ts":ts}),
+        }
     }
     #[test]
     fn project_observation_rejects_delayed_delivery_old_idle_and_report_races() {
-        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
-        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
         db.write(|c| {
             let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
             e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
@@ -716,9 +826,15 @@ mod observation_tests {
             c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(100,?1,'project.delivery_started',?2)",params![e.worker,json!({"delivery_id":e.delivery_id}).to_string()])?;
             planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
         }).unwrap();
-        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-        let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
-        let old_idle=observation(&e.worker,95.0);
+        let state = AppState {
+            store: Arc::new(db),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let e = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+        let old_idle = observation(&e.worker, 95.0);
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let probes=std::sync::atomic::AtomicUsize::new(0);
             observe_with(&state,"sample","A",&e,||async {probes.fetch_add(1,std::sync::atomic::Ordering::SeqCst);Some(old_idle.clone())}).await.unwrap();
@@ -754,8 +870,9 @@ mod observation_tests {
     }
     #[test]
     fn project_observation_stopped_before_submission_retains_packet_and_bounds_recovery() {
-        let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
-        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
         db.write(|c| {
             let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
             e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
@@ -763,59 +880,178 @@ mod observation_tests {
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES(?1,?2,'original unsent packet',94,'project-execution')",params![e.delivery_id,e.worker])?;
             planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
         }).unwrap();
-        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-        let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
-        let path=sv::env_path(&e.worker);std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path,"CC_PROJECT=sample\nCC_BOARD_CARD=A\n").unwrap();
+        let state = AppState {
+            store: Arc::new(db),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let e = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+        let path = sv::env_path(&e.worker);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "CC_PROJECT=sample\nCC_BOARD_CARD=A\n").unwrap();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             // A delivery acquiring the packet during the probe wins the writer race.
-            let db=state.store.clone();let id=e.delivery_id.clone();let worker=e.worker.clone();
-            observe_with(&state,"sample","A",&e,||async move {
-                db.write(move|c|{c.execute("UPDATE steering_queue SET delivering_since=100 WHERE id=?1",[id])?;Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
-                Some(TurnObservation{running:false,..observation(&worker,95.0)})
-            }).await.unwrap();
-            assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"working");
-            state.store.write(|c|{c.execute("UPDATE steering_queue SET delivering_since=NULL",[])?;Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
-            for _ in 0..2 {observe_with(&state,"sample","A",&e,||async {Some(TurnObservation{running:false,..observation(&e.worker,95.0)})}).await.unwrap();}
+            let db = state.store.clone();
+            let id = e.delivery_id.clone();
+            let worker = e.worker.clone();
+            observe_with(&state, "sample", "A", &e, || async move {
+                db.write(move |c| {
+                    c.execute(
+                        "UPDATE steering_queue SET delivering_since=100 WHERE id=?1",
+                        [id],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+                Some(TurnObservation {
+                    running: false,
+                    ..observation(&worker, 95.0)
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                planner::execution(&state.store.read().unwrap(), "A")
+                    .unwrap()
+                    .stage,
+                "working"
+            );
+            state
+                .store
+                .write(|c| {
+                    c.execute("UPDATE steering_queue SET delivering_since=NULL", [])?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+            for _ in 0..2 {
+                observe_with(&state, "sample", "A", &e, || async {
+                    Some(TurnObservation {
+                        running: false,
+                        ..observation(&e.worker, 95.0)
+                    })
+                })
+                .await
+                .unwrap();
+            }
         });
         {
-            let c=state.store.read().unwrap();let current=planner::execution(&c,"A").unwrap();
-            assert_eq!(current.stage,"repair");assert_eq!(current.attempt,1);assert_eq!(current.waiting.as_deref(),Some("executor_stopped_before_result"));
-            assert_eq!(c.query_row("SELECT text FROM steering_queue WHERE id=?1",[&e.delivery_id],|r|r.get::<_,String>(0)).unwrap(),"original unsent packet");
-            assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_history WHERE id=?1",[&e.delivery_id],|r|r.get::<_,i64>(0)).unwrap(),0,"never manufacture sent evidence");
-            assert!(crate::api::projects::steering_delivery_hold(&c,&e.worker,&e.delivery_id).unwrap().is_some());
+            let c = state.store.read().unwrap();
+            let current = planner::execution(&c, "A").unwrap();
+            assert_eq!(current.stage, "repair");
+            assert_eq!(current.attempt, 1);
+            assert_eq!(
+                current.waiting.as_deref(),
+                Some("executor_stopped_before_result")
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT text FROM steering_queue WHERE id=?1",
+                    [&e.delivery_id],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "original unsent packet"
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM steering_history WHERE id=?1",
+                    [&e.delivery_id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0,
+                "never manufacture sent evidence"
+            );
+            assert!(
+                crate::api::projects::steering_delivery_hold(&c, &e.worker, &e.delivery_id)
+                    .unwrap()
+                    .is_some()
+            );
         }
-        state.store.write(|c|planner::claim(c,"sample","A").map_err(store::sql_error)).unwrap();
+        state
+            .store
+            .write(|c| planner::claim(c, "sample", "A").map_err(store::sql_error))
+            .unwrap();
         {
-            let c=state.store.read().unwrap();let next=planner::execution(&c,"A").unwrap();
-            assert_eq!(next.attempt,2);assert_eq!(next.generation,e.generation+1);
-            assert!(crate::api::projects::steering_delivery_hold(&c,&e.worker,&e.delivery_id).unwrap().is_some(),"old packet cannot cross into the new claim");
+            let c = state.store.read().unwrap();
+            let next = planner::execution(&c, "A").unwrap();
+            assert_eq!(next.attempt, 2);
+            assert_eq!(next.generation, e.generation + 1);
+            assert!(
+                crate::api::projects::steering_delivery_hold(&c, &e.worker, &e.delivery_id)
+                    .unwrap()
+                    .is_some(),
+                "old packet cannot cross into the new claim"
+            );
         }
-        state.store.write(|c| {
-            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.observed_at=1;
-            planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
-        }).unwrap();
-        let last=planner::execution(&state.store.read().unwrap(),"A").unwrap();
-        tokio::runtime::Runtime::new().unwrap().block_on(observe_with(&state,"sample","A",&last,||async {Some(TurnObservation{running:false,..observation(&last.worker,95.0)})})).unwrap();
-        assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"waiting");
-        let snapshot=|| {
-            let c=state.store.read().unwrap();
-            let execution=serde_json::to_value(planner::execution(&c,"A").unwrap()).unwrap();
-            let rows=["task_attempts","steering_queue","steering_history"].map(|table| {
-                let mut stmt=c.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();let columns=stmt.column_count();
-                let rows=stmt.query_map([],|row|Ok((0..columns).map(|i|format!("{:?}",row.get_ref(i).unwrap())).collect::<Vec<_>>())).unwrap();
-                rows.collect::<Result<Vec<_>,_>>().unwrap()
-            });(execution,rows)
+        state
+            .store
+            .write(|c| {
+                let row = bs::get_issue(c, "A")?.unwrap();
+                let mut e = planner::execution(c, "A").unwrap();
+                e.stage = "working".into();
+                e.observed_at = 1;
+                planner::save_execution(c, &row, &e, "project.execution").map_err(store::sql_error)
+            })
+            .unwrap();
+        let last = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(observe_with(&state, "sample", "A", &last, || async {
+                Some(TurnObservation {
+                    running: false,
+                    ..observation(&last.worker, 95.0)
+                })
+            }))
+            .unwrap();
+        assert_eq!(
+            planner::execution(&state.store.read().unwrap(), "A")
+                .unwrap()
+                .stage,
+            "waiting"
+        );
+        let snapshot = || {
+            let c = state.store.read().unwrap();
+            let execution = serde_json::to_value(planner::execution(&c, "A").unwrap()).unwrap();
+            let rows = ["task_attempts", "steering_queue", "steering_history"].map(|table| {
+                let mut stmt = c
+                    .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                    .unwrap();
+                let columns = stmt.column_count();
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((0..columns)
+                            .map(|i| format!("{:?}", row.get_ref(i).unwrap()))
+                            .collect::<Vec<_>>())
+                    })
+                    .unwrap();
+                rows.collect::<Result<Vec<_>, _>>().unwrap()
+            });
+            (execution, rows)
         };
-        let before=snapshot();
-        let refused=state.store.write(|c|planner::claim(c,"sample","A").map_err(store::sql_error)).unwrap();
-        assert!(!refused.applied,"stopped process does not create unlimited attempts");
+        let before = snapshot();
+        let refused = state
+            .store
+            .write(|c| planner::claim(c, "sample", "A").map_err(store::sql_error))
+            .unwrap();
+        assert!(
+            !refused.applied,
+            "stopped process does not create unlimited attempts"
+        );
         assert_eq!(snapshot(),before,"exhausted claim preserves exact attempt/generation, attempt history and original queue/delivery identity");
     }
     #[test]
     fn project_observation_current_ended_and_interrupted_turns_recover_boundedly() {
-        for outcome in ["sent","interrupted: server restart"] {
-            let (_dir,db,_)=super::super::outputs::tests::fixture();
+        for outcome in ["sent", "interrupted: server restart"] {
+            let (_dir, db, _) = super::super::outputs::tests::fixture();
             db.write(move|c| {
                 let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
                 write_report(c,&e.worker,120.0);
@@ -823,17 +1059,48 @@ mod observation_tests {
                 c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(100,?1,'project.delivery_started',?2)",params![e.worker,json!({"delivery_id":e.delivery_id}).to_string()])?;
                 planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
             }).unwrap();
-            let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-            let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+            let state = AppState {
+                store: Arc::new(db),
+                started: std::time::Instant::now(),
+                build_hash: "test".into(),
+                auth_token: None,
+                reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            };
+            let e = planner::execution(&state.store.read().unwrap(), "A").unwrap();
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 // Foreground/background work or a real draft closes the common boundary.
-                observe_with(&state,"sample","A",&e,||async {Some(TurnObservation{idle:false,..observation(&e.worker,120.0)})}).await.unwrap();
-                assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"working");
-                for _ in 0..2 {observe_with(&state,"sample","A",&e,||async {Some(observation(&e.worker,120.0))}).await.unwrap();}
+                observe_with(&state, "sample", "A", &e, || async {
+                    Some(TurnObservation {
+                        idle: false,
+                        ..observation(&e.worker, 120.0)
+                    })
+                })
+                .await
+                .unwrap();
+                assert_eq!(
+                    planner::execution(&state.store.read().unwrap(), "A")
+                        .unwrap()
+                        .stage,
+                    "working"
+                );
+                for _ in 0..2 {
+                    observe_with(&state, "sample", "A", &e, || async {
+                        Some(observation(&e.worker, 120.0))
+                    })
+                    .await
+                    .unwrap();
+                }
             });
-            let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(current.stage,"repair");assert_eq!(current.attempt,1);
-            state.store.write(|c| planner::claim(c,"sample","A").map_err(store::sql_error)).unwrap();
-            let next=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(next.attempt,2);assert_eq!(next.generation,e.generation+1);
+            let current = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+            assert_eq!(current.stage, "repair");
+            assert_eq!(current.attempt, 1);
+            state
+                .store
+                .write(|c| planner::claim(c, "sample", "A").map_err(store::sql_error))
+                .unwrap();
+            let next = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+            assert_eq!(next.attempt, 2);
+            assert_eq!(next.generation, e.generation + 1);
         }
     }
 }
@@ -842,10 +1109,16 @@ mod observation_tests {
 mod command_tests {
     #[test]
     fn project_executor_effort_uses_provider_launch_syntax() {
-        assert_eq!(super::project_effort_flags("codex","low").as_deref(),Some("-c model_reasoning_effort=low"));
-        assert_eq!(super::project_effort_flags("claude","low").as_deref(),Some("--effort low"));
-        assert_eq!(super::project_effort_flags("ollama","low"),None);
-        assert_eq!(super::project_effort_flags("codex",""),None);
+        assert_eq!(
+            super::project_effort_flags("codex", "low").as_deref(),
+            Some("-c model_reasoning_effort=low")
+        );
+        assert_eq!(
+            super::project_effort_flags("claude", "low").as_deref(),
+            Some("--effort low")
+        );
+        assert_eq!(super::project_effort_flags("ollama", "low"), None);
+        assert_eq!(super::project_effort_flags("codex", ""), None);
     }
     #[test]
     fn project_existing_executor_env_refreshes_provider_model_and_effort() {
@@ -861,8 +1134,13 @@ mod command_tests {
             "executor": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
             "verify_command": "git diff --check",
             "enabled": true
-        })).unwrap();
-        let project = store::Project { name: "sample".into(), revision: 1, policy };
+        }))
+        .unwrap();
+        let project = store::Project {
+            name: "sample".into(),
+            revision: 1,
+            policy,
+        };
         let mut env = sv::EnvFile::default();
         env.set("CC_PROJECT", "sample");
         env.set("CC_BOARD_CARD", "A");
@@ -873,7 +1151,10 @@ mod command_tests {
         configure_executor_env(&mut env, &project, &row);
 
         assert_eq!(env.get("CC_PROVIDER"), Some("codex"));
-        assert_eq!(env.get("CC_FLAGS"), Some("--model gpt-5.5 -c model_reasoning_effort=low"));
+        assert_eq!(
+            env.get("CC_FLAGS"),
+            Some("--model gpt-5.5 -c model_reasoning_effort=low")
+        );
         assert_eq!(env.get("CC_MODEL"), None);
         assert_eq!(env.get("CC_WORKTREE"), Some("1"));
         assert_eq!(env.get("AMUX_BOARD_DELEGATION"), Some("0"));
@@ -881,92 +1162,259 @@ mod command_tests {
     #[test]
     fn project_verification_retry_failure_stays_waiting_without_model_repair() {
         use super::*;
-        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
         db.write(|c| {
-            c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;
-            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();
-            e.stage="reported".into();e.waiting=None;e.attempt=1;e.verification_retry_pending=true;
-            e.report=Some(planner::Report{head:"a".repeat(40),summary:"retained".into(),assets:vec![super::super::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Output passes".into(),command:"true".into()}]});
-            planner::save_execution(c,&row,&e,"project.verification_retry_granted").map_err(store::sql_error)
-        }).unwrap();
-        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-        let e=planner::execution(&state.store.read().unwrap(),"A").unwrap();
-        let stage=if repair_after_failure(&e,2,"verify","Command timed out after 1 seconds") {"repair"}else{"waiting"};
-        assert_eq!(stage,"waiting","explicit verification retry never grants worker work even below repair cap");
-        tokio::runtime::Runtime::new().unwrap().block_on(transition(&state,"A",&e,stage,Some("Command timed out after 1 seconds".into()))).unwrap();
-        let c=state.store.read().unwrap();let after=planner::execution(&c,"A").unwrap();
-        assert_eq!(after.report,e.report);assert_eq!(after.attempt,1);assert_eq!(after.generation,e.generation);assert!(!after.verification_retry_pending);
-        assert_eq!(planner::plan(&c,&store::get(&c,"sample").unwrap().unwrap()).unwrap().into_iter().find(|p|p.id=="A").unwrap().action,"wait");
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM steering_queue",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+            c.execute("UPDATE issues SET status='review' WHERE id='A'", [])?;
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = planner::execution(c, "A").unwrap();
+            e.stage = "reported".into();
+            e.waiting = None;
+            e.attempt = 1;
+            e.verification_retry_pending = true;
+            e.report = Some(planner::Report {
+                head: "a".repeat(40),
+                summary: "retained".into(),
+                assets: vec![super::super::assets::Asset {
+                    path: "report.md".into(),
+                    sha256: "0".repeat(64),
+                }],
+                checks: vec![planner::Check {
+                    criterion: "Output passes".into(),
+                    command: "true".into(),
+                }],
+            });
+            planner::save_execution(c, &row, &e, "project.verification_retry_granted")
+                .map_err(store::sql_error)
+        })
+        .unwrap();
+        let state = AppState {
+            store: Arc::new(db),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let e = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+        let stage = if repair_after_failure(&e, 2, "verify", "Command timed out after 1 seconds") {
+            "repair"
+        } else {
+            "waiting"
+        };
+        assert_eq!(
+            stage, "waiting",
+            "explicit verification retry never grants worker work even below repair cap"
+        );
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(transition(
+                &state,
+                "A",
+                &e,
+                stage,
+                Some("Command timed out after 1 seconds".into()),
+            ))
+            .unwrap();
+        let c = state.store.read().unwrap();
+        let after = planner::execution(&c, "A").unwrap();
+        assert_eq!(after.report, e.report);
+        assert_eq!(after.attempt, 1);
+        assert_eq!(after.generation, e.generation);
+        assert!(!after.verification_retry_pending);
+        assert_eq!(
+            planner::plan(&c, &store::get(&c, "sample").unwrap().unwrap())
+                .unwrap()
+                .into_iter()
+                .find(|p| p.id == "A")
+                .unwrap()
+                .action,
+            "wait"
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM steering_queue", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
     #[test]
     fn project_verification_preflights_all_commands_before_any_execution() {
         use super::*;
-        let home=tempfile::tempdir().unwrap();
-        let _home=crate::api::settings::test_env::set_home(home.path());
-        let repo=home.path().join("candidate");std::fs::create_dir(&repo).unwrap();
-        let git=|args:&[&str]| {
-            let result=std::process::Command::new("git").current_dir(&repo)
-                .env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE")
-                .args(args).output().unwrap();
-            assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("candidate");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .current_dir(&repo)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
             String::from_utf8(result.stdout).unwrap().trim().to_string()
         };
-        git(&["init","-q"]);
-        git(&["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","core.hooksPath=/dev/null","commit","--allow-empty","-m","fixture"]);
-        let head=git(&["rev-parse","HEAD"]);
-        let marker=home.path().join("must-not-run");
-        let first=format!("touch {}",marker.display());
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let marker = home.path().join("must-not-run");
+        let first = format!("touch {}", marker.display());
         // Each scenario fixes repository and gate before claiming any execution.
         // Do not mutate live immutable policy to manufacture a persisted report.
-        let setup=|name:&str,gate:&str| {
-            let db=crate::db::Store::open(&home.path().join(name)).unwrap();
-            let gate=gate.to_string();
+        let setup = |name: &str, gate: &str| {
+            let db = crate::db::Store::open(&home.path().join(name)).unwrap();
+            let gate = gate.to_string();
             db.write(move|c| {
                 let policy=serde_json::from_value(json!({"repository":"/original-checkout","coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":gate,"enabled":true})).unwrap();
                 store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
                 c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES('A','Output','Build output','todo','code','sample',1,1,'Implement and test','[\"Output passes\"]')",[])?;
                 planner::claim(c,"sample","A").map_err(store::sql_error)
             }).unwrap();
-            let e=planner::execution(&db.read().unwrap(),"A").unwrap();
-            let p=store::get(&db.read().unwrap(),"sample").unwrap().unwrap();
-            let w=workspace::Workspace{repo:p.policy.repository.clone(),path:repo.to_string_lossy().into_owned(),branch:format!("amux/fanout/{}",e.worker),base:head.clone()};
-            workspace::save(home.path(),&e.worker,&w).unwrap();
-            let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
-            (state,p,e)
+            let e = planner::execution(&db.read().unwrap(), "A").unwrap();
+            let p = store::get(&db.read().unwrap(), "sample").unwrap().unwrap();
+            let w = workspace::Workspace {
+                repo: p.policy.repository.clone(),
+                path: repo.to_string_lossy().into_owned(),
+                branch: format!("amux/fanout/{}", e.worker),
+                base: head.clone(),
+            };
+            workspace::save(home.path(), &e.worker, &w).unwrap();
+            let state = AppState {
+                store: Arc::new(db),
+                started: std::time::Instant::now(),
+                build_hash: "test".into(),
+                auth_token: None,
+                reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            };
+            (state, p, e)
         };
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            for bad_gate in [false,true] {
-                let mut report=planner::Report{head:head.clone(),summary:"old persisted report".into(),assets:vec![],checks:vec![planner::Check{criterion:"first".into(),command:first.clone()},planner::Check{criterion:"last".into(),command:"/original-checkout/venv/bin/python check.py".into()}]};
-                let gate=if bad_gate {report.checks.pop().unwrap().command}else{first.clone()};
-                let (state,p,mut e)=setup(if bad_gate {"bad-gate"}else{"bad-check"},&gate);
-                e.report=Some(report);e.stage="reported".into();e.waiting=None;
+            for bad_gate in [false, true] {
+                let mut report = planner::Report {
+                    head: head.clone(),
+                    summary: "old persisted report".into(),
+                    assets: vec![],
+                    checks: vec![
+                        planner::Check {
+                            criterion: "first".into(),
+                            command: first.clone(),
+                        },
+                        planner::Check {
+                            criterion: "last".into(),
+                            command: "/original-checkout/venv/bin/python check.py".into(),
+                        },
+                    ],
+                };
+                let gate = if bad_gate {
+                    report.checks.pop().unwrap().command
+                } else {
+                    first.clone()
+                };
+                let (state, p, mut e) =
+                    setup(if bad_gate { "bad-gate" } else { "bad-check" }, &gate);
+                e.report = Some(report);
+                e.stage = "reported".into();
+                e.waiting = None;
                 let current = e.clone();
-                state.store.write(move |c| {let row=bs::get_issue(c,"A")?.unwrap();planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)}).unwrap();
-                let error=verify(&state,&p,"A",&e).await.unwrap_err();
-                assert!(error.contains("original worker or shared checkout"),"{error}");
-                assert!(!marker.exists(),"even the first valid command must not execute");
-                assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().report,e.report);
+                state
+                    .store
+                    .write(move |c| {
+                        let row = bs::get_issue(c, "A")?.unwrap();
+                        planner::save_execution(c, &row, &current, "project.execution")
+                            .map_err(store::sql_error)
+                    })
+                    .unwrap();
+                let error = verify(&state, &p, "A", &e).await.unwrap_err();
+                assert!(
+                    error.contains("original worker or shared checkout"),
+                    "{error}"
+                );
+                assert!(
+                    !marker.exists(),
+                    "even the first valid command must not execute"
+                );
+                assert_eq!(
+                    planner::execution(&state.store.read().unwrap(), "A")
+                        .unwrap()
+                        .report,
+                    e.report
+                );
             }
         });
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            for dirty in [false,true] {
-                let (state,p,mut e)=setup(if dirty {"dirty-head"}else{"stale-head"},&first);
-                e.stage="reported".into();e.waiting=None;
-                e.verification_retry_pending=true;
-                e.report=Some(planner::Report{head:if dirty{head.clone()}else{"b".repeat(40)},summary:"retained report".into(),assets:vec![super::super::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}],checks:vec![planner::Check{criterion:"Output passes".into(),command:first.clone()}]});
-                let current=e.clone();state.store.write(move|c|{let row=bs::get_issue(c,"A")?.unwrap();planner::save_execution(c,&row,&current,"project.execution").map_err(store::sql_error)}).unwrap();
-                if dirty {std::fs::write(repo.join("dirty"),"uncommitted").unwrap();}
-                let error=verify(&state,&p,"A",&e).await.unwrap_err();
-                assert!(error.contains(if dirty{"uncommitted"}else{"reported head is stale"}),"{error}");
-                assert!(!marker.exists(),"retained report cannot bypass actual candidate identity/cleanliness");
+            for dirty in [false, true] {
+                let (state, p, mut e) =
+                    setup(if dirty { "dirty-head" } else { "stale-head" }, &first);
+                e.stage = "reported".into();
+                e.waiting = None;
+                e.verification_retry_pending = true;
+                e.report = Some(planner::Report {
+                    head: if dirty { head.clone() } else { "b".repeat(40) },
+                    summary: "retained report".into(),
+                    assets: vec![super::super::assets::Asset {
+                        path: "report.md".into(),
+                        sha256: "0".repeat(64),
+                    }],
+                    checks: vec![planner::Check {
+                        criterion: "Output passes".into(),
+                        command: first.clone(),
+                    }],
+                });
+                let current = e.clone();
+                state
+                    .store
+                    .write(move |c| {
+                        let row = bs::get_issue(c, "A")?.unwrap();
+                        planner::save_execution(c, &row, &current, "project.execution")
+                            .map_err(store::sql_error)
+                    })
+                    .unwrap();
+                if dirty {
+                    std::fs::write(repo.join("dirty"), "uncommitted").unwrap();
+                }
+                let error = verify(&state, &p, "A", &e).await.unwrap_err();
+                assert!(
+                    error.contains(if dirty {
+                        "uncommitted"
+                    } else {
+                        "reported head is stale"
+                    }),
+                    "{error}"
+                );
+                assert!(
+                    !marker.exists(),
+                    "retained report cannot bypass actual candidate identity/cleanliness"
+                );
             }
         });
         // Path identity accepts aliases, never unrelated or unresolved paths.
-        let alias=home.path().join("alias");std::os::unix::fs::symlink(&repo,&alias).unwrap();
-        assert!(workspace::same_repository(repo.to_str().unwrap(),alias.to_str().unwrap()));
-        assert!(!workspace::same_repository(repo.to_str().unwrap(),home.path().to_str().unwrap()));
-        assert!(!workspace::same_repository("/missing-one","/missing-two"));
+        let alias = home.path().join("alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+        assert!(workspace::same_repository(
+            repo.to_str().unwrap(),
+            alias.to_str().unwrap()
+        ));
+        assert!(!workspace::same_repository(
+            repo.to_str().unwrap(),
+            home.path().to_str().unwrap()
+        ));
+        assert!(!workspace::same_repository("/missing-one", "/missing-two"));
     }
 
     #[test]
@@ -974,37 +1422,57 @@ mod command_tests {
         use super::*;
         let (_dir, db, _) = super::super::outputs::tests::fixture();
         db.write(|c| {
-            let p=store::get(c,"sample").unwrap().unwrap();
-            let row=bs::get_issue(c,"A")?.unwrap();
-            let mut e=planner::execution(c,"A").unwrap();
-            for failure in ["short exact error".to_string(),format!("HEAD{}TAIL","α🧪\n".repeat(9000))] {
-                e.last_failure=Some(failure.clone());
-                planner::save_execution(c,&row,&e,"project.execution").unwrap();
-                let original=serde_json::to_value(&e).unwrap();
-                let text=packet(&p,&row,&e);
-                let value:serde_json::Value=serde_json::from_str(text.split("Task packet:\n").nth(1).unwrap()).unwrap();
-                assert_eq!(serde_json::to_value(&e).unwrap(),original,"packet cannot mutate history");
-                assert_eq!(value["criteria"],json!(["Output passes"]));
-                if failure.chars().count()<=2048 {
-                    assert_eq!(value["previous_result"],failure);
+            let p = store::get(c, "sample").unwrap().unwrap();
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = planner::execution(c, "A").unwrap();
+            for failure in [
+                "short exact error".to_string(),
+                format!("HEAD{}TAIL", "α🧪\n".repeat(9000)),
+            ] {
+                e.last_failure = Some(failure.clone());
+                planner::save_execution(c, &row, &e, "project.execution").unwrap();
+                let original = serde_json::to_value(&e).unwrap();
+                let text = packet(&p, &row, &e);
+                let value: serde_json::Value =
+                    serde_json::from_str(text.split("Task packet:\n").nth(1).unwrap()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&e).unwrap(),
+                    original,
+                    "packet cannot mutate history"
+                );
+                assert_eq!(value["criteria"], json!(["Output passes"]));
+                if failure.chars().count() <= 2048 {
+                    assert_eq!(value["previous_result"], failure);
                 } else {
-                    let preview=&value["previous_result"];
-                    assert_eq!(preview["truncated"],true);
-                    assert_eq!(preview["original_chars"],failure.chars().count());
-                    assert_eq!(preview["original_bytes"],failure.len());
+                    let preview = &value["previous_result"];
+                    assert_eq!(preview["truncated"], true);
+                    assert_eq!(preview["original_chars"], failure.chars().count());
+                    assert_eq!(preview["original_bytes"], failure.len());
                     assert!(preview["preview"].as_str().unwrap().starts_with("HEAD"));
                     assert!(preview["preview"].as_str().unwrap().ends_with("TAIL"));
-                    assert!(preview["preview"].as_str().unwrap().chars().count()<2100);
-                    assert_eq!(preview["full_diagnostic"]["path"],"/api/projects/sample");
+                    assert!(preview["preview"].as_str().unwrap().chars().count() < 2100);
+                    assert_eq!(preview["full_diagnostic"]["path"], "/api/projects/sample");
                 }
                 // This is the exact read model served by existing GET /api/projects/{name}.
-                let board=store::board(c,"sample").unwrap();
-                let card=board["cards"].as_array().unwrap().iter().find(|v|v["id"]=="A").unwrap();
-                assert_eq!(card["execution_plan"]["execution"]["last_failure"],failure);
-                assert_eq!(planner::execution(c,"A").unwrap().last_failure,Some(failure));
+                let board = store::board(c, "sample").unwrap();
+                let card = board["cards"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["id"] == "A")
+                    .unwrap();
+                assert_eq!(card["execution_plan"]["execution"]["last_failure"], failure);
+                assert_eq!(
+                    planner::execution(c, "A").unwrap().last_failure,
+                    Some(failure)
+                );
             }
-            Ok(WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     }
     #[test]
     fn project_verification_deduplicates_only_identical_bytes() {
@@ -1012,7 +1480,10 @@ mod command_tests {
         let report = Report {
             head: "a".repeat(40),
             summary: String::new(),
-            assets: vec![super::super::assets::Asset { path: "report.md".into(), sha256: "0".repeat(64) }],
+            assets: vec![super::super::assets::Asset {
+                path: "report.md".into(),
+                sha256: "0".repeat(64),
+            }],
             checks: vec![
                 Check {
                     criterion: "one".into(),

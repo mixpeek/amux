@@ -245,7 +245,10 @@ pub fn tick(state: &AppState) -> (u32, u32, u32) {
                 )?;
                 cell.store(n as u32, std::sync::atomic::Ordering::Relaxed);
             }
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         });
     }
     let pruned = pruned_cell.load(std::sync::atomic::Ordering::Relaxed);
@@ -275,9 +278,15 @@ mod tests {
     /// The change rule, including the cell that makes an empty history honest.
     #[test]
     fn a_first_sighting_counts_as_a_change_and_a_repeat_does_not() {
-        assert!(is_change(None, "idle", "report"), "a lane never recorded must be recorded");
+        assert!(
+            is_change(None, "idle", "report"),
+            "a lane never recorded must be recorded"
+        );
         let prev = ("idle".to_string(), "report".to_string());
-        assert!(!is_change(Some(&prev), "idle", "report"), "an unchanged lane writes nothing");
+        assert!(
+            !is_change(Some(&prev), "idle", "report"),
+            "an unchanged lane writes nothing"
+        );
         assert!(
             is_change(Some(&prev), "active", "report"),
             "the STATUS changing is a change"
@@ -293,7 +302,13 @@ mod tests {
     /// would turn a sampler into a hot loop over 52 pane captures.
     #[test]
     fn the_cadence_and_retention_floors_hold() {
-        assert!(tick_secs() >= 5, "a sub-5s tick captures panes faster than they paint");
-        assert!(retention_days() > 0.0, "a zero retention would delete every row it just wrote");
+        assert!(
+            tick_secs() >= 5,
+            "a sub-5s tick captures panes faster than they paint"
+        );
+        assert!(
+            retention_days() > 0.0,
+            "a zero retention would delete every row it just wrote"
+        );
     }
 }

@@ -144,15 +144,15 @@ pub fn terms(title: &str) -> BTreeSet<String> {
 ///
 /// Pure over (id, title, tags) so the clustering is testable without a board.
 /// Returns clusters sorted by size descending.
-pub fn cluster(
-    cards: &[(String, String, Vec<String>)],
-    min_size: usize,
-) -> Vec<Value> {
+pub fn cluster(cards: &[(String, String, Vec<String>)], min_size: usize) -> Vec<Value> {
     if cards.is_empty() {
         return Vec::new();
     }
-    let per_card: Vec<(usize, BTreeSet<String>)> =
-        cards.iter().enumerate().map(|(i, c)| (i, terms(&c.1))).collect();
+    let per_card: Vec<(usize, BTreeSet<String>)> = cards
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i, terms(&c.1)))
+        .collect();
 
     let mut df: HashMap<&str, usize> = HashMap::new();
     for (_, ts) in &per_card {
@@ -213,7 +213,9 @@ pub fn cluster(
         .collect();
     out.sort_by(|a, b| {
         b["size"].as_u64().cmp(&a["size"].as_u64()).then_with(|| {
-            a["suggested_tag"].as_str().cmp(&b["suggested_tag"].as_str())
+            a["suggested_tag"]
+                .as_str()
+                .cmp(&b["suggested_tag"].as_str())
         })
     });
     out.truncate(MAX_CLUSTERS);
@@ -299,7 +301,11 @@ mod tests {
     use super::*;
 
     fn card(id: &str, title: &str, tags: &[&str]) -> (String, String, Vec<String>) {
-        (id.into(), title.into(), tags.iter().map(|s| s.to_string()).collect())
+        (
+            id.into(),
+            title.into(),
+            tags.iter().map(|s| s.to_string()).collect(),
+        )
     }
 
     #[test]
@@ -398,7 +404,11 @@ mod tests {
         ];
         let first = cluster(&cards, 3);
         for _ in 0..20 {
-            assert_eq!(cluster(&cards, 3), first, "clustering must be deterministic");
+            assert_eq!(
+                cluster(&cards, 3),
+                first,
+                "clustering must be deterministic"
+            );
         }
     }
 

@@ -120,25 +120,41 @@ pub(crate) fn count_by_verdict(conn: &Connection, task_id: &str) -> rusqlite::Re
 
 /// Project current coverage without pretending a gate acknowledgement is an
 /// independently executed test. Historical attempts remain in the same ledger.
-pub fn coverage(conn: &Connection, row: &super::board_store::IssueRow, gate: &[String]) -> rusqlite::Result<serde_json::Value> {
+pub fn coverage(
+    conn: &Connection,
+    row: &super::board_store::IssueRow,
+    gate: &[String],
+) -> rusqlite::Result<serde_json::Value> {
     let criteria = crate::api::criteria::load(conn, &row.id)?;
     let history = list_for_task(conn, &row.id)?;
     let latest = history.first();
-    let typed = history.iter().find(|v| v.verdict == "passed" || v.verdict == "failed");
+    let typed = history
+        .iter()
+        .find(|v| v.verdict == "passed" || v.verdict == "failed");
     let snapshot = history.iter().find_map(|v| {
-        if v.verdict == "acknowledged" { serde_json::from_str::<Vec<String>>(&v.criteria).ok() }
-        else if v.verdict == "passed" { v.run_detail.as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .and_then(|run| serde_json::from_value::<Vec<String>>(run["gate_snapshot"].clone()).ok()) }
-        else { None }
+        if v.verdict == "acknowledged" {
+            serde_json::from_str::<Vec<String>>(&v.criteria).ok()
+        } else if v.verdict == "passed" {
+            v.run_detail
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|run| {
+                    serde_json::from_value::<Vec<String>>(run["gate_snapshot"].clone()).ok()
+                })
+        } else {
+            None
+        }
     });
     let gate_matches = snapshot.as_ref().map(|recorded| {
         let old: std::collections::BTreeSet<_> = recorded.iter().collect();
         let current: std::collections::BTreeSet<_> = gate.iter().collect();
         old == current
     });
-    let typed_current = criteria.as_ref().map(|c| typed.is_some_and(|v| v.verdict == "passed" && v.criteria_version == c.version));
-    let stale = row.status == "verified" && (gate_matches == Some(false) || typed_current == Some(false));
+    let typed_current = criteria
+        .as_ref()
+        .map(|c| typed.is_some_and(|v| v.verdict == "passed" && v.criteria_version == c.version));
+    let stale =
+        row.status == "verified" && (gate_matches == Some(false) || typed_current == Some(false));
     Ok(serde_json::json!({
         "state": if stale { "needs_reverification" } else if row.status != "verified" { "not_verified" }
             else if latest.is_none() { "history_unavailable" } else { "current" },

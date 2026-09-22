@@ -344,13 +344,22 @@ mod home_resolution_tests {
     use super::*;
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
     }
 
     #[test]
     fn amux_home_wins_and_cc_home_is_the_legacy_fallback() {
         assert_eq!(
-            resolve_home(env(&[("AMUX_HOME", "/a"), ("CC_HOME", "/c"), ("HOME", "/h")])),
+            resolve_home(env(&[
+                ("AMUX_HOME", "/a"),
+                ("CC_HOME", "/c"),
+                ("HOME", "/h")
+            ])),
             PathBuf::from("/a")
         );
         assert_eq!(
@@ -359,7 +368,10 @@ mod home_resolution_tests {
             "CC_HOME was honoured by exactly one of the ten old copies — settings read \
              one home while groups/dictation/push read another"
         );
-        assert_eq!(resolve_home(env(&[("HOME", "/h")])), PathBuf::from("/h/.amux"));
+        assert_eq!(
+            resolve_home(env(&[("HOME", "/h")])),
+            PathBuf::from("/h/.amux")
+        );
     }
 
     /// The bug that made this consolidation worth doing. An exported-but-empty
@@ -380,7 +392,10 @@ mod home_resolution_tests {
         // The shape the old code produced, asserted as NOT happening: a
         // relative path is the failure mode, so name it explicitly.
         let got = resolve_home(env(&[("AMUX_HOME", ""), ("HOME", "/h")]));
-        assert!(got.is_absolute(), "an empty AMUX_HOME must not yield a relative home: {got:?}");
+        assert!(
+            got.is_absolute(),
+            "an empty AMUX_HOME must not yield a relative home: {got:?}"
+        );
     }
 
     /// `$HOME` missing split the old copies too: `unwrap_or_default()` gave the
@@ -430,7 +445,10 @@ mod tests {
     use super::*;
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
     /// Nothing in the live process env, so only the injected maps decide.
     fn no_live(_: &str) -> bool {
@@ -449,9 +467,9 @@ mod tests {
     #[test]
     fn a_key_we_exported_is_refreshed_but_a_key_the_process_owns_is_not() {
         let file = map(&[
-            ("STALE", "new-from-file"),  // we exported it last boot: refresh
-            ("THEIRS", "file-value"),    // launchd set it: leave alone
-            ("FRESH", "brand-new"),      // nobody has it: export
+            ("STALE", "new-from-file"), // we exported it last boot: refresh
+            ("THEIRS", "file-value"),   // launchd set it: leave alone
+            ("FRESH", "brand-new"),     // nobody has it: export
         ]);
         // What the successor inherited across the exec. STALE and THEIRS look
         // IDENTICAL here: both are simply present. Only the marker separates
@@ -507,7 +525,13 @@ mod tests {
         );
 
         // One key edited in the file: exactly one write, and it is that key.
-        let drifted = |k: &str| if k == "B" { Some("stale".to_string()) } else { inherited.get(k).cloned() };
+        let drifted = |k: &str| {
+            if k == "B" {
+                Some("stale".to_string())
+            } else {
+                inherited.get(k).cloned()
+            }
+        };
         assert_eq!(plan.writes(&drifted), vec![("B", "v2")]);
     }
 
@@ -519,13 +543,23 @@ mod tests {
         let inherited = map(&[("KEPT", "v"), ("GONE", "old")]);
 
         let plan = plan_env(&file, true, &inherited, &no_live, Some("KEPT,GONE"));
-        assert_eq!(plan.unset, vec!["GONE".to_string()], "a key the file no longer sets must be withdrawn");
+        assert_eq!(
+            plan.unset,
+            vec!["GONE".to_string()],
+            "a key the file no longer sets must be withdrawn"
+        );
 
         // THE DESTRUCTIVE CASE. `parse_env_file` returns an empty map for a
         // MISSING file and an EMPTY one alike, so without the existence gate an
         // unreadable server.env would withdraw every key the server had ever
         // exported. Same inputs, file_exists=false, and nothing may be unset.
-        let plan = plan_env(&BTreeMap::new(), false, &inherited, &no_live, Some("KEPT,GONE"));
+        let plan = plan_env(
+            &BTreeMap::new(),
+            false,
+            &inherited,
+            &no_live,
+            Some("KEPT,GONE"),
+        );
         assert!(
             plan.unset.is_empty(),
             "an unreadable server.env must not wipe the process config: {:?}",
@@ -564,7 +598,10 @@ mod tests {
         // set that forgets a key every boot.
         let after = map(&[("THEIRS", "set-by-launchd"), ("A", "1"), ("B", "2")]);
         let plan2 = plan_env(&file, true, &after, &no_live, Some(&plan.marker));
-        assert_eq!(plan2.marker, "A,B", "the export set must be stable across generations");
+        assert_eq!(
+            plan2.marker, "A,B",
+            "the export set must be stable across generations"
+        );
         assert_eq!(plan2.export.get("A").map(String::as_str), Some("1"));
     }
 
@@ -617,12 +654,18 @@ mod tests {
 
 /// `$KEY` parsed as f64, trimmed, falling back to `default`.
 pub fn env_f64(key: &str, default: f64) -> f64 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 /// `$KEY` parsed as i64, trimmed, falling back to `default`.
 pub fn env_i64(key: &str, default: i64) -> i64 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 /// Unix epoch seconds as f64. Three identical copies (board_drive, alerts,

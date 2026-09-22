@@ -6,13 +6,13 @@
 
 pub mod api;
 pub mod backend;
-pub mod config;
-pub mod fanout_workspace;
-mod fanout_retirement;
-pub mod project_execution;
 mod cargo_target_guard;
+pub mod config;
+mod fanout_retirement;
+pub mod fanout_workspace;
 pub mod legacy_port;
 pub mod log_dedupe;
+pub mod project_execution;
 
 /// Should this process exec itself when its binary changes on disk? (AEAB-52)
 ///
@@ -29,7 +29,10 @@ pub mod log_dedupe;
 pub(crate) fn self_adopt_enabled() -> bool {
     match std::env::var("AMUX_NO_SELF_ADOPT") {
         Err(_) => true,
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "off" | "no"),
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off" | "no"
+        ),
     }
 }
 
@@ -70,18 +73,27 @@ mod self_adopt_tests {
     fn self_adoption_is_on_by_default_and_off_only_when_asked() {
         let _g = lock();
         std::env::remove_var("AMUX_NO_SELF_ADOPT");
-        assert!(self_adopt_enabled(), "absent must mean ENABLED — production sets nothing");
+        assert!(
+            self_adopt_enabled(),
+            "absent must mean ENABLED — production sets nothing"
+        );
 
         for on in ["1", "true", "yes", "TRUE", " 1 "] {
             std::env::set_var("AMUX_NO_SELF_ADOPT", on);
-            assert!(!self_adopt_enabled(), "AMUX_NO_SELF_ADOPT={on:?} must disable");
+            assert!(
+                !self_adopt_enabled(),
+                "AMUX_NO_SELF_ADOPT={on:?} must disable"
+            );
         }
         // The reading-comprehension case: `=0` must NOT disable. A var whose name
         // is a negative and whose value is a negative is where an operator gets
         // it backwards, so it is pinned rather than left to intuition.
         for off in ["0", "false", "off", "no", ""] {
             std::env::set_var("AMUX_NO_SELF_ADOPT", off);
-            assert!(self_adopt_enabled(), "AMUX_NO_SELF_ADOPT={off:?} must leave it ENABLED");
+            assert!(
+                self_adopt_enabled(),
+                "AMUX_NO_SELF_ADOPT={off:?} must leave it ENABLED"
+            );
         }
         std::env::remove_var("AMUX_NO_SELF_ADOPT");
     }
@@ -91,19 +103,22 @@ mod self_adopt_tests {
         assert_eq!(boot_provenance(false, false), BootProvenance::FirstBoot);
         assert_eq!(boot_provenance(true, true), BootProvenance::SelfAdopted);
         assert_eq!(boot_provenance(true, false), BootProvenance::SelfAdopted);
-        assert_eq!(boot_provenance(false, true), BootProvenance::UnannouncedRestart);
+        assert_eq!(
+            boot_provenance(false, true),
+            BootProvenance::UnannouncedRestart
+        );
     }
 }
+pub mod activation;
 pub mod db;
 pub mod integrations;
 pub mod invariants;
 pub mod opencode;
 pub mod orchestrator;
-pub mod reconciliation;
 pub mod provider;
 pub mod push;
+pub mod reconciliation;
 pub mod runtime_jobs;
-pub mod activation;
 pub mod tls;
 
 use std::sync::Arc;
@@ -119,22 +134,28 @@ pub fn build_hash() -> String {
     // (AF-911 / AMUX-4744). A replaced executable is a candidate until exec;
     // activation::Candidate still hashes those on-disk candidates separately.
     static RUNNING_BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    RUNNING_BUILD.get_or_init(|| {
-        let measured = std::env::current_exe().ok()
-            .and_then(|exe| activation::file_build_hash(&exe).ok());
-        match measured {
-            Some(build) => {
-                tracing::info!(verdict="running_build_measured", %build, measured=true,
+    RUNNING_BUILD
+        .get_or_init(|| {
+            let measured = std::env::current_exe()
+                .ok()
+                .and_then(|exe| activation::file_build_hash(&exe).ok());
+            match measured {
+                Some(build) => {
+                    tracing::info!(verdict="running_build_measured", %build, measured=true,
                     "running executable identity measured once for this process");
-                build
+                    build
+                }
+                None => {
+                    tracing::warn!(
+                        verdict = "running_build_unmeasured",
+                        measured = false,
+                        "running executable unreadable; using package version identity"
+                    );
+                    format!("v{}", env!("CARGO_PKG_VERSION"))
+                }
             }
-            None => {
-                tracing::warn!(verdict="running_build_unmeasured", measured=false,
-                    "running executable unreadable; using package version identity");
-                format!("v{}", env!("CARGO_PKG_VERSION"))
-            }
-        }
-    }).clone()
+        })
+        .clone()
 }
 
 pub fn run() {
@@ -163,7 +184,11 @@ struct StoreConversationSink {
 impl opencode::structured::ConversationSink for StoreConversationSink {
     fn save(&self, worker: &amux_core::ids::WorkerId, family: &str, conversation_ref: &str) {
         let store = self.store.clone();
-        let (w, f, c) = (worker.to_string(), family.to_string(), conversation_ref.to_string());
+        let (w, f, c) = (
+            worker.to_string(),
+            family.to_string(),
+            conversation_ref.to_string(),
+        );
         tokio::spawn(async move {
             let (ww, ff, cc) = (w.clone(), f, c);
             let res = store
@@ -176,7 +201,10 @@ impl opencode::structured::ConversationSink for StoreConversationSink {
                              provider = ?2, conversation_ref = ?3, updated_at = ?4",
                         rusqlite::params![ww, ff, cc, chrono::Utc::now().to_rfc3339()],
                     )?;
-                    Ok(db::WriteOutcome { applied: false, events: vec![] })
+                    Ok(db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    })
                 })
                 .await;
             if let Err(e) = res {
@@ -196,7 +224,10 @@ impl opencode::structured::ConversationSink for StoreConversationSink {
                         "DELETE FROM _amux_conversations WHERE worker_id = ?1",
                         rusqlite::params![ww],
                     )?;
-                    Ok(db::WriteOutcome { applied: false, events: vec![] })
+                    Ok(db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    })
                 })
                 .await;
             if let Err(e) = res {
@@ -220,9 +251,8 @@ async fn async_main() {
     // Logs tab's raw view reads the server's own log. ANSI off so the file
     // (and the SPA's raw view) gets clean text. If the file cannot be
     // opened, stdout-only — logging setup must never stop the server.
-    let env_filter = || {
-        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())
-    };
+    let env_filter =
+        || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
     /// Is fd 1 the very file we just opened? See the call site for why this is
     /// (dev, ino) and not a path comparison. Non-unix has no `/dev/fd`, and no
     /// launchd either, so the tee is correct there.
@@ -288,7 +318,9 @@ async fn async_main() {
             // already-open fd and the path could be a symlink, a relative spelling
             // or a rotated file, so string comparison would silently miss.
             let dup = stdout_is_same_file(&f);
-            let sub = tracing_subscriber::fmt().with_env_filter(env_filter()).with_ansi(false);
+            let sub = tracing_subscriber::fmt()
+                .with_env_filter(env_filter())
+                .with_ansi(false);
             if dup {
                 sub.with_writer(Arc::new(f)).init()
             } else {
@@ -301,7 +333,9 @@ async fn async_main() {
                 "log writer configured (stdout suppressed when it is the same file — AMUX-2906)"
             );
         }
-        None => tracing_subscriber::fmt().with_env_filter(env_filter()).init(),
+        None => tracing_subscriber::fmt()
+            .with_env_filter(env_filter())
+            .init(),
     }
 
     let running_build = build_hash();
@@ -340,7 +374,9 @@ async fn async_main() {
             tracing::info!("boot: first database start — there is no predecessor to classify")
         }
         BootProvenance::SelfAdopted => {
-            tracing::info!("boot: self-adoption (the previous process exec'd this one deliberately)")
+            tracing::info!(
+                "boot: self-adoption (the previous process exec'd this one deliberately)"
+            )
         }
         BootProvenance::UnannouncedRestart => {
             tracing::warn!(
@@ -375,7 +411,12 @@ async fn async_main() {
     // Migration-rehearsal mode (Phase 11): open + migrate + report + exit.
     // Lets docs/rust-migration/migration-rehearsal.sh exercise the EXACT production
     // migration path against a DB copy without binding ports.
-    if cfg.env.get("AMUX_RS_MIGRATE_ONLY").map(|v| v == "1").unwrap_or(false) {
+    if cfg
+        .env
+        .get("AMUX_RS_MIGRATE_ONLY")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         let conn = store.read().expect("read after migrate");
         let tables: i64 = conn
             .query_row(
@@ -602,9 +643,13 @@ async fn async_main() {
     // `_amux_conversations` (AMUX-2613 gap 2) so bootstrap re-hydrates them
     // after a restart — an in-memory-only ref is fiction (the D1 report-
     // table lesson: this process re-execs on every deploy).
-    let protocol = Arc::new(opencode::structured::StructuredCliProtocol::with_conversation_sink(
-        Arc::new(StoreConversationSink { store: store.clone() }),
-    ));
+    let protocol = Arc::new(
+        opencode::structured::StructuredCliProtocol::with_conversation_sink(Arc::new(
+            StoreConversationSink {
+                store: store.clone(),
+            },
+        )),
+    );
     opencode::set_process_protocol(protocol.clone());
 
     // Orchestrator runtime: reconcile once, then tick (RR-0041).
@@ -659,7 +704,11 @@ async fn async_main() {
         },
         fleet_state: std::sync::Mutex::new(durable_fleet_state),
         protocol: Some(protocol.clone() as Arc<dyn opencode::AgentProtocol>),
-        pickup_unowned: cfg.env.get("AMUX_RS_PICKUP_UNOWNED").map(|v| v == "1").unwrap_or(false),
+        pickup_unowned: cfg
+            .env
+            .get("AMUX_RS_PICKUP_UNOWNED")
+            .map(|v| v == "1")
+            .unwrap_or(false),
         // RR-0044b: staggered un-park interval after a provider rate-limit
         // reset (thundering-herd prevention).
         resume_stagger_secs: cfg
@@ -714,7 +763,10 @@ async fn async_main() {
         Some(secs(orchestrator::events::SUPERVISE_SECS)),
         orchestrator::events::run_event_processors(
             store.clone(),
-            runtime.protocol.clone().expect("protocol constructed above"),
+            runtime
+                .protocol
+                .clone()
+                .expect("protocol constructed above"),
         ),
     );
 
@@ -730,7 +782,11 @@ async fn async_main() {
         .get("AMUX_RS_SCAN_SECS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(15);
-    jobs::spawn_loop(jobs::ids::SCAN, Some(secs(scan_secs.max(5))), scan.run(scan_secs));
+    jobs::spawn_loop(
+        jobs::ids::SCAN,
+        Some(secs(scan_secs.max(5))),
+        scan.run(scan_secs),
+    );
 
     // Session bootstrap (backend::bootstrap): the spawn/registration glue
     // that turns the API's durable Starting/ended records into real backend
@@ -748,7 +804,11 @@ async fn async_main() {
         .get("AMUX_RS_BOOTSTRAP_SECS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
-    jobs::spawn_loop(jobs::ids::BOOTSTRAP, Some(secs(boot_secs.max(1))), boot.run(boot_secs));
+    jobs::spawn_loop(
+        jobs::ids::BOOTSTRAP,
+        Some(secs(boot_secs.max(1))),
+        boot.run(boot_secs),
+    );
 
     // Self-adoption (parity with the Python server's own-mtime watch): when
     // the INSTALLED binary changes underneath us — the builder agent just
@@ -812,8 +872,12 @@ async fn async_main() {
         );
     } else {
         jobs::spawn_loop(jobs::ids::SELF_ADOPT, Some(secs(5)), async move {
-            let Ok(exe) = std::env::current_exe() else { return };
-            let Ok(meta) = std::fs::metadata(&exe) else { return };
+            let Ok(exe) = std::env::current_exe() else {
+                return;
+            };
+            let Ok(meta) = std::fs::metadata(&exe) else {
+                return;
+            };
             let mut observed = meta.modified().ok();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
@@ -822,11 +886,19 @@ async fn async_main() {
                 let current = std::fs::metadata(&exe).ok().and_then(|m| m.modified().ok());
                 if current.is_some() && current != observed {
                     let path = exe.clone();
-                    let candidate = match tokio::task::spawn_blocking(move || activation::Candidate::read(&path)).await {
+                    let candidate = match tokio::task::spawn_blocking(move || {
+                        activation::Candidate::read(&path)
+                    })
+                    .await
+                    {
                         Ok(Ok(candidate)) => candidate,
                         error => {
-                            tracing::warn!(verdict = "adoption_identity_unmeasured", ?error,
-                                pid = std::process::id(), "self-adoption deferred: cannot verify installed image");
+                            tracing::warn!(
+                                verdict = "adoption_identity_unmeasured",
+                                ?error,
+                                pid = std::process::id(),
+                                "self-adoption deferred: cannot verify installed image"
+                            );
                             continue;
                         }
                     };

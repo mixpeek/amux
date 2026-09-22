@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 /// truncation (Invariant 40).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CompletenessError {
-    #[error("total {total} < returned {returned}: a collection cannot contain more items than exist")]
+    #[error(
+        "total {total} < returned {returned}: a collection cannot contain more items than exist"
+    )]
     TotalLessThanReturned { total: u64, returned: u64 },
 }
 

@@ -90,7 +90,10 @@ pub fn verdict(
     if running > 0 || ready > 0 {
         return "draining";
     }
-    if blocked.iter().any(|b| !b.needs_human && !b.blocked_by.is_empty()) {
+    if blocked
+        .iter()
+        .any(|b| !b.needs_human && !b.blocked_by.is_empty())
+    {
         return "waiting_on_dependency";
     }
     if unblockable > 0 {
@@ -133,7 +136,12 @@ pub fn drain_state_unmeasured(lane: &str) -> DrainState {
 pub fn drain_state(conn: &Connection, lane: &str, now: i64) -> DrainState {
     let mut st = drain_state_unmeasured(lane);
     let statuses: Vec<String> = OPEN.iter().map(|s| s.to_string()).collect();
-    let rows = match bs::list_issues(conn, &statuses, &[lane.to_string()], bs::ArchivedFilter::ActiveOnly) {
+    let rows = match bs::list_issues(
+        conn,
+        &statuses,
+        &[lane.to_string()],
+        bs::ArchivedFilter::ActiveOnly,
+    ) {
         Ok(rows) => rows,
         Err(error) => {
             tracing::warn!(
@@ -145,15 +153,22 @@ pub fn drain_state(conn: &Connection, lane: &str, now: i64) -> DrainState {
     };
     let attempts = crate::db::attempts::running_attempt_numbers(conn).unwrap_or_default();
     let status_of = |id: &str| -> String {
-        conn.query_row("SELECT status FROM issues WHERE id=?1 AND deleted IS NULL", [id], |r| r.get(0))
-            .unwrap_or_else(|_| "missing".to_string())
+        conn.query_row(
+            "SELECT status FROM issues WHERE id=?1 AND deleted IS NULL",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "missing".to_string())
     };
     for row in rows.iter().filter(|r| r.owner_type == "agent") {
         st.n_considered += 1;
         let unresolved = crate::runtime_jobs::board_drive::deps_blocking(conn, row);
         let blockers: Vec<Blocker> = unresolved
             .iter()
-            .map(|id| Blocker { id: id.clone(), status: status_of(id) })
+            .map(|id| Blocker {
+                id: id.clone(),
+                status: status_of(id),
+            })
             .collect();
         let blocked_on = row.blocked_on.clone().filter(|b| !b.trim().is_empty());
         let as_blocked = |blockers: Vec<Blocker>| BlockedCard {
@@ -207,7 +222,14 @@ mod tests {
         BlockedCard {
             id: "B".into(),
             status: "blocked".into(),
-            blocked_by: if by_card { vec![Blocker { id: "D".into(), status: "doing".into() }] } else { vec![] },
+            blocked_by: if by_card {
+                vec![Blocker {
+                    id: "D".into(),
+                    status: "doing".into(),
+                }]
+            } else {
+                vec![]
+            },
             blocked_on: (!by_card).then(|| "vendor ships the fix".to_string()),
             needs_human,
         }
@@ -216,14 +238,26 @@ mod tests {
     #[test]
     fn every_verdict_arm_is_reachable_and_ordered() {
         assert_eq!(verdict(1, 0, &[], 0, 0, 0, 0), "draining");
-        assert_eq!(verdict(0, 1, &[blocked(true, true)], 0, 3, 3, 3), "draining",
-            "anything running outranks what is waiting");
-        assert_eq!(verdict(0, 0, &[blocked(false, true)], 1, 0, 1, 0), "waiting_on_dependency",
-            "a card a worker can finish outranks a human ask");
+        assert_eq!(
+            verdict(0, 1, &[blocked(true, true)], 0, 3, 3, 3),
+            "draining",
+            "anything running outranks what is waiting"
+        );
+        assert_eq!(
+            verdict(0, 0, &[blocked(false, true)], 1, 0, 1, 0),
+            "waiting_on_dependency",
+            "a card a worker can finish outranks a human ask"
+        );
         assert_eq!(verdict(0, 0, &[], 1, 0, 0, 0), "unblockable");
-        assert_eq!(verdict(0, 0, &[blocked(true, true)], 0, 0, 0, 0), "waiting_on_human");
+        assert_eq!(
+            verdict(0, 0, &[blocked(true, true)], 0, 0, 0, 0),
+            "waiting_on_human"
+        );
         assert_eq!(verdict(0, 0, &[], 0, 0, 2, 0), "waiting_on_human");
-        assert_eq!(verdict(0, 0, &[blocked(false, false)], 0, 0, 0, 0), "waiting_on_external");
+        assert_eq!(
+            verdict(0, 0, &[blocked(false, false)], 0, 0, 0, 0),
+            "waiting_on_external"
+        );
         assert_eq!(verdict(0, 0, &[], 0, 2, 0, 0), "waiting_on_review");
         assert_eq!(verdict(0, 0, &[], 0, 0, 0, 4), "backlog_only");
         assert_eq!(verdict(0, 0, &[], 0, 0, 0, 0), "drained");
@@ -248,18 +282,32 @@ mod tests {
         ins("ASK", "needsyou", "decision", "[]");
         let st = drain_state(&conn, "lane", 100);
         assert!(st.measured);
-        assert_eq!(st.n_considered, 4, "done is not open work for this question");
+        assert_eq!(
+            st.n_considered, 4,
+            "done is not open work for this question"
+        );
         assert_eq!(st.ready, 1);
         assert_eq!(st.blocked.len(), 1);
         assert_eq!(st.blocked[0].id, "WAITS");
-        assert_eq!(st.blocked[0].blocked_by, vec![Blocker { id: "DEP".into(), status: "done".into() }]);
+        assert_eq!(
+            st.blocked[0].blocked_by,
+            vec![Blocker {
+                id: "DEP".into(),
+                status: "done".into()
+            }]
+        );
         assert_eq!(st.unblockable, vec!["STUCK".to_string()]);
         assert_eq!(st.needs_human, 1);
         assert_eq!(st.verdict, "draining");
 
-        conn.execute("UPDATE issues SET status='discarded' WHERE id='FREE'", []).unwrap();
-        assert_eq!(drain_state(&conn, "lane", 100).verdict, "waiting_on_dependency");
-        conn.execute("UPDATE issues SET status='verified' WHERE id='DEP'", []).unwrap();
+        conn.execute("UPDATE issues SET status='discarded' WHERE id='FREE'", [])
+            .unwrap();
+        assert_eq!(
+            drain_state(&conn, "lane", 100).verdict,
+            "waiting_on_dependency"
+        );
+        conn.execute("UPDATE issues SET status='verified' WHERE id='DEP'", [])
+            .unwrap();
         let st = drain_state(&conn, "lane", 100);
         assert_eq!(st.ready, 1, "a verified dependency frees its successor");
         assert_eq!(st.verdict, "draining");

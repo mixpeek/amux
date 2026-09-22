@@ -72,7 +72,12 @@ fn out_of(o: &std::process::Output) -> String {
 async fn fetch_upstream_for_activation(dir: &Path) -> Result<String, String> {
     let upstream = git(
         dir,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
         GIT_TIMEOUT,
     )
     .await
@@ -101,10 +106,15 @@ async fn fetch_upstream_for_activation(dir: &Path) -> Result<String, String> {
     }
 
     let lower = first_output.to_lowercase();
-    let auth_failed = ["permission denied", "authentication failed", "could not read from remote",
-                       "publickey", "terminal prompts disabled"]
-        .iter()
-        .any(|needle| lower.contains(needle));
+    let auth_failed = [
+        "permission denied",
+        "authentication failed",
+        "could not read from remote",
+        "publickey",
+        "terminal prompts disabled",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
     if auth_failed {
         let url = git(dir, &["remote", "get-url", remote], GIT_TIMEOUT)
             .await
@@ -219,12 +229,14 @@ pub(crate) async fn preflight(dir: &Path) -> Option<serde_json::Value> {
             .collect();
         if !dirty.is_empty() {
             let shown: Vec<String> = dirty.iter().take(20).cloned().collect();
-            return Some(json!({"ok": false, "blocked": "dirty_tree", "files": shown.clone(),
+            return Some(
+                json!({"ok": false, "blocked": "dirty_tree", "files": shown.clone(),
                 "output": format!(
                     "Refusing to pull: {} uncommitted change(s) in {}.\n{}\n\n\
                      This is a shared checkout — those edits may belong to another session \
                      that is not even running. Commit or stash them first.",
-                    dirty.len(), dir.display(), shown.join("\n"))}));
+                    dirty.len(), dir.display(), shown.join("\n"))}),
+            );
         }
     }
 
@@ -269,7 +281,8 @@ async fn pull() -> Response {
                 "mode": "fetch_only",
                 "local_blocked": refusal["blocked"],
                 "output": output,
-            })).into_response(),
+            }))
+            .into_response(),
             Err(fetch_error) => Json(json!({
                 "ok": false,
                 "blocked": refusal["blocked"],
@@ -277,13 +290,15 @@ async fn pull() -> Response {
                     "{}\n\nThe safe fetch-only fallback also failed: {fetch_error}",
                     refusal["output"].as_str().unwrap_or("Local pull was refused.")
                 ),
-            })).into_response(),
+            }))
+            .into_response(),
         };
     }
 
     // ---- the pull itself ---------------------------------------------------
     let Some(o) = git(&dir, &["pull", "--ff-only"], GIT_TIMEOUT).await else {
-        return Json(json!({"ok": false, "output": "git pull timed out after 30s"})).into_response();
+        return Json(json!({"ok": false, "output": "git pull timed out after 30s"}))
+            .into_response();
     };
     let output = out_of(&o);
     if o.status.success() {
@@ -295,10 +310,15 @@ async fn pull() -> Response {
     // user's git credentials. A cron/launchd env with no SSH agent was silently
     // failing hourly (2026-07-17); retry anonymously over HTTPS.
     let lower = output.to_lowercase();
-    let auth_failed = ["permission denied", "authentication failed", "could not read from remote",
-                       "publickey", "terminal prompts disabled"]
-        .iter()
-        .any(|k| lower.contains(k));
+    let auth_failed = [
+        "permission denied",
+        "authentication failed",
+        "could not read from remote",
+        "publickey",
+        "terminal prompts disabled",
+    ]
+    .iter()
+    .any(|k| lower.contains(k));
     if auth_failed {
         let url = git(&dir, &["remote", "get-url", "origin"], GIT_TIMEOUT)
             .await
@@ -312,7 +332,14 @@ async fn pull() -> Response {
                 .unwrap_or_else(|| "main".into());
             if let Some(o2) = git(
                 &dir,
-                &["-c", "credential.helper=", "pull", "--ff-only", &https, &branch],
+                &[
+                    "-c",
+                    "credential.helper=",
+                    "pull",
+                    "--ff-only",
+                    &https,
+                    &branch,
+                ],
                 GIT_TIMEOUT,
             )
             .await
@@ -361,22 +388,32 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let run = |args: &[&str], cwd: &Path| {
             std::process::Command::new("git")
-                .args(args).current_dir(cwd)
-                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t")
-                .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
-                .output().unwrap()
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap()
         };
         // A bare "remote" so the branch can have a real upstream.
         let remote = d.path().join("remote.git");
         std::fs::create_dir_all(&remote).unwrap();
-        run(&["init", "--bare", "-b", "main", remote.to_str().unwrap()], d.path());
+        run(
+            &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+            d.path(),
+        );
         let work = d.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
         run(&["init", "-b", "main"], &work);
         std::fs::write(work.join("a.txt"), "one\n").unwrap();
         run(&["add", "."], &work);
         run(&["commit", "-m", "first"], &work);
-        run(&["remote", "add", "origin", remote.to_str().unwrap()], &work);
+        run(
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+            &work,
+        );
         run(&["push", "-u", "origin", "main"], &work);
         d
     }
@@ -388,10 +425,15 @@ mod tests {
         let d = repo();
         let work = d.path().join("work");
         // CONTROL: clean and level with the remote — nothing to refuse.
-        assert!(preflight(&work).await.is_none(), "a clean, up-to-date repo must pull");
+        assert!(
+            preflight(&work).await.is_none(),
+            "a clean, up-to-date repo must pull"
+        );
 
         std::fs::write(work.join("a.txt"), "edited by a peer\n").unwrap();
-        let r = preflight(&work).await.expect("a dirty tree must be refused");
+        let r = preflight(&work)
+            .await
+            .expect("a dirty tree must be refused");
         assert_eq!(r["blocked"], "dirty_tree");
         // The FILE, not just a count — "1 file" tells nobody what to look at.
         assert_eq!(r["files"][0].as_str().unwrap().trim(), "M a.txt");
@@ -405,32 +447,52 @@ mod tests {
         let peer = d.path().join("peer");
         let run = |args: &[&str], cwd: &Path| {
             std::process::Command::new("git")
-                .args(args).current_dir(cwd)
-                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t")
-                .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
-                .output().unwrap()
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap()
         };
 
-        run(&["clone", remote.to_str().unwrap(), peer.to_str().unwrap()], d.path());
+        run(
+            &["clone", remote.to_str().unwrap(), peer.to_str().unwrap()],
+            d.path(),
+        );
         std::fs::write(peer.join("remote.txt"), "new remote bytes\n").unwrap();
         run(&["add", "."], &peer);
         run(&["commit", "-m", "remote advance"], &peer);
         run(&["push", "origin", "main"], &peer);
         let remote_head = String::from_utf8_lossy(&run(&["rev-parse", "HEAD"], &peer).stdout)
-            .trim().to_string();
+            .trim()
+            .to_string();
 
         std::fs::write(work.join("a.txt"), "peer's uncommitted edit\n").unwrap();
         let before_head = String::from_utf8_lossy(&run(&["rev-parse", "HEAD"], &work).stdout)
-            .trim().to_string();
+            .trim()
+            .to_string();
         let output = fetch_upstream_for_activation(&work).await.unwrap();
 
-        assert_eq!(std::fs::read_to_string(work.join("a.txt")).unwrap(),
-                   "peer's uncommitted edit\n");
-        assert_eq!(String::from_utf8_lossy(&run(&["rev-parse", "HEAD"], &work).stdout).trim(),
-                   before_head, "fetch-only must not move the shared checkout");
-        assert_eq!(String::from_utf8_lossy(&run(&["rev-parse", "origin/main"], &work).stdout).trim(),
-                   remote_head, "the activation authority must see the fetched revision");
-        assert!(output.contains("shared checkout was left unchanged"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "peer's uncommitted edit\n"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run(&["rev-parse", "HEAD"], &work).stdout).trim(),
+            before_head,
+            "fetch-only must not move the shared checkout"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run(&["rev-parse", "origin/main"], &work).stdout).trim(),
+            remote_head,
+            "the activation authority must see the fetched revision"
+        );
+        assert!(
+            output.contains("shared checkout was left unchanged"),
+            "{output}"
+        );
     }
 
     #[tokio::test]
@@ -439,10 +501,15 @@ mod tests {
         let work = d.path().join("work");
         std::fs::write(work.join("b.txt"), "two\n").unwrap();
         for args in [vec!["add", "."], vec!["commit", "-m", "local only"]] {
-            std::process::Command::new("git").args(&args).current_dir(&work)
-                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t")
-                .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
-                .output().unwrap();
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
         }
         assert!(
             preflight(&work).await.is_none(),
@@ -467,7 +534,9 @@ mod tests {
         let d = repo();
         let work = d.path().join("work");
         std::fs::write(work.join(".git/MERGE_HEAD"), "deadbeef\n").unwrap();
-        let r = preflight(&work).await.expect("an in-progress merge must be refused");
+        let r = preflight(&work)
+            .await
+            .expect("an in-progress merge must be refused");
         assert_eq!(r["blocked"], "operation_in_progress");
         assert!(r["output"].as_str().unwrap().contains("a merge"));
     }

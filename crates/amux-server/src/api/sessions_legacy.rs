@@ -263,9 +263,10 @@ fn run_bounded_output(
     fn nonblocking(pipe: &impl AsRawFd) -> io::Result<()> {
         // SAFETY: pipe owns this valid descriptor throughout both fcntl calls.
         let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
-        if flags == -1 || unsafe {
-            libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK)
-        } == -1 {
+        if flags == -1
+            || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
+                == -1
+        {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -279,8 +280,14 @@ fn run_bounded_output(
         for _ in 0..32 {
             let Some(reader) = pipe.as_mut() else { break };
             match reader.read(&mut buf) {
-                Ok(0) => { *pipe = None; break; }
-                Ok(n) => { bytes.extend_from_slice(&buf[..n]); progressed = true; }
+                Ok(0) => {
+                    *pipe = None;
+                    break;
+                }
+                Ok(n) => {
+                    bytes.extend_from_slice(&buf[..n]);
+                    progressed = true;
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
@@ -306,20 +313,30 @@ fn run_bounded_output(
     let mut stderr = Vec::new();
     let mut status = None;
     let result = (|| -> io::Result<Option<std::process::Output>> {
-        if let Some(pipe) = &stdout_pipe { nonblocking(pipe)?; }
-        if let Some(pipe) = &stderr_pipe { nonblocking(pipe)?; }
+        if let Some(pipe) = &stdout_pipe {
+            nonblocking(pipe)?;
+        }
+        if let Some(pipe) = &stderr_pipe {
+            nonblocking(pipe)?;
+        }
         loop {
             let stdout_progress = drain(&mut stdout_pipe, &mut stdout)?;
             let stderr_progress = drain(&mut stderr_pipe, &mut stderr)?;
-            if status.is_none() { status = child.try_wait()?; }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
             if let Some(status) = status {
                 if stdout_pipe.is_none() && stderr_pipe.is_none() {
                     return Ok(Some(std::process::Output {
-                        status, stdout: std::mem::take(&mut stdout), stderr: std::mem::take(&mut stderr),
+                        status,
+                        stdout: std::mem::take(&mut stdout),
+                        stderr: std::mem::take(&mut stderr),
                     }));
                 }
             }
-            if start.elapsed() >= budget { return Ok(None); }
+            if start.elapsed() >= budget {
+                return Ok(None);
+            }
             if !stdout_progress && !stderr_progress {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
@@ -337,13 +354,19 @@ fn run_bounded_output(
                     if let Ok(mut last) = PANE_CAPTURE_LAST_TIMEOUT.lock() {
                         *last = Some((lane.to_string(), now));
                     }
-                    let phase = if status.is_some() { "pipe_eof" } else { "child_exit" };
+                    let phase = if status.is_some() {
+                        "pipe_eof"
+                    } else {
+                        "child_exit"
+                    };
                     let detail = json!({"measured": true, "n_considered": 1,
                         "lane": lane, "pid": pid, "ts": now, "phase": phase,
                         "elapsed_s": start.elapsed().as_secs_f64(), "budget_s": budget.as_secs_f64(),
                         "stdout_bytes": stdout.len(), "stderr_bytes": stderr.len(),
                         "child_exited": status.is_some()});
-                    if let Ok(mut last) = PANE_CAPTURE_LAST_TIMEOUT_DETAIL.lock() { *last = Some(detail.clone()); }
+                    if let Ok(mut last) = PANE_CAPTURE_LAST_TIMEOUT_DETAIL.lock() {
+                        *last = Some(detail.clone());
+                    }
                     tracing::warn!(target: "amux::sessions", lane, pid, phase,
                         budget_s = budget.as_secs_f64(), elapsed_s = start.elapsed().as_secs_f64(),
                         stdout_bytes = stdout.len(), stderr_bytes = stderr.len(),
@@ -369,7 +392,9 @@ fn run_bounded(
     lane: &str,
 ) -> Option<String> {
     let out = run_bounded_output(cmd, budget, lane)?;
-    String::from_utf8(out.stdout).ok().map(|s| s.trim().to_string())
+    String::from_utf8(out.stdout)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// Derive the waiting_reason from a pane capture: "permission_prompt",
@@ -380,12 +405,15 @@ fn run_bounded(
 /// any subprocess.
 fn derive_waiting_reason(raw: &str) -> &'static str {
     if crate::backend::adapter::claude_auto_resume_banner(raw).is_some()
-        || crate::api::session_verbs::is_rate_limit_menu(raw) {
+        || crate::api::session_verbs::is_rate_limit_menu(raw)
+    {
         return "rate_limit";
     }
     let clean = strip_ansi(raw);
     let lines: Vec<_> = clean.lines().collect();
-    let start = lines.iter().rposition(|l| matches!(l.trim(), "❯" | "›"))
+    let start = lines
+        .iter()
+        .rposition(|l| matches!(l.trim(), "❯" | "›"))
         .unwrap_or_else(|| lines.len().saturating_sub(12));
     let current = lines[start..].join("\n");
     // Cancellation is also offered during generation, retry and quota waits.
@@ -404,7 +432,9 @@ fn derive_waiting_reason(raw: &str) -> &'static str {
 /// Preview enrichment must not downgrade quota/errors/stopped to human input.
 fn apply_preview_waiting_status(v: &mut serde_json::Value, raw: &str) {
     let wr = derive_waiting_reason(raw);
-    if wr.is_empty() || v["running"].as_bool() != Some(true) { return; }
+    if wr.is_empty() || v["running"].as_bool() != Some(true) {
+        return;
+    }
     let previous = v["status"].as_str().unwrap_or("").to_string();
     if wr == "rate_limit" {
         v["status"] = json!("rate_limited");
@@ -413,8 +443,12 @@ fn apply_preview_waiting_status(v: &mut serde_json::Value, raw: &str) {
         if let Some(banner) = crate::backend::adapter::claude_auto_resume_banner(raw) {
             v["credit_limited"] = json!(false);
             if let Some(reset) = crate::api::session_verbs::parse_rate_limit_reset(&banner) {
-                v["rate_limited_until"] = json!(crate::api::session_verbs::effective_rate_limit_reset(
-                    v["rate_limited_until"].as_i64().unwrap_or(0), reset, chrono::Utc::now().timestamp()));
+                v["rate_limited_until"] =
+                    json!(crate::api::session_verbs::effective_rate_limit_reset(
+                        v["rate_limited_until"].as_i64().unwrap_or(0),
+                        reset,
+                        chrono::Utc::now().timestamp()
+                    ));
             }
         }
         if previous != "rate_limited" {
@@ -422,7 +456,10 @@ fn apply_preview_waiting_status(v: &mut serde_json::Value, raw: &str) {
                 previous, verdict = "preview_quota_over_input",
                 "provider quota wait supersedes generic input classification");
         }
-    } else if !matches!(previous.as_str(), "active" | "rate_limited" | "api_error" | "error" | "starting") {
+    } else if !matches!(
+        previous.as_str(),
+        "active" | "rate_limited" | "api_error" | "error" | "starting"
+    ) {
         v["waiting_reason"] = json!(wr);
         v["status"] = json!("waiting");
     }
@@ -518,7 +555,9 @@ fn pane_content_hash(raw: &str) -> Option<u64> {
 /// Record one freshly captured frame. `window_s` bounds both pruning and the
 /// later distinct-count, so an observation can never outlive its relevance.
 pub(crate) fn note_pane_frame(name: &str, raw: &str, now: f64, window_s: f64) {
-    let Some(hash) = pane_content_hash(raw) else { return };
+    let Some(hash) = pane_content_hash(raw) else {
+        return;
+    };
     if let Ok(mut g) = churn_store().lock() {
         let v = g.entry(name.to_string()).or_default();
         v.retain(|(ts, _)| now - *ts <= window_s);
@@ -528,7 +567,9 @@ pub(crate) fn note_pane_frame(name: &str, raw: &str, now: f64, window_s: f64) {
 
 /// ≥ CHURN_MIN_DISTINCT distinct content-frames inside the window.
 fn pane_churn_distinct(name: &str, now: f64, window_s: f64) -> usize {
-    let Ok(g) = churn_store().lock() else { return 0 };
+    let Ok(g) = churn_store().lock() else {
+        return 0;
+    };
     let Some(v) = g.get(name) else { return 0 };
     v.iter()
         .filter(|(ts, _)| now - *ts <= window_s)
@@ -559,8 +600,7 @@ struct ListSnapshot {
 }
 
 fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<ListSnapshot>> =
-        std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ListSnapshot>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
         std::sync::Mutex::new(ListSnapshot {
             store: std::sync::Weak::new(),
@@ -580,8 +620,7 @@ fn build_array_cache() -> &'static std::sync::Mutex<ListSnapshot> {
 /// the pre-create list into the cache — resurrecting exactly the staleness
 /// the invalidation was for.
 static SESSIONS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SESSIONS_RUNTIME_EPOCH: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static SESSIONS_RUNTIME_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Order-independent fingerprint of WHICH workers exist: the set of `*.env`
 /// stems in the sessions dir.
@@ -743,14 +782,19 @@ fn sessions_with_all_panes_dead(stdout: &str) -> std::collections::BTreeSet<Stri
     for l in stdout.lines() {
         // rsplit_once: a session name may contain ':', the flag cannot, so the
         // LAST separator is the field boundary.
-        let Some((name, dead)) = l.trim().rsplit_once(':') else { continue };
+        let Some((name, dead)) = l.trim().rsplit_once(':') else {
+            continue;
+        };
         if name.is_empty() {
             continue;
         }
         let is_live = dead.trim() != "1";
         *live.entry(name.to_string()).or_insert(false) |= is_live;
     }
-    live.into_iter().filter(|(_, any_live)| !*any_live).map(|(n, _)| n).collect()
+    live.into_iter()
+        .filter(|(_, any_live)| !*any_live)
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// One `tmux list-sessions` line -> (name, last-painted, created).
@@ -814,7 +858,9 @@ fn sessions_with_codex_tool_children(
                     reached_root = true;
                     break;
                 }
-                let Some((parent, _, command)) = processes.get(cursor) else { break };
+                let Some((parent, _, command)) = processes.get(cursor) else {
+                    break;
+                };
                 if Path::new(command)
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -920,7 +966,10 @@ pub struct FleetSignals {
 }
 
 fn no_current_hook_report(report: Option<&Value>, started: f64) -> bool {
-    let ts=report.and_then(|r|r.get("ts")).and_then(Value::as_f64).unwrap_or(0.0);
+    let ts = report
+        .and_then(|r| r.get("ts"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     ts <= 0.0 || ts < started
 }
 
@@ -984,7 +1033,7 @@ impl FleetSignals {
             lsc.args(["list-sessions", "-F", format]);
         }
         lsc.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped());
         let tmux_out = run_bounded_output(lsc, probe_budget(), "list-sessions").ok_or(());
         match &tmux_out {
             Ok(o) if !o.status.success() => tracing::warn!(
@@ -1027,7 +1076,13 @@ impl FleetSignals {
             let mut c = std::process::Command::new("tmux");
             if let Some(name) = lane {
                 let pt = Self::lane_probe_target(name);
-                c.args(["list-panes", "-t", &pt, "-F", "#{session_name}:#{pane_dead}"]);
+                c.args([
+                    "list-panes",
+                    "-t",
+                    &pt,
+                    "-F",
+                    "#{session_name}:#{pane_dead}",
+                ]);
             } else {
                 c.args(["list-panes", "-a", "-F", "#{session_name}:#{pane_dead}"]);
             }
@@ -1051,7 +1106,9 @@ impl FleetSignals {
                 let Some((n, a, c)) = parse_list_sessions_line(l) else {
                     continue;
                 };
-                if lane.is_some_and(|lane| n != format!("amux-{lane}")) || all_panes_dead.contains(n) {
+                if lane.is_some_and(|lane| n != format!("amux-{lane}"))
+                    || all_panes_dead.contains(n)
+                {
                     continue;
                 }
                 running.insert(n.to_string());
@@ -1076,9 +1133,20 @@ impl FleetSignals {
             let mut c = std::process::Command::new("tmux");
             if let Some(name) = lane {
                 let pt = Self::lane_probe_target(name);
-                c.args(["list-panes", "-t", &pt, "-F", "#{session_name}:#{pane_pid}:#{pane_current_command}"]);
+                c.args([
+                    "list-panes",
+                    "-t",
+                    &pt,
+                    "-F",
+                    "#{session_name}:#{pane_pid}:#{pane_current_command}",
+                ]);
             } else {
-                c.args(["list-panes", "-a", "-F", "#{session_name}:#{pane_pid}:#{pane_current_command}"]);
+                c.args([
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_name}:#{pane_pid}:#{pane_current_command}",
+                ]);
             }
             c.stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null());
@@ -1096,9 +1164,15 @@ impl FleetSignals {
             for l in o.lines() {
                 // format is session:pid:cmd, but a session NAME can contain ':',
                 // so split from the RIGHT twice: cmd, then pid.
-                let Some((rest, cmd)) = l.rsplit_once(':') else { continue };
-                let Some((sess, pid)) = rest.rsplit_once(':') else { continue };
-                if !running.contains(sess) { continue; }
+                let Some((rest, cmd)) = l.rsplit_once(':') else {
+                    continue;
+                };
+                let Some((sess, pid)) = rest.rsplit_once(':') else {
+                    continue;
+                };
+                if !running.contains(sess) {
+                    continue;
+                }
                 seen.insert(sess.to_string());
                 pane_roots.push((sess.to_string(), pid.trim().to_string()));
                 let cmd = cmd.trim().trim_start_matches('-');
@@ -1181,8 +1255,7 @@ impl FleetSignals {
                             ppids_with_children.insert(ppid.to_string());
                         }
                     }
-                    provider_child_activity =
-                        sessions_with_codex_tool_children(&pane_roots, out);
+                    provider_child_activity = sessions_with_codex_tool_children(&pane_roots, out);
                 }
                 None => tracing::warn!(
                     target: "amux::sessions",
@@ -1229,9 +1302,11 @@ impl FleetSignals {
             }
         }
         let reports = conn
-            .query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT value FROM prefs WHERE key='session_reports'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(serde_json::Value::Null);
@@ -1274,22 +1349,33 @@ impl FleetSignals {
                 }
             }
         }
-        let codex_turns = running.iter()
+        let codex_turns = running
+            .iter()
             .filter_map(|tmux| tmux.strip_prefix("amux-"))
             .filter_map(|name| {
                 crate::api::session_verbs::codex_rollout_turn_signal(name)
                     .map(|signal| (name.to_string(), signal))
             })
             .collect();
-        let hookless_workers = running.iter().filter_map(|tmux| tmux.strip_prefix("amux-"))
+        let hookless_workers = running
+            .iter()
+            .filter_map(|tmux| tmux.strip_prefix("amux-"))
             .filter(|name| {
-                let no_current_report = no_current_hook_report(reports.get(*name), started.get(*name).copied().unwrap_or(0.0));
+                let no_current_report = no_current_hook_report(
+                    reports.get(*name),
+                    started.get(*name).copied().unwrap_or(0.0),
+                );
                 // A fresh Claude worker has no Stop hook yet. Its recognized idle
                 // composer must stay observable after its last repaint ages out.
-                no_current_report || crate::config::parse_env_file(&amux_home().join("sessions").join(format!("{name}.env")))
-                    .get("CC_PROVIDER").is_some_and(|provider| provider == "gemini")
+                no_current_report
+                    || crate::config::parse_env_file(
+                        &amux_home().join("sessions").join(format!("{name}.env")),
+                    )
+                    .get("CC_PROVIDER")
+                    .is_some_and(|provider| provider == "gemini")
             })
-            .map(str::to_string).collect();
+            .map(str::to_string)
+            .collect();
         FleetSignals {
             hookless_workers,
             activity,
@@ -1316,13 +1402,16 @@ impl FleetSignals {
             return None;
         }
         let (status, ex) = self.derive_status_explain(name, true);
-        let structured = ex["report"]["applied"] == true
-            || ex["codex_rollout"]["from_this_life"] == true;
-        let pane_boundary = self.pane_of(name).map(crate::api::session_verbs::pane_is_at_boundary);
+        let structured =
+            ex["report"]["applied"] == true || ex["codex_rollout"]["from_this_life"] == true;
+        let pane_boundary = self
+            .pane_of(name)
+            .map(crate::api::session_verbs::pane_is_at_boundary);
         let measured = structured || pane_boundary.is_some();
         if !structured && status == "idle" && pane_boundary != Some(true) {
             let key = format!("unrecognized-idle-boundary:{name}");
-            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now)) {
+            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now))
+            {
                 tracing::warn!(target: "status_truth", session = name, measured = pane_boundary.is_some(),
                     verdict = "idle_display_without_delivery_boundary",
                     "worker displays idle but no recognized terminal boundary permits queued delivery; inspect provider UI drift");
@@ -1331,7 +1420,8 @@ impl FleetSignals {
         }
         if !structured && status == "idle" && pane_boundary == Some(true) {
             let key = format!("measured-fallback-boundary:{name}");
-            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now)) {
+            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now))
+            {
                 tracing::info!(target: "status_truth", session = name, measured = true, n_considered = 1,
                     verdict = "idle_boundary_measured_without_current_hook",
                     "recognized live composer restores dispatch after absent or expired structured report");
@@ -1339,7 +1429,8 @@ impl FleetSignals {
         }
         if measured && ex["decided_by"] == "codex_stale_active_refused" {
             let key = format!("structured-boundary:{name}");
-            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now)) {
+            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now))
+            {
                 tracing::warn!(target: "status_truth", session = name, measured = true, n_considered = 1,
                     verdict = "boundary_stale_codex_footer_refused",
                     "Workers and steering agree: stale Codex footer has no live heartbeat or child; boundary is idle");
@@ -1378,7 +1469,8 @@ impl FleetSignals {
                 let ts = rep["ts"].as_f64().unwrap_or(0.0);
                 let from_this_life = self.started.get(name).copied().unwrap_or(0.0) <= ts;
                 let live = self.now - ts < env_secs("AMUX_HOOKS_LIVE_S", 1800.0);
-                if from_this_life && live && (st == "active" || st == "waiting" || st == "blocked") {
+                if from_this_life && live && (st == "active" || st == "waiting" || st == "blocked")
+                {
                     return true;
                 }
             }
@@ -1407,11 +1499,17 @@ impl FleetSignals {
     /// lane. Keeping it here also means a caller CANNOT make a parked lane's
     /// scrollback count as evidence by stuffing the map.
     pub fn pane_probe_candidate(&self, name: &str) -> bool {
-        let act = self.activity.get(&format!("amux-{name}")).copied().unwrap_or(0) as f64;
+        let act = self
+            .activity
+            .get(&format!("amux-{name}"))
+            .copied()
+            .unwrap_or(0) as f64;
         let report_current = self.reports.get(name).is_some_and(|r| {
             report_applies(
-                r["state"].as_str().unwrap_or(""), r["ts"].as_f64().unwrap_or(0.0),
-                self.started.get(name).copied().unwrap_or(0.0), self.now,
+                r["state"].as_str().unwrap_or(""),
+                r["ts"].as_f64().unwrap_or(0.0),
+                self.started.get(name).copied().unwrap_or(0.0),
+                self.now,
             )
         });
         // Losing a hook must not also disable its fallback. A quiet worker
@@ -1564,9 +1662,7 @@ impl FleetSignals {
         // return true when their newest boundary is the working row. `None`
         // means this is not structurally a Codex-family pane, so Claude/Gemini
         // retain the existing hooks + bar + churn logic unchanged.
-        if let Some(generating) =
-            crate::backend::adapter::codex_pane_generation_state(raw)
-        {
+        if let Some(generating) = crate::backend::adapter::codex_pane_generation_state(raw) {
             return generating;
         }
         // THE BAR PHRASE ALONE NO LONGER PROVES A GENERATING MAIN TURN
@@ -1726,11 +1822,7 @@ impl FleetSignals {
     /// investigation: nothing could answer "which rule decided, over what
     /// evidence, inside which trust window". Served by
     /// GET /api/sessions/{name}/status-explain.
-    pub fn derive_status_explain(
-        &self,
-        name: &str,
-        running: bool,
-    ) -> (String, serde_json::Value) {
+    pub fn derive_status_explain(&self, name: &str, running: bool) -> (String, serde_json::Value) {
         use serde_json::json;
         let mut ex = serde_json::Map::new();
         if !running {
@@ -1811,7 +1903,9 @@ impl FleetSignals {
         // being judged on the mtime window instead.
         ex.insert(
             "subagents_live".into(),
-            self.reported_subagent_count(name).map(|c| json!(c)).unwrap_or(serde_json::Value::Null),
+            self.reported_subagent_count(name)
+                .map(|c| json!(c))
+                .unwrap_or(serde_json::Value::Null),
         );
         ex.insert(
             "subagent_live_ids".into(),
@@ -1819,7 +1913,10 @@ impl FleetSignals {
                 .map(|ids| json!(ids))
                 .unwrap_or(serde_json::Value::Null),
         );
-        ex.insert("subagents_working".into(), json!(self.subagents_working(name)));
+        ex.insert(
+            "subagents_working".into(),
+            json!(self.subagents_working(name)),
+        );
         // No transition: prefer the PANE over the activity timestamp when the
         // pane is admissible. A timestamp says something painted; the pane
         // says what. `detect_claude_status` returning "" is the documented
@@ -1828,7 +1925,10 @@ impl FleetSignals {
         // which after `capture_panes` means a silent one (idle) or a herdr
         // lane mid-turn (empty capture, and `act` is fresh, so: active).
         let mut status = status.unwrap_or_else(|| {
-            match self.pane_of(name).map(crate::api::session_verbs::detect_claude_status) {
+            match self
+                .pane_of(name)
+                .map(crate::api::session_verbs::detect_claude_status)
+            {
                 Some(v) if v == "active" || v == "waiting" => {
                     decided = "pane";
                     v
@@ -1897,8 +1997,9 @@ impl FleetSignals {
         // the pane both painted inside the window and shows the main turn
         // generating. It can only ever flip idle -> active, so a missed frame
         // costs a late correction, never a false "busy".
-        let idle_gate_open =
-            idle_report_age.map(|a| a > self.contradiction_window()).unwrap_or(true);
+        let idle_gate_open = idle_report_age
+            .map(|a| a > self.contradiction_window())
+            .unwrap_or(true);
         // ...AND A FRESH ONE IS FALSIFIABLE TOO, BY EVIDENCE THE RACE CANNOT
         // MANUFACTURE (AMUX-3896). The window above is one number doing two
         // jobs, and its own doc says so: "one number for both halves because it
@@ -1931,7 +2032,9 @@ impl FleetSignals {
         // Measured in the same window as the claim, never a fixed one: at age
         // 3s only the last 3s of frames may vote, so the evidence can never
         // include the turn the lane just finished.
-        let churn_since_claim = idle_report_age.map(|a| self.pane_churn_since(name, a)).unwrap_or(0);
+        let churn_since_claim = idle_report_age
+            .map(|a| self.pane_churn_since(name, a))
+            .unwrap_or(0);
         let fresh_idle_contradicted = !idle_gate_open
             && churn_since_claim >= CHURN_MIN_SINCE_CLAIM
             && self
@@ -1941,12 +2044,20 @@ impl FleetSignals {
                 == Some("active");
         ex.insert(
             "idle_report_age_s".into(),
-            idle_report_age.map(|a| json!(a)).unwrap_or(serde_json::Value::Null),
+            idle_report_age
+                .map(|a| json!(a))
+                .unwrap_or(serde_json::Value::Null),
         );
         ex.insert("idle_contradiction_gate_open".into(), json!(idle_gate_open));
         ex.insert("churn_since_claim".into(), json!(churn_since_claim));
-        ex.insert("churn_since_claim_threshold".into(), json!(CHURN_MIN_SINCE_CLAIM));
-        ex.insert("fresh_idle_contradicted".into(), json!(fresh_idle_contradicted));
+        ex.insert(
+            "churn_since_claim_threshold".into(),
+            json!(CHURN_MIN_SINCE_CLAIM),
+        );
+        ex.insert(
+            "fresh_idle_contradicted".into(),
+            json!(fresh_idle_contradicted),
+        );
         // Provider-owned background work is not the repaint-race evidence the
         // fresh-idle gate protects against. Claude explicitly says it is
         // waiting for live agents; Codex explicitly says its background
@@ -1963,7 +2074,9 @@ impl FleetSignals {
             status = "active".into();
             decided = "contradiction_provider_background_working";
         }
-        if status == "idle" && (idle_gate_open || fresh_idle_contradicted) && self.pane_says_working(name)
+        if status == "idle"
+            && (idle_gate_open || fresh_idle_contradicted)
+            && self.pane_says_working(name)
         {
             status = "active".into();
             // NAMED APART from the aged path, because the two rest on different
@@ -2045,7 +2158,9 @@ impl FleetSignals {
         // error the other half of this card is about. A subagent count cannot be
         // typed.
         let subagents_reported_live = self.reported_subagent_count(name).is_some_and(|c| c > 0);
-        if status == "idle" && (idle_gate_open || subagents_reported_live) && self.subagents_working(name)
+        if status == "idle"
+            && (idle_gate_open || subagents_reported_live)
+            && self.subagents_working(name)
         {
             status = "active".into();
             // Named apart from the aged path, same reason the pane rules are:
@@ -2073,24 +2188,32 @@ impl FleetSignals {
             let heartbeat_window = env_secs("AMUX_CODEX_TURN_HEARTBEAT_S", 300.0);
             let heartbeat_fresh = heartbeat_age <= heartbeat_window;
             let tool_child_running = self.provider_child_activity.contains(name);
-            let active_is_live = signal.state != "active" || heartbeat_fresh || tool_child_running || self.subagents_working(name);
+            let active_is_live = signal.state != "active"
+                || heartbeat_fresh
+                || tool_child_running
+                || self.subagents_working(name);
             let applied = from_this_life && active_is_live;
-            let pane_waiting = self.pane_of(name)
+            let pane_waiting = self
+                .pane_of(name)
                 .map(crate::api::session_verbs::detect_claude_status)
-                .as_deref() == Some("waiting");
-            ex.insert("codex_rollout".into(), json!({
-                "state": signal.state,
-                "boundary": signal.boundary,
-                "rollout_file": signal.rollout_file,
-                "age_s": (self.now - signal.ts).max(0.0),
-                "heartbeat_age_s": heartbeat_age,
-                "heartbeat_window_s": heartbeat_window,
-                "heartbeat_fresh": heartbeat_fresh,
-                "tool_child_running": tool_child_running,
-                "tool_children_measured": self.provider_children_measured,
-                "from_this_life": from_this_life,
-                "applied": applied,
-            }));
+                .as_deref()
+                == Some("waiting");
+            ex.insert(
+                "codex_rollout".into(),
+                json!({
+                    "state": signal.state,
+                    "boundary": signal.boundary,
+                    "rollout_file": signal.rollout_file,
+                    "age_s": (self.now - signal.ts).max(0.0),
+                    "heartbeat_age_s": heartbeat_age,
+                    "heartbeat_window_s": heartbeat_window,
+                    "heartbeat_fresh": heartbeat_fresh,
+                    "tool_child_running": tool_child_running,
+                    "tool_children_measured": self.provider_children_measured,
+                    "from_this_life": from_this_life,
+                    "applied": applied,
+                }),
+            );
             if applied {
                 if signal.state == "active" && pane_waiting {
                     status = "waiting".into();
@@ -2116,7 +2239,9 @@ impl FleetSignals {
             }
         }
         // Main-turn completion does not complete its live tool/subagents.
-        if status == "idle" && (self.provider_child_activity.contains(name) || subagents_reported_live) {
+        if status == "idle"
+            && (self.provider_child_activity.contains(name) || subagents_reported_live)
+        {
             status = "active".into();
             decided = "structured_live_children";
         }
@@ -2142,7 +2267,12 @@ impl FleetSignals {
             status = "api_error".into();
             decided = "api_error_banner";
         }
-        if self.panes.get(name).and_then(|raw| crate::backend::adapter::claude_auto_resume_banner(raw)).is_some() {
+        if self
+            .panes
+            .get(name)
+            .and_then(|raw| crate::backend::adapter::claude_auto_resume_banner(raw))
+            .is_some()
+        {
             status = "rate_limited".into();
             decided = "provider_auto_resume_quota";
         }
@@ -2150,7 +2280,6 @@ impl FleetSignals {
         (status, serde_json::Value::Object(ex))
     }
 }
-
 
 /// lane -> newest subagent-transcript mtime, in ONE pass over
 /// `~/.claude/projects/<proj>/<conversation>/subagents/`.
@@ -2185,16 +2314,22 @@ pub(crate) fn scan_subagent_activity() -> BTreeMap<String, f64> {
         .join(".claude/projects");
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
     let claims = crate::api::session_verbs::conversation_claims();
-    let Ok(projs) = std::fs::read_dir(&projects) else { return out };
+    let Ok(projs) = std::fs::read_dir(&projects) else {
+        return out;
+    };
     for proj in projs.flatten() {
-        let Ok(entries) = std::fs::read_dir(proj.path()) else { continue };
+        let Ok(entries) = std::fs::read_dir(proj.path()) else {
+            continue;
+        };
         for e in entries.flatten() {
             let conv = e.path();
             if conv.extension().and_then(|x| x.to_str()) != Some("jsonl") {
                 continue;
             }
             let subs = conv.with_extension("").join("subagents");
-            let Ok(files) = std::fs::read_dir(&subs) else { continue };
+            let Ok(files) = std::fs::read_dir(&subs) else {
+                continue;
+            };
             let mut newest = 0.0f64;
             for f in files.flatten() {
                 if !f.file_name().to_string_lossy().ends_with(".jsonl") {
@@ -2295,7 +2430,8 @@ pub(crate) fn is_chrome_line(cl: &str) -> bool {
         return true;
     }
     let lower = cl.to_lowercase();
-    if cl.contains("⏵⏵") || lower.contains("bypass permissions") || lower.contains("plan mode") {
+    if cl.contains("⏵⏵") || lower.contains("bypass permissions") || lower.contains("plan mode")
+    {
         return true;
     }
     // Claude Code's own "shared session" footer card: a fixed boilerplate
@@ -2319,7 +2455,10 @@ pub(crate) fn is_chrome_line(cl: &str) -> bool {
     if n_chars <= 2 {
         return true;
     }
-    let alnum = cl.chars().filter(|c| c.is_alphanumeric() || *c == ' ').count();
+    let alnum = cl
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .count();
     if n_chars > 3 && (alnum as f64) / (n_chars as f64) < 0.3 {
         return true;
     }
@@ -2342,7 +2481,9 @@ fn preview_of(raw: &str) -> (String, Vec<String>) {
         .find(|cl| {
             let lower = cl.to_lowercase();
             let n = cl.chars().count();
-            if n <= 2 { return false; }
+            if n <= 2 {
+                return false;
+            }
             if cl.contains("\u{23f5}\u{23f5}")
                 || lower.contains("bypass permissions")
                 || lower.contains("plan mode")
@@ -2350,7 +2491,10 @@ fn preview_of(raw: &str) -> (String, Vec<String>) {
             {
                 return false;
             }
-            let alnum = cl.chars().filter(|c| c.is_alphanumeric() || *c == ' ').count();
+            let alnum = cl
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == ' ')
+                .count();
             n <= 3 || (alnum as f64) / (n as f64) >= 0.3
         })
         .unwrap_or_default();
@@ -2389,14 +2533,18 @@ fn preview_of(raw: &str) -> (String, Vec<String>) {
 /// correct invalidation. A line without the shape passes through untouched.
 fn strip_elapsed_suffix(line: &str) -> String {
     let trimmed = line.trim_end();
-    let Some(gap) = trimmed.rfind("  ") else { return trimmed.to_string() };
+    let Some(gap) = trimmed.rfind("  ") else {
+        return trimmed.to_string();
+    };
     let suffix = trimmed[gap..].trim_start();
     let is_elapsed = !suffix.is_empty()
         && suffix.split_whitespace().all(|tok| {
             // Char-based, not split_at: a byte index panics on a multi-byte
             // final char, and pane text is arbitrary UTF-8.
             let mut cs = tok.chars();
-            let Some(unit) = cs.next_back() else { return false };
+            let Some(unit) = cs.next_back() else {
+                return false;
+            };
             let num = cs.as_str();
             matches!(unit, 'h' | 'm' | 's')
                 && !num.is_empty()
@@ -2442,8 +2590,9 @@ use crate::config::amux_home;
 /// per request collapsed to ~113.
 fn load_meta(name: &str) -> serde_json::Value {
     fn meta_cache() -> &'static std::sync::Mutex<(f64, BTreeMap<String, serde_json::Value>)> {
-        static CACHE: std::sync::OnceLock<std::sync::Mutex<(f64, BTreeMap<String, serde_json::Value>)>> =
-            std::sync::OnceLock::new();
+        static CACHE: std::sync::OnceLock<
+            std::sync::Mutex<(f64, BTreeMap<String, serde_json::Value>)>,
+        > = std::sync::OnceLock::new();
         CACHE.get_or_init(|| std::sync::Mutex::new((0.0, BTreeMap::new())))
     }
     let now = chrono::Utc::now().timestamp() as f64;
@@ -2454,7 +2603,9 @@ fn load_meta(name: &str) -> serde_json::Value {
             }
         }
     }
-    let p = amux_home().join("sessions").join(format!("{name}.meta.json"));
+    let p = amux_home()
+        .join("sessions")
+        .join(format!("{name}.meta.json"));
     let val = std::fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -2474,7 +2625,10 @@ fn confirmed_active_model(meta: &serde_json::Value, provider: &str) -> String {
     let from_this_life = meta["active_model_confirmed_at"].as_i64().unwrap_or(0)
         >= meta["last_started"].as_i64().unwrap_or(0);
     if same_provider && from_this_life {
-        meta["active_model_confirmed"].as_str().unwrap_or("").to_string()
+        meta["active_model_confirmed"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
     } else {
         String::new()
     }
@@ -2647,7 +2801,11 @@ fn reconcile_runtime_board(
     if runtime_status != "active" {
         return RuntimeBoardTruth {
             status: runtime_status.to_string(),
-            card_id: if claimed_card_valid { claimed.to_string() } else { String::new() },
+            card_id: if claimed_card_valid {
+                claimed.to_string()
+            } else {
+                String::new()
+            },
             card_live: false,
             verdict: "runtime-not-active",
             measured: true,
@@ -2711,7 +2869,9 @@ fn announce_runtime_board_truth(
     static ACTIVE_VIOLATIONS: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> =
         std::sync::OnceLock::new();
     let active = ACTIVE_VIOLATIONS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()));
-    let Ok(mut active) = active.lock() else { return };
+    let Ok(mut active) = active.lock() else {
+        return;
+    };
     if truth.violation {
         if active.insert(session.to_string()) {
             tracing::warn!(
@@ -2744,7 +2904,9 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
     static STICKY_CLAIMS: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> =
         std::sync::OnceLock::new();
     let active = STICKY_CLAIMS.get_or_init(|| std::sync::Mutex::new(BTreeSet::new()));
-    let Ok(mut active) = active.lock() else { return };
+    let Ok(mut active) = active.lock() else {
+        return;
+    };
     if suppressed {
         if active.insert(session.to_string()) {
             tracing::info!(
@@ -2943,8 +3105,7 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     // Snapshot runtime evidence before the SQL read too. If a report lands
     // during the build, tagging pre-report JSON with the post-report epoch
     // would make stale status look current until some later report happened.
-    let runtime_epoch_start =
-        SESSIONS_RUNTIME_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
+    let runtime_epoch_start = SESSIONS_RUNTIME_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     let registry_start = registry_fingerprint();
     // Never reserve one of the request pool's readers while external probes
     // run. Cheap board/status requests remain independent of fleet discovery.
@@ -3138,16 +3299,22 @@ fn retry_after_hint(e: &anyhow::Error) -> Option<&'static str> {
 pub(crate) fn discovery_failure(e: &anyhow::Error, message: String) -> Response {
     match retry_after_hint(e) {
         Some(secs) => {
-            let mut r = (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": message }))).into_response();
+            let mut r = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": message })),
+            )
+                .into_response();
             r.headers_mut().insert(
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static(secs),
             );
             r
         }
-        None => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": message }))).into_response()
-        }
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": message })),
+        )
+            .into_response(),
     }
 }
 
@@ -3286,10 +3453,17 @@ fn filter_isolated_for_peer(json: &str, headers: &axum::http::HeaderMap) -> Stri
         return json.to_string();
     };
     let before = arr.len();
-    arr.retain(|s| !s.get("isolated").and_then(serde_json::Value::as_bool).unwrap_or(false));
+    arr.retain(|s| {
+        !s.get("isolated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    });
     let hidden = before - arr.len();
     if hidden > 0 {
-        tracing::debug!(hidden, "sessions list: isolated worker(s) hidden from a peer caller");
+        tracing::debug!(
+            hidden,
+            "sessions list: isolated worker(s) hidden from a peer caller"
+        );
     }
     serde_json::to_string(&arr).unwrap_or_else(|_| json.to_string())
 }
@@ -3313,7 +3487,13 @@ fn filter_isolated_for_peer(json: &str, headers: &axum::http::HeaderMap) -> Stri
 fn sanitize_session_name(raw: &str) -> String {
     raw.trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -3405,7 +3585,11 @@ pub(crate) fn worker_model_env(
     } else {
         String::new()
     };
-    let cc_model = if is_ollama { model.clone() } else { String::new() };
+    let cc_model = if is_ollama {
+        model.clone()
+    } else {
+        String::new()
+    };
     let resolved_model = if is_ollama {
         model
     } else {
@@ -3482,7 +3666,11 @@ pub async fn create_session_legacy(
     }
     let provider = {
         let p = s("provider");
-        if p.is_empty() { "claude".to_string() } else { p }
+        if p.is_empty() {
+            "claude".to_string()
+        } else {
+            p
+        }
     };
     // Provider-shaped model -> env wiring, factored into worker_model_env so the
     // rule is unit-tested (ethos rule 7) instead of re-derived here, and cannot
@@ -3531,7 +3719,11 @@ pub async fn create_session_legacy(
     // Written only when true: absent means "not isolated", which is what every
     // reader already assumes (`env_flag_on(cfg.get("CC_ISOLATED"))`), so an
     // explicit CC_ISOLATED=0 would add a second spelling of the default.
-    if body.get("isolated").map(crate::api::py_truthy).unwrap_or(false) {
+    if body
+        .get("isolated")
+        .map(crate::api::py_truthy)
+        .unwrap_or(false)
+    {
         pairs.push(("CC_ISOLATED", "1".to_string()));
     }
     // ACCEPT tags AS AN ARRAY, which is what the dashboard and API send
@@ -3739,8 +3931,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         // CC_ARCHIVED=1 is Python's session-archive marker (amux-server.py
         // :20346) — blocked-sessions.txt is QUARANTINE, a different thing;
         // conflating them reported 0 archived against a fleet with dozens.
-        let archived = env.get("CC_ARCHIVED").map(|v| v == "1").unwrap_or(false)
-            || blocked.contains(&name);
+        let archived =
+            env.get("CC_ARCHIVED").map(|v| v == "1").unwrap_or(false) || blocked.contains(&name);
         let paused = env.get("CC_PAUSED").map(|v| v == "1").unwrap_or(false);
         // One label rule with the peer-interaction gate (AMUX-4566).
         let lifecycle = crate::api::session_verbs::lifecycle_label(archived, paused);
@@ -3769,7 +3961,11 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         let confirmed_model = confirmed_active_model(&meta, &configured_provider);
         let last_activity = {
             let send = meta["last_send"].as_i64().unwrap_or(0);
-            if send != 0 { send } else { meta["last_started"].as_i64().unwrap_or(0) }
+            if send != 0 {
+                send
+            } else {
+                meta["last_started"].as_i64().unwrap_or(0)
+            }
         };
         let mut status = signals.derive_status(&name, is_running);
         // A lane parked on a real picker is WAITING, never idle (AMUX-2834). The
@@ -3780,7 +3976,9 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         // Only overrides a NON-active status: if the lane is genuinely
         // generating, that is the more urgent truth and the picker reading is
         // stale by definition.
-        if is_running && matches!(status.as_str(), "idle" | "waiting") && meta["input_required_since"].as_i64().unwrap_or(0) > 0
+        if is_running
+            && matches!(status.as_str(), "idle" | "waiting")
+            && meta["input_required_since"].as_i64().unwrap_or(0) > 0
         {
             status = "waiting".to_string();
         }
@@ -3793,7 +3991,9 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         // 13-lane false positive); here it becomes the state the fleet list
         // shows. Ghost-rescue auto-submits the amux-prefixed subset; this
         // surfaces the rest instead of deciding for a human.
-        if is_running && matches!(status.as_str(), "idle" | "waiting") && meta["composer_stuck_since"].as_i64().unwrap_or(0) > 0
+        if is_running
+            && matches!(status.as_str(), "idle" | "waiting")
+            && meta["composer_stuck_since"].as_i64().unwrap_or(0) > 0
         {
             status = "waiting".to_string();
         }
@@ -3997,19 +4197,35 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
 /// pub(crate): session_verbs' bare GET /api/sessions/{name} serves ONE
 /// record from the SAME array (py:74892 — the natural URL answers the
 /// natural shape).
-fn steering_with_transport(conn: &rusqlite::Connection) -> rusqlite::Result<BTreeMap<String, Vec<Value>>> {
+fn steering_with_transport(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<BTreeMap<String, Vec<Value>>> {
     let mut steering: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    let mut stmt=conn.prepare("SELECT id, session, text, queued_at, COALESCE(guard,''),
+    let mut stmt = conn.prepare(
+        "SELECT id, session, text, queued_at, COALESCE(guard,''),
         (SELECT substr(msg_id,7) FROM send_dedup d WHERE d.session=steering_queue.session
           AND d.receipt_id=steering_queue.id AND d.msg_id LIKE 'steer:%' LIMIT 1)
-        FROM steering_queue ORDER BY queued_at ASC")?;
-    let rows=stmt.query_map([],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
-        r.get::<_,f64>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?)))?;
+        FROM steering_queue ORDER BY queued_at ASC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, f64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<String>>(5)?,
+        ))
+    })?;
     for row in rows {
-        let (id,session,text,queued_at,guard,transport_id)=row?;
-        let system=crate::api::session_verbs::steer_guard_is_system(&guard);
-        let held=crate::api::projects::steering_delivery_hold(conn,&session,&id).unwrap_or_else(|_|Some("project_delivery_identity_unavailable".into()));
-        steering.entry(session).or_default().push(json!({"id":id,"text":text,"queued_at":queued_at,
+        let (id, session, text, queued_at, guard, transport_id) = row?;
+        let system = crate::api::session_verbs::steer_guard_is_system(&guard);
+        let held = crate::api::projects::steering_delivery_hold(conn, &session, &id)
+            .unwrap_or_else(|_| Some("project_delivery_identity_unavailable".into()));
+        steering
+            .entry(session)
+            .or_default()
+            .push(json!({"id":id,"text":text,"queued_at":queued_at,
             "guard":guard,"system":system,"transport_id":transport_id,"blocked_reason":held}));
     }
     Ok(steering)
@@ -4045,7 +4261,11 @@ fn branch_from_head_file(dir: &str) -> Option<String> {
                 let txt = std::fs::read_to_string(&dot).ok()?;
                 let rest = txt.trim().strip_prefix("gitdir:")?.trim().to_string();
                 let p = std::path::PathBuf::from(&rest);
-                if p.is_absolute() { p } else { cur.join(p) }
+                if p.is_absolute() {
+                    p
+                } else {
+                    cur.join(p)
+                }
             } else {
                 dot
             };
@@ -4086,7 +4306,9 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         let model: Option<String> = r.get(3)?;
         let cwd: String = r.get(4)?;
         let live: i64 = r.get(5)?;
-        let lifecycle: String = r.get::<_, Option<String>>(6)?.unwrap_or_else(|| "active".into());
+        let lifecycle: String = r
+            .get::<_, Option<String>>(6)?
+            .unwrap_or_else(|| "active".into());
         let archived = lifecycle == "archived";
         Ok(json!({
             // The Python list's load-bearing fields; ones the Rust side
@@ -4174,8 +4396,9 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 *epic_doing_counts.entry(sess).or_default() += 1;
                 continue;
             }
-            let blocked = issue
-                .is_some_and(|issue| !crate::runtime_jobs::board_drive::doing_is_unblocked(conn, &issue));
+            let blocked = issue.is_some_and(|issue| {
+                !crate::runtime_jobs::board_drive::doing_is_unblocked(conn, &issue)
+            });
             if blocked {
                 *blocked_doing_counts.entry(sess).or_default() += 1;
                 continue;
@@ -4200,8 +4423,8 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         // (_humanSortSessions) reads it to tell a lane you last messaged an
         // hour ago from one you have never messaged; a hardcoded 0 made every
         // session read as the latter.
-        let user_msgs: Vec<(String, String, Option<String>, i64)> = if let Ok(mut messages) =
-            conn.prepare(
+        let user_msgs: Vec<(String, String, Option<String>, i64)> = if let Ok(mut messages) = conn
+            .prepare(
                 "SELECT session, text, card_id, ts FROM cmd_history \
                  WHERE type='user' AND COALESCE(submit_verdict,'') <> 'stuck' \
                  ORDER BY ts ASC, id ASC",
@@ -4243,15 +4466,17 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                     && (amux_core::board::title_from_prompt(&text).is_none()
                         || amux_core::board::is_informational_query(&text));
                 if card_id.is_some() || cardless {
-                    task_markers
-                        .entry(session)
-                        .or_default()
-                        .push((
-                            ts_ms as f64 / 1000.0,
-                            card_id,
-                            cardless,
-                            if cardless { "cardless-prompt" } else { "message-card" }.into(),
-                        ));
+                    task_markers.entry(session).or_default().push((
+                        ts_ms as f64 / 1000.0,
+                        card_id,
+                        cardless,
+                        if cardless {
+                            "cardless-prompt"
+                        } else {
+                            "message-card"
+                        }
+                        .into(),
+                    ));
                 }
             }
         }
@@ -4328,20 +4553,25 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 .then_some(exact_board)
                 .flatten()
                 .or_else(|| {
-                if runtime_status == "active" { None } else { doing.get(&name) }
+                    if runtime_status == "active" {
+                        None
+                    } else {
+                        doing.get(&name)
+                    }
                 });
             let causal_card = marker.and_then(|(_, card, _, _)| card.as_deref());
             // `doing_by_id` intentionally stores (owner, title, updated), so
             // its first tuple field is the lane name—not the card id. Keep the
             // causal marker's ID when it still matches that row, including at
             // an idle boundary; only a markerless WIP fallback reads `doing`.
-            let (claimed_card, claimed_card_valid) = if causal_card.is_some() && exact_board.is_some() {
-                (causal_card, true)
-            } else if runtime_status == "active" {
-                (causal_card, exact_board.is_some())
-            } else {
-                (board.map(|(id, _, _)| id.as_str()), board.is_some())
-            };
+            let (claimed_card, claimed_card_valid) =
+                if causal_card.is_some() && exact_board.is_some() {
+                    (causal_card, true)
+                } else if runtime_status == "active" {
+                    (causal_card, exact_board.is_some())
+                } else {
+                    (board.map(|(id, _, _)| id.as_str()), board.is_some())
+                };
             let doing_count = doing_counts.get(&name).copied().unwrap_or(0);
             let blocked_doing_count = blocked_doing_counts.get(&name).copied().unwrap_or(0);
             let epic_doing_count = epic_doing_counts.get(&name).copied().unwrap_or(0);
@@ -4376,10 +4606,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             let board_updated = board.map(|(_, _, u)| *u).unwrap_or(0);
             let board_fresh = board.is_some() && now - board_updated <= 86400;
             let meta = load_meta(&name);
-            let summary = meta["task_summary"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let summary = meta["task_summary"].as_str().unwrap_or("").to_string();
             let summary_ts = meta["task_summary_ts"].as_i64().unwrap_or(0);
             // GATE THE SUMMARY BY FRESHNESS, exactly as `board_fresh` above gates
             // the board card (Ethan, 2026-08-13: "these task names are out of
@@ -4415,8 +4642,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             // NOT the same as "just now" — the same distinction task_updated
             // makes a few lines below. The client must not render an age it
             // does not have.
-            v["last_board_change_ts"] =
-                json!(last_board_change.get(&name).copied().unwrap_or(0.0));
+            v["last_board_change_ts"] = json!(last_board_change.get(&name).copied().unwrap_or(0.0));
             v["runtime_board"] = json!({
                 "measured": truth.measured,
                 // `status` is the compact client contract; retain the
@@ -4450,21 +4676,24 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             // churned the payload every poll and defeated the response ETag.
             // Quantizing to whole days preserves every rendered value while
             // the byte churn drops from per-request to once a day per row.
-            v["task_board_age"] = json!(
-                if board.is_some() && board_updated != 0 && !board_fresh {
-                    ((now - board_updated).max(0) / 86400) * 86400
-                } else {
-                    0
-                }
-            );
+            v["task_board_age"] = json!(if board.is_some() && board_updated != 0 && !board_fresh {
+                ((now - board_updated).max(0) / 86400) * 86400
+            } else {
+                0
+            });
         }
     }
 
     if let Some(report) = crate::runtime_jobs::board_drive::last_report() {
-        let traces: BTreeMap<&str, &crate::runtime_jobs::board_drive::LaneTrace> =
-            report.lanes.iter().map(|trace| (trace.session.as_str(), trace)).collect();
+        let traces: BTreeMap<&str, &crate::runtime_jobs::board_drive::LaneTrace> = report
+            .lanes
+            .iter()
+            .map(|trace| (trace.session.as_str(), trace))
+            .collect();
         for worker in out.iter_mut() {
-            let Some(name) = worker["name"].as_str() else { continue };
+            let Some(name) = worker["name"].as_str() else {
+                continue;
+            };
             if let Some(trace) = traces.get(name) {
                 worker["board_drive"] = json!({
                     "outcome": trace.outcome,
@@ -4600,7 +4829,9 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
     // Never invents: absent transcript, unreadable file, or records carrying
     // neither field all leave the honest empty in place.
     for v in out.iter_mut() {
-        let Some(name) = v["name"].as_str().map(str::to_string) else { continue };
+        let Some(name) = v["name"].as_str().map(str::to_string) else {
+            continue;
+        };
         let need_model = v["active_model"].as_str().unwrap_or("").is_empty();
         let need_tokens = v["tokens"]["total"].as_u64().unwrap_or(0) == 0;
         if !need_model && !need_tokens {
@@ -4690,10 +4921,19 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             }
         }
         for v in out.iter_mut() {
-            let b = v["dir"].as_str().and_then(|d| branches.get(d)).cloned().unwrap_or_default();
+            let b = v["dir"]
+                .as_str()
+                .and_then(|d| branches.get(d))
+                .cloned()
+                .unwrap_or_default();
             v["branch"] = if v["worktree_active"] == true {
-                json!(v["worktree_path"].as_str().and_then(branch_from_head_file).unwrap_or_default())
-            } else { json!(b) };
+                json!(v["worktree_path"]
+                    .as_str()
+                    .and_then(branch_from_head_file)
+                    .unwrap_or_default())
+            } else {
+                json!(b)
+            };
         }
     }
 
@@ -4735,8 +4975,10 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 .filter(|(_, raw)| !raw.trim().is_empty())
                 .map(|(n, raw)| (n.clone(), raw.clone()))
                 .collect();
-            let names: Vec<(String, bool)> =
-                names.into_iter().filter(|(n, _)| !raws.contains_key(n)).collect();
+            let names: Vec<(String, bool)> = names
+                .into_iter()
+                .filter(|(n, _)| !raws.contains_key(n))
+                .collect();
             for chunk in names.chunks(12) {
                 let handles: Vec<_> = chunk
                     .iter()
@@ -4773,7 +5015,9 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             }
             raws
         };
-        let mut sticky = sticky_preview_cache().lock().unwrap_or_else(|e| e.into_inner());
+        let mut sticky = sticky_preview_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for v in out.iter_mut() {
             if let Some(name) = v["name"].as_str() {
                 if let Some(raw) = raws.get(name) {
@@ -4828,7 +5072,10 @@ pub(crate) mod tests {
     #[test]
     fn fleet_suppression_is_scoped_and_reaches_the_pane_read() {
         let _serial = PROBE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        assert!(!fleet_suppressed(), "precondition: nothing is suppressing yet");
+        assert!(
+            !fleet_suppressed(),
+            "precondition: nothing is suppressing yet"
+        );
 
         {
             let _outer = suppress_fleet_for_test();
@@ -4870,23 +5117,30 @@ pub(crate) mod tests {
 
     #[test]
     fn steering_transport_identity_joins_receipt_and_session_without_text_deduplication() {
-        let conn=crate::db::migrate::test_memdb_pub();
+        let conn = crate::db::migrate::test_memdb_pub();
         // A sessions snapshot uses a read-only pool, including before any send.
-        conn.pragma_update(None,"query_only","ON").unwrap();
+        conn.pragma_update(None, "query_only", "ON").unwrap();
         assert!(steering_with_transport(&conn).unwrap().is_empty());
-        conn.pragma_update(None,"query_only","OFF").unwrap();
+        conn.pragma_update(None, "query_only", "OFF").unwrap();
         conn.execute_batch("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('row-1','lane','same',1,''),('row-2','lane','same',2,''),('system','lane','system',3,'board-drive');
             INSERT INTO send_dedup(session,msg_id,ts,receipt_id) VALUES('lane','steer:transport-1',1,'row-1'),('other','steer:wrong-lane',1,'row-2');").unwrap();
-        conn.pragma_update(None,"query_only","ON").unwrap();
-        let rows=steering_with_transport(&conn).unwrap();
-        assert_eq!(rows["lane"].len(),3);
-        assert_eq!(rows["lane"][0]["transport_id"],"transport-1");
+        conn.pragma_update(None, "query_only", "ON").unwrap();
+        let rows = steering_with_transport(&conn).unwrap();
+        assert_eq!(rows["lane"].len(), 3);
+        assert_eq!(rows["lane"][0]["transport_id"], "transport-1");
         assert!(rows["lane"][1]["transport_id"].is_null());
-        assert_eq!(rows["lane"][2]["system"],true);
-        conn.pragma_update(None,"query_only","OFF").unwrap();
-        conn.execute("ALTER TABLE steering_queue RENAME COLUMN text TO missing_text",[]).unwrap();
-        conn.pragma_update(None,"query_only","ON").unwrap();
-        assert!(steering_with_transport(&conn).is_err(),"unmeasured must not be an empty queue");
+        assert_eq!(rows["lane"][2]["system"], true);
+        conn.pragma_update(None, "query_only", "OFF").unwrap();
+        conn.execute(
+            "ALTER TABLE steering_queue RENAME COLUMN text TO missing_text",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "query_only", "ON").unwrap();
+        assert!(
+            steering_with_transport(&conn).is_err(),
+            "unmeasured must not be an empty queue"
+        );
     }
 
     #[test]
@@ -4903,8 +5157,12 @@ pub(crate) mod tests {
         let _guard = PROBE_TEST_LOCK.lock().unwrap();
         use std::process::{Command, Stdio};
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2"])
-            .stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args([
+            "-c",
+            "head -c 262144 /dev/zero; head -c 262144 /dev/zero >&2",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
         let out = run_bounded_output(cmd, std::time::Duration::from_secs(3), "large-probe")
             .expect("a productive child must not be killed because amux left its output pipe full");
         assert!(out.status.success());
@@ -4918,7 +5176,8 @@ pub(crate) mod tests {
         use std::process::{Command, Stdio};
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "head -c 262144 /dev/zero"])
-            .stdout(Stdio::piped()).stderr(Stdio::null());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         let out = run_bounded(cmd, std::time::Duration::from_secs(3), "large-pane")
             .expect("pane length in lines does not bound bytes in its output pipe");
         assert_eq!(out.as_bytes(), vec![0; 262144]);
@@ -4928,13 +5187,30 @@ pub(crate) mod tests {
     fn bounded_probe_deadline_survives_continuous_output_and_inherited_pipes() {
         let _guard = PROBE_TEST_LOCK.lock().unwrap();
         use std::process::{Command, Stdio};
-        for (script, phase) in [("exec yes x", "child_exit"), ("sleep 2 & printf finished", "pipe_eof")] {
+        for (script, phase) in [
+            ("exec yes x", "child_exit"),
+            ("sleep 2 & printf finished", "pipe_eof"),
+        ] {
             let mut cmd = Command::new("sh");
-            cmd.args(["-c", script]).stdout(Stdio::piped()).stderr(Stdio::null());
+            cmd.args(["-c", script])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
             let started = std::time::Instant::now();
-            assert!(run_bounded_output(cmd, std::time::Duration::from_millis(150), "deadline-probe").is_none());
-            assert!(started.elapsed() < std::time::Duration::from_secs(1), "pipe reads escaped the deadline");
-            let detail = PANE_CAPTURE_LAST_TIMEOUT_DETAIL.lock().unwrap().clone().unwrap();
+            assert!(run_bounded_output(
+                cmd,
+                std::time::Duration::from_millis(150),
+                "deadline-probe"
+            )
+            .is_none());
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "pipe reads escaped the deadline"
+            );
+            let detail = PANE_CAPTURE_LAST_TIMEOUT_DETAIL
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap();
             assert_eq!(detail["phase"], phase);
             assert_eq!(detail["measured"], true);
             assert!(detail["stdout_bytes"].as_u64().unwrap() > 0);
@@ -4986,12 +5262,17 @@ pub(crate) mod tests {
 
         // 1. THE HANG. Must come back on the budget, not in 30s.
         let mut hang = Command::new("sh");
-        hang.args(["-c", "sleep 30"]).stdout(Stdio::piped()).stderr(Stdio::null());
+        hang.args(["-c", "sleep 30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         let before = PANE_CAPTURE_TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed);
         let t0 = std::time::Instant::now();
         let got = run_bounded(hang, budget, "hung-lane");
         let waited = t0.elapsed();
-        assert!(got.is_none(), "a killed capture yields no pane, not a partial one: {got:?}");
+        assert!(
+            got.is_none(),
+            "a killed capture yields no pane, not a partial one: {got:?}"
+        );
         assert!(
             waited < std::time::Duration::from_secs(5),
             "the whole point is the bound: waited {waited:?} for a 300ms budget"
@@ -5008,12 +5289,18 @@ pub(crate) mod tests {
         let after = PANE_CAPTURE_TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(after, before + 1, "the kill must be counted");
         let last = PANE_CAPTURE_LAST_TIMEOUT.lock().unwrap().clone();
-        assert_eq!(last.map(|(l, _)| l).as_deref(), Some("hung-lane"), "and must name the lane");
+        assert_eq!(
+            last.map(|(l, _)| l).as_deref(),
+            Some("hung-lane"),
+            "and must name the lane"
+        );
 
         // 3. THE HAPPY PATH, which is what stops this becoming a capture that
         //    always fails. Output must survive intact.
         let mut ok = Command::new("sh");
-        ok.args(["-c", "printf 'pane line one'"]).stdout(Stdio::piped()).stderr(Stdio::null());
+        ok.args(["-c", "printf 'pane line one'"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         assert_eq!(
             run_bounded(ok, std::time::Duration::from_secs(5), "ok-lane").as_deref(),
             Some("pane line one"),
@@ -5054,7 +5341,10 @@ pub(crate) mod tests {
             ensure_work_dir(fresh.to_str().unwrap()),
             WorkDirOutcome::Created
         ));
-        assert!(fresh.is_dir(), "the directory must actually exist afterwards");
+        assert!(
+            fresh.is_dir(),
+            "the directory must actually exist afterwards"
+        );
 
         // Exists as a FILE: creation is impossible, and "does not exist" was a
         // false statement about this path.
@@ -5110,23 +5400,38 @@ pub(crate) mod tests {
         peer.insert("x-amux-worker", "some-peer".parse().unwrap());
         let peer_view: Vec<serde_json::Value> =
             serde_json::from_str(&filter_isolated_for_peer(&arr, &peer)).unwrap();
-        let peer_names: Vec<&str> =
-            peer_view.iter().filter_map(|s| s["name"].as_str()).collect();
-        assert_eq!(peer_names, vec!["normal"], "peer must not see the isolated worker");
+        let peer_names: Vec<&str> = peer_view
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        assert_eq!(
+            peer_names,
+            vec!["normal"],
+            "peer must not see the isolated worker"
+        );
 
         // The OWNER dashboard sends no worker/session header, so it sees BOTH.
         let owner = axum::http::HeaderMap::new();
         let owner_view: Vec<serde_json::Value> =
             serde_json::from_str(&filter_isolated_for_peer(&arr, &owner)).unwrap();
-        let owner_names: Vec<&str> =
-            owner_view.iter().filter_map(|s| s["name"].as_str()).collect();
-        assert_eq!(owner_names, vec!["normal", "secret"], "owner sees the full fleet");
+        let owner_names: Vec<&str> = owner_view
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        assert_eq!(
+            owner_names,
+            vec!["normal", "secret"],
+            "owner sees the full fleet"
+        );
 
         // An EMPTY worker header is the owner, not a peer (the send guard's same
         // rule), so it must not trigger the strip.
         let mut empty = axum::http::HeaderMap::new();
         empty.insert("x-amux-worker", "".parse().unwrap());
-        assert!(!caller_is_peer(&empty), "an empty header is the owner, not a peer");
+        assert!(
+            !caller_is_peer(&empty),
+            "an empty header is the owner, not a peer"
+        );
     }
 
     /// AMUX-3182: the create modal could not honestly make an ollama worker.
@@ -5152,7 +5457,10 @@ pub(crate) mod tests {
                 "{p} with no model must get NO --model flag, not the Claude default: {flags:?}"
             );
             assert_eq!(ccm, "", "{p} must not get CC_MODEL either: {ccm:?}");
-            assert_eq!(resolved, "", "and nothing to display as its model: {resolved:?}");
+            assert_eq!(
+                resolved, "",
+                "and nothing to display as its model: {resolved:?}"
+            );
         }
 
         // CONTROL 1: an EXPLICIT model still wins, for any provider. The fix
@@ -5173,9 +5481,18 @@ pub(crate) mod tests {
         // Ollama + a chosen model -> CC_MODEL, and NO --model in CC_FLAGS.
         let (flags, model, resolved) = worker_model_env("ollama", "qwen3.8:27b", "", "opus");
         assert_eq!(model, "qwen3.8:27b", "ollama model must be CC_MODEL");
-        assert!(flags.is_empty(), "ollama must not put --model in CC_FLAGS, got {flags:?}");
-        assert!(!flags.contains("--model"), "ollama CC_FLAGS must never carry --model");
-        assert_eq!(resolved, "qwen3.8:27b", "resolved model echoed to the response");
+        assert!(
+            flags.is_empty(),
+            "ollama must not put --model in CC_FLAGS, got {flags:?}"
+        );
+        assert!(
+            !flags.contains("--model"),
+            "ollama CC_FLAGS must never carry --model"
+        );
+        assert_eq!(
+            resolved, "qwen3.8:27b",
+            "resolved model echoed to the response"
+        );
         // POSITIVE CONTROL: identical inputs, codex provider -> the model DOES
         // ride in CC_FLAGS as --model and CC_MODEL is empty. Proves the ollama
         // branch actually diverges rather than the assertions being vacuous.
@@ -5187,7 +5504,10 @@ pub(crate) mod tests {
         // empty (the ollama CC_MODEL path is ollama-only).
         let (mflags, mmodel, mresolved) = worker_model_env("muse", "muse-spark-1.2", "", "opus");
         assert_eq!(mflags, "--model muse-spark-1.2");
-        assert!(mmodel.is_empty(), "muse must not use the ollama CC_MODEL path");
+        assert!(
+            mmodel.is_empty(),
+            "muse must not use the ollama CC_MODEL path"
+        );
         assert_eq!(mresolved, "muse-spark-1.2");
         // THE CLAUDE DEFAULT MUST NOT LEAK (the gtm-researcher-gemini defect one
         // provider over). An unspecified model leaves CC_FLAGS EMPTY so muse's
@@ -5195,7 +5515,10 @@ pub(crate) mod tests {
         // muse-spark-1.3-contributor at launch. "opus" is not a model Meta can
         // be asked for, and a worker created with it would be dead on arrival.
         let (mflags2, mmodel2, mresolved2) = worker_model_env("muse", "", "", "opus");
-        assert!(mflags2.is_empty(), "empty muse model must not become --model opus: {mflags2}");
+        assert!(
+            mflags2.is_empty(),
+            "empty muse model must not become --model opus: {mflags2}"
+        );
         assert!(!mflags2.contains("opus"));
         assert!(mmodel2.is_empty());
         assert!(mresolved2.is_empty());
@@ -5204,22 +5527,44 @@ pub(crate) mod tests {
         // and the CLAUDE default ("opus") must appear NOWHERE. This is the exact
         // incident: pre-fix this produced CC_FLAGS="--model opus".
         let (flags2, model2, resolved2) = worker_model_env("ollama", "", "", "opus");
-        assert!(model2.is_empty(), "no claude default in CC_MODEL for ollama");
-        assert!(flags2.is_empty(), "no claude default in CC_FLAGS for ollama");
-        assert!(!flags2.contains("opus") && resolved2 != "opus", "claude default leaked to an ollama worker");
+        assert!(
+            model2.is_empty(),
+            "no claude default in CC_MODEL for ollama"
+        );
+        assert!(
+            flags2.is_empty(),
+            "no claude default in CC_FLAGS for ollama"
+        );
+        assert!(
+            !flags2.contains("opus") && resolved2 != "opus",
+            "claude default leaked to an ollama worker"
+        );
         // POSITIVE CONTROL: claude + no model DOES apply the default.
         let (dflags, dmodel, _) = worker_model_env("claude", "", "", "opus");
-        assert_eq!(dflags, "--model opus", "claude default must apply to a claude worker");
+        assert_eq!(
+            dflags, "--model opus",
+            "claude default must apply to a claude worker"
+        );
         assert!(dmodel.is_empty());
 
         // Ollama + a NON-default local model is honoured, not dropped.
         let (_, model3, _) = worker_model_env("ollama", "qwen2.5vl:7b", "", "opus");
-        assert_eq!(model3, "qwen2.5vl:7b", "a non-default ollama model pick must be kept");
+        assert_eq!(
+            model3, "qwen2.5vl:7b",
+            "a non-default ollama model pick must be kept"
+        );
 
         // Explicit flags win for both, and ollama keeps its model in CC_MODEL.
-        let (eflags, emodel, _) = worker_model_env("ollama", "qwen3.8:27b", "--sandbox danger", "opus");
-        assert_eq!(eflags, "--sandbox danger", "explicit flags honoured verbatim (AMUX-3114)");
-        assert_eq!(emodel, "qwen3.8:27b", "ollama model stays in CC_MODEL alongside explicit flags");
+        let (eflags, emodel, _) =
+            worker_model_env("ollama", "qwen3.8:27b", "--sandbox danger", "opus");
+        assert_eq!(
+            eflags, "--sandbox danger",
+            "explicit flags honoured verbatim (AMUX-3114)"
+        );
+        assert_eq!(
+            emodel, "qwen3.8:27b",
+            "ollama model stays in CC_MODEL alongside explicit flags"
+        );
     }
 
     /// The 2026-08-13 "task names are out of date" bug: a stale, UNSTAMPED
@@ -5230,24 +5575,38 @@ pub(crate) mod tests {
     fn task_name_precedence_gates_a_stale_summary() {
         // Unstamped/stale summary (summary_fresh=false), no board -> desc, NOT
         // the frozen relic. This is the exact incident.
-        let (name, src) = resolve_task_name(None, false, "Luke's Wilderness Tales", false, "Ethan's personal notes");
+        let (name, src) = resolve_task_name(
+            None,
+            false,
+            "Luke's Wilderness Tales",
+            false,
+            "Ethan's personal notes",
+        );
         assert_eq!(src, "desc", "a stale summary must not be the task name");
         assert_eq!(name, "Ethan's personal notes");
 
         // A FRESH summary still wins over desc — the gate does not kill the
         // feature, only stale values.
-        let (name, src) = resolve_task_name(None, false, "Draft the county reply", true, "role desc");
+        let (name, src) =
+            resolve_task_name(None, false, "Draft the county reply", true, "role desc");
         assert_eq!(src, "summary");
         assert_eq!(name, "Draft the county reply");
 
         // A fresh board card outranks even a fresh summary (the ledger is truth).
-        let (name, src) = resolve_task_name(Some("AMUX-9 do the thing"), true, "a summary", true, "desc");
+        let (name, src) =
+            resolve_task_name(Some("AMUX-9 do the thing"), true, "a summary", true, "desc");
         assert_eq!(src, "board");
         assert_eq!(name, "AMUX-9 do the thing");
 
         // Stale board beats desc but loses to a fresh summary; a stale summary
         // with a stale board falls to the stale board (last resort before desc).
-        let (name, src) = resolve_task_name(Some("old board title"), false, "stale summary", false, "desc");
+        let (name, src) = resolve_task_name(
+            Some("old board title"),
+            false,
+            "stale summary",
+            false,
+            "desc",
+        );
         assert_eq!(src, "board");
         assert_eq!(name, "old board title");
 
@@ -5271,7 +5630,10 @@ pub(crate) mod tests {
         // because its owned board row remains Doing. The newer control turn
         // belongs to this life and cannot implicitly release it.
         let selected = select_runtime_marker(&markers, 15.0, "lane", &doing);
-        assert_eq!(selected.marker.and_then(|marker| marker.1.as_deref()), Some("ATE-92"));
+        assert_eq!(
+            selected.marker.and_then(|marker| marker.1.as_deref()),
+            Some("ATE-92")
+        );
         assert!(!selected.conflicting_live_claims);
         assert!(selected.newer_cardless_suppressed);
 
@@ -5292,9 +5654,13 @@ pub(crate) mod tests {
 
     #[test]
     fn transport_intent_cannot_classify_substantive_work_as_cardless() {
-        assert!(cardless_event_allowed(&json!({"reason": "informational-query"})));
+        assert!(cardless_event_allowed(
+            &json!({"reason": "informational-query"})
+        ));
         assert!(cardless_event_allowed(&json!({"reason": "control-prompt"})));
-        assert!(cardless_event_allowed(&json!({"reason": "peer-coordination"})));
+        assert!(cardless_event_allowed(
+            &json!({"reason": "peer-coordination"})
+        ));
         for invalid in [
             json!({}),
             json!({"reason": "explicit-no-board"}),
@@ -5318,13 +5684,20 @@ pub(crate) mod tests {
         assert!(linked.card_live);
         assert_eq!(linked.verdict, "linked");
         assert!(linked.measured);
-        assert_eq!(linked.n_considered, 3, "an exact claim beats unrelated Doing rows");
+        assert_eq!(
+            linked.n_considered, 3,
+            "an exact claim beats unrelated Doing rows"
+        );
         assert!(!linked.violation);
 
-        let conflicting = reconcile_runtime_board(true, "active", Some("ATE-92"), true, true, false, 2);
+        let conflicting =
+            reconcile_runtime_board(true, "active", Some("ATE-92"), true, true, false, 2);
         assert_eq!(conflicting.status, "unattributed");
         assert_eq!(conflicting.verdict, "active-conflicting-claims");
-        assert!(conflicting.card_id.is_empty(), "two surviving exact claims must stay explicit ambiguity");
+        assert!(
+            conflicting.card_id.is_empty(),
+            "two surviving exact claims must stay explicit ambiguity"
+        );
         assert!(conflicting.violation);
 
         let informational = reconcile_runtime_board(true, "active", None, false, false, true, 0);
@@ -5339,19 +5712,30 @@ pub(crate) mod tests {
         assert!(missing.violation);
         assert_eq!(missing.n_considered, 2);
 
-        let invalid = reconcile_runtime_board(true, "active", Some("ATE-OLD"), false, false, false, 1);
+        let invalid =
+            reconcile_runtime_board(true, "active", Some("ATE-OLD"), false, false, false, 1);
         assert_eq!(invalid.status, "unattributed");
         assert_eq!(invalid.verdict, "active-card-invalid");
-        assert!(invalid.card_id.is_empty(), "a stale/wrong card must not be exposed as live");
+        assert!(
+            invalid.card_id.is_empty(),
+            "a stale/wrong card must not be exposed as live"
+        );
         assert!(invalid.violation);
 
         let idle = reconcile_runtime_board(true, "idle", Some("ATE-92"), true, false, false, 1);
         assert_eq!(idle.status, "idle");
-        assert_eq!(idle.card_id, "ATE-92", "idle WIP remains visible but is not live");
-        assert!(!idle.card_live, "an idle runtime must never highlight its doing card");
+        assert_eq!(
+            idle.card_id, "ATE-92",
+            "idle WIP remains visible but is not live"
+        );
+        assert!(
+            !idle.card_live,
+            "an idle runtime must never highlight its doing card"
+        );
         assert_eq!(idle.verdict, "runtime-not-active");
 
-        let vanished = reconcile_runtime_board(false, "active", Some("ATE-92"), true, false, false, 1);
+        let vanished =
+            reconcile_runtime_board(false, "active", Some("ATE-92"), true, false, false, 1);
         assert!(vanished.status.is_empty());
         assert!(vanished.card_id.is_empty());
         assert!(!vanished.card_live);
@@ -5374,15 +5758,20 @@ pub(crate) mod tests {
         assert!(!sig.subagents_working("primis"));
 
         // A recent write contradicts `idle`.
-        sig.subagent_activity.insert("primis".into(), sig.now - 20.0);
-        assert!(sig.subagents_working("primis"), "a 20s-old subagent write must contradict idle");
+        sig.subagent_activity
+            .insert("primis".into(), sig.now - 20.0);
+        assert!(
+            sig.subagents_working("primis"),
+            "a 20s-old subagent write must contradict idle"
+        );
 
         // THE INCIDENT (2026-08-13): a subagent "still thinking with xhigh
         // effort" writes nothing for a stretch, so its newest transcript write is
         // minutes old while it is very much working. A 90s-old write is PAST the
         // 60s contradiction_window that used to gate this — the lane read IDLE
         // while crunching. It must now read as working (subagent cadence window).
-        sig.subagent_activity.insert("primis".into(), sig.now - 90.0);
+        sig.subagent_activity
+            .insert("primis".into(), sig.now - 90.0);
         assert!(
             sig.subagents_working("primis"),
             "a 90s-old subagent write (a thinking agent between writes) must still contradict idle"
@@ -5390,8 +5779,12 @@ pub(crate) mod tests {
 
         // Stale activity does NOT. An agent that finished an hour ago is not
         // evidence the lane is busy now — the window is generous, not unbounded.
-        sig.subagent_activity.insert("primis".into(), sig.now - 86_400.0);
-        assert!(!sig.subagents_working("primis"), "stale subagent activity must not pin a lane active");
+        sig.subagent_activity
+            .insert("primis".into(), sig.now - 86_400.0);
+        assert!(
+            !sig.subagents_working("primis"),
+            "stale subagent activity must not pin a lane active"
+        );
 
         // Scoped per lane.
         sig.subagent_activity.insert("other".into(), sig.now - 5.0);
@@ -5431,21 +5824,35 @@ pub(crate) mod tests {
         sig.reports = serde_json::json!({
             "primis": {"subagents": {"count": 0, "ts": sig.now - 5.0}}
         });
-        assert!(!sig.subagents_working("primis"), "count 0 with no mtime must read idle");
+        assert!(
+            !sig.subagents_working("primis"),
+            "count 0 with no mtime must read idle"
+        );
 
         // A hookless lane (no `subagents` key) is unaffected: pure mtime fallback.
         sig.reports = serde_json::json!({"gemini-lane": {"state": "active"}});
-        sig.subagent_activity.insert("gemini-lane".into(), sig.now - 30.0);
-        assert!(sig.subagents_working("gemini-lane"), "hookless lane still uses the mtime window");
-        sig.subagent_activity.insert("gemini-lane".into(), sig.now - 86_400.0);
-        assert!(!sig.subagents_working("gemini-lane"), "stale mtime on a hookless lane reads idle");
+        sig.subagent_activity
+            .insert("gemini-lane".into(), sig.now - 30.0);
+        assert!(
+            sig.subagents_working("gemini-lane"),
+            "hookless lane still uses the mtime window"
+        );
+        sig.subagent_activity
+            .insert("gemini-lane".into(), sig.now - 86_400.0);
+        assert!(
+            !sig.subagents_working("gemini-lane"),
+            "stale mtime on a hookless lane reads idle"
+        );
     }
 
     #[test]
     fn status_vocabulary_matches_python() {
         assert_eq!(python_status(r#"{"state":"active","turn":null}"#), "active");
         assert_eq!(python_status(r#"{"state":"idle","since":"x"}"#), "idle");
-        assert_eq!(python_status(r#"{"state":"rate_limited","reset_at":null}"#), "rate_limited");
+        assert_eq!(
+            python_status(r#"{"state":"rate_limited","reset_at":null}"#),
+            "rate_limited"
+        );
         assert_eq!(python_status(r#"{"state":"stopped"}"#), "");
     }
 
@@ -5538,36 +5945,57 @@ pub(crate) mod tests {
         let tmux = "amux-avetest";
         s.running.insert(tmux.into()); // the tmux session exists
         s.shell_only.insert(tmux.into()); // but the pane scrapes as a bare shell
-        assert!(!s.agent_running(tmux), "shell scrape + no report reads not-running");
+        assert!(
+            !s.agent_running(tmux),
+            "shell scrape + no report reads not-running"
+        );
 
         // A fresh active report from THIS life -> running, despite the shell scrape.
         s.started.insert("avetest".into(), s.now - 1000.0);
         s.reports = serde_json::json!({ "avetest": { "state": "active", "ts": s.now - 57.0 } });
-        assert!(s.agent_running(tmux), "a 57s-old active self-report means an agent is running");
+        assert!(
+            s.agent_running(tmux),
+            "a 57s-old active self-report means an agent is running"
+        );
 
         // A PREVIOUS-LIFE report (before the session (re)started) must NOT count.
         s.started.insert("avetest".into(), s.now - 10.0);
-        assert!(!s.agent_running(tmux), "a report from before the last start is a dead life");
+        assert!(
+            !s.agent_running(tmux),
+            "a report from before the last start is a dead life"
+        );
 
         // An idle report does not assert a live agent.
         s.started.insert("avetest".into(), s.now - 1000.0);
         s.reports = serde_json::json!({ "avetest": { "state": "idle", "ts": s.now - 5.0 } });
-        assert!(!s.agent_running(tmux), "an idle report does not make it running");
+        assert!(
+            !s.agent_running(tmux),
+            "an idle report does not make it running"
+        );
 
         // A STALE active report (older than the live window) must NOT count.
         s.reports = serde_json::json!({ "avetest": { "state": "active", "ts": s.now - 4000.0 } });
-        assert!(!s.agent_running(tmux), "a stale active report (>30min) is not a live agent");
+        assert!(
+            !s.agent_running(tmux),
+            "a stale active report (>30min) is not a live agent"
+        );
 
         // The session GONE: no report resurrects it.
         s.running.clear();
         s.reports = serde_json::json!({ "avetest": { "state": "active", "ts": s.now - 5.0 } });
-        assert!(!s.agent_running(tmux), "a report cannot resurrect a lane whose session is gone");
+        assert!(
+            !s.agent_running(tmux),
+            "a report cannot resurrect a lane whose session is gone"
+        );
 
         // Normal case: a non-shell foreground pane is running with no report at all.
         s.running.insert(tmux.into());
         s.shell_only.clear();
         s.reports = serde_json::Value::Null;
-        assert!(s.agent_running(tmux), "a non-shell foreground pane is running");
+        assert!(
+            s.agent_running(tmux),
+            "a non-shell foreground pane is running"
+        );
     }
 
     #[test]
@@ -5589,7 +6017,8 @@ pub(crate) mod tests {
     fn status_prefers_persisted_transition_including_waiting() {
         let mut s = signals();
         s.activity.insert("amux-x".into(), 999_000);
-        s.transitions.insert("x".into(), ("waiting".into(), 999_900.0));
+        s.transitions
+            .insert("x".into(), ("waiting".into(), 999_900.0));
         assert_eq!(s.derive_status("x", true), "waiting");
     }
 
@@ -5598,7 +6027,8 @@ pub(crate) mod tests {
         let mut s = signals();
         // Transition says active, but the pane has been silent 1000s (>120).
         s.activity.insert("amux-x".into(), 999_000);
-        s.transitions.insert("x".into(), ("active".into(), 999_100.0));
+        s.transitions
+            .insert("x".into(), ("active".into(), 999_100.0));
         assert_eq!(s.derive_status("x", true), "idle");
     }
 
@@ -5615,7 +6045,7 @@ pub(crate) mod tests {
     fn self_report_overrides_with_asymmetric_freshness() {
         let mut s = signals();
         s.activity.insert("amux-x".into(), 999_970); // scrape would say active
-        // A 4h-old idle report STILL wins (idle does not decay, py:20233).
+                                                     // A 4h-old idle report STILL wins (idle does not decay, py:20233).
         s.reports = json!({"x": {"state": "idle", "ts": 985_600.0, "source": "stop-hook"}});
         assert_eq!(s.derive_status("x", true), "idle");
         // A 4h-old ACTIVE report licenses nothing (heartbeat lapsed).
@@ -5749,7 +6179,10 @@ pub(crate) mod tests {
         assert_eq!(preview, "Implemented the fix in board.rs");
         // Array: bars (low alnum ratio), the ⏵⏵ line, and <=2-char lines
         // are dropped; ANSI is stripped from kept lines.
-        assert_eq!(lines, vec!["Doing the work", "Implemented the fix in board.rs"]);
+        assert_eq!(
+            lines,
+            vec!["Doing the work", "Implemented the fix in board.rs"]
+        );
     }
 
     #[test]
@@ -5863,9 +6296,9 @@ pub(crate) fn ensure_work_dir(dir: &str) -> WorkDirOutcome {
     }
     match std::fs::create_dir_all(p) {
         Ok(()) => WorkDirOutcome::Created,
-        Err(e) => WorkDirOutcome::Refused(format!(
-            "could not create working directory '{dir}': {e}"
-        )),
+        Err(e) => {
+            WorkDirOutcome::Refused(format!("could not create working directory '{dir}': {e}"))
+        }
     }
 }
 
@@ -5948,7 +6381,8 @@ Claude usage limit reached. Your limit will reset at 3pm.
     fn run(c: &Case) -> String {
         let mut s = signals();
         s.activity.insert("x".into(), 0); // never matched: keys are `amux-<n>`
-        s.activity.insert("amux-x".into(), (s.now - c.activity_age_s) as i64);
+        s.activity
+            .insert("amux-x".into(), (s.now - c.activity_age_s) as i64);
         if c.running {
             s.running.insert("amux-x".into());
         }
@@ -5980,11 +6414,18 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.panes.insert("x".into(), WORKING_BAR.into());
         let (status, ex) = s.derive_status_explain("x", true);
         assert_eq!(status, "active");
-        assert_eq!(ex["decided_by"], json!("contradiction_pane_generating"), "{ex}");
+        assert_eq!(
+            ex["decided_by"],
+            json!("contradiction_pane_generating"),
+            "{ex}"
+        );
         assert_eq!(ex["report"]["state"], json!("idle"));
         assert_eq!(ex["report"]["applied"], json!(true));
         assert!(ex["report"]["age_s"].as_f64().unwrap() > 1000.0, "{ex}");
-        assert!(ex["report"]["trust_window_s"].as_f64().unwrap() > 0.0, "{ex}");
+        assert!(
+            ex["report"]["trust_window_s"].as_f64().unwrap() > 0.0,
+            "{ex}"
+        );
         assert_eq!(ex["idle_contradiction_gate_open"], json!(true), "{ex}");
         assert_eq!(ex["pane"]["says_working"], json!(true), "{ex}");
 
@@ -6011,7 +6452,8 @@ Claude usage limit reached. Your limit will reset at 3pm.
     fn codex_rollout_lifecycle_overrides_stale_tmux_activity() {
         let mut s = signals();
         s.running.insert("amux-codex-lane".into());
-        s.activity.insert("amux-codex-lane".into(), (s.now - 2_500.0) as i64);
+        s.activity
+            .insert("amux-codex-lane".into(), (s.now - 2_500.0) as i64);
         s.started.insert("codex-lane".into(), s.now - 300.0);
         s.codex_turns.insert(
             "codex-lane".into(),
@@ -6030,18 +6472,27 @@ Claude usage limit reached. Your limit will reset at 3pm.
         );
         assert_eq!(ex["decided_by"], json!("codex_rollout"));
         assert_eq!(ex["codex_rollout"]["applied"], json!(true));
-        assert_eq!(ex["codex_rollout"]["rollout_file"], json!("rollout-codex-lane.jsonl"));
+        assert_eq!(
+            ex["codex_rollout"]["rollout_file"],
+            json!("rollout-codex-lane.jsonl")
+        );
 
         let signal = s.codex_turns.get_mut("codex-lane").unwrap();
         signal.state = "idle".into();
         signal.boundary = "task_complete".into();
         let (status, ex) = s.derive_status_explain("codex-lane", true);
-        assert_eq!(status, "idle", "task-complete is the provider's terminal truth: {ex}");
+        assert_eq!(
+            status, "idle",
+            "task-complete is the provider's terminal truth: {ex}"
+        );
         assert_eq!(ex["decided_by"], json!("codex_rollout"));
 
         s.started.insert("codex-lane".into(), s.now - 10.0);
         let (status, ex) = s.derive_status_explain("codex-lane", true);
-        assert_eq!(status, "idle", "pre-restart rollout evidence must be ignored: {ex}");
+        assert_eq!(
+            status, "idle",
+            "pre-restart rollout evidence must be ignored: {ex}"
+        );
         assert_eq!(ex["codex_rollout"]["applied"], json!(false));
         assert_ne!(ex["decided_by"], json!("codex_rollout"));
     }
@@ -6065,7 +6516,8 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.started.insert(lane.into(), s.now - 12.0 * 3600.0);
         // The footer counter repaints every second even though no work event
         // has landed for nearly an hour.
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.panes.insert(lane.into(), frame.into());
         s.reports = json!({lane: {
             "state": "idle", "ts": s.now - 13.0 * 3600.0,
@@ -6083,16 +6535,34 @@ Claude usage limit reached. Your limit will reset at 3pm.
         );
 
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "idle", "stale provider chrome is not a current turn: {ex}");
-        assert_eq!(ex["decided_by"], json!("codex_stale_active_refused"), "{ex}");
+        assert_eq!(
+            status, "idle",
+            "stale provider chrome is not a current turn: {ex}"
+        );
+        assert_eq!(
+            ex["decided_by"],
+            json!("codex_stale_active_refused"),
+            "{ex}"
+        );
         assert_eq!(ex["codex_rollout"]["heartbeat_fresh"], json!(false), "{ex}");
-        assert_eq!(ex["codex_rollout"]["tool_child_running"], json!(false), "{ex}");
+        assert_eq!(
+            ex["codex_rollout"]["tool_child_running"],
+            json!(false),
+            "{ex}"
+        );
         assert_eq!(ex["subagents_live"], json!(0), "{ex}");
 
         s.provider_child_activity.insert(lane.into());
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "active", "a real tool descendant is positive live evidence: {ex}");
-        assert_eq!(ex["codex_rollout"]["tool_child_running"], json!(true), "{ex}");
+        assert_eq!(
+            status, "active",
+            "a real tool descendant is positive live evidence: {ex}"
+        );
+        assert_eq!(
+            ex["codex_rollout"]["tool_child_running"],
+            json!(true),
+            "{ex}"
+        );
     }
 
     #[test]
@@ -6102,11 +6572,18 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.hookless_workers.insert(lane.into());
         let frame = include_str!("../../tests/fixtures/boundary/gemini-0.58-idle.txt");
         s.running.insert(format!("amux-{lane}"));
-        s.activity.insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
         s.panes.insert(lane.into(), frame.into());
-        assert!(s.pane_probe_candidate(lane), "a quiet hookless worker must still be probed");
+        assert!(
+            s.pane_probe_candidate(lane),
+            "a quiet hookless worker must still be probed"
+        );
         assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
-        s.panes.insert(lane.into(), format!("⠙ Thinking... (esc to cancel, 9s)\n{frame}"));
+        s.panes.insert(
+            lane.into(),
+            format!("⠙ Thinking... (esc to cancel, 9s)\n{frame}"),
+        );
         assert_ne!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
         s.panes.insert(lane.into(), String::new());
         assert!(s.turn_boundary_status(lane).is_none());
@@ -6116,18 +6593,28 @@ Claude usage limit reached. Your limit will reset at 3pm.
 
     #[test]
     fn fresh_claude_without_a_hook_keeps_its_quiet_composer_observable() {
-        let mut s=signals(); let lane="fresh-claude";
+        let mut s = signals();
+        let lane = "fresh-claude";
         s.running.insert(format!("amux-{lane}"));
-        s.activity.insert(format!("amux-{lane}"),(s.now-7200.0) as i64);
-        assert!(no_current_hook_report(None,s.now-100.0));
-        assert!(no_current_hook_report(Some(&json!({"state":"idle","ts":s.now-200.0})),s.now-100.0));
-        assert!(!no_current_hook_report(Some(&json!({"state":"idle","ts":s.now-50.0})),s.now-100.0));
-        if no_current_hook_report(None,s.now-100.0) { s.hookless_workers.insert(lane.into()); }
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
+        assert!(no_current_hook_report(None, s.now - 100.0));
+        assert!(no_current_hook_report(
+            Some(&json!({"state":"idle","ts":s.now-200.0})),
+            s.now - 100.0
+        ));
+        assert!(!no_current_hook_report(
+            Some(&json!({"state":"idle","ts":s.now-50.0})),
+            s.now - 100.0
+        ));
+        if no_current_hook_report(None, s.now - 100.0) {
+            s.hookless_workers.insert(lane.into());
+        }
         s.panes.insert(lane.into(),"Claude Code\n❯ \n────────────────────\n⏵⏵ bypass permissions on (shift+tab to cycle) · ← 5 agents".into());
-        assert_eq!(s.turn_boundary_status(lane).as_deref(),Some("idle"));
-        s.panes.insert(lane.into(),WORKING_BAR.into());
-        assert_ne!(s.turn_boundary_status(lane).as_deref(),Some("idle"));
-        s.panes.insert(lane.into(),String::new());
+        assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
+        s.panes.insert(lane.into(), WORKING_BAR.into());
+        assert_ne!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
+        s.panes.insert(lane.into(), String::new());
         assert!(s.turn_boundary_status(lane).is_none());
     }
 
@@ -6138,15 +6625,32 @@ Claude usage limit reached. Your limit will reset at 3pm.
             let lane = "expired-hook";
             s.running.insert(format!("amux-{lane}"));
             s.started.insert(lane.into(), s.now - 200_000.0);
-            s.activity.insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
-            s.reports = json!({lane: {"state":state,"ts":s.now - 100_000.0,"subagents":{"count":0}}});
-            assert!(s.pane_probe_candidate(lane), "expired {state} must not suppress the fallback measurement");
-            assert!(s.turn_boundary_status(lane).is_none(), "an absent capture is not idle evidence");
+            s.activity
+                .insert(format!("amux-{lane}"), (s.now - 7200.0) as i64);
+            s.reports =
+                json!({lane: {"state":state,"ts":s.now - 100_000.0,"subagents":{"count":0}}});
+            assert!(
+                s.pane_probe_candidate(lane),
+                "expired {state} must not suppress the fallback measurement"
+            );
+            assert!(
+                s.turn_boundary_status(lane).is_none(),
+                "an absent capture is not idle evidence"
+            );
             s.panes.insert(lane.into(), "Claude Code\n❯ \n────────────────────\n⏵⏵ bypass permissions on (shift+tab to cycle)".into());
-            assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"), "expired {state}");
+            assert_eq!(
+                s.turn_boundary_status(lane).as_deref(),
+                Some("idle"),
+                "expired {state}"
+            );
             s.panes.insert(lane.into(), WORKING_BAR.into());
-            assert_ne!(s.turn_boundary_status(lane).as_deref(), Some("idle"), "busy {state}");
-            s.panes.insert(lane.into(), "unrecognized provider output".into());
+            assert_ne!(
+                s.turn_boundary_status(lane).as_deref(),
+                Some("idle"),
+                "busy {state}"
+            );
+            s.panes
+                .insert(lane.into(), "unrecognized provider output".into());
             assert!(s.turn_boundary_status(lane).is_none(), "unknown {state}");
             s.panes.insert(lane.into(), String::new());
             assert!(s.turn_boundary_status(lane).is_none(), "empty {state}");
@@ -6162,14 +6666,24 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.started.insert(lane.into(), s.now - 7200.0);
         s.reports = json!({lane: {"state":"idle", "ts":s.now - 7300.0, "subagents":{"count":0}}});
         s.panes.insert(lane.into(), "• Working (1h • esc to interrupt)\n› Ask Codex to do anything\n  gpt-6-astra xhigh · /tmp".into());
-        s.codex_turns.insert(lane.into(), crate::api::session_verbs::CodexTurnSignal {
-            state: "active".into(), ts: s.now - 3600.0, heartbeat_ts: s.now - 3500.0, boundary: "task_started".into(),
-            rollout_file: None,
-        });
+        s.codex_turns.insert(
+            lane.into(),
+            crate::api::session_verbs::CodexTurnSignal {
+                state: "active".into(),
+                ts: s.now - 3600.0,
+                heartbeat_ts: s.now - 3500.0,
+                boundary: "task_started".into(),
+                rollout_file: None,
+            },
+        );
         assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"));
         assert_eq!(s.derive_status(lane, true), "idle");
         s.provider_children_measured = false;
-        assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("active"), "missing process probe must hold");
+        assert_eq!(
+            s.turn_boundary_status(lane).as_deref(),
+            Some("active"),
+            "missing process probe must hold"
+        );
         s.provider_children_measured = true;
         s.codex_turns.get_mut(lane).unwrap().heartbeat_ts = s.now;
         assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("active"));
@@ -6182,11 +6696,21 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.reports[lane]["subagents"]["count"] = json!(0);
         for edge in ["task_complete", "turn_aborted"] {
             let signal = s.codex_turns.get_mut(lane).unwrap();
-            signal.state = "idle".into(); signal.boundary = edge.into();
-            assert_eq!(s.turn_boundary_status(lane).as_deref(), Some("idle"), "{edge}");
+            signal.state = "idle".into();
+            signal.boundary = edge.into();
+            assert_eq!(
+                s.turn_boundary_status(lane).as_deref(),
+                Some("idle"),
+                "{edge}"
+            );
         }
-        s.codex_turns.clear(); s.panes.clear(); s.reports = json!({});
-        assert!(s.turn_boundary_status(lane).is_none(), "no structured or pane evidence is not permission");
+        s.codex_turns.clear();
+        s.panes.clear();
+        s.reports = json!({});
+        assert!(
+            s.turn_boundary_status(lane).is_none(),
+            "no structured or pane evidence is not permission"
+        );
         s.running.clear();
         assert!(s.turn_boundary_status(lane).is_none());
     }
@@ -6226,7 +6750,8 @@ Claude usage limit reached. Your limit will reset at 3pm.
 
   gpt-5.6-sol xhigh · ~/Dev/amux · Main [default]";
         let mut s = signals();
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
         s.started.insert(lane.into(), s.now - 300.0);
         s.reports = json!({lane: {
@@ -6245,9 +6770,16 @@ Claude usage limit reached. Your limit will reset at 3pm.
         );
 
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "idle", "turn_aborted must close the live rollout: {ex}");
+        assert_eq!(
+            status, "idle",
+            "turn_aborted must close the live rollout: {ex}"
+        );
         assert_eq!(ex["decided_by"], json!("codex_rollout"), "{ex}");
-        assert_eq!(ex["codex_rollout"]["boundary"], json!("turn_aborted"), "{ex}");
+        assert_eq!(
+            ex["codex_rollout"]["boundary"],
+            json!("turn_aborted"),
+            "{ex}"
+        );
         assert_eq!(ex["subagents_live"], serde_json::Value::Null, "{ex}");
         assert_eq!(ex["provider_background_working"], json!(false), "{ex}");
         assert_eq!(ex["subagents_working"], json!(false), "{ex}");
@@ -6288,7 +6820,8 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.activity
             .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
-        s.reports = json!({lane: {"state": "idle", "ts": s.now - claim_age_s, "source": "stop-hook"}});
+        s.reports =
+            json!({lane: {"state": "idle", "ts": s.now - claim_age_s, "source": "stop-hook"}});
         s.panes.insert(lane.into(), WORKING_BAR.into());
         s
     }
@@ -6302,9 +6835,20 @@ Claude usage limit reached. Your limit will reset at 3pm.
         let s = fresh_idle_lane(lane, 9.0);
         plant_frames(lane, s.now, &["frame one", "frame two"], 1.0);
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "active", "a generating lane must not read idle: {ex}");
-        assert_eq!(ex["decided_by"], json!("contradiction_pane_redrew_since_claim"), "{ex}");
-        assert_eq!(ex["idle_contradiction_gate_open"], json!(false), "the 60s gate is still shut: {ex}");
+        assert_eq!(
+            status, "active",
+            "a generating lane must not read idle: {ex}"
+        );
+        assert_eq!(
+            ex["decided_by"],
+            json!("contradiction_pane_redrew_since_claim"),
+            "{ex}"
+        );
+        assert_eq!(
+            ex["idle_contradiction_gate_open"],
+            json!(false),
+            "the 60s gate is still shut: {ex}"
+        );
         assert_eq!(ex["fresh_idle_contradicted"], json!(true), "{ex}");
         assert!(ex["churn_since_claim"].as_u64().unwrap() >= 2, "{ex}");
     }
@@ -6328,10 +6872,25 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.reports[lane]["subagents"] =
             json!({"count": 1, "live_ids": ["explore-live"], "ts": s.now - 3.0});
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "active", "a lane waiting on a background agent is not idle: {ex}");
-        assert_eq!(ex["decided_by"], json!("contradiction_subagents_reported_live"), "{ex}");
-        assert_eq!(ex["idle_contradiction_gate_open"], json!(false), "the 60s gate is still shut: {ex}");
-        assert_eq!(ex["subagents_live"], json!(1), "the count is the evidence: {ex}");
+        assert_eq!(
+            status, "active",
+            "a lane waiting on a background agent is not idle: {ex}"
+        );
+        assert_eq!(
+            ex["decided_by"],
+            json!("contradiction_subagents_reported_live"),
+            "{ex}"
+        );
+        assert_eq!(
+            ex["idle_contradiction_gate_open"],
+            json!(false),
+            "the 60s gate is still shut: {ex}"
+        );
+        assert_eq!(
+            ex["subagents_live"],
+            json!(1),
+            "the count is the evidence: {ex}"
+        );
         assert_eq!(ex["subagent_live_ids"], json!(["explore-live"]), "{ex}");
     }
 
@@ -6348,18 +6907,28 @@ Claude usage limit reached. Your limit will reset at 3pm.
     fn a_reported_zero_count_beats_a_warm_subagent_mtime() {
         let mut s = signals();
         let lane = "t4024-finished";
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
         s.reports = json!({lane: {"state": "idle", "ts": s.now - 1076.0, "source": "stop-hook"}});
         // A transcript written 20s ago — well inside the 240s window, and on its
         // own enough to pin the lane WORKING for four minutes.
         s.subagent_activity.insert(lane.into(), s.now - 20.0);
-        assert!(s.subagents_working(lane), "control: the warm mtime alone reads as working");
+        assert!(
+            s.subagents_working(lane),
+            "control: the warm mtime alone reads as working"
+        );
 
         s.reports[lane]["subagents"] = json!({"count": 0, "ts": s.now - 5.0});
-        assert!(!s.subagents_working(lane), "a reported zero must override the warm mtime");
+        assert!(
+            !s.subagents_working(lane),
+            "a reported zero must override the warm mtime"
+        );
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "idle", "finished agents must not pin a lane WORKING: {ex}");
+        assert_eq!(
+            status, "idle",
+            "finished agents must not pin a lane WORKING: {ex}"
+        );
         assert_eq!(ex["subagents_live"], json!(0), "{ex}");
     }
 
@@ -6385,7 +6954,10 @@ CLAUDE-POSTFIX-COMPLETE
                 .into(),
         );
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "idle", "the later terminal boundary must keep the lane idle: {ex}");
+        assert_eq!(
+            status, "idle",
+            "the later terminal boundary must keep the lane idle: {ex}"
+        );
         assert_eq!(ex["provider_background_working"], json!(false), "{ex}");
         assert_eq!(ex["subagents_live"], json!(0), "{ex}");
         assert_eq!(ex["decided_by"], json!("report"), "{ex}");
@@ -6401,8 +6973,15 @@ CLAUDE-POSTFIX-COMPLETE
         let lane = "t4024-hookless";
         s.reports = json!({lane: {"state": "idle", "ts": s.now - 1076.0, "source": "stop-hook"}});
         s.subagent_activity.insert(lane.into(), s.now - 90.0);
-        assert_eq!(s.reported_subagent_count(lane), None, "fixture: this lane reports no count");
-        assert!(s.subagents_working(lane), "a hookless lane must still read its mtime window");
+        assert_eq!(
+            s.reported_subagent_count(lane),
+            None,
+            "fixture: this lane reports no count"
+        );
+        assert!(
+            s.subagents_working(lane),
+            "a hookless lane must still read its mtime window"
+        );
     }
 
     /// THE RACE THE WINDOW EXISTS FOR, WHICH MUST KEEP WINNING. The live
@@ -6433,7 +7012,10 @@ CLAUDE-POSTFIX-COMPLETE
         // Four distinct frames, all older than the 5s-old claim.
         plant_frames(lane, s.now, &["a", "b", "c", "d"], 8.0);
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "idle", "the finished turn's own frames are not evidence: {ex}");
+        assert_eq!(
+            status, "idle",
+            "the finished turn's own frames are not evidence: {ex}"
+        );
         assert_eq!(ex["churn_since_claim"], json!(0), "{ex}");
         assert_eq!(ex["fresh_idle_contradicted"], json!(false), "{ex}");
     }
@@ -6455,7 +7037,10 @@ CLAUDE-POSTFIX-COMPLETE
             "idle",
             "fixture guard: this pane must not detect as active, or the test proves nothing"
         );
-        assert_eq!(status, "idle", "content churn alone is not a generating turn: {ex}");
+        assert_eq!(
+            status, "idle",
+            "content churn alone is not a generating turn: {ex}"
+        );
         assert_eq!(ex["fresh_idle_contradicted"], json!(false), "{ex}");
     }
 
@@ -6477,13 +7062,33 @@ CLAUDE-POSTFIX-COMPLETE
     fn the_boundary_gate_and_the_badge_judge_a_report_the_same_way() {
         let now = 1_787_766_000.0;
         let born = now - 400_000.0; // every lane started well before its report
-        // (state, age_s, applies?, lane it was measured on)
+                                    // (state, age_s, applies?, lane it was measured on)
         let cells: &[(&str, f64, bool, &str)] = &[
-            ("active", 214_567.0, false, "ai-video-editor (59.5h, prompt-hook)"),
-            ("active", 221_356.0, false, "creative-dna (61.4h, tool-hook)"),
-            ("active", 22_952.0, false, "mixpeek-autopilot (6.4h, prompt-hook)"),
+            (
+                "active",
+                214_567.0,
+                false,
+                "ai-video-editor (59.5h, prompt-hook)",
+            ),
+            (
+                "active",
+                221_356.0,
+                false,
+                "creative-dna (61.4h, tool-hook)",
+            ),
+            (
+                "active",
+                22_952.0,
+                false,
+                "mixpeek-autopilot (6.4h, prompt-hook)",
+            ),
             ("active", 3_390.0, false, "primer (56m, tool-hook)"),
-            ("active", 9.0, true, "tubescience — genuinely mid-turn, must stay held"),
+            (
+                "active",
+                9.0,
+                true,
+                "tubescience — genuinely mid-turn, must stay held",
+            ),
             // THE CELLS THAT ISOLATE `stale_active` FROM THE TRUST WINDOW.
             // Every measured lane above is also past the 1800s active window,
             // so without these three the whole `stale_active` leg could be
@@ -6492,17 +7097,57 @@ CLAUDE-POSTFIX-COMPLETE
             // refreshed by the tool hook on every tool call, so silence past
             // the 120s heartbeat means the turn died; without this leg the
             // deadlock window is 30 minutes rather than 2.
-            ("active", 119.0, true, "inside the heartbeat — a real turn between tool calls"),
-            ("active", 121.0, false, "one second past it: the turn stopped reporting"),
-            ("active", 600.0, false, "10m silent but inside the 1800s window — stale_active only"),
+            (
+                "active",
+                119.0,
+                true,
+                "inside the heartbeat — a real turn between tool calls",
+            ),
+            (
+                "active",
+                121.0,
+                false,
+                "one second past it: the turn stopped reporting",
+            ),
+            (
+                "active",
+                600.0,
+                false,
+                "10m silent but inside the 1800s window — stale_active only",
+            ),
             ("idle", 50.0, true, "gtm-research — fresh stop-hook idle"),
-            ("idle", 40_000.0, true, "idle survives silence inside its 24h window"),
+            (
+                "idle",
+                40_000.0,
+                true,
+                "idle survives silence inside its 24h window",
+            ),
             ("idle", 90_000.0, false, "past the 24h idle window"),
             ("waiting", 60.0, true, "a fresh selector report"),
-            ("blocked", 50.0, true, "a fresh blocked report — permission dialog"),
-            ("blocked", 500.0, true, "blocked survives 8 minutes of the 10m window"),
-            ("blocked", 700.0, false, "past the 10m blocked window — stale permission dialog"),
-            ("compacting", 5.0, false, "a state no rule knows is not evidence"),
+            (
+                "blocked",
+                50.0,
+                true,
+                "a fresh blocked report — permission dialog",
+            ),
+            (
+                "blocked",
+                500.0,
+                true,
+                "blocked survives 8 minutes of the 10m window",
+            ),
+            (
+                "blocked",
+                700.0,
+                false,
+                "past the 10m blocked window — stale permission dialog",
+            ),
+            (
+                "compacting",
+                5.0,
+                false,
+                "a state no rule knows is not evidence",
+            ),
         ];
         for (st, age, want, why) in cells {
             let ts = now - age;
@@ -6554,7 +7199,8 @@ CLAUDE-POSTFIX-COMPLETE
         };
         let mut s = signals();
         let lane = "churn-glyphless";
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
         s.reports =
             json!({lane: {"state": "idle", "ts": s.now - 1076.0, "source": "stop-hook-test"}});
@@ -6566,16 +7212,24 @@ CLAUDE-POSTFIX-COMPLETE
             "idle",
             "fixture must be invisible to string detection or this test proves nothing"
         );
-        for (i, f) in
-            [frame("\u{25d0}", 3), frame("\u{25d1}", 4), last.clone()].iter().enumerate()
+        for (i, f) in [frame("\u{25d0}", 3), frame("\u{25d1}", 4), last.clone()]
+            .iter()
+            .enumerate()
         {
             note_pane_frame(lane, f, s.now - 4.0 + i as f64, s.contradiction_window());
         }
         s.panes.insert(lane.into(), last);
         let (status, ex) = s.derive_status_explain(lane, true);
         assert_eq!(status, "active", "{ex}");
-        assert_eq!(ex["decided_by"], json!("contradiction_pane_generating"), "{ex}");
-        assert!(ex["pane"]["churn_distinct_frames"].as_u64().unwrap() >= 3, "{ex}");
+        assert_eq!(
+            ex["decided_by"],
+            json!("contradiction_pane_generating"),
+            "{ex}"
+        );
+        assert!(
+            ex["pane"]["churn_distinct_frames"].as_u64().unwrap() >= 3,
+            "{ex}"
+        );
     }
 
     /// ATE-36, the second live false-WORKING shape. Codex had finished and
@@ -6594,7 +7248,8 @@ Checked, nothing of mine was at risk, no action needed from you.
 › Ask Codex to do anything
   gpt-5.6-sol xhigh · ~/Dev/amux";
         let mut s = signals();
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
         s.reports = json!({lane: {
             "state": "idle", "ts": s.now - 1076.0, "source": "stop-hook-test"
@@ -6603,9 +7258,17 @@ Checked, nothing of mine was at risk, no action needed from you.
         // The preceding turn painted multiple distinct bodies. This is the
         // exact stale history that the live status-explain exposed as
         // churn_distinct_frames=9 after the prompt was already idle.
-        for (i, body) in ["working one", "working two", "working three"].iter().enumerate() {
+        for (i, body) in ["working one", "working two", "working three"]
+            .iter()
+            .enumerate()
+        {
             let frame = format!("{body}\n{completed}");
-            note_pane_frame(lane, &frame, s.now - 4.0 + i as f64, s.contradiction_window());
+            note_pane_frame(
+                lane,
+                &frame,
+                s.now - 4.0 + i as f64,
+                s.contradiction_window(),
+            );
         }
         s.panes.insert(lane.into(), completed.into());
 
@@ -6615,7 +7278,10 @@ Checked, nothing of mine was at risk, no action needed from you.
             "the newest Codex prompt is authoritative over queued-message prose and stale churn: {ex}"
         );
         assert_eq!(ex["pane"]["says_working"], json!(false), "{ex}");
-        assert!(ex["pane"]["churn_distinct_frames"].as_u64().unwrap() >= 3, "{ex}");
+        assert!(
+            ex["pane"]["churn_distinct_frames"].as_u64().unwrap() >= 3,
+            "{ex}"
+        );
     }
 
     /// ATE-38, the opposite live edge of ATE-36. Codex leaves the prompt shell
@@ -6629,7 +7295,8 @@ Checked, nothing of mine was at risk, no action needed from you.
 › Ask Codex to do anything
   gpt-5.6-sol xhigh · ~/Dev/amux";
         let mut s = signals();
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
         s.reports = json!({lane: {
             "state": "idle", "ts": s.now - 1076.0, "source": "stop-hook-test"
@@ -6657,9 +7324,16 @@ Checked, nothing of mine was at risk, no action needed from you.
   gpt-5.6-sol xhigh · ~/Dev/amux";
         s.panes.insert(lane.into(), background_terminal.into());
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "active", "a live Codex background terminal is lane work: {ex}");
+        assert_eq!(
+            status, "active",
+            "a live Codex background terminal is lane work: {ex}"
+        );
         assert_eq!(ex["pane"]["says_working"], json!(true), "{ex}");
-        assert_eq!(ex["decided_by"], json!("contradiction_provider_background_working"), "{ex}");
+        assert_eq!(
+            ex["decided_by"],
+            json!("contradiction_provider_background_working"),
+            "{ex}"
+        );
     }
 
     /// The two controls that keep churn honest: the SAME frame re-captured is
@@ -6676,16 +7350,23 @@ Checked, nothing of mine was at risk, no action needed from you.
         };
         let mut s = signals();
         let lane = "churn-baronly";
-        s.activity.insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
+        s.activity
+            .insert(format!("amux-{lane}"), (s.now - 1.0) as i64);
         s.running.insert(format!("amux-{lane}"));
         s.reports =
             json!({lane: {"state": "idle", "ts": s.now - 1076.0, "source": "stop-hook-test"}});
-        for (i, f) in [bar_frame(1), bar_frame(2), bar_frame(3)].iter().enumerate() {
+        for (i, f) in [bar_frame(1), bar_frame(2), bar_frame(3)]
+            .iter()
+            .enumerate()
+        {
             note_pane_frame(lane, f, s.now - 4.0 + i as f64, s.contradiction_window());
         }
         s.panes.insert(lane.into(), bar_frame(3));
         let (status, ex) = s.derive_status_explain(lane, true);
-        assert_eq!(status, "idle", "bar-only repaints must not read as generation: {ex}");
+        assert_eq!(
+            status, "idle",
+            "bar-only repaints must not read as generation: {ex}"
+        );
         assert_eq!(ex["pane"]["churn_distinct_frames"], json!(1), "{ex}");
     }
 
@@ -6697,7 +7378,10 @@ Checked, nothing of mine was at risk, no action needed from you.
         s.activity.insert("amux-x".into(), (s.now - 1.0) as i64);
         s.running.insert("amux-x".into());
         s.panes.insert("x".into(), WORKING_BAR.into());
-        assert_eq!(s.derive_status("x", true), s.derive_status_explain("x", true).0);
+        assert_eq!(
+            s.derive_status("x", true),
+            s.derive_status_explain("x", true).0
+        );
     }
 
     /// THE TABLE. Every cell is a (report, age, source, pane, activity,
@@ -6881,10 +7565,17 @@ Checked, nothing of mine was at risk, no action needed from you.
         for c in &cases {
             let got = run(c);
             if got != c.expect {
-                failed.push(format!("  {}\n     want {:?}, got {:?}", c.what, c.expect, got));
+                failed.push(format!(
+                    "  {}\n     want {:?}, got {:?}",
+                    c.what, c.expect, got
+                ));
             }
         }
-        assert!(failed.is_empty(), "status truth table:\n{}", failed.join("\n"));
+        assert!(
+            failed.is_empty(),
+            "status truth table:\n{}",
+            failed.join("\n")
+        );
     }
 
     /// THE PROPERTY, over the full product of the table's inputs: a lane whose
@@ -6899,10 +7590,21 @@ Checked, nothing of mine was at risk, no action needed from you.
     fn no_input_combination_reports_idle_over_a_working_pane() {
         let states = ["idle", "active", "waiting", "error", "bogus"];
         let ages = [0.0, 1.0, 59.0, 61.0, 121.0, 1_076.0, 1_801.0, 86_401.0];
-        let sources = ["stop-hook", "tool-hook", "prompt-hook", "stop-hook-test", ""];
+        let sources = [
+            "stop-hook",
+            "tool-hook",
+            "prompt-hook",
+            "stop-hook-test",
+            "",
+        ];
         let working_panes = [WORKING_BAR, WORKING_SPINNER_ONLY];
         let act_ages = [0.0, 1.0, 30.0, 59.0];
-        let transitions = [None, Some(("idle", 10.0)), Some(("active", 900.0)), Some(("waiting", 5.0))];
+        let transitions = [
+            None,
+            Some(("idle", 10.0)),
+            Some(("active", 900.0)),
+            Some(("waiting", 5.0)),
+        ];
         let mut checked = 0usize;
         for pane in working_panes {
             for act in act_ages {
@@ -6977,13 +7679,31 @@ Checked, nothing of mine was at risk, no action needed from you.
             s.panes.insert("x".into(), raw.into());
             s.pane_says_working("x")
         };
-        assert!(verdict(&mut s, WORKING_BAR), "bar `esc to interrupt` is work");
-        assert!(verdict(&mut s, WORKING_SPINNER_ONLY), "a live spinner is work");
-        assert!(!verdict(&mut s, IDLE_WITH_AGENTS), "background agents are NOT the main turn");
+        assert!(
+            verdict(&mut s, WORKING_BAR),
+            "bar `esc to interrupt` is work"
+        );
+        assert!(
+            verdict(&mut s, WORKING_SPINNER_ONLY),
+            "a live spinner is work"
+        );
+        assert!(
+            !verdict(&mut s, IDLE_WITH_AGENTS),
+            "background agents are NOT the main turn"
+        );
         assert!(!verdict(&mut s, SHELL_PROMPT), "a shell is not work");
-        assert!(!verdict(&mut s, WAITING_SELECTOR), "waiting on a human is not work");
-        assert!(!verdict(&mut s, RATE_LIMIT_MENU), "a usage-limit menu is not work");
-        assert!(!verdict(&mut s, HERDR_MID_TURN), "an empty capture proves nothing");
+        assert!(
+            !verdict(&mut s, WAITING_SELECTOR),
+            "waiting on a human is not work"
+        );
+        assert!(
+            !verdict(&mut s, RATE_LIMIT_MENU),
+            "a usage-limit menu is not work"
+        );
+        assert!(
+            !verdict(&mut s, HERDR_MID_TURN),
+            "an empty capture proves nothing"
+        );
     }
 
     /// Evidence must be admissible only while it is FRESH — this is the half
@@ -6994,7 +7714,10 @@ Checked, nothing of mine was at risk, no action needed from you.
         let mut s = signals();
         s.panes.insert("x".into(), WORKING_BAR.into());
         s.activity.insert("amux-x".into(), (s.now - 61.0) as i64);
-        assert!(!s.pane_says_working("x"), "a pane that has not painted in 61s is not evidence");
+        assert!(
+            !s.pane_says_working("x"),
+            "a pane that has not painted in 61s is not evidence"
+        );
         s.activity.insert("amux-x".into(), (s.now - 59.0) as i64);
         assert!(s.pane_says_working("x"), "…and one that painted 59s ago is");
     }
@@ -7010,7 +7733,10 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert!(!s.pane_probe_candidate("x"));
         // A caller stuffs the map anyway (a superset capture, or a test).
         s.panes.insert("x".into(), WORKING_BAR.into());
-        assert!(!s.pane_says_working("x"), "belief must re-apply the capture predicate");
+        assert!(
+            !s.pane_says_working("x"),
+            "belief must re-apply the capture predicate"
+        );
         assert_eq!(s.derive_status("x", true), "idle");
     }
 
@@ -7040,7 +7766,10 @@ Checked, nothing of mine was at risk, no action needed from you.
         )
         .unwrap_or_else(|e| panic!("live db {db} unreadable: {e}"));
         let mut s = FleetSignals::load(&conn);
-        assert!(!s.running.is_empty(), "no tmux fleet visible — probe is broken, not fleet empty");
+        assert!(
+            !s.running.is_empty(),
+            "no tmux fleet visible — probe is broken, not fleet empty"
+        );
         s.capture_panes();
         let probed = s.probed_lanes();
         let mut bad = vec![];
@@ -7068,10 +7797,14 @@ Checked, nothing of mine was at risk, no action needed from you.
                 if p.extension().and_then(|x| x.to_str()) != Some("env") {
                     continue;
                 }
-                let Some(n) = p.file_stem().and_then(|x| x.to_str()) else { continue };
+                let Some(n) = p.file_stem().and_then(|x| x.to_str()) else {
+                    continue;
+                };
                 let running = s.agent_running(&format!("amux-{n}"));
                 let st = s.derive_status(n, running);
-                *hist.entry(if st.is_empty() { "<blank>".into() } else { st }).or_default() += 1;
+                *hist
+                    .entry(if st.is_empty() { "<blank>".into() } else { st })
+                    .or_default() += 1;
             }
         }
         println!(
@@ -7086,7 +7819,11 @@ Checked, nothing of mine was at risk, no action needed from you.
         for l in &bad {
             println!("{l}");
         }
-        assert!(bad.is_empty(), "card/pane disagreements:\n{}", bad.join("\n"));
+        assert!(
+            bad.is_empty(),
+            "card/pane disagreements:\n{}",
+            bad.join("\n")
+        );
     }
 
     /// tmux's `session_activity` does not move for a DETACHED session, and
@@ -7110,7 +7847,10 @@ Checked, nothing of mine was at risk, no action needed from you.
             parse_list_sessions_line("amux-x:200:100:50"),
             Some(("amux-x", Some(200), Some(100)))
         );
-        assert_eq!(parse_list_sessions_line("amux-x:200"), Some(("amux-x", Some(200), None)));
+        assert_eq!(
+            parse_list_sessions_line("amux-x:200"),
+            Some(("amux-x", Some(200), None))
+        );
         assert_eq!(parse_list_sessions_line(""), None);
     }
 
@@ -7138,7 +7878,10 @@ Checked, nothing of mine was at risk, no action needed from you.
         let repo = root.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(branch_from_head_file(repo.to_str().unwrap()).as_deref(), Some("main"));
+        assert_eq!(
+            branch_from_head_file(repo.to_str().unwrap()).as_deref(),
+            Some("main")
+        );
 
         // 2. A SUBDIRECTORY. This is what broke the naive version: 79 of the
         // 100 real directories are nested, have no `.git` of their own, and git
@@ -7169,7 +7912,11 @@ Checked, nothing of mine was at risk, no action needed from you.
         // with the command this replaces.
         let det = root.join("det");
         std::fs::create_dir_all(det.join(".git")).unwrap();
-        std::fs::write(det.join(".git/HEAD"), "9fceb02a1b0e4e1f0000000000000000deadbeef\n").unwrap();
+        std::fs::write(
+            det.join(".git/HEAD"),
+            "9fceb02a1b0e4e1f0000000000000000deadbeef\n",
+        )
+        .unwrap();
         assert_eq!(
             branch_from_head_file(det.to_str().unwrap()).as_deref(),
             Some("HEAD"),
@@ -7192,14 +7939,25 @@ Checked, nothing of mine was at risk, no action needed from you.
     fn elapsed_suffix_strips_the_ticker_and_only_the_ticker() {
         // The live specimens (column-padded status lines).
         assert_eq!(
-            strip_elapsed_suffix("◯ general-purpose  Pricing gala event ticket costs         3m 13s "),
+            strip_elapsed_suffix(
+                "◯ general-purpose  Pricing gala event ticket costs         3m 13s "
+            ),
             "◯ general-purpose  Pricing gala event ticket costs"
         );
-        assert_eq!(strip_elapsed_suffix("◯ x  Fetching pages   47s"), "◯ x  Fetching pages");
+        assert_eq!(
+            strip_elapsed_suffix("◯ x  Fetching pages   47s"),
+            "◯ x  Fetching pages"
+        );
         assert_eq!(strip_elapsed_suffix("task   1h 2m 3s"), "task");
         // Controls: no elapsed shape, or no 2-space gap -> untouched.
-        assert_eq!(strip_elapsed_suffix("deploys in 3m 13s"), "deploys in 3m 13s");
-        assert_eq!(strip_elapsed_suffix("meeting at  9am sharp"), "meeting at  9am sharp");
+        assert_eq!(
+            strip_elapsed_suffix("deploys in 3m 13s"),
+            "deploys in 3m 13s"
+        );
+        assert_eq!(
+            strip_elapsed_suffix("meeting at  9am sharp"),
+            "meeting at  9am sharp"
+        );
         assert_eq!(strip_elapsed_suffix("plain line"), "plain line");
         assert_eq!(strip_elapsed_suffix(""), "");
         // Multi-byte final char must not panic (byte-indexed split would).
@@ -7222,9 +7980,17 @@ Checked, nothing of mine was at risk, no action needed from you.
             ("a".to_string(), "second, later".to_string(), None, 2_000),
         ];
         let out = last_human_ts_from_user_messages(&rows);
-        assert_eq!(out.get("a"), Some(&2_000), "the LATER row for session a must win, not the first");
+        assert_eq!(
+            out.get("a"),
+            Some(&2_000),
+            "the LATER row for session a must win, not the first"
+        );
         assert_eq!(out.get("b"), Some(&5_000));
-        assert_eq!(out.get("c"), None, "a session with no rows must be absent, not zero");
+        assert_eq!(
+            out.get("c"),
+            None,
+            "a session with no rows must be absent, not zero"
+        );
     }
 
     // AMUX-4879. A lane that has moved a card recently and one that has not
@@ -7283,7 +8049,11 @@ Checked, nothing of mine was at risk, no action needed from you.
         let out = last_board_change_from_rows(&rows);
         assert_eq!(out.get("good").copied(), Some(42.0));
         for bad in ["", "zero", "negative", "nan"] {
-            assert_eq!(out.get(bad).copied(), None, "{bad} must not reach the payload");
+            assert_eq!(
+                out.get(bad).copied(),
+                None,
+                "{bad} must not reach the payload"
+            );
         }
     }
 
@@ -7303,17 +8073,35 @@ Checked, nothing of mine was at risk, no action needed from you.
         // human-messaged.
         conn.execute(
             "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
-            rusqlite::params!["hi from a person", "user", "amux-frustrations", 1_000_i64, "ethan"],
+            rusqlite::params![
+                "hi from a person",
+                "user",
+                "amux-frustrations",
+                1_000_i64,
+                "ethan"
+            ],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
-            rusqlite::params!["peer relay, not a person", "session", "amux-frustrations", 9_000_i64, "amux-homepage"],
+            rusqlite::params![
+                "peer relay, not a person",
+                "session",
+                "amux-frustrations",
+                9_000_i64,
+                "amux-homepage"
+            ],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
-            rusqlite::params!["cron fire, not a person", "schedule", "amux-frustrations", 9_500_i64, ""],
+            rusqlite::params![
+                "cron fire, not a person",
+                "schedule",
+                "amux-frustrations",
+                9_500_i64,
+                ""
+            ],
         )
         .unwrap();
 
@@ -7366,7 +8154,9 @@ mod discovery_race_tests {
         let r = discovery_failure(&raced, raced.to_string());
         assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            r.headers().get(axum::http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()),
+            r.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
             Some("1")
         );
         let body = axum::body::to_bytes(r.into_body(), 4096).await.unwrap();
@@ -7385,7 +8175,10 @@ mod discovery_race_tests {
         assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(r.headers().get(axum::http::header::RETRY_AFTER).is_none());
         let db = anyhow::anyhow!("database query failed");
-        assert_eq!(discovery_failure(&db, db.to_string()).status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            discovery_failure(&db, db.to_string()).status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     /// AMUX-4838: an unreadable registry is NOT a changed registry.
@@ -7475,7 +8268,10 @@ mod discovery_race_tests {
         std::fs::create_dir(&populated).unwrap();
         std::fs::write(populated.join("alpha.env"), "X=1").unwrap();
         let one = registry_fingerprint_at(&populated).expect("readable");
-        assert_ne!(one, 0, "a populated registry must not hash to the empty value");
+        assert_ne!(
+            one, 0,
+            "a populated registry must not hash to the empty value"
+        );
 
         // The pair the old `return 0` could not tell apart, stated as the
         // inequality that used to be an equality.
@@ -7517,7 +8313,9 @@ mod discovery_race_tests {
         let r = discovery_failure(&busy, message.clone());
         assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            r.headers().get(axum::http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()),
+            r.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
             Some("5"),
             "a caller that already waited 30s should not be told to retry in 1s; \
              that hint belongs to DiscoveryRaced, whose answer exists a moment later"
@@ -7529,11 +8327,15 @@ mod discovery_race_tests {
         // Wrapped in context, the way sessions-git reports it, still a refusal.
         let wrapped =
             anyhow::Error::from(BuilderBusy { waited_s: 30.0 }).context("session list unavailable");
-        assert_eq!(discovery_failure(&wrapped, format!("{wrapped:#}")).status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            discovery_failure(&wrapped, format!("{wrapped:#}")).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
 
         // THE CONTROL: identical words, untyped, is the shape this card is
         // about and must stay a 500 with no Retry-After.
-        let untyped = anyhow::anyhow!("sessions list temporarily unavailable: builder busy after 30.0s");
+        let untyped =
+            anyhow::anyhow!("sessions list temporarily unavailable: builder busy after 30.0s");
         let r = discovery_failure(&untyped, untyped.to_string());
         assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(r.headers().get(axum::http::header::RETRY_AFTER).is_none());

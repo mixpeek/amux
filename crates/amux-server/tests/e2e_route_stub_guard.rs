@@ -70,7 +70,9 @@ fn a_spec_that_stubs_a_request_routes_through_the_fixture_that_notices_a_dead_st
     let mut guarded = 0usize;
 
     for p in &specs {
-        let Ok(src) = std::fs::read_to_string(p) else { continue };
+        let Ok(src) = std::fs::read_to_string(p) else {
+            continue;
+        };
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         let uses_page = src.contains("page.route(");
         let uses_ctx = src.contains("context.route(");

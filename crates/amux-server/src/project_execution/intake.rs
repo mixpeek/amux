@@ -513,18 +513,39 @@ mod tests {
     }
     #[test]
     fn project_reverify_completed_fanout_uses_durable_owner_after_executor_retirement() {
-        let (dir,state)=fixture();
-        let _home=crate::api::settings::test_env::set_home(dir.path());
-        let task=|key:&str,existing:Option<String>| json!({"key":key,"title":format!("{key} report"),"description":format!("Write {key} report"),"type":"doc","action":if existing.is_some(){"verify"}else{"create"},"existing_id":existing,"next_action":"Inspect and verify report","acceptance_criteria":[format!("{key} report passes")],"needs":[],"dependency_reason":""});
+        let (dir, state) = fixture();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let task = |key: &str, existing: Option<String>| json!({"key":key,"title":format!("{key} report"),"description":format!("Write {key} report"),"type":"doc","action":if existing.is_some(){"verify"}else{"create"},"existing_id":existing,"next_action":"Inspect and verify report","acceptance_criteria":[format!("{key} report passes")],"needs":[],"dependency_reason":""});
         let initial=Arc::new(Fake{calls:Default::default(),response:json!({"kind":"tasks","reason":"two outputs","confidence":0.99,"tasks":[task("alpha",None),task("beta",None)]}).to_string()});
-        let rt=tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(interpret(&state,receipt(&state,"original"),"sample",initial.clone())).unwrap();
-        let rows=bs::project_issues(&state.store.read().unwrap(),"sample").unwrap();
-        assert_eq!(rows.len(),3);
-        let alpha=rows.iter().find(|r|r.title=="alpha report").unwrap().id.clone();
-        let beta=rows.iter().find(|r|r.title=="beta report").unwrap().id.clone();
-        let epic=rows.iter().find(|r|r.item_type=="epic").unwrap().id.clone();
-        let completed=rows.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(interpret(
+            &state,
+            receipt(&state, "original"),
+            "sample",
+            initial.clone(),
+        ))
+        .unwrap();
+        let rows = bs::project_issues(&state.store.read().unwrap(), "sample").unwrap();
+        assert_eq!(rows.len(), 3);
+        let alpha = rows
+            .iter()
+            .find(|r| r.title == "alpha report")
+            .unwrap()
+            .id
+            .clone();
+        let beta = rows
+            .iter()
+            .find(|r| r.title == "beta report")
+            .unwrap()
+            .id
+            .clone();
+        let epic = rows
+            .iter()
+            .find(|r| r.item_type == "epic")
+            .unwrap()
+            .id
+            .clone();
+        let completed = rows.clone();
         state.store.write(move|c| {
             for row in &completed {
                 let worker=if row.item_type=="epic" {None} else if row.title=="alpha report" {Some("retired-alpha")} else {Some("retired-beta")};
@@ -533,33 +554,99 @@ mod tests {
             Ok(WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
-        for worker in ["retired-alpha","retired-beta"] {std::fs::write(dir.path().join(format!("sessions/{worker}.env.reaped")),"CC_PROJECT=sample\nCC_DIR=/tmp/project-repo\n").unwrap();}
-        let next=Arc::new(std::sync::Mutex::new(0));let id=next.clone();
-        state.store.write(move|c| {let (value,out)=receive(c,"sample","distinct-recheck","Recheck alpha report without creating new work").map_err(store::sql_error)?;*id.lock().unwrap()=value;Ok(out)}).unwrap();
-        let id=*next.lock().unwrap();
+        for worker in ["retired-alpha", "retired-beta"] {
+            std::fs::write(
+                dir.path().join(format!("sessions/{worker}.env.reaped")),
+                "CC_PROJECT=sample\nCC_DIR=/tmp/project-repo\n",
+            )
+            .unwrap();
+        }
+        let next = Arc::new(std::sync::Mutex::new(0));
+        let id = next.clone();
+        state
+            .store
+            .write(move |c| {
+                let (value, out) = receive(
+                    c,
+                    "sample",
+                    "distinct-recheck",
+                    "Recheck alpha report without creating new work",
+                )
+                .map_err(store::sql_error)?;
+                *id.lock().unwrap() = value;
+                Ok(out)
+            })
+            .unwrap();
+        let id = *next.lock().unwrap();
         let fake=Arc::new(Fake{calls:Default::default(),response:json!({"kind":"tasks","reason":"reverify existing alpha","confidence":0.99,"tasks":[task("alpha",Some(alpha.clone()))]}).to_string()});
-        rt.block_on(interpret(&state,id,"sample",fake.clone())).unwrap();
-        rt.block_on(interpret(&state,id,"sample",fake.clone())).unwrap();
-        assert_eq!(fake.calls.load(std::sync::atomic::Ordering::SeqCst),1,"no provider retry to repair assignment ownership");
-        let c=state.store.read().unwrap();
-        let a=bs::get_issue(&c,&alpha).unwrap().unwrap();let b=bs::get_issue(&c,&beta).unwrap().unwrap();let parent=bs::get_issue(&c,&epic).unwrap().unwrap();
-        assert_eq!(bs::project_issues(&c,"sample").unwrap().len(),3);
-        assert_eq!(a.status,"backlog");assert_eq!(parent.status,"backlog");assert_eq!(b.status,"verified");
-        assert_eq!(a.session.as_deref(),Some("retired-alpha"));assert_eq!(b.session.as_deref(),Some("retired-beta"));
-        assert_eq!(parent.depends_on.len(),2);assert!(parent.depends_on.contains(&alpha)&&parent.depends_on.contains(&beta));
-        assert_eq!(a.acceptance_criteria.as_deref(),Some("[\"alpha report passes\"]"));
-        for row in [&a,&b,&parent] {assert_eq!(row.project_group.as_deref(),Some("sample"));assert_eq!(row.evidence.as_deref(),Some("retained verified evidence"));}
-        let receipt=receipts(&c,"sample").unwrap().into_iter().find(|r|r["id"]==id).unwrap();
-        assert_eq!(receipt["pending"],false);assert_eq!(receipt["attempts"],1);
+        rt.block_on(interpret(&state, id, "sample", fake.clone()))
+            .unwrap();
+        rt.block_on(interpret(&state, id, "sample", fake.clone()))
+            .unwrap();
+        assert_eq!(
+            fake.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no provider retry to repair assignment ownership"
+        );
+        let c = state.store.read().unwrap();
+        let a = bs::get_issue(&c, &alpha).unwrap().unwrap();
+        let b = bs::get_issue(&c, &beta).unwrap().unwrap();
+        let parent = bs::get_issue(&c, &epic).unwrap().unwrap();
+        assert_eq!(bs::project_issues(&c, "sample").unwrap().len(), 3);
+        assert_eq!(a.status, "backlog");
+        assert_eq!(parent.status, "backlog");
+        assert_eq!(b.status, "verified");
+        assert_eq!(a.session.as_deref(), Some("retired-alpha"));
+        assert_eq!(b.session.as_deref(), Some("retired-beta"));
+        assert_eq!(parent.depends_on.len(), 2);
+        assert!(parent.depends_on.contains(&alpha) && parent.depends_on.contains(&beta));
+        assert_eq!(
+            a.acceptance_criteria.as_deref(),
+            Some("[\"alpha report passes\"]")
+        );
+        for row in [&a, &b, &parent] {
+            assert_eq!(row.project_group.as_deref(), Some("sample"));
+            assert_eq!(row.evidence.as_deref(), Some("retained verified evidence"));
+        }
+        let receipt = receipts(&c, "sample")
+            .unwrap()
+            .into_iter()
+            .find(|r| r["id"] == id)
+            .unwrap();
+        assert_eq!(receipt["pending"], false);
+        assert_eq!(receipt["attempts"], 1);
         drop(c);
-        for (foreign,project) in [("OTHER",Some("other")),("LEGACY",None)] {
+        for (foreign, project) in [("OTHER", Some("other")), ("LEGACY", None)] {
             state.store.write(move|c| {c.execute("INSERT INTO issues(id,title,status,type,project_group,session,created,updated,next_action,acceptance_criteria) VALUES(?1,'alpha report','verified','doc',?2,'retired-alpha',1,1,'Verify report','[\"alpha report passes\"]')",params![foreign,project])?;Ok(WriteOutcome{applied:true,events:vec![]})}).unwrap();
-            let next=Arc::new(std::sync::Mutex::new(0));let got=next.clone();
-            state.store.write(move|c| {let (value,out)=receive(c,"sample",foreign,&format!("Recheck explicit foreign target {foreign}")).map_err(store::sql_error)?;*got.lock().unwrap()=value;Ok(out)}).unwrap();
+            let next = Arc::new(std::sync::Mutex::new(0));
+            let got = next.clone();
+            state
+                .store
+                .write(move |c| {
+                    let (value, out) = receive(
+                        c,
+                        "sample",
+                        foreign,
+                        &format!("Recheck explicit foreign target {foreign}"),
+                    )
+                    .map_err(store::sql_error)?;
+                    *got.lock().unwrap() = value;
+                    Ok(out)
+                })
+                .unwrap();
             let fake=Arc::new(Fake{calls:Default::default(),response:json!({"kind":"tasks","reason":"foreign target negative control","confidence":0.99,"tasks":[task("alpha",Some(foreign.into()))]}).to_string()});
-            assert!(rt.block_on(interpret(&state,*next.lock().unwrap(),"sample",fake.clone())).is_err());
-            let c=state.store.read().unwrap();let row=bs::get_issue(&c,foreign).unwrap().unwrap();
-            assert_eq!(row.status,"verified");assert_eq!(row.project_group.as_deref(),project);
+            assert!(rt
+                .block_on(interpret(
+                    &state,
+                    *next.lock().unwrap(),
+                    "sample",
+                    fake.clone()
+                ))
+                .is_err());
+            let c = state.store.read().unwrap();
+            let row = bs::get_issue(&c, foreign).unwrap().unwrap();
+            assert_eq!(row.status, "verified");
+            assert_eq!(row.project_group.as_deref(), project);
         }
     }
     #[tokio::test]

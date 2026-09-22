@@ -99,10 +99,7 @@ pub enum TurnError {
     /// outcome/time and corrupt every metric derived from turn history
     /// (ethos rule 6: the trail must be real).
     #[error("turn {id} already ended at {ended_at}")]
-    AlreadyEnded {
-        id: TurnId,
-        ended_at: DateTime<Utc>,
-    },
+    AlreadyEnded { id: TurnId, ended_at: DateTime<Utc> },
 }
 
 impl Turn {
@@ -284,7 +281,9 @@ mod tests {
             None,
             t("2026-08-09T12:00:00Z"),
         );
-        let ended = turn.end(TurnOutcome::Completed, t("2026-08-09T12:05:00Z")).unwrap();
+        let ended = turn
+            .end(TurnOutcome::Completed, t("2026-08-09T12:05:00Z"))
+            .unwrap();
         assert!(!ended.is_running());
         assert_eq!(ended.ended_at, Some(t("2026-08-09T12:05:00Z")));
         assert_eq!(ended.outcome, Some(TurnOutcome::Completed));
@@ -415,7 +414,10 @@ mod tests {
 
         let mut edited = fixture();
         edited[2].content = "auth moved to src/authn.rs".into();
-        assert_ne!(ContextSnapshot::build(edited).content_hash, base.content_hash);
+        assert_ne!(
+            ContextSnapshot::build(edited).content_hash,
+            base.content_hash
+        );
 
         // Priority is part of the identity too: same text at a different
         // pipeline position is a DIFFERENT context (the model sees it in a
@@ -460,9 +462,7 @@ mod tests {
             TurnOutcome::Completed,
             TurnOutcome::Interrupted,
             TurnOutcome::RateLimited,
-            TurnOutcome::Failed {
-                reason: "x".into(),
-            },
+            TurnOutcome::Failed { reason: "x".into() },
         ] {
             let json = serde_json::to_string(&o).unwrap();
             let back: TurnOutcome = serde_json::from_str(&json).unwrap();

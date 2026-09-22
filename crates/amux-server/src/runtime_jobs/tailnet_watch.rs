@@ -131,7 +131,13 @@ pub fn classify(r: &Reading, now: f64) -> TailnetHealth {
                 None,
             )
         }
-        None => return mk("unknown", "tailscale reported no backend state".into(), None),
+        None => {
+            return mk(
+                "unknown",
+                "tailscale reported no backend state".into(),
+                None,
+            )
+        }
     }
     if r.self_online == Some(false) {
         return mk(
@@ -153,7 +159,11 @@ pub fn classify(r: &Reading, now: f64) -> TailnetHealth {
         );
     };
     let Some(exp_ts) = parse_rfc3339(expiry) else {
-        return mk("unknown", format!("could not parse key expiry {expiry:?}"), None);
+        return mk(
+            "unknown",
+            format!("could not parse key expiry {expiry:?}"),
+            None,
+        );
     };
     let days = (exp_ts - now) / 86_400.0;
     let rounded = (days * 10.0).round() / 10.0;
@@ -187,7 +197,9 @@ pub fn classify(r: &Reading, now: f64) -> TailnetHealth {
 }
 
 fn parse_rfc3339(s: &str) -> Option<f64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp() as f64)
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp() as f64)
 }
 
 /// Locations to try, in order, before giving up. `tailscale` on PATH covers
@@ -204,13 +216,18 @@ const CANDIDATES: &[&str] = &[
 
 fn read_status() -> Reading {
     for bin in CANDIDATES {
-        let out = std::process::Command::new(bin).args(["status", "--json"]).output();
+        let out = std::process::Command::new(bin)
+            .args(["status", "--json"])
+            .output();
         let Ok(out) = out else { continue };
         if !out.status.success() {
             return Reading {
                 unavailable: Some(format!(
                     "`{bin} status --json` exited {}",
-                    out.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+                    out.status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into())
                 )),
                 ..Default::default()
             };
@@ -222,8 +239,14 @@ fn read_status() -> Reading {
             };
         };
         return Reading {
-            backend_state: v.get("BackendState").and_then(|b| b.as_str()).map(String::from),
-            self_online: v.get("Self").and_then(|s| s.get("Online")).and_then(|o| o.as_bool()),
+            backend_state: v
+                .get("BackendState")
+                .and_then(|b| b.as_str())
+                .map(String::from),
+            self_online: v
+                .get("Self")
+                .and_then(|s| s.get("Online"))
+                .and_then(|o| o.as_bool()),
             key_expiry: v
                 .get("Self")
                 .and_then(|s| s.get("KeyExpiry"))
@@ -247,7 +270,9 @@ fn tick() {
     // Log only when there is something to say. A line every 15 minutes saying
     // the tailnet is fine is the noise that buries the line that matters.
     match health.state {
-        "critical" => tracing::warn!(job = JOB, state = "critical", detail = %health.detail, "tailnet"),
+        "critical" => {
+            tracing::warn!(job = JOB, state = "critical", detail = %health.detail, "tailnet")
+        }
         "warn" => tracing::warn!(job = JOB, state = "warn", detail = %health.detail, "tailnet"),
         _ => tracing::debug!(job = JOB, state = health.state, detail = %health.detail, "tailnet"),
     }
@@ -292,11 +317,23 @@ mod tests {
     fn the_same_node_escalates_as_the_date_approaches() {
         let expiry = "2027-02-13T11:51:57Z";
         let exp = parse_rfc3339(expiry).unwrap();
-        assert_eq!(classify(&running(Some(expiry)), exp - 31.0 * 86_400.0).state, "ok");
-        assert_eq!(classify(&running(Some(expiry)), exp - 29.0 * 86_400.0).state, "warn");
-        assert_eq!(classify(&running(Some(expiry)), exp - 6.0 * 86_400.0).state, "critical");
-        assert_eq!(classify(&running(Some(expiry)), exp + 86_400.0).state, "critical",
-            "already expired is not suddenly fine again");
+        assert_eq!(
+            classify(&running(Some(expiry)), exp - 31.0 * 86_400.0).state,
+            "ok"
+        );
+        assert_eq!(
+            classify(&running(Some(expiry)), exp - 29.0 * 86_400.0).state,
+            "warn"
+        );
+        assert_eq!(
+            classify(&running(Some(expiry)), exp - 6.0 * 86_400.0).state,
+            "critical"
+        );
+        assert_eq!(
+            classify(&running(Some(expiry)), exp + 86_400.0).state,
+            "critical",
+            "already expired is not suddenly fine again"
+        );
     }
 
     /// Expiry DISABLED is the recommended end state for an always-on host. It
@@ -334,7 +371,11 @@ mod tests {
         };
         let h = classify(&r, NOW);
         assert_eq!(h.state, "critical");
-        assert!(h.detail.contains("Stopped"), "the unmapped state reaches the reader: {}", h.detail);
+        assert!(
+            h.detail.contains("Stopped"),
+            "the unmapped state reaches the reader: {}",
+            h.detail
+        );
     }
 
     /// Running-but-offline is its own fault and must not be swallowed by the
@@ -359,7 +400,10 @@ mod tests {
     /// the cache is genuinely untouched here and this assertion is real.
     #[test]
     fn the_cache_starts_empty_so_health_can_omit_the_field() {
-        assert!(cached().is_none(), "an unticked cache must not present a verdict");
+        assert!(
+            cached().is_none(),
+            "an unticked cache must not present a verdict"
+        );
     }
 
     /// The binary lookup must actually find tailscale ON A HOST THAT HAS IT.
@@ -372,7 +416,10 @@ mod tests {
     fn the_binary_lookup_works_where_tailscale_is_installed() {
         let installed = CANDIDATES.iter().any(|c| {
             std::path::Path::new(c).exists()
-                || std::process::Command::new(c).arg("version").output().is_ok_and(|o| o.status.success())
+                || std::process::Command::new(c)
+                    .arg("version")
+                    .output()
+                    .is_ok_and(|o| o.status.success())
         });
         if !installed {
             eprintln!("skipped: no tailscale on this host, so `unknown` is the right answer");
@@ -384,10 +431,17 @@ mod tests {
             "tailscale is installed but read_status could not use it: {:?}",
             r.unavailable
         );
-        assert!(r.backend_state.is_some(), "a working CLI must report a BackendState");
+        assert!(
+            r.backend_state.is_some(),
+            "a working CLI must report a BackendState"
+        );
         // And the verdict built from it must be a real one, not `unknown`.
         let h = classify(&r, crate::runtime_jobs::registry::unix_now());
-        assert_ne!(h.state, "unknown", "live reading classified as unknown: {}", h.detail);
+        assert_ne!(
+            h.state, "unknown",
+            "live reading classified as unknown: {}",
+            h.detail
+        );
         eprintln!("live tailnet verdict: {} — {}", h.state, h.detail);
     }
 }

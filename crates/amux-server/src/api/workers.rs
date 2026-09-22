@@ -103,7 +103,10 @@ pub fn routes() -> Router<AppState> {
         // AF-293. These two were filed under CONFIG READS, and they are not
         // reads: each has a GET arm and a POST arm, so a route mounted with
         // `get` would promote half a verb. Reclassified to RESOURCE in the doc.
-        .route("/{id}/instructions", axum::routing::any(instructions_worker))
+        .route(
+            "/{id}/instructions",
+            axum::routing::any(instructions_worker),
+        )
         .route("/{id}/memory", axum::routing::any(memory_worker))
         // AF-291: the checkout SUB-RESOURCE, grouped rather than promoted flat.
         // Six sibling routes on a worker for one sub-resource is the shape the
@@ -122,8 +125,14 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}/git/dirty", get(git_dirty_worker))
         .route("/{id}/git/push", post(git_push_worker))
         .route("/{id}/git/commit-report", post(git_commit_report_worker))
-        .route("/{id}/git/tracked-files", axum::routing::any(git_tracked_files_worker))
-        .route("/{id}/git/commit-guard", axum::routing::any(git_commit_guard_worker))
+        .route(
+            "/{id}/git/tracked-files",
+            axum::routing::any(git_tracked_files_worker),
+        )
+        .route(
+            "/{id}/git/commit-guard",
+            axum::routing::any(git_commit_guard_worker),
+        )
 }
 
 /// `GET /api/ollama/models` — list locally installed Ollama models by running
@@ -375,10 +384,7 @@ fn default_limit() -> u64 {
 /// List workers, PagedResponse-shaped (Invariant 40: `total`/`truncated`
 /// announce what a page omits instead of silently capping).
 /// Optional `?lifecycle=active` (or comma-separated: `active,paused`) filter.
-pub async fn list_workers(
-    State(state): State<AppState>,
-    Query(p): Query<ListParams>,
-) -> Response {
+pub async fn list_workers(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
     let offset = p.offset;
     let limit = p.limit.clamp(1, 1000);
     let lifecycles: Vec<WorkerLifecycle> = p
@@ -394,7 +400,12 @@ pub async fn list_workers(
         if lifecycles.is_empty() {
             Ok(queries::list_workers(&conn, offset, limit)?)
         } else {
-            Ok(queries::list_workers_by_lifecycle(&conn, &lifecycles, offset, limit)?)
+            Ok(queries::list_workers_by_lifecycle(
+                &conn,
+                &lifecycles,
+                offset,
+                limit,
+            )?)
         }
     })
     .await;
@@ -490,8 +501,12 @@ fn parse_backend_id(raw: &str) -> Result<BackendId, String> {
 /// new permission model — or "remove from the API surface" — a breaking
 /// change to a field with a real, if narrow, consumer). It does not invent
 /// policy; it names the policy that already runs.
-const KNOWN_PERMISSIONS: [&str; 4] =
-    ["deny:*", "deny:execute_task", "unsafe", "claude:skip_permissions"];
+const KNOWN_PERMISSIONS: [&str; 4] = [
+    "deny:*",
+    "deny:execute_task",
+    "unsafe",
+    "claude:skip_permissions",
+];
 
 fn parse_permission(raw: &str) -> Result<String, String> {
     if KNOWN_PERMISSIONS.contains(&raw) {
@@ -520,10 +535,7 @@ fn parse_permissions(raw: &[String]) -> Result<Vec<String>, String> {
 /// only cold when nobody is looking is how a passing test and a broken
 /// product trade places. Wrapper, not per-return calls, for the same reason
 /// as config_patch: a dozen exits, and the next one added would miss it.
-pub async fn create_worker(
-    state: State<AppState>,
-    body: Json<CreateWorkerBody>,
-) -> Response {
+pub async fn create_worker(state: State<AppState>, body: Json<CreateWorkerBody>) -> Response {
     let out = create_worker_inner(state, body).await;
     crate::api::sessions_legacy::invalidate_sessions_cache();
     out
@@ -558,12 +570,7 @@ async fn create_worker_inner(
     let backend = match &body.backend {
         Some(b) => match parse_backend_id(b) {
             Ok(id) => Some(id),
-            Err(e) => {
-                return err(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": e, "backend": b }),
-                )
-            }
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e, "backend": b })),
         },
         None => None,
     };
@@ -675,9 +682,16 @@ pub struct PatchWorkerBody {
 
 enum PatchOutcome {
     NotFound,
-    Conflict { current_version: u64 },
-    Noop { body: Value },
-    Applied { body: Value, change: ConfigChangeResult },
+    Conflict {
+        current_version: u64,
+    },
+    Noop {
+        body: Value,
+    },
+    Applied {
+        body: Value,
+        change: ConfigChangeResult,
+    },
 }
 
 pub async fn patch_worker(
@@ -710,12 +724,7 @@ pub async fn patch_worker(
     let backend: Option<BackendId> = match &body.backend {
         Some(b) => match parse_backend_id(b) {
             Ok(id) => Some(id),
-            Err(e) => {
-                return err(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": e, "backend": b }),
-                )
-            }
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e, "backend": b })),
         },
         None => None,
     };
@@ -751,7 +760,9 @@ pub async fn patch_worker(
                 if expect != row.version {
                     return finish(
                         &slot_w,
-                        PatchOutcome::Conflict { current_version: row.version },
+                        PatchOutcome::Conflict {
+                            current_version: row.version,
+                        },
                         no_write(),
                     );
                 }
@@ -797,7 +808,9 @@ pub async fn patch_worker(
                 // bump, no events.
                 return finish(
                     &slot_w,
-                    PatchOutcome::Noop { body: worker_body(&row) },
+                    PatchOutcome::Noop {
+                        body: worker_body(&row),
+                    },
                     no_write(),
                 );
             }
@@ -831,7 +844,9 @@ pub async fn patch_worker(
                 // elsewhere.
                 return finish(
                     &slot_w,
-                    PatchOutcome::Conflict { current_version: row.version },
+                    PatchOutcome::Conflict {
+                        current_version: row.version,
+                    },
                     no_write(),
                 );
             }
@@ -866,10 +881,13 @@ pub async fn patch_worker(
             // row Starting — is written here so the swap is one auditable
             // event, never an unpaired death and birth.
             if change.session_replaced {
-                if let (Some(old_ses), Some(new_ses)) = (&change.old_session, &change.new_session)
-                {
+                if let (Some(old_ses), Some(new_ses)) = (&change.old_session, &change.new_session) {
                     queries::end_session(conn, old_ses.as_str(), &ExitReason::Replaced, &now_s)?;
-                    events.push(ev(EntityType::Session, old_ses.as_str(), MutationKind::Updated));
+                    events.push(ev(
+                        EntityType::Session,
+                        old_ses.as_str(),
+                        MutationKind::Updated,
+                    ));
                     queries::insert_session(
                         conn,
                         &SessionRow {
@@ -883,14 +901,24 @@ pub async fn patch_worker(
                             exit_reason: None,
                         },
                     )?;
-                    events.push(ev(EntityType::Session, new_ses.as_str(), MutationKind::Created));
+                    events.push(ev(
+                        EntityType::Session,
+                        new_ses.as_str(),
+                        MutationKind::Created,
+                    ));
                 }
             }
 
             finish(
                 &slot_w,
-                PatchOutcome::Applied { body: worker_body(&new_row), change },
-                WriteOutcome { applied: true, events },
+                PatchOutcome::Applied {
+                    body: worker_body(&new_row),
+                    change,
+                },
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
             )
         })
         .await;
@@ -928,10 +956,17 @@ pub async fn patch_worker(
 enum StepOutcome {
     NotFound,
     /// The requested transition is illegal from the current state -> 409.
-    Refused { error: &'static str, state: String },
-    Applied { body: Value },
+    Refused {
+        error: &'static str,
+        state: String,
+    },
+    Applied {
+        body: Value,
+    },
     /// Already in the requested state -> honest no-op (Invariant 37).
-    Noop { body: Value },
+    Noop {
+        body: Value,
+    },
 }
 
 /// POST /api/workers/{id}/start — 202 Accepted. Writes the durable record of
@@ -947,10 +982,19 @@ pub async fn start_worker(
     Path(key): Path<String>,
 ) -> Response {
     // Lifecycle refusal is independent of host capacity and must remain stable.
-    match state.store.read().and_then(|conn| Ok(queries::get_worker(&conn, &key)?)) {
-        Ok(Some(row)) if !row.lifecycle.can_start() => return err(StatusCode::CONFLICT,
-            json!({"error":"worker must be active before starting; resume it first", "lifecycle":row.lifecycle.as_str()})),
-        Ok(_) => {}, Err(e) => return internal(e),
+    match state
+        .store
+        .read()
+        .and_then(|conn| Ok(queries::get_worker(&conn, &key)?))
+    {
+        Ok(Some(row)) if !row.lifecycle.can_start() => {
+            return err(
+                StatusCode::CONFLICT,
+                json!({"error":"worker must be active before starting; resume it first", "lifecycle":row.lifecycle.as_str()}),
+            )
+        }
+        Ok(_) => {}
+        Err(e) => return internal(e),
     }
     // Host admission check BEFORE any state is written (AMUX-3396 follow-through).
     //
@@ -1050,7 +1094,10 @@ pub async fn start_worker(
             let events = vec![
                 ev_worker(
                     &after,
-                    MutationKind::StatusChanged { from: "stopped".into(), to: "starting".into() },
+                    MutationKind::StatusChanged {
+                        from: "stopped".into(),
+                        to: "starting".into(),
+                    },
                 ),
                 ev(EntityType::Session, ses_id.as_str(), MutationKind::Created),
             ];
@@ -1064,7 +1111,10 @@ pub async fn start_worker(
                         "state": "starting",
                     }),
                 },
-                WriteOutcome { applied: true, events },
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
             )
         })
         .await;
@@ -1080,15 +1130,23 @@ pub async fn start_worker(
     // rather than routing around it, and does not touch session_verbs.rs's
     // own separate dispatch of admission-free real starts.
     if write.is_ok() {
-        let is_not_found =
-            matches!(*slot.lock().expect("outcome slot poisoned"), Some(StepOutcome::NotFound));
+        let is_not_found = matches!(
+            *slot.lock().expect("outcome slot poisoned"),
+            Some(StepOutcome::NotFound)
+        );
         if is_not_found && crate::api::session_verbs::lane_env_exists(&key) {
             let (ok, msg) = crate::api::session_verbs::start_session(&state, &key, "", false).await;
             return if ok {
-                (StatusCode::ACCEPTED, Json(json!({ "ok": true, "message": msg, "worker_id": key })))
+                (
+                    StatusCode::ACCEPTED,
+                    Json(json!({ "ok": true, "message": msg, "worker_id": key })),
+                )
                     .into_response()
             } else {
-                err(StatusCode::CONFLICT, json!({ "ok": false, "error": msg, "worker_id": key }))
+                err(
+                    StatusCode::CONFLICT,
+                    json!({ "ok": false, "error": msg, "worker_id": key }),
+                )
             };
         }
     }
@@ -1141,7 +1199,10 @@ pub async fn stop_worker(State(state): State<AppState>, Path(key): Path<String>)
                 StepOutcome::Applied {
                     body: json!({ "applied": true, "state": "stopped", "worker_id": row.id }),
                 },
-                WriteOutcome { applied: true, events },
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
             )
         })
         .await;
@@ -1152,11 +1213,16 @@ pub async fn stop_worker(State(state): State<AppState>, Path(key): Path<String>)
     // stop a NAMED lane -- the same thing `amux stop <lane>` already does
     // through a different path.
     if write.is_ok() {
-        let is_not_found =
-            matches!(*slot.lock().expect("outcome slot poisoned"), Some(StepOutcome::NotFound));
+        let is_not_found = matches!(
+            *slot.lock().expect("outcome slot poisoned"),
+            Some(StepOutcome::NotFound)
+        );
         if is_not_found && crate::api::session_verbs::lane_env_exists(&key) {
             return match crate::api::session_verbs::stop_for_pause(&state, &key).await {
-                Ok(()) => (StatusCode::OK, Json(json!({ "applied": true, "state": "stopped", "worker_id": key })))
+                Ok(()) => (
+                    StatusCode::OK,
+                    Json(json!({ "applied": true, "state": "stopped", "worker_id": key })),
+                )
                     .into_response(),
                 Err(e) => err(
                     StatusCode::BAD_GATEWAY,
@@ -1208,7 +1274,9 @@ async fn delete_worker_inner(State(state): State<AppState>, Path(key): Path<Stri
             after.updated_at = now_s;
             finish(
                 &slot_w,
-                StepOutcome::Applied { body: json!({ "deleted": true, "id": row.id }) },
+                StepOutcome::Applied {
+                    body: json!({ "deleted": true, "id": row.id }),
+                },
                 WriteOutcome {
                     applied: true,
                     events: vec![ev_worker(&after, MutationKind::Deleted)],
@@ -1287,8 +1355,15 @@ fn restore_retired_legacy_for_resume(name: &str) -> anyhow::Result<bool> {
 /// Serialize lifecycle transitions by resolved worker name, including typed
 /// bootstrap, so an in-flight spawn cannot complete after Pause acknowledges.
 pub(crate) fn lifecycle_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
-    LOCKS.get_or_init(Mutex::default).lock().unwrap().entry(name.to_owned()).or_default().clone()
+    static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap()
+        .entry(name.to_owned())
+        .or_default()
+        .clone()
 }
 
 pub async fn pause_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
@@ -1313,47 +1388,87 @@ async fn change_pause(
 ) -> Response {
     use crate::api::session_verbs as fleet;
     let name = match resolve_key(&state, key.clone()).await {
-        Ok(n) => n, Err(r) => return r,
+        Ok(n) => n,
+        Err(r) => return r,
     };
     let lock = lifecycle_lock(&name);
     let _guard = lock.lock().await;
     if !paused {
         if let Err(error) = restore_retired_legacy_for_resume(&name) {
-            return err(StatusCode::CONFLICT, json!({"error": error.to_string(), "state": "expired"}));
+            return err(
+                StatusCode::CONFLICT,
+                json!({"error": error.to_string(), "state": "expired"}),
+            );
         }
     }
-    let row = match state.store.read().and_then(|conn| Ok(queries::get_worker(&conn, &key)?)) {
-        Ok(row) => row, Err(e) => return internal(e),
+    let row = match state
+        .store
+        .read()
+        .and_then(|conn| Ok(queries::get_worker(&conn, &key)?))
+    {
+        Ok(row) => row,
+        Err(e) => return internal(e),
     };
     let legacy = fleet::lane_env_exists(&name);
-    if row.is_none() && !legacy { return not_found(&key); }
+    if row.is_none() && !legacy {
+        return not_found(&key);
+    }
     let cfg = fleet::parse_env(&name);
     let current = row.as_ref().map(|r| r.lifecycle).unwrap_or_else(|| {
-        if cfg.get("CC_ARCHIVED") == Some("1") { WorkerLifecycle::Archived }
-        else if cfg.get("CC_PAUSED") == Some("1") { WorkerLifecycle::Paused }
-        else { WorkerLifecycle::Active }
+        if cfg.get("CC_ARCHIVED") == Some("1") {
+            WorkerLifecycle::Archived
+        } else if cfg.get("CC_PAUSED") == Some("1") {
+            WorkerLifecycle::Paused
+        } else {
+            WorkerLifecycle::Active
+        }
     });
     if !matches!(current, WorkerLifecycle::Active | WorkerLifecycle::Paused)
-        || cfg.get("CC_ARCHIVED") == Some("1") {
-        return err(StatusCode::CONFLICT, json!({"error":"restore the worker before pausing or resuming", "state":current.as_str()}));
+        || cfg.get("CC_ARCHIVED") == Some("1")
+    {
+        return err(
+            StatusCode::CONFLICT,
+            json!({"error":"restore the worker before pausing or resuming", "state":current.as_str()}),
+        );
     }
-    let target = if paused { WorkerLifecycle::Paused } else { WorkerLifecycle::Active };
+    let target = if paused {
+        WorkerLifecycle::Paused
+    } else {
+        WorkerLifecycle::Active
+    };
     // A repeated Resume is a no-op, not a request to restart a manually stopped worker.
     if !paused && current == target && cfg.get("CC_PAUSED") != Some("1") {
-        return (StatusCode::OK, Json(json!({"applied":false,"lifecycle":"active","name":name}))).into_response();
+        return (
+            StatusCode::OK,
+            Json(json!({"applied":false,"lifecycle":"active","name":name})),
+        )
+            .into_response();
     }
     if let Some(row) = &row {
-        let response = lifecycle_transition(state.clone(), row.id.clone(),
-            &[WorkerLifecycle::Active, WorkerLifecycle::Paused], target,
-            if paused { "pause" } else { "resume" }).await;
-        if !response.status().is_success() { return response; }
+        let response = lifecycle_transition(
+            state.clone(),
+            row.id.clone(),
+            &[WorkerLifecycle::Active, WorkerLifecycle::Paused],
+            target,
+            if paused { "pause" } else { "resume" },
+        )
+        .await;
+        if !response.status().is_success() {
+            return response;
+        }
     }
     let outcome: anyhow::Result<Value> = async {
         fleet::set_legacy_paused(&name, paused)?;
         if let (Some(row), Some(protocol)) = (&row, crate::opencode::process_protocol()) {
             let worker = WorkerId::parse(&row.id)?;
-            let result = if paused { protocol.pause(&worker).await } else { protocol.resume(&worker).await };
-            if !matches!(result, Err(crate::opencode::ProtocolError::NoSession(_))) { result?; }
+            let result = if paused {
+                protocol.pause(&worker).await
+            } else {
+                protocol.resume(&worker).await
+            };
+            if !matches!(result, Err(crate::opencode::ProtocolError::NoSession(_))) {
+                result?;
+            }
         }
         if legacy {
             if paused {
@@ -1368,46 +1483,90 @@ async fn change_pause(
             let row = row.as_ref().unwrap();
             // End the durable session first so bootstrap cannot re-adopt it.
             let response = stop_worker(State(state.clone()), Path(row.id.clone())).await;
-            anyhow::ensure!(response.status().is_success(), "could not end worker session");
+            anyhow::ensure!(
+                response.status().is_success(),
+                "could not end worker session"
+            );
             let has_session = state.store.read()?.query_row(
-                "SELECT EXISTS(SELECT 1 FROM _amux_sessions WHERE worker_id=?1)", [&row.id], |r| r.get::<_, bool>(0))?;
-            if !has_session { return Ok(json!({"running":false,"session":"stopped"})); }
-            let backend = crate::backend::process_backend(&row.backend)
-                .ok_or_else(|| anyhow::anyhow!("backend '{}' is unavailable; shutdown cannot be verified", row.backend))?;
+                "SELECT EXISTS(SELECT 1 FROM _amux_sessions WHERE worker_id=?1)",
+                [&row.id],
+                |r| r.get::<_, bool>(0),
+            )?;
+            if !has_session {
+                return Ok(json!({"running":false,"session":"stopped"}));
+            }
+            let backend = crate::backend::process_backend(&row.backend).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "backend '{}' is unavailable; shutdown cannot be verified",
+                    row.backend
+                )
+            })?;
             let process = crate::backend::ProcessRef {
-                backend_ref: backend_ref(&WorkerId::parse(&row.id)?), pid: None,
+                backend_ref: backend_ref(&WorkerId::parse(&row.id)?),
+                pid: None,
             };
             backend.terminate(&process).await?;
-            anyhow::ensure!(!matches!(backend.status(&process).await?, crate::backend::BackendStatus::Running), "worker is still running after pause");
+            anyhow::ensure!(
+                !matches!(
+                    backend.status(&process).await?,
+                    crate::backend::BackendStatus::Running
+                ),
+                "worker is still running after pause"
+            );
             Ok(json!({"running":false,"session":"stopped"}))
         } else {
             let response = start_worker(State(state.clone()), admission, Path(key.clone())).await;
             if !response.status().is_success() {
                 let bytes = axum::body::to_bytes(response.into_body(), 65536).await?;
                 let body: Value = serde_json::from_slice(&bytes)?;
-                anyhow::bail!("{}", body["error"].as_str().unwrap_or("worker start was refused"));
+                anyhow::bail!(
+                    "{}",
+                    body["error"].as_str().unwrap_or("worker start was refused")
+                );
             }
             Ok(json!({"session":"starting"}))
         }
-    }.await;
+    }
+    .await;
     crate::api::sessions_legacy::invalidate_sessions_cache();
     match outcome {
         Ok(mut body) => {
             body["applied"] = json!(current != target);
             body["lifecycle"] = json!(target.as_str());
             body["name"] = json!(name);
-            tracing::info!(session = name, lifecycle = target.as_str(), verdict = "worker_lifecycle_applied", "worker lifecycle and runtime transition completed");
-            (if body["session"] == "starting" { StatusCode::ACCEPTED } else { StatusCode::OK }, Json(body)).into_response()
+            tracing::info!(
+                session = name,
+                lifecycle = target.as_str(),
+                verdict = "worker_lifecycle_applied",
+                "worker lifecycle and runtime transition completed"
+            );
+            (
+                if body["session"] == "starting" {
+                    StatusCode::ACCEPTED
+                } else {
+                    StatusCode::OK
+                },
+                Json(body),
+            )
+                .into_response()
         }
         Err(e) => {
             // Fail closed: a failed Resume stays paused and can be retried.
             if !paused {
                 if let Some(row) = &row {
-                    let _ = lifecycle_transition(state.clone(), row.id.clone(), &[WorkerLifecycle::Active, WorkerLifecycle::Paused], WorkerLifecycle::Paused, "resume_failed").await;
+                    let _ = lifecycle_transition(
+                        state.clone(),
+                        row.id.clone(),
+                        &[WorkerLifecycle::Active, WorkerLifecycle::Paused],
+                        WorkerLifecycle::Paused,
+                        "resume_failed",
+                    )
+                    .await;
                     if let Some(protocol) = crate::opencode::process_protocol() {
                         if let Ok(worker) = WorkerId::parse(&row.id) {
                             if let Err(rollback) = protocol.pause(&worker).await {
-                                if !matches!(rollback, crate::opencode::ProtocolError::NoSession(_)) {
+                                if !matches!(rollback, crate::opencode::ProtocolError::NoSession(_))
+                                {
                                     tracing::error!(session = name, %rollback, "worker_protocol_rollback_failed");
                                 }
                             }
@@ -1419,7 +1578,10 @@ async fn change_pause(
                 }
             }
             tracing::warn!(session = name, %e, paused, verdict = "worker_lifecycle_failed", "worker lifecycle transition failed; completion was not acknowledged");
-            err(StatusCode::BAD_GATEWAY, json!({"error":e.to_string(),"applied":false,"name":name}))
+            err(
+                StatusCode::BAD_GATEWAY,
+                json!({"error":e.to_string(),"applied":false,"name":name}),
+            )
         }
     }
 }
@@ -1466,13 +1628,7 @@ async fn lifecycle_transition(
                 );
             }
             let now_s = chrono::Utc::now().to_rfc3339();
-            let n = queries::update_worker_lifecycle(
-                conn,
-                &row.id,
-                &from_owned,
-                to,
-                &now_s,
-            )?;
+            let n = queries::update_worker_lifecycle(conn, &row.id, &from_owned, to, &now_s)?;
             if n == 0 {
                 return finish(
                     &slot_w,
@@ -1501,10 +1657,7 @@ async fn lifecycle_transition(
                 },
                 WriteOutcome {
                     applied: true,
-                    events: vec![ev_worker(
-                        &after,
-                        MutationKind::Updated,
-                    )],
+                    events: vec![ev_worker(&after, MutationKind::Updated)],
                 },
             )
         })
@@ -2098,9 +2251,12 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: token,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        (router(state).layer(Extension(AdmissionOverride(verdict))), dir)
+        (
+            router(state).layer(Extension(AdmissionOverride(verdict))),
+            dir,
+        )
     }
 
     fn app() -> (axum::Router, tempfile::TempDir) {
@@ -2136,18 +2292,25 @@ mod tests {
     /// Still fails closed: only the one explicit race body is retried, every
     /// other status and body returns immediately, and an exhausted deadline
     /// returns the last refusal for the caller to assert on.
-    async fn read_real_sessions_settled(app: &axum::Router, stage: &str) -> (StatusCode, HeaderMap, Value) {
+    async fn read_real_sessions_settled(
+        app: &axum::Router,
+        stage: &str,
+    ) -> (StatusCode, HeaderMap, Value) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let mut attempts = 0u32;
         loop {
             let result = send(app, "GET", "/api/sessions", None).await;
             attempts += 1;
             let racing = result.0 == StatusCode::SERVICE_UNAVAILABLE
-                && result.2["error"].as_str() == Some("sessions list changed during discovery; retry");
+                && result.2["error"].as_str()
+                    == Some("sessions list changed during discovery; retry");
             if !racing || std::time::Instant::now() >= deadline {
                 if racing {
-                    eprintln!("{}", json!({"verdict":"discovery_deadline_exhausted", "stage":stage,
-                        "attempts":attempts, "measured":true, "n_considered":1}));
+                    eprintln!(
+                        "{}",
+                        json!({"verdict":"discovery_deadline_exhausted", "stage":stage,
+                        "attempts":attempts, "measured":true, "n_considered":1})
+                    );
                 }
                 return result;
             }
@@ -2157,17 +2320,24 @@ mod tests {
 
     // The attempt-count policy has its own stub-router negative control below.
     // Real-handler tests use the settled-read deadline above under epoch churn.
-    async fn read_fixture_sessions(app: &axum::Router, stage: &str) -> (StatusCode, HeaderMap, Value) {
+    async fn read_fixture_sessions(
+        app: &axum::Router,
+        stage: &str,
+    ) -> (StatusCode, HeaderMap, Value) {
         for attempt in 0..5 {
             let result = send(app, "GET", "/api/sessions", None).await;
             if result.0 != StatusCode::SERVICE_UNAVAILABLE
-                || result.2["error"].as_str() != Some("sessions list changed during discovery; retry")
+                || result.2["error"].as_str()
+                    != Some("sessions list changed during discovery; retry")
                 || attempt == 4
             {
                 return result;
             }
-            eprintln!("{}", json!({"verdict":"fixture_session_discovery_retry", "stage":stage,
-                "attempt":attempt + 1, "max_attempts":5, "measured":true, "n_considered":1}));
+            eprintln!(
+                "{}",
+                json!({"verdict":"fixture_session_discovery_retry", "stage":stage,
+                "attempt":attempt + 1, "max_attempts":5, "measured":true, "n_considered":1})
+            );
             tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
         }
         unreachable!("the final attempt returns its actual response")
@@ -2178,23 +2348,41 @@ mod tests {
         // AMUX-4637: the race is served as 503. The reader retries that pair
         // only; the same words on a 500 are an ordinary failure and read once.
         for (error, served, expected_reads) in [
-            ("database query failed", StatusCode::INTERNAL_SERVER_ERROR, 1),
-            ("sessions list changed during discovery; retry", StatusCode::SERVICE_UNAVAILABLE, 5),
-            ("sessions list changed during discovery; retry", StatusCode::INTERNAL_SERVER_ERROR, 1),
+            (
+                "database query failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                1,
+            ),
+            (
+                "sessions list changed during discovery; retry",
+                StatusCode::SERVICE_UNAVAILABLE,
+                5,
+            ),
+            (
+                "sessions list changed during discovery; retry",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                1,
+            ),
         ] {
             let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed = calls.clone();
-            let app = axum::Router::new().route("/api/sessions", axum::routing::get(move || {
-                let calls = calls.clone();
-                async move {
-                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    (served, axum::Json(json!({"error":error})))
-                }
-            }));
+            let app = axum::Router::new().route(
+                "/api/sessions",
+                axum::routing::get(move || {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        (served, axum::Json(json!({"error":error})))
+                    }
+                }),
+            );
             let (status, _, body) = read_fixture_sessions(&app, "negative-control").await;
             assert_eq!(status, served, "{body}");
             assert_eq!(body["error"], error);
-            assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), expected_reads);
+            assert_eq!(
+                observed.load(std::sync::atomic::Ordering::SeqCst),
+                expected_reads
+            );
         }
     }
 
@@ -2219,7 +2407,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let headers = res.headers().clone();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = if bytes.is_empty() {
             Value::Null
         } else {
@@ -2293,7 +2483,10 @@ mod tests {
         assert_eq!(allowed["effective"], json!("*"), "{allowed}");
         assert_eq!(allowed["source"], json!("global + worker"), "{allowed}");
         assert!(
-            allowed["reason"].as_str().unwrap_or("").contains("additive"),
+            allowed["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("additive"),
             "{allowed}"
         );
         assert_eq!(
@@ -2622,7 +2815,8 @@ mod tests {
         let _home = crate::api::settings::test_env::set_home(home.path());
         let (app, _dir) = app();
         for verb in ["pause", "resume"] {
-            let (st, _, body) = send(&app, "POST", &format!("/api/workers/ghost/{verb}"), None).await;
+            let (st, _, body) =
+                send(&app, "POST", &format!("/api/workers/ghost/{verb}"), None).await;
             assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
         }
         let id = create(&app, "pause-probe").await;
@@ -2660,16 +2854,29 @@ mod tests {
 
         let (st, _, body) = send(&app, "POST", &format!("/api/workers/{id}/start"), None).await;
         assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("memory headroom"), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("memory headroom"),
+            "{body}"
+        );
         assert_eq!(body["admission_source"], "override", "{body}");
         let (_, _, worker) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
-        assert_eq!(worker["state"]["state"], "stopped", "a refused start wrote state: {worker}");
+        assert_eq!(
+            worker["state"]["state"], "stopped",
+            "a refused start wrote state: {worker}"
+        );
 
         let (st, _, body) = send(&app, "POST", &format!("/api/workers/{id}/pause"), None).await;
-        assert_eq!(st, StatusCode::OK, "pause does not consult admission: {body}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "pause does not consult admission: {body}"
+        );
         let (st, _, body) = send(&app, "POST", &format!("/api/workers/{id}/resume"), None).await;
         assert_eq!(st, StatusCode::BAD_GATEWAY, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("memory headroom"), "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("memory headroom"),
+            "{body}"
+        );
         let (_, _, worker) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
         assert_eq!(worker["lifecycle"], "paused", "{worker}");
         assert_eq!(worker["state"]["state"], "stopped", "{worker}");
@@ -2686,13 +2893,37 @@ mod tests {
         let (app, _dir) = app();
 
         let (st, _, body) = send(&app, "POST", "/api/workers/expired-probe/resume", None).await;
-        assert_eq!(st, StatusCode::BAD_GATEWAY, "resume should restore then fail honestly on unsupported backend: {body}");
-        assert!(body["error"].as_str().unwrap().contains("herdr-backed session start"), "{body}");
-        assert!(active.exists(), "expired receipt must be restored to the normal env path");
-        assert!(!retired.exists(), "restored worker must leave the expired accordion");
+        assert_eq!(
+            st,
+            StatusCode::BAD_GATEWAY,
+            "resume should restore then fail honestly on unsupported backend: {body}"
+        );
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("herdr-backed session start"),
+            "{body}"
+        );
+        assert!(
+            active.exists(),
+            "expired receipt must be restored to the normal env path"
+        );
+        assert!(
+            !retired.exists(),
+            "restored worker must leave the expired accordion"
+        );
         let env = crate::api::session_verbs::parse_env("expired-probe");
-        assert_eq!(env.get("CC_PAUSED"), Some("1"), "failed resume stays visible and retryable as paused");
-        assert_ne!(env.get("CC_ARCHIVED"), Some("1"), "resume must not leave archived outranking paused");
+        assert_eq!(
+            env.get("CC_PAUSED"),
+            Some("1"),
+            "failed resume stays visible and retryable as paused"
+        );
+        assert_ne!(
+            env.get("CC_ARCHIVED"),
+            Some("1"),
+            "resume must not leave archived outranking paused"
+        );
     }
 
     #[tokio::test]
@@ -2707,10 +2938,19 @@ mod tests {
         let (st, _, body) = send(&app, "POST", "/api/workers/pause-probe/resume", None).await;
         assert_eq!(st, StatusCode::BAD_GATEWAY, "{body}");
         assert_eq!(body["applied"], false);
-        assert_eq!(crate::api::session_verbs::parse_env("pause-probe").get("CC_PAUSED"), Some("1"));
+        assert_eq!(
+            crate::api::session_verbs::parse_env("pause-probe").get("CC_PAUSED"),
+            Some("1")
+        );
         std::fs::write(&env, "CC_ARCHIVED=1\n").unwrap();
         for verb in ["pause", "resume"] {
-            let (st, _, body) = send(&app, "POST", &format!("/api/workers/pause-probe/{verb}"), None).await;
+            let (st, _, body) = send(
+                &app,
+                "POST",
+                &format!("/api/workers/pause-probe/{verb}"),
+                None,
+            )
+            .await;
             assert_eq!(st, StatusCode::CONFLICT, "{body}");
         }
         assert_eq!(std::fs::read_to_string(&env).unwrap(), "CC_ARCHIVED=1\n");
@@ -2791,7 +3031,10 @@ mod tests {
         let live = queries::live_session_for(&conn, &id).unwrap().unwrap();
         assert_eq!(live.id, new_ses);
         assert_eq!(
-            queries::live_session_for(&conn, &id).unwrap().unwrap().ended_at,
+            queries::live_session_for(&conn, &id)
+                .unwrap()
+                .unwrap()
+                .ended_at,
             None
         );
         let reason: String = conn
@@ -2889,16 +3132,26 @@ mod tests {
         let idle_race = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let injected = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (race, count) = (idle_race.clone(), injected.clone());
-        let app = app.layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
-            let (race, count) = (race.clone(), count.clone());
-            async move {
-                if request.uri().path() == "/api/sessions" && race.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"error":"sessions list changed during discovery; retry"}))).into_response();
+        let app = app.layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let (race, count) = (race.clone(), count.clone());
+                async move {
+                    if request.uri().path() == "/api/sessions"
+                        && race.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            axum::Json(
+                                json!({"error":"sessions list changed during discovery; retry"}),
+                            ),
+                        )
+                            .into_response();
+                    }
+                    next.run(request).await
                 }
-                next.run(request).await
-            }
-        }));
+            },
+        ));
         let now = chrono::Utc::now().timestamp();
         let marker_ts = now as f64 + 60.0;
         let conn = rusqlite::Connection::open(dir.path().join("amux-test.db")).unwrap();
@@ -2942,8 +3195,10 @@ mod tests {
             )
             .unwrap();
         }
-        conn.execute("UPDATE issues SET type='epic' WHERE id='DECOMP-1'", []).unwrap();
-        conn.execute("UPDATE issues SET epic='DECOMP-1' WHERE id='DECOMP-2'", []).unwrap();
+        conn.execute("UPDATE issues SET type='epic' WHERE id='DECOMP-1'", [])
+            .unwrap();
+        conn.execute("UPDATE issues SET epic='DECOMP-1' WHERE id='DECOMP-2'", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO issues (id, title, status, session, creator, created, updated) \
              VALUES ('RELEASED-1', 'released title', 'done', 'released', 'test', ?1, ?1)",
@@ -2977,7 +3232,11 @@ mod tests {
             conn.execute(
                 "INSERT INTO session_events (ts, session, type, data, source) \
                  VALUES (?1, ?2, 'task.claimed', ?3, 'test')",
-                rusqlite::params![marker_ts + if card.ends_with("2") { 1.0 } else { 0.0 }, session, json!({"issue": card}).to_string()],
+                rusqlite::params![
+                    marker_ts + if card.ends_with("2") { 1.0 } else { 0.0 },
+                    session,
+                    json!({"issue": card}).to_string()
+                ],
             )
             .unwrap();
         }
@@ -2991,7 +3250,11 @@ mod tests {
             conn.execute(
                 "INSERT INTO session_events (ts, session, type, data, source) \
                  VALUES (?1, ?2, 'task.cardless', ?3, 'test')",
-                rusqlite::params![marker_ts + 2.0, session, json!({"reason": reason}).to_string()],
+                rusqlite::params![
+                    marker_ts + 2.0,
+                    session,
+                    json!({"reason": reason}).to_string()
+                ],
             )
             .unwrap();
         }
@@ -3001,61 +3264,169 @@ mod tests {
         let (status, _, payload) = read_real_sessions_settled(&app, "active").await;
         assert_eq!(status, StatusCode::OK, "{payload}");
         let rows = payload.as_array().expect("legacy session array");
-        let linked = rows.iter().find(|row| row["name"] == "linked").expect("linked row");
+        let linked = rows
+            .iter()
+            .find(|row| row["name"] == "linked")
+            .expect("linked row");
         assert_eq!(linked["runtime_board"]["measured"], json!(true), "{linked}");
-        assert_eq!(linked["runtime_board"]["status"], json!("linked"), "{linked}");
-        assert_eq!(linked["runtime_board"]["card_id"], json!("LINKED-1"), "{linked}");
+        assert_eq!(
+            linked["runtime_board"]["status"],
+            json!("linked"),
+            "{linked}"
+        );
+        assert_eq!(
+            linked["runtime_board"]["card_id"],
+            json!("LINKED-1"),
+            "{linked}"
+        );
         assert_eq!(linked["runtime_board"]["card_count"], json!(1), "{linked}");
         assert_eq!(linked["task_board_id"], json!("LINKED-1"), "{linked}");
 
         // Aggregate Doing count is diagnostic, not a substitute for causal
         // ownership: MULTI-1 remains exact even with unrelated MULTI-2 live.
-        let multiple = rows.iter().find(|row| row["name"] == "multiple").expect("multiple row");
+        let multiple = rows
+            .iter()
+            .find(|row| row["name"] == "multiple")
+            .expect("multiple row");
         assert_eq!(multiple["status"], json!("active"), "{multiple}");
-        assert_eq!(multiple["runtime_board"]["measured"], json!(true), "{multiple}");
-        assert_eq!(multiple["runtime_board"]["status"], json!("linked"), "{multiple}");
-        assert_eq!(multiple["runtime_board"]["card_count"], json!(2), "{multiple}");
-        assert_eq!(multiple["runtime_board"]["card_id"], json!("MULTI-1"), "{multiple}");
+        assert_eq!(
+            multiple["runtime_board"]["measured"],
+            json!(true),
+            "{multiple}"
+        );
+        assert_eq!(
+            multiple["runtime_board"]["status"],
+            json!("linked"),
+            "{multiple}"
+        );
+        assert_eq!(
+            multiple["runtime_board"]["card_count"],
+            json!(2),
+            "{multiple}"
+        );
+        assert_eq!(
+            multiple["runtime_board"]["card_id"],
+            json!("MULTI-1"),
+            "{multiple}"
+        );
         assert_eq!(multiple["task_board_id"], json!("MULTI-1"), "{multiple}");
 
-        let sticky = rows.iter().find(|row| row["name"] == "sticky").expect("sticky row");
-        assert_eq!(sticky["runtime_board"]["status"], json!("linked"), "{sticky}");
-        assert_eq!(sticky["runtime_board"]["card_id"], json!("STICKY-1"), "{sticky}");
+        let sticky = rows
+            .iter()
+            .find(|row| row["name"] == "sticky")
+            .expect("sticky row");
+        assert_eq!(
+            sticky["runtime_board"]["status"],
+            json!("linked"),
+            "{sticky}"
+        );
+        assert_eq!(
+            sticky["runtime_board"]["card_id"],
+            json!("STICKY-1"),
+            "{sticky}"
+        );
         assert_eq!(sticky["runtime_board"]["card_count"], json!(1), "{sticky}");
-        assert_eq!(sticky["runtime_board"]["cardless_suppressed_by_live_claim"], json!(true), "{sticky}");
+        assert_eq!(
+            sticky["runtime_board"]["cardless_suppressed_by_live_claim"],
+            json!(true),
+            "{sticky}"
+        );
         assert_eq!(sticky["task_board_id"], json!("STICKY-1"), "{sticky}");
 
-        let tubescience = rows.iter().find(|row| row["name"] == "tubescience").expect("active TubeScience row");
-        assert_eq!(tubescience["status"], json!("unattributed"), "{tubescience}");
-        assert_eq!(tubescience["runtime_board"]["status"], json!("active-card-invalid"), "{tubescience}");
-        assert_eq!(tubescience["runtime_board"]["blocked_doing_count"], json!(1), "{tubescience}");
-        assert_eq!(tubescience["runtime_board"]["card_count"], json!(0), "{tubescience}");
-        assert!(tubescience["runtime_board"]["card_id"].is_null(), "{tubescience}");
-        assert!(tubescience["task_board_id"].as_str().unwrap_or_default().is_empty(), "{tubescience}");
+        let tubescience = rows
+            .iter()
+            .find(|row| row["name"] == "tubescience")
+            .expect("active TubeScience row");
+        assert_eq!(
+            tubescience["status"],
+            json!("unattributed"),
+            "{tubescience}"
+        );
+        assert_eq!(
+            tubescience["runtime_board"]["status"],
+            json!("active-card-invalid"),
+            "{tubescience}"
+        );
+        assert_eq!(
+            tubescience["runtime_board"]["blocked_doing_count"],
+            json!(1),
+            "{tubescience}"
+        );
+        assert_eq!(
+            tubescience["runtime_board"]["card_count"],
+            json!(0),
+            "{tubescience}"
+        );
+        assert!(
+            tubescience["runtime_board"]["card_id"].is_null(),
+            "{tubescience}"
+        );
+        assert!(
+            tubescience["task_board_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "{tubescience}"
+        );
         assert_eq!(
             tubescience["runtime_board"]["observed_card_id"],
             json!("TUBES-2459"),
             "the rejected stale claim remains diagnostic evidence, never current truth: {tubescience}"
         );
 
-        let released = rows.iter().find(|row| row["name"] == "released").expect("released row");
-        assert_eq!(released["runtime_board"]["status"], json!("cardless-allowed"), "{released}");
-        assert_eq!(released["runtime_board"]["card_count"], json!(0), "{released}");
+        let released = rows
+            .iter()
+            .find(|row| row["name"] == "released")
+            .expect("released row");
+        assert_eq!(
+            released["runtime_board"]["status"],
+            json!("cardless-allowed"),
+            "{released}"
+        );
+        assert_eq!(
+            released["runtime_board"]["card_count"],
+            json!(0),
+            "{released}"
+        );
         assert!(released["runtime_board"]["card_id"].is_null(), "{released}");
-        assert_eq!(released["runtime_board"]["cardless_suppressed_by_live_claim"], json!(false), "{released}");
-        assert!(released["task_board_id"].as_str().unwrap_or_default().is_empty(), "{released}");
+        assert_eq!(
+            released["runtime_board"]["cardless_suppressed_by_live_claim"],
+            json!(false),
+            "{released}"
+        );
+        assert!(
+            released["task_board_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "{released}"
+        );
 
         let decomposed = rows.iter().find(|row| row["name"] == "decomposed").unwrap();
         assert_eq!(decomposed["status"], json!("active"), "{decomposed}");
         assert_eq!(decomposed["runtime_board"]["status"], json!("linked"));
         assert_eq!(decomposed["runtime_board"]["card_id"], json!("DECOMP-2"));
         assert_eq!(decomposed["runtime_board"]["card_count"], json!(1));
-        assert_eq!(decomposed["runtime_board"]["epic_container_count"], json!(1));
+        assert_eq!(
+            decomposed["runtime_board"]["epic_container_count"],
+            json!(1)
+        );
 
-        let conflict = rows.iter().find(|row| row["name"] == "conflict").expect("conflict row");
+        let conflict = rows
+            .iter()
+            .find(|row| row["name"] == "conflict")
+            .expect("conflict row");
         assert_eq!(conflict["status"], json!("unattributed"), "{conflict}");
-        assert_eq!(conflict["runtime_board"]["status"], json!("active-conflicting-claims"), "{conflict}");
-        assert_eq!(conflict["runtime_board"]["card_count"], json!(2), "{conflict}");
+        assert_eq!(
+            conflict["runtime_board"]["status"],
+            json!("active-conflicting-claims"),
+            "{conflict}"
+        );
+        assert_eq!(
+            conflict["runtime_board"]["card_count"],
+            json!(2),
+            "{conflict}"
+        );
         assert!(conflict["runtime_board"]["card_id"].is_null(), "{conflict}");
 
         let conn = rusqlite::Connection::open(dir.path().join("amux-test.db")).unwrap();
@@ -3068,17 +3439,42 @@ mod tests {
         crate::api::sessions_legacy::invalidate_sessions_cache();
         idle_race.store(true, std::sync::atomic::Ordering::SeqCst);
         let (status, _, idle_payload) = read_real_sessions_settled(&app, "idle").await;
-        assert_eq!(injected.load(std::sync::atomic::Ordering::SeqCst), 1, "idle discovery-race control must execute");
+        assert_eq!(
+            injected.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "idle discovery-race control must execute"
+        );
         assert_eq!(status, StatusCode::OK, "{idle_payload}");
         let idle_tubescience = idle_payload
             .as_array()
             .and_then(|rows| rows.iter().find(|row| row["name"] == "tubescience"))
             .expect("idle TubeScience row");
-        assert_eq!(idle_tubescience["status"], json!("idle"), "{idle_tubescience}");
-        assert_eq!(idle_tubescience["runtime_board"]["status"], json!("runtime-not-active"), "{idle_tubescience}");
-        assert!(idle_tubescience["runtime_board"]["card_id"].is_null(), "{idle_tubescience}");
-        assert!(idle_tubescience["task_board_id"].as_str().unwrap_or_default().is_empty(), "{idle_tubescience}");
-        assert_eq!(idle_tubescience["runtime_board"]["blocked_doing_count"], json!(1), "{idle_tubescience}");
+        assert_eq!(
+            idle_tubescience["status"],
+            json!("idle"),
+            "{idle_tubescience}"
+        );
+        assert_eq!(
+            idle_tubescience["runtime_board"]["status"],
+            json!("runtime-not-active"),
+            "{idle_tubescience}"
+        );
+        assert!(
+            idle_tubescience["runtime_board"]["card_id"].is_null(),
+            "{idle_tubescience}"
+        );
+        assert!(
+            idle_tubescience["task_board_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "{idle_tubescience}"
+        );
+        assert_eq!(
+            idle_tubescience["runtime_board"]["blocked_doing_count"],
+            json!(1),
+            "{idle_tubescience}"
+        );
     }
 
     #[tokio::test]
@@ -3208,9 +3604,8 @@ mod tests {
         assert_eq!(st, StatusCode::ACCEPTED, "{started}");
 
         // The same store the router serves, via the DB file.
-        let store = std::sync::Arc::new(
-            crate::db::Store::open(&dir.path().join("amux-test.db")).unwrap(),
-        );
+        let store =
+            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("amux-test.db")).unwrap());
         let wid = WorkerId::parse(&id).unwrap();
         let protocol = std::sync::Arc::new(MockProtocol::new());
         protocol.register(wid.clone(), crate::opencode::AgentState::Idle);
@@ -3221,7 +3616,12 @@ mod tests {
         );
 
         let turn = TurnId::from_ulid(ulid::Ulid::new());
-        protocol.emit(&wid, WorkerEvent::TurnStarted { turn_id: turn.clone() });
+        protocol.emit(
+            &wid,
+            WorkerEvent::TurnStarted {
+                turn_id: turn.clone(),
+            },
+        );
         let mut active = Value::Null;
         for _ in 0..200 {
             let (_, _, body) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
@@ -3231,7 +3631,11 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(active["status"], json!("active"), "worker never went active: {active}");
+        assert_eq!(
+            active["status"],
+            json!("active"),
+            "worker never went active: {active}"
+        );
         assert_eq!(
             active["state"]["turn"],
             json!(turn.as_str()),
@@ -3240,7 +3644,10 @@ mod tests {
 
         protocol.emit(
             &wid,
-            WorkerEvent::TurnCompleted(TurnResult { turn_id: turn.clone(), outcome: "done".into() }),
+            WorkerEvent::TurnCompleted(TurnResult {
+                turn_id: turn.clone(),
+                outcome: "done".into(),
+            }),
         );
         let mut settled = Value::Null;
         for _ in 0..200 {
@@ -3251,7 +3658,11 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(settled["status"], json!("idle"), "worker never settled idle: {settled}");
+        assert_eq!(
+            settled["status"],
+            json!("idle"),
+            "worker never settled idle: {settled}"
+        );
         proc.abort();
 
         // Journal proof (RR-0111a): both transitions landed as worker
@@ -3272,12 +3683,18 @@ mod tests {
             .iter()
             .find(|(m, _)| m.contains("\"to\":\"active\""))
             .unwrap_or_else(|| panic!("no ->active journal row: {rows:?}"));
-        assert!(to_active.1, "->active journal row must carry a payload snapshot");
+        assert!(
+            to_active.1,
+            "->active journal row must carry a payload snapshot"
+        );
         let to_idle = rows
             .iter()
             .find(|(m, _)| m.contains("\"to\":\"idle\""))
             .unwrap_or_else(|| panic!("no ->idle journal row: {rows:?}"));
-        assert!(to_idle.1, "->idle journal row must carry a payload snapshot");
+        assert!(
+            to_idle.1,
+            "->idle journal row must carry a payload snapshot"
+        );
     }
 
     // ---- peek (AMUX-2613 gap 4) -------------------------------------------
@@ -3311,7 +3728,9 @@ mod tests {
                 Ok(BackendStatus::Running)
             }
             async fn attach_info(&self, _p: &ProcessRef) -> crate::backend::Result<AttachInfo> {
-                Ok(AttachInfo { command: "true".into() })
+                Ok(AttachInfo {
+                    command: "true".into(),
+                })
             }
             async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> {
                 Ok(vec![])
@@ -3353,8 +3772,13 @@ mod tests {
             name: "tmux",
             frame: Ok("❯ cargo test\nok. 42 passed".into()),
         })]);
-        let (st, _, body) =
-            send(&app, "GET", &format!("/api/workers/{tid}/peek?lines=50"), None).await;
+        let (st, _, body) = send(
+            &app,
+            "GET",
+            &format!("/api/workers/{tid}/peek?lines=50"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{body}");
         assert_eq!(body["output"], json!("❯ cargo test\nok. 42 passed"));
         assert_eq!(body["backend"], json!("tmux"));
@@ -3431,8 +3855,7 @@ mod tests {
             "CC_PAUSED=\"1\"\n",
         )
         .unwrap();
-        let (st, _, body) =
-            send(&app, "POST", "/api/workers/fleet-lane-af298/start", None).await;
+        let (st, _, body) = send(&app, "POST", "/api/workers/fleet-lane-af298/start", None).await;
         assert_eq!(st, StatusCode::CONFLICT, "{body}");
         assert!(
             body["error"].as_str().unwrap().contains("paused"),
@@ -3457,8 +3880,7 @@ mod tests {
         .unwrap();
         let (app, _dir) = app_admitting(None, Admission::Deny);
 
-        let (st, _, body) =
-            send(&app, "POST", "/api/workers/fleet-lane-af398/start", None).await;
+        let (st, _, body) = send(&app, "POST", "/api/workers/fleet-lane-af398/start", None).await;
         assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert!(
             body["error"].as_str().unwrap().contains("memory headroom"),
@@ -3483,8 +3905,13 @@ mod tests {
         assert_eq!(st, StatusCode::NOT_FOUND);
 
         std::fs::write(home.path().join("sessions/fleet-lane-stop-af298.env"), "").unwrap();
-        let (st, _, body) =
-            send(&app, "POST", "/api/workers/fleet-lane-stop-af298/stop", None).await;
+        let (st, _, body) = send(
+            &app,
+            "POST",
+            "/api/workers/fleet-lane-stop-af298/stop",
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{body}");
         assert_eq!(body["applied"], json!(true), "{body}");
         assert_eq!(body["worker_id"], json!("fleet-lane-stop-af298"));
@@ -3524,7 +3951,11 @@ mod tests {
             Some(json!({ "new_name": "twindst" })),
         )
         .await;
-        assert_eq!(st, StatusCode::OK, "promoted duplicate route must answer: {v}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "promoted duplicate route must answer: {v}"
+        );
         assert_eq!(
             v["registered"],
             json!(true),
@@ -3549,7 +3980,6 @@ mod tests {
             "the duplicate must be visible to /api/workers; got {names:?}"
         );
     }
-
 
     /// AF-288: every promoted RESOURCE verb resolves a worker ID to the session
     /// name, instead of handing the ulid to the fleet substrate verbatim.
@@ -3623,7 +4053,13 @@ mod tests {
             ("memory", "GET"),
             ("memory", "POST"),
         ] {
-            let (_, _, v) = send(&app, m, &format!("/api/workers/{id}/{verb}"), Some(json!({}))).await;
+            let (_, _, v) = send(
+                &app,
+                m,
+                &format!("/api/workers/{id}/{verb}"),
+                Some(json!({})),
+            )
+            .await;
             assert!(
                 !v.to_string().contains(&id),
                 "{verb} {m}: the raw worker id reached the answer, so this half fell to the \
@@ -3647,7 +4083,13 @@ mod tests {
         // 404 is the property this whole epic bought: a wrong guess FAILS rather
         // than answering plausibly. Before the retirement this same call leaked
         // the ulid, which is what the assertion used to pin.
-        let (st, _, v) = send(&app, "POST", &format!("/api/workers/{id}/commit-report"), None).await;
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            &format!("/api/workers/{id}/commit-report"),
+            None,
+        )
+        .await;
         assert_eq!(
             st,
             StatusCode::NOT_FOUND,
@@ -3655,7 +4097,6 @@ mod tests {
              or the loop above cannot distinguish a routed verb from an unrouted one: {v}"
         );
     }
-
 
     /// AF-291: every git sub-verb resolves a worker ID at its own explicit route.
     ///
@@ -3723,7 +4164,6 @@ mod tests {
         );
     }
 
-
     /// AF-298: peek at the workers spelling reaches a FLEET lane, which is not a
     /// row in the workers store.
     ///
@@ -3741,7 +4181,11 @@ mod tests {
     async fn peek_at_the_workers_spelling_reaches_a_fleet_lane_not_in_the_store() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
-        std::fs::write(home.path().join("sessions/fleetlane.env"), "CC_TAGS=\"x\"\n").unwrap();
+        std::fs::write(
+            home.path().join("sessions/fleetlane.env"),
+            "CC_TAGS=\"x\"\n",
+        )
+        .unwrap();
         let _home = crate::api::settings::test_env::set_home(home.path());
         let (app, _dir) = app();
 
@@ -3777,10 +4221,21 @@ mod tests {
             Some(json!({ "display_name": "x", "cwd": "/tmp/w", "backend": "__probe__" })),
         )
         .await;
-        assert_eq!(st, StatusCode::BAD_REQUEST, "must refuse at creation, not at spawn: {body}");
-        assert_eq!(body["backend"], json!("__probe__"), "the refused value must be named back");
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "must refuse at creation, not at spawn: {body}"
+        );
+        assert_eq!(
+            body["backend"],
+            json!("__probe__"),
+            "the refused value must be named back"
+        );
         let msg = body["error"].as_str().unwrap_or_default();
-        assert!(msg.contains("herdr") && msg.contains("tmux"), "must name the valid set: {msg}");
+        assert!(
+            msg.contains("herdr") && msg.contains("tmux"),
+            "must name the valid set: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -3817,9 +4272,17 @@ mod tests {
         // THE CELL THAT MATTERS: no write happened. A 400 whose refusal is
         // cosmetic (the closure already ran) is the exact `applied:true`-beside
         // -a-value-nothing-honours shape this entry is about, one layer deeper.
-        assert_eq!(health_rev(&app).await, rev_before, "a refused PATCH must not bump revision");
+        assert_eq!(
+            health_rev(&app).await,
+            rev_before,
+            "a refused PATCH must not bump revision"
+        );
         let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
-        assert_eq!(got["backend"], json!("herdr"), "the stored backend must be untouched");
+        assert_eq!(
+            got["backend"],
+            json!("herdr"),
+            "the stored backend must be untouched"
+        );
     }
 
     #[tokio::test]
@@ -3854,12 +4317,22 @@ mod tests {
             Some(json!({ "display_name": "x", "cwd": "/tmp/w", "permissions": ["deny:bash"] })),
         )
         .await;
-        assert_eq!(st, StatusCode::BAD_REQUEST, "must refuse at creation, not at spawn: {body}");
-        assert_eq!(body["permissions"], json!(["deny:bash"]), "the refused list must be named back");
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "must refuse at creation, not at spawn: {body}"
+        );
+        assert_eq!(
+            body["permissions"],
+            json!(["deny:bash"]),
+            "the refused list must be named back"
+        );
         let msg = body["error"].as_str().unwrap_or_default();
         assert!(
-            msg.contains("deny:*") && msg.contains("deny:execute_task")
-                && msg.contains("unsafe") && msg.contains("claude:skip_permissions"),
+            msg.contains("deny:*")
+                && msg.contains("deny:execute_task")
+                && msg.contains("unsafe")
+                && msg.contains("claude:skip_permissions"),
             "must name all four real literals, not just the two the original report found: {msg}"
         );
     }
@@ -3867,7 +4340,12 @@ mod tests {
     #[tokio::test]
     async fn create_worker_accepts_every_real_permission_literal() {
         let (app, _dir) = app();
-        for lit in ["deny:*", "deny:execute_task", "unsafe", "claude:skip_permissions"] {
+        for lit in [
+            "deny:*",
+            "deny:execute_task",
+            "unsafe",
+            "claude:skip_permissions",
+        ] {
             let (st, _, body) = send(
                 &app,
                 "POST",
@@ -3913,9 +4391,17 @@ mod tests {
         // THE CELL THAT MATTERS, same shape as the backend test: no write
         // happened. Composes directly with gh#202/AF-651's own finding --
         // ["deny:bash"] must not become applied:true anywhere in this API.
-        assert_eq!(health_rev(&app).await, rev_before, "a refused PATCH must not bump revision");
+        assert_eq!(
+            health_rev(&app).await,
+            rev_before,
+            "a refused PATCH must not bump revision"
+        );
         let (_, _, got) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
-        assert_eq!(got["permissions"], json!([]), "the stored permissions must be untouched");
+        assert_eq!(
+            got["permissions"],
+            json!([]),
+            "the stored permissions must be untouched"
+        );
     }
 
     #[tokio::test]

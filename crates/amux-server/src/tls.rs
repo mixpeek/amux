@@ -17,7 +17,10 @@ pub fn load_or_generate(dir: &Path) -> anyhow::Result<TlsMaterial> {
     if bundle.exists() {
         let pem = std::fs::read_to_string(bundle)?;
         load_certified_key(&pem, &pem)?;
-        return Ok(TlsMaterial { cert_pem: pem.clone(), key_pem: pem });
+        return Ok(TlsMaterial {
+            cert_pem: pem.clone(),
+            key_pem: pem,
+        });
     }
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
@@ -29,10 +32,8 @@ pub fn load_or_generate(dir: &Path) -> anyhow::Result<TlsMaterial> {
             return Ok(TlsMaterial { cert_pem, key_pem });
         }
     }
-    let mut params = rcgen::CertificateParams::new(vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-    ])?;
+    let mut params =
+        rcgen::CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])?;
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, "amux");
@@ -104,17 +105,20 @@ impl ResolvesServerCert for SniCerts {
 }
 
 fn load_certified_key(cert_pem: &str, key_pem: &str) -> anyhow::Result<CertifiedKey> {
-    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_pem.as_bytes())
-        .collect::<Result<_, _>>()?;
+    let certs: Vec<_> =
+        rustls_pemfile::certs(&mut cert_pem.as_bytes()).collect::<Result<_, _>>()?;
     let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())?
         .ok_or_else(|| anyhow::anyhow!("no private key in PEM"))?;
     for cert in &certs {
-        rustls::server::ParsedCertificate::try_from(cert).map_err(|_| anyhow::anyhow!("certificate_invalid"))?;
+        rustls::server::ParsedCertificate::try_from(cert)
+            .map_err(|_| anyhow::anyhow!("certificate_invalid"))?;
     }
     let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
         .map_err(|e| anyhow::anyhow!("unsupported key type: {e}"))?;
     let certified = CertifiedKey::new(certs, signing_key);
-    certified.keys_match().map_err(|_| anyhow::anyhow!("certificate_key_mismatch"))?;
+    certified
+        .keys_match()
+        .map_err(|_| anyhow::anyhow!("certificate_key_mismatch"))?;
     Ok(certified)
 }
 
@@ -175,12 +179,12 @@ fn prepare_server_config(dir: &Path) -> anyhow::Result<(rustls::ServerConfig, Ac
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(SniCerts {
-            fallback,
-            ts_hostname,
-            ts_cert,
-        }));
+    .with_no_client_auth()
+    .with_cert_resolver(Arc::new(SniCerts {
+        fallback,
+        ts_hostname,
+        ts_cert,
+    }));
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok((cfg, active))
 }
@@ -216,7 +220,10 @@ pub fn http_redirect_response(head: &[u8], fallback_host: &str) -> Vec<u8> {
 /// Extract the request path (with query) from a raw HTTP request head.
 pub fn http_head_path(head: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(head);
-    text.lines().next().and_then(|req| req.split_whitespace().nth(1)).map(str::to_string)
+    text.lines()
+        .next()
+        .and_then(|req| req.split_whitespace().nth(1))
+        .map(str::to_string)
 }
 
 /// OAuth callback paths must COMPLETE on the plain-HTTP leg (AMUX-3427).
@@ -250,7 +257,11 @@ mod redirect_tests {
 
     #[test]
     fn missing_host_uses_fallback() {
-        let resp = String::from_utf8(http_redirect_response(b"GET / HTTP/1.0\r\n\r\n", "127.0.0.1:8824")).unwrap();
+        let resp = String::from_utf8(http_redirect_response(
+            b"GET / HTTP/1.0\r\n\r\n",
+            "127.0.0.1:8824",
+        ))
+        .unwrap();
         assert!(resp.contains("Location: https://127.0.0.1:8824/"));
     }
 
@@ -260,7 +271,9 @@ mod redirect_tests {
         // strands the consent tab on the cert interstitial).
         assert!(is_oauth_callback_path("/api/gmail/callback?state=x&code=y"));
         assert!(is_oauth_callback_path("/api/gmail/callback"));
-        assert!(is_oauth_callback_path("/api/connectors/google/callback?code=y"));
+        assert!(is_oauth_callback_path(
+            "/api/connectors/google/callback?code=y"
+        ));
         assert!(is_oauth_callback_path("/api/connectors/slack/callback"));
         // Everything else keeps the https redirect — the carve-out must not
         // quietly grow into serving the whole API over plain HTTP.
@@ -269,14 +282,17 @@ mod redirect_tests {
         assert!(!is_oauth_callback_path("/api/sessions"));
         assert!(!is_oauth_callback_path("/api/gmail/accounts"));
         assert!(!is_oauth_callback_path("/api/connectors/google/token"));
-        assert!(!is_oauth_callback_path("/api/gmail/callback/../../sessions"));
+        assert!(!is_oauth_callback_path(
+            "/api/gmail/callback/../../sessions"
+        ));
         assert!(!is_oauth_callback_path("/api/connectors/../admin/callback"));
     }
 
     #[test]
     fn head_path_parses_the_request_line() {
         assert_eq!(
-            http_head_path(b"GET /api/gmail/callback?state=x HTTP/1.1\r\nHost: h\r\n\r\n").as_deref(),
+            http_head_path(b"GET /api/gmail/callback?state=x HTTP/1.1\r\nHost: h\r\n\r\n")
+                .as_deref(),
             Some("/api/gmail/callback?state=x")
         );
         assert_eq!(http_head_path(b"").as_deref(), None);
@@ -289,7 +305,10 @@ mod redirect_tests {
 /// is the callback's own HTML ("✓ connected" / the error page), so the consent
 /// tab finishes without the browser ever crossing the interstitial.
 async fn proxy_oauth_callback(path: &str, fallback_host: &str) -> Result<Vec<u8>, String> {
-    let port = fallback_host.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+    let port = fallback_host
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or_else(crate::config::canonical_port);
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -325,7 +344,10 @@ pub struct RedirectingAcceptor {
 
 impl RedirectingAcceptor {
     pub fn new(inner: axum_server::tls_rustls::RustlsAcceptor, fallback_host: String) -> Self {
-        Self { inner, fallback_host }
+        Self {
+            inner,
+            fallback_host,
+        }
     }
 }
 
@@ -337,8 +359,7 @@ where
     type Service = S;
     type Future = std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = std::io::Result<(Self::Stream, Self::Service)>>
-                + Send,
+            dyn std::future::Future<Output = std::io::Result<(Self::Stream, Self::Service)>> + Send,
         >,
     >;
 
@@ -357,35 +378,47 @@ where
                 let mut stream = stream;
                 let mut head = vec![0u8; 4096];
                 let read = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                    let mut used=0;
+                    let mut used = 0;
                     while used < head.len() {
-                        let n=stream.read(&mut head[used..]).await?;
-                        if n==0 {break;} used+=n;
-                        if head[..used].windows(4).any(|w|w==b"\r\n\r\n") {break;}
+                        let n = stream.read(&mut head[used..]).await?;
+                        if n == 0 {
+                            break;
+                        }
+                        used += n;
+                        if head[..used].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
                     }
-                    Ok::<usize,std::io::Error>(used)
-                }).await.unwrap_or(Ok(0)).unwrap_or(0);
+                    Ok::<usize, std::io::Error>(used)
+                })
+                .await
+                .unwrap_or(Ok(0))
+                .unwrap_or(0);
                 let path = http_head_path(&head[..read]);
-                let resp = if let Some(help) = local_setup_response(&head[..read], stream.peer_addr().ok().map(|a| a.ip())) {
+                let resp = if let Some(help) =
+                    local_setup_response(&head[..read], stream.peer_addr().ok().map(|a| a.ip()))
+                {
                     help
-                } else { match path.as_deref().filter(|p| is_oauth_callback_path(p)) {
-                    Some(p) => match proxy_oauth_callback(p, &fallback).await {
-                        Ok(r) => {
-                            tracing::info!(
+                } else {
+                    match path.as_deref().filter(|p| is_oauth_callback_path(p)) {
+                        Some(p) => match proxy_oauth_callback(p, &fallback).await {
+                            Ok(r) => {
+                                tracing::info!(
                                 path = p.split('?').next().unwrap_or(p),
                                 "plain-http oauth callback served in place (no TLS interstitial)"
                             );
-                            r
-                        }
-                        Err(e) => {
-                            // Fall back to the old behavior so the flow is
-                            // never WORSE than before the fix — but say so.
-                            tracing::warn!(error = %e, "oauth callback proxy failed — falling back to https redirect (the consent tab may strand on the cert interstitial)");
-                            http_redirect_response(&head[..read], &fallback)
-                        }
-                    },
-                    None => http_redirect_response(&head[..read], &fallback),
-                }};
+                                r
+                            }
+                            Err(e) => {
+                                // Fall back to the old behavior so the flow is
+                                // never WORSE than before the fix — but say so.
+                                tracing::warn!(error = %e, "oauth callback proxy failed — falling back to https redirect (the consent tab may strand on the cert interstitial)");
+                                http_redirect_response(&head[..read], &fallback)
+                            }
+                        },
+                        None => http_redirect_response(&head[..read], &fallback),
+                    }
+                };
                 let _ = stream.write_all(&resp).await;
                 let _ = stream.shutdown().await;
                 return Err(std::io::Error::new(
@@ -406,7 +439,8 @@ struct ActiveCertificates {
     tailscale: Option<serde_json::Value>,
 }
 fn active_certificates() -> &'static std::sync::RwLock<Option<ActiveCertificates>> {
-    static ACTIVE: std::sync::OnceLock<std::sync::RwLock<Option<ActiveCertificates>>> = std::sync::OnceLock::new();
+    static ACTIVE: std::sync::OnceLock<std::sync::RwLock<Option<ActiveCertificates>>> =
+        std::sync::OnceLock::new();
     ACTIVE.get_or_init(Default::default)
 }
 fn fingerprint(der: &[u8]) -> String {
@@ -442,36 +476,59 @@ fn certificate_metadata(pem: &str) -> anyhow::Result<serde_json::Value> {
     input.write_all(public.as_bytes())?;
     let output = tempfile::NamedTempFile::new()?;
     let mut child = Command::new("openssl")
-        .args(["x509", "-in"]).arg(input.path())
+        .args(["x509", "-in"])
+        .arg(input.path())
         .args(["-noout", "-startdate", "-enddate", "-subject", "-issuer"])
-        .stdin(Stdio::null()).stdout(output.reopen()?).stderr(Stdio::null()).spawn()
+        .stdin(Stdio::null())
+        .stdout(output.reopen()?)
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|_| anyhow::anyhow!("certificate_inspector_unavailable"))?;
     let status = match child.wait_timeout(std::time::Duration::from_secs(3)) {
         Ok(status) => status,
-        Err(_) => { let _=child.kill(); let _=child.wait(); anyhow::bail!("certificate_inspector_failed"); }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("certificate_inspector_failed");
+        }
     };
     let Some(status) = status else {
-        let _ = child.kill(); let _ = child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
         anyhow::bail!("certificate_inspector_timeout");
     };
     anyhow::ensure!(status.success(), "certificate_invalid");
     let mut text = String::new();
     output.reopen()?.take(16384).read_to_string(&mut text)?;
-    let field = |prefix: &str| text.lines().find_map(|l| l.strip_prefix(prefix)).unwrap_or("").trim().to_string();
+    let field = |prefix: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(prefix))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let before = field("notBefore=");
     let after = field("notAfter=");
-    let parse = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%b %e %H:%M:%S %Y GMT").map(|t| t.and_utc().timestamp());
+    let parse = |s: &str| {
+        chrono::NaiveDateTime::parse_from_str(s, "%b %e %H:%M:%S %Y GMT")
+            .map(|t| t.and_utc().timestamp())
+    };
     let start = parse(&before).map_err(|_| anyhow::anyhow!("certificate_dates_invalid"))?;
     let end = parse(&after).map_err(|_| anyhow::anyhow!("certificate_dates_invalid"))?;
     let now = chrono::Utc::now().timestamp();
     let certs = rustls_pemfile::certs(&mut public.as_bytes()).collect::<Result<Vec<_>, _>>()?;
-    Ok(serde_json::json!({"sha256": fingerprint(&certs[0]), "subject": field("subject="),
+    Ok(
+        serde_json::json!({"sha256": fingerprint(&certs[0]), "subject": field("subject="),
         "issuer": field("issuer="), "not_before":start, "not_after":end,
-        "valid_now":start <= now && now < end, "trust":"unknown_to_server"}))
+        "valid_now":start <= now && now < end, "trust":"unknown_to_server"}),
+    )
 }
 
 pub fn connection_status(dir: &Path) -> serde_json::Value {
-    let active = active_certificates().read().expect("TLS state lock").clone();
+    let active = active_certificates()
+        .read()
+        .expect("TLS state lock")
+        .clone();
     connection_snapshot(dir, active.as_ref())
 }
 fn connection_snapshot(dir: &Path, active: Option<&ActiveCertificates>) -> serde_json::Value {
@@ -485,32 +542,63 @@ fn connection_snapshot(dir: &Path, active: Option<&ActiveCertificates>) -> serde
         "why":"The server reports the loaded certificate, not browser or OS trust. Certificate changes take effect after an operator restart."})
 }
 fn load_persisted_fingerprint(dir: &Path) -> Option<String> {
-    let path = if dir.join("connection.pem").exists() { dir.join("connection.pem") } else { dir.join("cert.pem") };
+    let path = if dir.join("connection.pem").exists() {
+        dir.join("connection.pem")
+    } else {
+        dir.join("cert.pem")
+    };
     let pem = std::fs::read_to_string(path).ok()?;
     let cert = rustls_pemfile::certs(&mut pem.as_bytes()).next()?.ok()?;
     Some(fingerprint(&cert))
 }
 fn local_setup_authority(url: &reqwest::Url) -> bool {
-    let Some(host) = url.host_str() else { return false; };
-    if host.eq_ignore_ascii_case("localhost") { return true; }
-    host.trim_matches(['[',']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Validate everything before the one atomic replacement. The active resolver
 /// continues serving its old immutable key until a deliberate process restart.
-pub fn install_connection_certificate(dir: &Path, cert: &str, key: &str, hostname: &str) -> anyhow::Result<serde_json::Value> {
+pub fn install_connection_certificate(
+    dir: &Path,
+    cert: &str,
+    key: &str,
+    hostname: &str,
+) -> anyhow::Result<serde_json::Value> {
     use std::io::Write;
-    anyhow::ensure!(cert.len() <= 65536 && key.len() <= 32768, "certificate_too_large");
-    let certified = load_certified_key(cert, key).map_err(|_| anyhow::anyhow!("certificate_invalid_or_key_mismatch"))?;
-    let leaf = certified.cert.first().ok_or_else(|| anyhow::anyhow!("certificate_missing"))?;
-    let parsed = rustls::server::ParsedCertificate::try_from(leaf).map_err(|_| anyhow::anyhow!("certificate_invalid"))?;
-    let name = rustls::pki_types::ServerName::try_from(hostname.to_string()).map_err(|_| anyhow::anyhow!("certificate_hostname_invalid"))?;
-    rustls::client::verify_server_name(&parsed, &name).map_err(|_| anyhow::anyhow!("certificate_hostname_mismatch"))?;
+    anyhow::ensure!(
+        cert.len() <= 65536 && key.len() <= 32768,
+        "certificate_too_large"
+    );
+    let certified = load_certified_key(cert, key)
+        .map_err(|_| anyhow::anyhow!("certificate_invalid_or_key_mismatch"))?;
+    let leaf = certified
+        .cert
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("certificate_missing"))?;
+    let parsed = rustls::server::ParsedCertificate::try_from(leaf)
+        .map_err(|_| anyhow::anyhow!("certificate_invalid"))?;
+    let name = rustls::pki_types::ServerName::try_from(hostname.to_string())
+        .map_err(|_| anyhow::anyhow!("certificate_hostname_invalid"))?;
+    rustls::client::verify_server_name(&parsed, &name)
+        .map_err(|_| anyhow::anyhow!("certificate_hostname_mismatch"))?;
     let metadata = certificate_metadata(cert)?;
-    anyhow::ensure!(metadata["valid_now"] == true, "certificate_not_currently_valid");
+    anyhow::ensure!(
+        metadata["valid_now"] == true,
+        "certificate_not_currently_valid"
+    );
     // Re-encode only certificate PEM; reject accidentally supplied private keys
     // in that field rather than ever returning them as public metadata/download.
-    anyhow::ensure!(!cert.contains("PRIVATE KEY"), "certificate_field_contains_private_key");
+    anyhow::ensure!(
+        !cert.contains("PRIVATE KEY"),
+        "certificate_field_contains_private_key"
+    );
     let public = public_certificate_pem(cert)?;
     std::fs::create_dir_all(dir)?;
     let mut pending = tempfile::NamedTempFile::new_in(dir)?; // 0600, same filesystem
@@ -518,19 +606,25 @@ pub fn install_connection_certificate(dir: &Path, cert: &str, key: &str, hostnam
     pending.write_all(b"\n")?;
     // Persist only the parsed key, not additional PEM blocks supplied beside it.
     use base64::Engine;
-    let key = rustls_pemfile::private_key(&mut key.as_bytes())?.ok_or_else(||anyhow::anyhow!("private_key_missing"))?;
+    let key = rustls_pemfile::private_key(&mut key.as_bytes())?
+        .ok_or_else(|| anyhow::anyhow!("private_key_missing"))?;
     let label = match &key {
         rustls::pki_types::PrivateKeyDer::Pkcs1(_) => "RSA PRIVATE KEY",
         rustls::pki_types::PrivateKeyDer::Sec1(_) => "EC PRIVATE KEY",
         rustls::pki_types::PrivateKeyDer::Pkcs8(_) => "PRIVATE KEY",
         _ => anyhow::bail!("private_key_unsupported"),
     };
-    writeln!(pending,"-----BEGIN {label}-----")?;
-    let encoded=base64::engine::general_purpose::STANDARD.encode(key.secret_der());
-    for line in encoded.as_bytes().chunks(64) {pending.write_all(line)?;pending.write_all(b"\n")?;}
-    writeln!(pending,"-----END {label}-----")?;
+    writeln!(pending, "-----BEGIN {label}-----")?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(key.secret_der());
+    for line in encoded.as_bytes().chunks(64) {
+        pending.write_all(line)?;
+        pending.write_all(b"\n")?;
+    }
+    writeln!(pending, "-----END {label}-----")?;
     pending.as_file().sync_all()?;
-    pending.persist(dir.join("connection.pem")).map_err(|_| anyhow::anyhow!("certificate_save_failed"))?;
+    pending
+        .persist(dir.join("connection.pem"))
+        .map_err(|_| anyhow::anyhow!("certificate_save_failed"))?;
     tracing::info!(target:"amux::tls", verdict="connection_certificate_saved", sha256=metadata["sha256"].as_str().unwrap_or(""), "validated certificate saved; operator restart required");
     Ok(metadata)
 }
@@ -542,15 +636,40 @@ fn local_setup_response(head: &[u8], peer: Option<std::net::IpAddr>) -> Option<V
     let text = std::str::from_utf8(head).ok()?;
     let request = text.lines().next()?;
     let mut words = request.split_whitespace();
-    if words.next()? != "GET" { return None; }
+    if words.next()? != "GET" {
+        return None;
+    }
     let path = words.next()?;
-    if !matches!(path, "/" | "/connection-setup" | "/connection-certificate.pem") { return None; }
-    if !peer.is_some_and(|ip| ip.is_loopback()) { return None; }
-    let host = text.lines().skip(1).filter_map(|l| l.split_once(':')).find(|(k,_)| k.eq_ignore_ascii_case("host"))?.1.trim();
+    if !matches!(
+        path,
+        "/" | "/connection-setup" | "/connection-certificate.pem"
+    ) {
+        return None;
+    }
+    if !peer.is_some_and(|ip| ip.is_loopback()) {
+        return None;
+    }
+    let host = text
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("host"))?
+        .1
+        .trim();
     let url = reqwest::Url::parse(&format!("http://{host}")).ok()?;
-    if !local_setup_authority(&url) { return None; }
+    if !local_setup_authority(&url) {
+        return None;
+    }
     let (kind, body) = if path == "/connection-certificate.pem" {
-        ("application/x-pem-file", active_certificates().read().ok()?.as_ref()?.fallback_pem.clone())
+        (
+            "application/x-pem-file",
+            active_certificates()
+                .read()
+                .ok()?
+                .as_ref()?
+                .fallback_pem
+                .clone(),
+        )
     } else {
         ("text/html; charset=utf-8", r#"<!doctype html><html><meta name="viewport" content="width=device-width"><title>Amux connection setup</title><body style="font:16px system-ui;max-width:42em;margin:2em auto;padding:1em"><h1>Connect securely to Amux</h1><p>This local page provides instructions only. Never paste an owner token or private key into an HTTP page.</p><p>A browser cannot grant certificate trust. Ask the machine owner to configure a certificate trusted by this browser, with localhost and 127.0.0.1 in its Subject Alternative Names.</p><ol><li>On the server, use an existing trusted local CA (for example mkcert). Installing its CA in an OS/browser trust store is an explicit owner action. Never share its CA private key.</li><li>Generate a server certificate: <code>mkcert -cert-file localhost.pem -key-file localhost-key.pem localhost 127.0.0.1 ::1</code>.</li><li>If HTTPS is already accessible, open Settings → Connect → Connection &amp; security and upload that server certificate and key, then arrange a server restart.</li><li>If HTTPS is blocked before the app loads, the operator can atomically install the pair in the active Amux home's <code>tls/connection.pem</code>: concatenate certificate then private key into a new mode-0600 file in that directory, then rename it to connection.pem and restart the server. Do not change another Amux home's files.</li><li>Open the original HTTPS address again. The UI reports loaded and saved fingerprints; verify the loaded fingerprint and browser certificate status.</li></ol><p><a href="/connection-certificate.pem">Download the currently served fallback certificate (public only)</a> for fingerprint inspection. Downloading it does not make it trusted. Do not bypass browser TLS checks.</p></body></html>"#.to_string())
     };
@@ -563,111 +682,233 @@ mod connection_tests {
     use super::*;
     #[test]
     fn connection_certificate_atomic_save_validates_key_name_dates_and_survives_restart() {
-        let dir=tempfile::tempdir().unwrap();
-        let original=load_or_generate(dir.path()).unwrap();
-        let first=load_certified_key(&original.cert_pem,&original.key_pem).unwrap();
-        let one=rcgen::generate_simple_self_signed(vec!["localhost".into(),"127.0.0.1".into()]).unwrap();
-        let other=rcgen::generate_simple_self_signed(vec!["elsewhere.test".into()]).unwrap();
-        for (cert,key,host) in [
-            ("invalid".into(),one.key_pair.serialize_pem(),"localhost"),
-            (one.cert.pem(),other.key_pair.serialize_pem(),"localhost"),
-            (other.cert.pem(),other.key_pair.serialize_pem(),"localhost"),
+        let dir = tempfile::tempdir().unwrap();
+        let original = load_or_generate(dir.path()).unwrap();
+        let first = load_certified_key(&original.cert_pem, &original.key_pem).unwrap();
+        let one = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
+            .unwrap();
+        let other = rcgen::generate_simple_self_signed(vec!["elsewhere.test".into()]).unwrap();
+        for (cert, key, host) in [
+            ("invalid".into(), one.key_pair.serialize_pem(), "localhost"),
+            (one.cert.pem(), other.key_pair.serialize_pem(), "localhost"),
+            (
+                other.cert.pem(),
+                other.key_pair.serialize_pem(),
+                "localhost",
+            ),
         ] {
-            assert!(install_connection_certificate(dir.path(),&cert,&key,host).is_err());
-            assert_eq!(load_or_generate(dir.path()).unwrap().cert_pem,original.cert_pem);
+            assert!(install_connection_certificate(dir.path(), &cert, &key, host).is_err());
+            assert_eq!(
+                load_or_generate(dir.path()).unwrap().cert_pem,
+                original.cert_pem
+            );
         }
-        for (from,to) in [(2000,2001),(2090,2091)] {
-            let mut p=rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
-            p.not_before=rcgen::date_time_ymd(from,1,1);p.not_after=rcgen::date_time_ymd(to,1,1);
-            let expired=p.self_signed(&one.key_pair).unwrap();
-            assert_eq!(install_connection_certificate(dir.path(),&expired.pem(),&one.key_pair.serialize_pem(),"localhost").unwrap_err().to_string(),"certificate_not_currently_valid");
+        for (from, to) in [(2000, 2001), (2090, 2091)] {
+            let mut p = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+            p.not_before = rcgen::date_time_ymd(from, 1, 1);
+            p.not_after = rcgen::date_time_ymd(to, 1, 1);
+            let expired = p.self_signed(&one.key_pair).unwrap();
+            assert_eq!(
+                install_connection_certificate(
+                    dir.path(),
+                    &expired.pem(),
+                    &one.key_pair.serialize_pem(),
+                    "localhost"
+                )
+                .unwrap_err()
+                .to_string(),
+                "certificate_not_currently_valid"
+            );
         }
-        let saved=install_connection_certificate(dir.path(),&one.cert.pem(),&one.key_pair.serialize_pem(),"localhost").unwrap();
-        assert_eq!(load_persisted_fingerprint(dir.path()).unwrap(),saved["sha256"]);
+        let saved = install_connection_certificate(
+            dir.path(),
+            &one.cert.pem(),
+            &one.key_pair.serialize_pem(),
+            "localhost",
+        )
+        .unwrap();
+        assert_eq!(
+            load_persisted_fingerprint(dir.path()).unwrap(),
+            saved["sha256"]
+        );
         // Live resolver still owns the old immutable key; restart adopts pair.
-        assert_ne!(fingerprint(&first.cert[0]),saved["sha256"]);
-        let adopted=load_or_generate(dir.path()).unwrap();
-        let restored=load_certified_key(&adopted.cert_pem,&adopted.key_pem).unwrap();
-        assert_eq!(fingerprint(&restored.cert[0]),saved["sha256"]);
-        assert!(!public_certificate_pem(&adopted.cert_pem).unwrap().contains("PRIVATE KEY"));
-        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;assert_eq!(std::fs::metadata(dir.path().join("connection.pem")).unwrap().permissions().mode() & 0o777,0o600);}
+        assert_ne!(fingerprint(&first.cert[0]), saved["sha256"]);
+        let adopted = load_or_generate(dir.path()).unwrap();
+        let restored = load_certified_key(&adopted.cert_pem, &adopted.key_pem).unwrap();
+        assert_eq!(fingerprint(&restored.cert[0]), saved["sha256"]);
+        assert!(!public_certificate_pem(&adopted.cert_pem)
+            .unwrap()
+            .contains("PRIVATE KEY"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(dir.path().join("connection.pem"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         // A failed atomic replace cannot damage the active pair or legacy files.
-        let blocked=tempfile::tempdir().unwrap();
+        let blocked = tempfile::tempdir().unwrap();
         std::fs::create_dir(blocked.path().join("connection.pem")).unwrap();
-        assert!(install_connection_certificate(blocked.path(),&one.cert.pem(),&one.key_pair.serialize_pem(),"localhost").is_err());
+        assert!(install_connection_certificate(
+            blocked.path(),
+            &one.cert.pem(),
+            &one.key_pair.serialize_pem(),
+            "localhost"
+        )
+        .is_err());
         assert!(blocked.path().join("connection.pem").is_dir());
-        assert_eq!(load_certified_key(&adopted.cert_pem,&adopted.key_pem).unwrap().cert,restored.cert);
+        assert_eq!(
+            load_certified_key(&adopted.cert_pem, &adopted.key_pem)
+                .unwrap()
+                .cert,
+            restored.cert
+        );
     }
     #[test]
     fn connection_certificate_status_uses_loaded_resolver_and_preserves_tailscale_on_restart() {
-        let dir=tempfile::tempdir().unwrap();
-        let ts=rcgen::generate_simple_self_signed(vec!["machine.test.ts.net".into()]).unwrap();
-        std::fs::write(dir.path().join("machine.test.ts.net.crt"),ts.cert.pem()).unwrap();
-        std::fs::write(dir.path().join("machine.test.ts.net.key"),ts.key_pair.serialize_pem()).unwrap();
-        let (_,old)=prepare_server_config(dir.path()).unwrap();
-        let before=connection_snapshot(dir.path(),Some(&old));
-        assert_eq!(before["restart_required"],false);
-        assert_eq!(before["tailscale"]["hostname"],"machine.test.ts.net");
-        let next=rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let saved=install_connection_certificate(dir.path(),&next.cert.pem(),&next.key_pair.serialize_pem(),"localhost").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ts = rcgen::generate_simple_self_signed(vec!["machine.test.ts.net".into()]).unwrap();
+        std::fs::write(dir.path().join("machine.test.ts.net.crt"), ts.cert.pem()).unwrap();
+        std::fs::write(
+            dir.path().join("machine.test.ts.net.key"),
+            ts.key_pair.serialize_pem(),
+        )
+        .unwrap();
+        let (_, old) = prepare_server_config(dir.path()).unwrap();
+        let before = connection_snapshot(dir.path(), Some(&old));
+        assert_eq!(before["restart_required"], false);
+        assert_eq!(before["tailscale"]["hostname"], "machine.test.ts.net");
+        let next = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let saved = install_connection_certificate(
+            dir.path(),
+            &next.cert.pem(),
+            &next.key_pair.serialize_pem(),
+            "localhost",
+        )
+        .unwrap();
         // Files exist but the live resolver still contains the previous cert.
-        let pending=connection_snapshot(dir.path(),Some(&old));
-        assert_eq!(pending["active"],before["active"]);
-        assert_eq!(pending["saved_sha256"],saved["sha256"]);
-        assert_eq!(pending["restart_required"],true);
-        assert_eq!(pending["trust"],"unknown_to_server");
-        let (_,restarted)=prepare_server_config(dir.path()).unwrap();
-        let after=connection_snapshot(dir.path(),Some(&restarted));
-        assert_eq!(after["active"]["sha256"],saved["sha256"]);
-        assert_eq!(after["restart_required"],false);
-        assert_eq!(after["tailscale"],before["tailscale"]);
-        std::fs::write(dir.path().join("machine.test.ts.net.key"),next.key_pair.serialize_pem()).unwrap();
-        let (_,bad_sni)=prepare_server_config(dir.path()).unwrap();
-        assert!(bad_sni.tailscale.is_none(),"file presence cannot claim a loaded SNI pair");
+        let pending = connection_snapshot(dir.path(), Some(&old));
+        assert_eq!(pending["active"], before["active"]);
+        assert_eq!(pending["saved_sha256"], saved["sha256"]);
+        assert_eq!(pending["restart_required"], true);
+        assert_eq!(pending["trust"], "unknown_to_server");
+        let (_, restarted) = prepare_server_config(dir.path()).unwrap();
+        let after = connection_snapshot(dir.path(), Some(&restarted));
+        assert_eq!(after["active"]["sha256"], saved["sha256"]);
+        assert_eq!(after["restart_required"], false);
+        assert_eq!(after["tailscale"], before["tailscale"]);
+        std::fs::write(
+            dir.path().join("machine.test.ts.net.key"),
+            next.key_pair.serialize_pem(),
+        )
+        .unwrap();
+        let (_, bad_sni) = prepare_server_config(dir.path()).unwrap();
+        assert!(
+            bad_sni.tailscale.is_none(),
+            "file presence cannot claim a loaded SNI pair"
+        );
     }
     #[tokio::test]
     async fn connection_setup_reaches_real_plain_http_acceptor_without_serving_owner_api() {
-        use tokio::io::{AsyncReadExt,AsyncWriteExt};
-        let dir=tempfile::tempdir().unwrap();
-        let config=prepare_server_config(dir.path()).unwrap().0;
-        let rustls=axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config));
-        for (path,expected) in [("/connection-setup","200 OK"),("/api/connection/session","301 Moved Permanently")] {
-            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address=listener.local_addr().unwrap();
-            let acceptor=RedirectingAcceptor::new(axum_server::tls_rustls::RustlsAcceptor::new(rustls.clone()),address.to_string());
-            let server=tokio::spawn(async move {
-                let (stream,_)=listener.accept().await.unwrap();
-                assert!(axum_server::accept::Accept::accept(&acceptor,stream,()).await.is_err());
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let config = prepare_server_config(dir.path()).unwrap().0;
+        let rustls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config));
+        for (path, expected) in [
+            ("/connection-setup", "200 OK"),
+            ("/api/connection/session", "301 Moved Permanently"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let acceptor = RedirectingAcceptor::new(
+                axum_server::tls_rustls::RustlsAcceptor::new(rustls.clone()),
+                address.to_string(),
+            );
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                assert!(axum_server::accept::Accept::accept(&acceptor, stream, ())
+                    .await
+                    .is_err());
             });
-            let mut client=tokio::net::TcpStream::connect(address).await.unwrap();
-            client.write_all(format!("GET {path} HTTP/1.1\r\n").as_bytes()).await.unwrap();
+            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+            client
+                .write_all(format!("GET {path} HTTP/1.1\r\n").as_bytes())
+                .await
+                .unwrap();
             tokio::task::yield_now().await;
-            client.write_all(b"Host: localhost:18972\r\n\r\n").await.unwrap();
-            let mut response=String::new();
-            tokio::time::timeout(std::time::Duration::from_secs(5),client.read_to_string(&mut response)).await.unwrap().unwrap();
-            assert!(response.starts_with(&format!("HTTP/1.1 {expected}")),"{response}");
-            assert!(!response.contains("Set-Cookie:"));server.await.unwrap();
+            client
+                .write_all(b"Host: localhost:18972\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.read_to_string(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {expected}")),
+                "{response}"
+            );
+            assert!(!response.contains("Set-Cookie:"));
+            server.await.unwrap();
         }
     }
     #[test]
     fn connection_setup_is_read_only_local_peer_and_local_authority_only() {
-        let local=Some("127.0.0.1".parse().unwrap());
-        let page=local_setup_response(b"GET /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",local).unwrap();
-        let page=String::from_utf8(page).unwrap();
-        assert!(page.contains("200 OK"));assert!(page.contains("mkcert"));assert!(page.contains("explicit owner action"));
-        assert!(!page.contains("<script"));assert!(!page.contains("<input"));
-        assert!(local_setup_response(b"GET /connection-setup HTTP/1.1\r\nHost: [::1]:18972\r\n\r\n",Some("::1".parse().unwrap())).is_some());
-        assert!(local_setup_authority(&reqwest::Url::parse("http://[::1]:18972").unwrap()));
-        assert!(local_setup_authority(&reqwest::Url::parse("http://127.0.0.1:18972").unwrap()));
-        assert!(local_setup_authority(&reqwest::Url::parse("http://localhost:18972").unwrap()));
-        assert!(!local_setup_authority(&reqwest::Url::parse("http://evil.test:18972").unwrap()));
+        let local = Some("127.0.0.1".parse().unwrap());
+        let page = local_setup_response(
+            b"GET /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",
+            local,
+        )
+        .unwrap();
+        let page = String::from_utf8(page).unwrap();
+        assert!(page.contains("200 OK"));
+        assert!(page.contains("mkcert"));
+        assert!(page.contains("explicit owner action"));
+        assert!(!page.contains("<script"));
+        assert!(!page.contains("<input"));
+        assert!(local_setup_response(
+            b"GET /connection-setup HTTP/1.1\r\nHost: [::1]:18972\r\n\r\n",
+            Some("::1".parse().unwrap())
+        )
+        .is_some());
+        assert!(local_setup_authority(
+            &reqwest::Url::parse("http://[::1]:18972").unwrap()
+        ));
+        assert!(local_setup_authority(
+            &reqwest::Url::parse("http://127.0.0.1:18972").unwrap()
+        ));
+        assert!(local_setup_authority(
+            &reqwest::Url::parse("http://localhost:18972").unwrap()
+        ));
+        assert!(!local_setup_authority(
+            &reqwest::Url::parse("http://evil.test:18972").unwrap()
+        ));
         for head in [
             "POST /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",
             "GET /connection-setup HTTP/1.1\r\nHost: evil.test:18972\r\n\r\n",
             "GET /api/connection/session HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",
             "GET /connection-setup?token=secret HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",
-        ] {assert!(local_setup_response(head.as_bytes(),local).is_none());}
-        assert!(local_setup_response(b"GET /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",Some("192.0.2.1".parse().unwrap())).is_none());
-        assert!(local_setup_response(b"GET /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",None).is_none());
+        ] {
+            assert!(local_setup_response(head.as_bytes(), local).is_none());
+        }
+        assert!(local_setup_response(
+            b"GET /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",
+            Some("192.0.2.1".parse().unwrap())
+        )
+        .is_none());
+        assert!(local_setup_response(
+            b"GET /connection-setup HTTP/1.1\r\nHost: localhost:18972\r\n\r\n",
+            None
+        )
+        .is_none());
     }
 }

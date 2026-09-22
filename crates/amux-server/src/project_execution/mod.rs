@@ -1,6 +1,6 @@
 //! One project execution authority, backed by the existing group and issue rows.
-pub(crate) mod driver;
 pub(crate) mod acceptance;
+pub(crate) mod driver;
 pub(crate) mod graph;
 pub(crate) mod intake;
 pub(crate) mod planner;

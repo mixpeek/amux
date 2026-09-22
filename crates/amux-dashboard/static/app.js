@@ -11779,7 +11779,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1024';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1025';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44933,15 +44933,20 @@ function _projectClearRefreshError() {
   const retry=document.getElementById('project-error-retry');if(retry) retry.hidden=true;
 }
 function _projectInventoryState(project) {
-  const policy=project?.policy || {};
+  const policy=project?.policy || {}, summary=project?.summary || {};
   if(policy.paused) return {label:'Paused',cls:'paused'};
   if(policy.enabled===false) return {label:'Disabled',cls:'disabled'};
-  return {label:'Driving',cls:'active'};
+  if(summary.acceptance_state==='awaiting_human' || summary.retirement_state==='awaiting_human') return {label:'Needs review',cls:'review'};
+  if(summary.acceptance_state==='accepted') return {label:'Accepted',cls:'done'};
+  if(summary.acceptance_state==='not_configured' && Number(summary.active_tasks||0)===0 && Number(summary.task_count||0)>0) return {label:'Review setup',cls:'review'};
+  if(Number(summary.running_executions||0)>0 || Number(summary.active_tasks||0)>0) return {label:'Driving',cls:'active'};
+  if(Number(summary.task_count||0)>0) return {label:'Tasks verified',cls:'done'};
+  return {label:'Ready',cls:'ready'};
 }
 function _projectRenderInventory(projects) {
   const el=document.getElementById('project-list'); if(!el) return;
   const rows=[{name:'',newProject:true}].concat(projects || []);
-  const sig=JSON.stringify([_projectsName,rows.map(p=>[p.name,p.newProject,!!p.policy?.paused,p.policy?.enabled,p.policy?.repository,p.policy?.executor?.provider,p.policy?.executor?.model,p.policy?.worktree])]);
+  const sig=JSON.stringify([_projectsName,rows.map(p=>[p.name,p.newProject,!!p.policy?.paused,p.policy?.enabled,p.policy?.repository,p.policy?.executor?.provider,p.policy?.executor?.model,p.policy?.executor?.effort,p.policy?.worktree,p.summary])]);
   if(el.dataset.sig===sig) return;
   el.dataset.sig=sig;
   el.innerHTML='<div class="project-list-title">Projects</div>'+rows.map(p=>{
@@ -45005,7 +45010,15 @@ function _projectRenderOverview(data) {
   const acc=data.acceptance||{}, policy=data.project.policy||{}, cards=data.cards||[], assets=_projectAssets(data);
   const phases=['intake','ready','working','verifying','verified'];
   const phaseSet=new Set(cards.map(c=>c.phase));
-  const timeline=phases.map(phase=>`<div class="project-timeline-step ${phaseSet.has(phase)||phase==='intake'?'done':''}"><span></span><strong>${esc(phase[0].toUpperCase()+phase.slice(1))}</strong><small>${phase==='verified'?cards.filter(c=>c.phase==='verified').length+' verified':phaseSet.has(phase)?'active':'pending'}</small></div>`).join('');
+  const phaseRank={intake:0,ready:1,working:2,waiting:2,verifying:3,verified:4,closed:4};
+  const furthest=cards.reduce((max,c)=>Math.max(max, phaseRank[c.phase] ?? -1), -1);
+  const verifiedCount=cards.filter(c=>c.phase==='verified').length;
+  const timeline=phases.map((phase,index)=>{
+    const current=phaseSet.has(phase) || (phase==='working' && phaseSet.has('waiting'));
+    const done=cards.length>0 && index<=furthest && (index<furthest || phase==='verified' && verifiedCount>0 || current);
+    const label=phase==='verified' ? (verifiedCount ? verifiedCount+' verified' : 'pending') : current ? 'active' : done ? 'done' : 'pending';
+    return `<div class="project-timeline-step ${done?'done':''}"><span></span><strong>${esc(phase[0].toUpperCase()+phase.slice(1))}</strong><small>${esc(label)}</small></div>`;
+  }).join('');
   const recent=cards.slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<tr><td>${esc(c.id)}</td><td>${esc(_projectClip(c.title,54))}</td><td><span class="project-status-chip ${esc(c.phase)}">${esc(c.phase)}</span></td><td>${esc(_projectShortDate(_projectCardUpdated(c)))}</td></tr>`).join('');
   const runs=cards.filter(c=>c.execution_plan?.execution?.stage || c.execution_plan?.execution?.report).slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<li><span class="project-run-dot ${c.phase==='verified'?'ok':''}"></span><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.execution?.stage || c.phase,40))}</span><small>${esc(_projectShortDate(_projectCardUpdated(c)))}</small></li>`).join('');
   const deps=cards.filter(c=>(c.depends_on||[]).length || c.execution_plan?.waiting_label || c.execution_plan?.waiting_reason).slice(0,4).map(c=>`<li><button class="project-link" onclick="_projectSetTab('dependencies')">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.waiting_label || ((c.depends_on||[]).length+' explicit dependencies'),80))}</span></li>`).join('');

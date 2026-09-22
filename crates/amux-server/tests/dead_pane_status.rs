@@ -44,7 +44,10 @@ async fn body(app: &axum::Router, worker: &WorkerId) -> Value {
 /// than as an empty answer.
 fn dead_pane_host_evidence(backend_ref: &str) -> String {
     fn run(args: &[&str]) -> String {
-        match std::process::Command::new(args[0]).args(&args[1..]).output() {
+        match std::process::Command::new(args[0])
+            .args(&args[1..])
+            .output()
+        {
             Ok(o) => format!(
                 "{}{}(exit {:?})",
                 String::from_utf8_lossy(&o.stdout),
@@ -59,15 +62,26 @@ fn dead_pane_host_evidence(backend_ref: &str) -> String {
         "tmux", "list-panes", "-t", &target, "-F",
         "dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal} time=#{pane_dead_time} pane_pid=#{pane_pid} server_pid=#{pid} version=#{version}",
     ]);
-    let mut out = format!("tmux -V: {}\nlist-panes: {}\n", run(&["tmux", "-V"]).trim(), panes.trim());
+    let mut out = format!(
+        "tmux -V: {}\nlist-panes: {}\n",
+        run(&["tmux", "-V"]).trim(),
+        panes.trim()
+    );
     let field = |key: &str| {
-        panes.split_whitespace().find_map(|w| w.strip_prefix(key)).unwrap_or("").to_string()
+        panes
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix(key))
+            .unwrap_or("")
+            .to_string()
     };
     let pane_pid = field("pane_pid=");
     let server_pid = field("server_pid=");
     if !pane_pid.is_empty() {
         let ps = run(&["ps", "-o", "pid,ppid,stat,args", "-p", &pane_pid]);
-        out.push_str(&format!("ps pane_pid (a Z row means tmux never reaped it): {}\n", ps.trim()));
+        out.push_str(&format!(
+            "ps pane_pid (a Z row means tmux never reaped it): {}\n",
+            ps.trim()
+        ));
     }
     if !server_pid.is_empty() {
         let ps = run(&["ps", "-o", "pid,ppid,stat,args", "-p", &server_pid]);
@@ -76,7 +90,10 @@ fn dead_pane_host_evidence(backend_ref: &str) -> String {
             Ok(status) => {
                 // SigBlk/SigIgn/SigCgt are hex masks; SIGCHLD is signal 17 on
                 // Linux, bit 0x10000.
-                for line in status.lines().filter(|l| l.starts_with("Sig") || l.starts_with("Shd")) {
+                for line in status
+                    .lines()
+                    .filter(|l| l.starts_with("Sig") || l.starts_with("Shd"))
+                {
                     out.push_str(line);
                     out.push('\n');
                 }
@@ -142,12 +159,27 @@ async fn retained_dead_pane_cannot_remain_idle_in_worker_api() {
     // for the entire observation window. This specimen tests exit detection,
     // not the developer's shell initialization; use a private minimal server.
     let bootstrap = std::process::Command::new("tmux")
-        .args(["-f", "/dev/null", "new-session", "-d", "-s", "dead-pane-fixture", "/bin/sh"])
-        .status().unwrap();
+        .args([
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "dead-pane-fixture",
+            "/bin/sh",
+        ])
+        .status()
+        .unwrap();
     assert!(bootstrap.success(), "private fixture server must start");
-    for (key, value) in [("default-shell", "/bin/sh"), ("default-command", "exec /bin/sh")] {
+    for (key, value) in [
+        ("default-shell", "/bin/sh"),
+        ("default-command", "exec /bin/sh"),
+    ] {
         assert!(std::process::Command::new("tmux")
-            .args(["set-option", "-g", key, value]).status().unwrap().success());
+            .args(["set-option", "-g", key, value])
+            .status()
+            .unwrap()
+            .success());
     }
     let dir = tempfile::tempdir().unwrap();
     let store: SharedStore = Arc::new(Store::open(&dir.path().join("probe.db")).unwrap());

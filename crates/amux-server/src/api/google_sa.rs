@@ -73,12 +73,11 @@ pub fn sa_config() -> Option<(String, String)> {
 /// locally, with neither result saying which environment it was measuring.
 pub fn sa_config_in(home: &std::path::Path) -> Option<(String, String)> {
     let file_env = crate::config::parse_env_file(&home.join("server.env"));
-    let ambient: Option<OwnedAmbientEnv> =
-        if home == crate::config::amux_home() {
-            Some(Box::new(|k: &str| std::env::var(k).ok()))
-        } else {
-            None
-        };
+    let ambient: Option<OwnedAmbientEnv> = if home == crate::config::amux_home() {
+        Some(Box::new(|k: &str| std::env::var(k).ok()))
+    } else {
+        None
+    };
     resolve_sa(&file_env, ambient.as_deref())
 }
 
@@ -166,9 +165,8 @@ pub async fn mint_token_as(scope: &str, subject: &str) -> Result<MintedToken, St
     // application/x-www-form-urlencoded body, built by hand so no extra reqwest
     // feature is needed. The JWT (base64url + '.') and the grant-type URN carry
     // no characters that require form-encoding.
-    let form = format!(
-        "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={assertion}"
-    );
+    let form =
+        format!("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={assertion}");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -186,7 +184,10 @@ pub async fn mint_token_as(scope: &str, subject: &str) -> Result<MintedToken, St
         .await
         .map_err(|e| format!("token exchange body: {e}"))?;
     if !status.is_success() {
-        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("error");
+        let err = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("error");
         let desc = body
             .get("error_description")
             .and_then(|v| v.as_str())
@@ -214,7 +215,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     /// AF-529. The ambient (process-env) lookup is a PARAMETER, so this asserts
@@ -256,7 +260,10 @@ mod tests {
             Some(("/from/file.json".into(), "file@example.com".into()))
         );
         // A blank in the file is not a value; it falls through, same as before.
-        let blank = env_of(&[("GOOGLE_SA_KEY_FILE", "   "), ("GOOGLE_SA_SUBJECT", "s@e.com")]);
+        let blank = env_of(&[
+            ("GOOGLE_SA_KEY_FILE", "   "),
+            ("GOOGLE_SA_SUBJECT", "s@e.com"),
+        ]);
         assert_eq!(
             resolve_sa(&blank, Some(&always)),
             Some(("from-ambient".into(), "s@e.com".into()))

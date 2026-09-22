@@ -119,7 +119,8 @@ pub(crate) async fn retire<F: Fleet>(
         if let Some(project) = env.get("CC_PROJECT") {
             let gate = {
                 let conn = state.store.read().map_err(|e| e.to_string())?;
-                crate::project_execution::acceptance::retirement_allowed(&conn, project).map_err(|e| e.to_string())?
+                crate::project_execution::acceptance::retirement_allowed(&conn, project)
+                    .map_err(|e| e.to_string())?
             };
             if gate["allowed"] != true {
                 crate::api::session_verbs::set_review_hold_at(&active, true)?;
@@ -218,7 +219,8 @@ pub(crate) async fn retire<F: Fleet>(
     if let Some(project) = env.get("CC_PROJECT") {
         let gate = {
             let conn = state.store.read().map_err(|e| e.to_string())?;
-            crate::project_execution::acceptance::retirement_allowed(&conn, project).map_err(|e| e.to_string())?
+            crate::project_execution::acceptance::retirement_allowed(&conn, project)
+                .map_err(|e| e.to_string())?
         };
         if gate["allowed"] != true {
             crate::api::session_verbs::set_review_hold_at(&source, true)?;
@@ -480,8 +482,8 @@ mod tests {
 
     #[test]
     fn project_superseded_packet_history_unblocks_only_verified_retirement() {
-        use crate::project_execution::{planner,store};
-        let (_dir,db,_)=crate::project_execution::outputs::tests::fixture();
+        use crate::project_execution::{planner, store};
+        let (_dir, db, _) = crate::project_execution::outputs::tests::fixture();
         db.write(|c| {
             let row=crate::db::board_store::get_issue(c,"A")?.unwrap();
             let mut current=planner::execution(c,"A").unwrap();
@@ -555,8 +557,8 @@ mod tests {
         use crate::project_execution::{acceptance, store};
         let f = Fixture::new().await;
         std::fs::write(f.env(), "CC_EPHEMERAL=1\nCC_PROJECT=review-project\n").unwrap();
-        let repo=f.w.repo.clone();
-        let head=f.head.clone();
+        let repo = f.w.repo.clone();
+        let head = f.head.clone();
         f.state.store.write(move |c| {
             c.execute("UPDATE issues SET project_group='review-project' WHERE id='C-1'", [])?;
             let policy: amux_core::project::ExecutionPolicy = serde_json::from_value(serde_json::json!({
@@ -580,8 +582,11 @@ mod tests {
             Some("1")
         );
         f.kept();
-        assert!(Path::new(&f.w.path).exists(), "review retains the exact executor checkout");
-        let head=f.head.clone();
+        assert!(
+            Path::new(&f.w.path).exists(),
+            "review retains the exact executor checkout"
+        );
+        let head = f.head.clone();
         f.state.store.write(move |c| {
             let current=store::get(c,"review-project").map_err(store::sql_error)?.unwrap();
             let contract=current.policy.acceptance.as_ref().unwrap();

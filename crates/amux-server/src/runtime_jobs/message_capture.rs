@@ -72,10 +72,16 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
     // Rotate across retained pending rows, including failed rows. A poisoned
     // first batch must not starve newer messages. Restart resets only the scan
     // cursor; the pending work itself lives in the database.
-    tracing::info!(job=JOB, interval_s=TICK_SECONDS, attempt_timeout_s=ATTEMPT_SECONDS,
-        health_budget_s=super::registry::stall_after_s(TICK_SECONDS as f64),
-        measured=true, n_considered=1, verdict="capture_recovery_configured",
-        "capture recovery cadence includes its bounded attempt budget");
+    tracing::info!(
+        job = JOB,
+        interval_s = TICK_SECONDS,
+        attempt_timeout_s = ATTEMPT_SECONDS,
+        health_budget_s = super::registry::stall_after_s(TICK_SECONDS as f64),
+        measured = true,
+        n_considered = 1,
+        verdict = "capture_recovery_configured",
+        "capture recovery cadence includes its bounded attempt budget"
+    );
     let cursor = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
     super::spawn_periodic(JOB, TICK_SECONDS, move || {
         let state = state.clone();
@@ -99,18 +105,34 @@ mod tests {
     #[test]
     fn bounded_attempt_fits_the_registered_health_budget() {
         assert!(
-            super::super::registry::stall_after_s(TICK_SECONDS as f64) > (TICK_SECONDS + ATTEMPT_SECONDS) as f64,
+            super::super::registry::stall_after_s(TICK_SECONDS as f64)
+                > (TICK_SECONDS + ATTEMPT_SECONDS) as f64,
             "normal idle interval plus permitted attempt must fit the health budget"
         );
-        assert_eq!(super::super::registry::doc_for(JOB).unwrap().name, "Message capture recovery");
+        assert_eq!(
+            super::super::registry::doc_for(JOB).unwrap().name,
+            "Message capture recovery"
+        );
         let facts = super::super::registry::Facts {
-            spawned:true, interval_s:Some(TICK_SECONDS as f64), spawned_at:Some(0.0),
-            last_tick_at:Some(0.0), in_flight_since:Some(TICK_SECONDS as f64),
-            instrumented:true, ..Default::default()
+            spawned: true,
+            interval_s: Some(TICK_SECONDS as f64),
+            spawned_at: Some(0.0),
+            last_tick_at: Some(0.0),
+            in_flight_since: Some(TICK_SECONDS as f64),
+            instrumented: true,
+            ..Default::default()
         };
-        assert_eq!(super::super::registry::classify(&facts, (TICK_SECONDS+ATTEMPT_SECONDS) as f64), "ok");
-        let deadline = TICK_SECONDS as f64 + super::super::registry::stall_after_s(TICK_SECONDS as f64);
-        assert_eq!(super::super::registry::classify(&facts, deadline+1.0), "hung", "a real overrun must still be detected");
+        assert_eq!(
+            super::super::registry::classify(&facts, (TICK_SECONDS + ATTEMPT_SECONDS) as f64),
+            "ok"
+        );
+        let deadline =
+            TICK_SECONDS as f64 + super::super::registry::stall_after_s(TICK_SECONDS as f64);
+        assert_eq!(
+            super::super::registry::classify(&facts, deadline + 1.0),
+            "hung",
+            "a real overrun must still be detected"
+        );
     }
 
     fn fixture() -> (AppState, tempfile::TempDir) {

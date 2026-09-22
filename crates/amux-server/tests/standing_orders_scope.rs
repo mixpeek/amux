@@ -38,7 +38,11 @@ impl Home {
         self.0.path()
     }
     fn worker(&self, lane: &str, body: &str) -> &Self {
-        fs::write(self.path().join("sessions").join(format!("{lane}.env")), body).unwrap();
+        fs::write(
+            self.path().join("sessions").join(format!("{lane}.env")),
+            body,
+        )
+        .unwrap();
         self
     }
     fn group(&self, group: &str, body: &str) -> &Self {
@@ -70,9 +74,13 @@ fn default_is_on_at_every_level() {
 #[test]
 fn worker_level_off_silences_that_lane_only() {
     let h = Home::new();
-    h.worker("so-off", "CC_AUTO_PICKUP=0\n").worker("so-on", "CC_DIR=/tmp\n");
+    h.worker("so-off", "CC_AUTO_PICKUP=0\n")
+        .worker("so-on", "CC_DIR=/tmp\n");
     assert!(!h.on("so-off", "CC_AUTO_PICKUP"));
-    assert!(h.on("so-on", "CC_AUTO_PICKUP"), "the neighbour is unaffected");
+    assert!(
+        h.on("so-on", "CC_AUTO_PICKUP"),
+        "the neighbour is unaffected"
+    );
 }
 
 /// THE REGRESSION, half one. Pre-fix this wrote `~/.amux/env/<group>.env` and
@@ -84,9 +92,18 @@ fn group_level_off_silences_every_member() {
         .worker("so-member-a", "CC_TAGS=quiet-crew\n")
         .worker("so-member-b", "CC_TAGS=quiet-crew,other\n")
         .worker("so-outsider", "CC_TAGS=other\n");
-    assert!(!h.on("so-member-a", "CC_AUTO_PICKUP"), "group off silences a member");
-    assert!(!h.on("so-member-b", "CC_AUTO_CONTINUE"), "multi-group member too");
-    assert!(h.on("so-outsider", "CC_AUTO_PICKUP"), "a lane outside the group keeps its default");
+    assert!(
+        !h.on("so-member-a", "CC_AUTO_PICKUP"),
+        "group off silences a member"
+    );
+    assert!(
+        !h.on("so-member-b", "CC_AUTO_CONTINUE"),
+        "multi-group member too"
+    );
+    assert!(
+        h.on("so-outsider", "CC_AUTO_PICKUP"),
+        "a lane outside the group keeps its default"
+    );
 }
 
 /// THE REGRESSION, half two. Same story for `~/.amux/amux.env`.
@@ -109,10 +126,22 @@ fn worker_overrides_group_overrides_global() {
         .group("loud-crew", "CC_STANDING_ORDERS=1\n")
         .worker("so-prec-global", "CC_DIR=/tmp\n")
         .worker("so-prec-group", "CC_TAGS=loud-crew\n")
-        .worker("so-prec-worker", "CC_TAGS=loud-crew\nCC_STANDING_ORDERS=0\n");
-    assert!(!h.on("so-prec-global", "CC_AUTO_PICKUP"), "global off applies");
-    assert!(h.on("so-prec-group", "CC_AUTO_PICKUP"), "the group's ON beats the global OFF");
-    assert!(!h.on("so-prec-worker", "CC_AUTO_PICKUP"), "the worker's OFF beats both");
+        .worker(
+            "so-prec-worker",
+            "CC_TAGS=loud-crew\nCC_STANDING_ORDERS=0\n",
+        );
+    assert!(
+        !h.on("so-prec-global", "CC_AUTO_PICKUP"),
+        "global off applies"
+    );
+    assert!(
+        h.on("so-prec-group", "CC_AUTO_PICKUP"),
+        "the group's ON beats the global OFF"
+    );
+    assert!(
+        !h.on("so-prec-worker", "CC_AUTO_PICKUP"),
+        "the worker's OFF beats both"
+    );
 }
 
 /// The master switch silences classes it does not name; the per-class key still
@@ -127,7 +156,10 @@ fn the_master_switch_covers_every_class_and_the_per_class_keys_still_work() {
     );
     h.worker("so-fine", "CC_AUTO_PICKUP=0\n");
     assert!(!h.on("so-fine", "CC_AUTO_PICKUP"), "per-class off");
-    assert!(h.on("so-fine", "CC_AUTO_CONTINUE"), "…and it does NOT silence the other class");
+    assert!(
+        h.on("so-fine", "CC_AUTO_CONTINUE"),
+        "…and it does NOT silence the other class"
+    );
 }
 
 /// Every falsey spelling the rest of the codebase accepts, plus a control set

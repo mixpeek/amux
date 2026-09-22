@@ -280,7 +280,10 @@ mod tests {
     }
 
     fn tid(n: u32) -> TaskId {
-        TaskId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 40_000 + n as u128))
+        TaskId::from_ulid(ulid::Ulid::from_parts(
+            1_700_000_000_000,
+            40_000 + n as u128,
+        ))
     }
 
     fn worker(n: u32, provider: &str, state: WorkerState) -> Worker {
@@ -360,9 +363,21 @@ mod tests {
         // One limited worker exhausts the provider for ALL its workers; the
         // provider reset is the LATEST evidence (early resume would thrash).
         let workers = vec![
-            worker(1, "claude", WorkerState::RateLimited { reset_at: Some(at(60)) }),
+            worker(
+                1,
+                "claude",
+                WorkerState::RateLimited {
+                    reset_at: Some(at(60)),
+                },
+            ),
             worker(2, "claude", WorkerState::Idle { since: t0() }),
-            worker(3, "claude", WorkerState::RateLimited { reset_at: Some(at(120)) }),
+            worker(
+                3,
+                "claude",
+                WorkerState::RateLimited {
+                    reset_at: Some(at(120)),
+                },
+            ),
             worker(4, "codex", WorkerState::Idle { since: t0() }),
         ];
         let m = derive(&workers, t0(), 5);
@@ -398,7 +413,13 @@ mod tests {
         // worker is only awaiting its stagger slot. Provider reads Available
         // so already-resumed siblings can take work mid-drain.
         let workers = vec![
-            worker(1, "claude", WorkerState::RateLimited { reset_at: Some(at(-10)) }),
+            worker(
+                1,
+                "claude",
+                WorkerState::RateLimited {
+                    reset_at: Some(at(-10)),
+                },
+            ),
             worker(2, "claude", WorkerState::Idle { since: t0() }),
         ];
         let m = derive(&workers, t0(), 5);
@@ -408,7 +429,10 @@ mod tests {
         assert_eq!(p.affected_workers, vec![wid(1)]);
         assert_eq!(
             p.resume_strategy,
-            Some(ResumeStrategy::WaitForReset { reset_at: at(-10), auto_resume: true })
+            Some(ResumeStrategy::WaitForReset {
+                reset_at: at(-10),
+                auto_resume: true
+            })
         );
     }
 
@@ -417,12 +441,19 @@ mod tests {
         // No reset time (Credit cap: clears on payment, not a clock) — the
         // provider is exhausted indefinitely and there is honestly no
         // schedule to offer (Invariant 20: never invent a retry time).
-        let workers = vec![worker(1, "claude", WorkerState::RateLimited { reset_at: None })];
+        let workers = vec![worker(
+            1,
+            "claude",
+            WorkerState::RateLimited { reset_at: None },
+        )];
         let m = derive(&workers, t0(), 5);
         let p = &m[&ProviderId::new("claude")];
         assert_eq!(
             p.state,
-            ProviderState::QuotaExhausted { reset_at: None, kind: RateLimitKind::Unknown }
+            ProviderState::QuotaExhausted {
+                reset_at: None,
+                kind: RateLimitKind::Unknown
+            }
         );
         assert_eq!(p.resume_strategy, None);
     }
@@ -462,7 +493,13 @@ mod tests {
         // report here would send the stall-fixer to fight the provider
         // gate, the Invariant 10+48 livelock in provider clothes).
         let workers = vec![
-            worker(1, "claude", WorkerState::RateLimited { reset_at: Some(at(3600)) }),
+            worker(
+                1,
+                "claude",
+                WorkerState::RateLimited {
+                    reset_at: Some(at(3600)),
+                },
+            ),
             worker(2, "claude", WorkerState::Idle { since: t0() }),
             worker(3, "claude", WorkerState::Idle { since: t0() }),
             worker(4, "codex", WorkerState::Idle { since: t0() }),
@@ -470,8 +507,16 @@ mod tests {
         let tasks = vec![task(1, 1), task(2, 2), task(3, 3), task(4, 4)];
         let plan = plan_at(t0(), &tasks, &workers);
         assert_eq!(plan.assignments.len(), 1, "{:?}", plan.assignments);
-        assert_eq!(plan.assignments[0].worker, wid(4), "only the codex worker runs");
-        assert!(plan.stalls.is_empty(), "paused fleet is not stalled: {:?}", plan.stalls);
+        assert_eq!(
+            plan.assignments[0].worker,
+            wid(4),
+            "only the codex worker runs"
+        );
+        assert!(
+            plan.stalls.is_empty(),
+            "paused fleet is not stalled: {:?}",
+            plan.stalls
+        );
     }
 
     #[test]
@@ -522,7 +567,10 @@ mod tests {
             wip_limit: 1,
             provider_states: &provider_states,
         });
-        assert!(plan.assignments.is_empty(), "weeks-long exhaustion parks the fleet");
+        assert!(
+            plan.assignments.is_empty(),
+            "weeks-long exhaustion parks the fleet"
+        );
         assert!(plan.stalls.is_empty());
 
         // The stagger arithmetic is horizon-agnostic: resume 23 days out is
@@ -532,7 +580,10 @@ mod tests {
             t0() + chrono::Duration::days(23),
             chrono::Duration::seconds(5),
         );
-        assert_eq!(sched[1].resume_at - sched[0].resume_at, chrono::Duration::seconds(5));
+        assert_eq!(
+            sched[1].resume_at - sched[0].resume_at,
+            chrono::Duration::seconds(5)
+        );
     }
 
     // ---- the RR-0044b simulation (Invariant 22) ------------------------
@@ -566,13 +617,23 @@ mod tests {
             match t {
                 // t=3: worker 1's request hits the provider limit.
                 3 => {
-                    workers[0].state = WorkerState::RateLimited { reset_at: Some(reset) };
+                    workers[0].state = WorkerState::RateLimited {
+                        reset_at: Some(reset),
+                    };
                     tasks.extend([task(4, 1), task(5, 2), task(6, 3)]);
                 }
                 // Workers 2 and 3 complete their current turns, then park
                 // against the same window (shared subscription).
-                4 => workers[1].state = WorkerState::RateLimited { reset_at: Some(reset) },
-                5 => workers[2].state = WorkerState::RateLimited { reset_at: Some(reset) },
+                4 => {
+                    workers[1].state = WorkerState::RateLimited {
+                        reset_at: Some(reset),
+                    }
+                }
+                5 => {
+                    workers[2].state = WorkerState::RateLimited {
+                        reset_at: Some(reset),
+                    }
+                }
                 _ => {}
             }
             // Staggered auto-resume: the RR-0072 loop un-parks a worker
@@ -617,8 +678,16 @@ mod tests {
         // Phase B drained on the staggered schedule: t=20, 25, 30 — no two
         // resumes inside the interval, no thundering herd at t=20.
         assert_eq!(assigned_at[&tid(4)], 20, "worker 1 resumes at reset");
-        assert_eq!(assigned_at[&tid(5)], 25, "worker 2 resumes one interval later");
-        assert_eq!(assigned_at[&tid(6)], 30, "worker 3 resumes two intervals later");
+        assert_eq!(
+            assigned_at[&tid(5)],
+            25,
+            "worker 2 resumes one interval later"
+        );
+        assert_eq!(
+            assigned_at[&tid(6)],
+            30,
+            "worker 3 resumes two intervals later"
+        );
         // All workers productive again; zero interaction: no transition
         // above involved a human, and nothing ever surfaced as a stall
         // (a stall is the "needs attention" signal).
@@ -635,7 +704,10 @@ mod tests {
                 reset_at: Some(at(120)),
                 kind: RateLimitKind::SubscriptionCap,
             },
-            ProviderState::QuotaExhausted { reset_at: None, kind: RateLimitKind::Credit },
+            ProviderState::QuotaExhausted {
+                reset_at: None,
+                kind: RateLimitKind::Credit,
+            },
             ProviderState::Unknown,
         ] {
             let json = serde_json::to_string(&s).unwrap();
@@ -643,12 +715,18 @@ mod tests {
             assert_eq!(s, back);
         }
         for r in [
-            ResumeStrategy::WaitForReset { reset_at: at(20), auto_resume: true },
+            ResumeStrategy::WaitForReset {
+                reset_at: at(20),
+                auto_resume: true,
+            },
             ResumeStrategy::Redistribute {
                 fallback: ProviderId::new("ollama"),
                 workers_moved: vec![wid(1)],
             },
-            ResumeStrategy::Stagger { interval_secs: 5, order: vec![wid(1), wid(2)] },
+            ResumeStrategy::Stagger {
+                interval_secs: 5,
+                order: vec![wid(1), wid(2)],
+            },
         ] {
             let json = serde_json::to_string(&r).unwrap();
             let back: ResumeStrategy = serde_json::from_str(&json).unwrap();

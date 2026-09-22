@@ -129,9 +129,10 @@ impl VerifierKind {
                 "curl -s -o /dev/null -w '%{{http_code}}' '{url}'  # expect {expected_status}"
             )),
             VerifierKind::FileExists { path } => Some(format!("test -e '{}'", path.display())),
-            VerifierKind::Temporal { after } => {
-                Some(format!("date -d @{} '+%Y-%m-%dT%H:%M:%S'  # gate opens at this time", after.timestamp()))
-            }
+            VerifierKind::Temporal { after } => Some(format!(
+                "date -d @{} '+%Y-%m-%dT%H:%M:%S'  # gate opens at this time",
+                after.timestamp()
+            )),
             VerifierKind::PlaywrightAssertion { .. } => None,
             VerifierKind::ModelJudgment { .. } => None,
         }
@@ -375,9 +376,7 @@ mod tests {
         }
     }
     fn temporal() -> VerifierKind {
-        VerifierKind::Temporal {
-            after: t0(),
-        }
+        VerifierKind::Temporal { after: t0() }
     }
     fn playwright() -> VerifierKind {
         VerifierKind::PlaywrightAssertion {
@@ -405,7 +404,9 @@ mod tests {
             assert!(pair[0].cost_rank() < pair[1].cost_rank());
             assert!(pair[0] < pair[1]);
         }
-        assert!(command().is_free() && http().is_free() && file().is_free() && temporal().is_free());
+        assert!(
+            command().is_free() && http().is_free() && file().is_free() && temporal().is_free()
+        );
         assert!(!playwright().is_free() && !model().is_free());
         assert!(temporal().is_deterministic());
         assert!(playwright().is_deterministic());

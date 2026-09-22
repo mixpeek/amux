@@ -81,7 +81,10 @@ fn is_worker_ready(st: &str) -> bool {
 async fn queue_delivery_message_accepted() {
     let c = client();
     let w = "opencode-test-1";
-    assert!(wait_idle(&c, w, Duration::from_secs(120)).await, "worker not idle");
+    assert!(
+        wait_idle(&c, w, Duration::from_secs(120)).await,
+        "worker not idle"
+    );
 
     let resp = send_message(&c, w, "Reply with exactly: QUEUE_TEST_1").await;
     assert!(resp["message"]["id"].is_string(), "no message id: {resp:?}");
@@ -105,7 +108,10 @@ async fn queue_delivery_message_accepted() {
 async fn queue_delivery_latency() {
     let c = client();
     let w = "opencode-test-1";
-    assert!(wait_idle(&c, w, Duration::from_secs(120)).await, "worker not idle");
+    assert!(
+        wait_idle(&c, w, Duration::from_secs(120)).await,
+        "worker not idle"
+    );
 
     let b0 = get_build(&c).await;
     let start = Instant::now();
@@ -152,7 +158,10 @@ async fn sequential_sends_reliable() {
             eprintln!("round {i}: send failed");
         }
     }
-    assert!(completed >= 2, "only {completed}/3 sequential sends completed");
+    assert!(
+        completed >= 2,
+        "only {completed}/3 sequential sends completed"
+    );
 }
 
 // ---- 4. Message while working is queued, not rejected ----
@@ -162,7 +171,10 @@ async fn sequential_sends_reliable() {
 async fn message_queued_while_working() {
     let c = client();
     let w = "opencode-test-1";
-    assert!(wait_idle(&c, w, Duration::from_secs(120)).await, "worker not idle");
+    assert!(
+        wait_idle(&c, w, Duration::from_secs(120)).await,
+        "worker not idle"
+    );
 
     // Send a longer prompt
     send_message(&c, w, "List 10 interesting facts about the number 7.").await;
@@ -286,7 +298,10 @@ async fn peek_response_has_required_fields() {
 async fn state_transitions_visible() {
     let c = client();
     let w = "opencode-test-1";
-    assert!(wait_idle(&c, w, Duration::from_secs(120)).await, "worker not idle");
+    assert!(
+        wait_idle(&c, w, Duration::from_secs(120)).await,
+        "worker not idle"
+    );
 
     let pre = get_state(&c, w).await;
     assert!(is_worker_ready(&pre), "pre-send state not idle: {pre}");
@@ -325,11 +340,19 @@ async fn state_transitions_visible() {
 async fn board_task_pickup() {
     let c = client();
     let w = "opencode-test-1";
-    assert!(wait_idle(&c, w, Duration::from_secs(120)).await, "worker not idle");
+    assert!(
+        wait_idle(&c, w, Duration::from_secs(120)).await,
+        "worker not idle"
+    );
 
     // Create a board card assigned to this worker
-    let marker = format!("PICKUP_{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+    let marker = format!(
+        "PICKUP_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
     let card = c
         .post(format!("{API}/api/board"))
         .json(&serde_json::json!({
@@ -355,7 +378,10 @@ async fn board_task_pickup() {
         let st = get_state(&c, w).await;
         if st == "active" || st == "rate_limited" {
             picked_up = true;
-            eprintln!("worker activated (card pickup) after {:.1}s", start.elapsed().as_secs_f64());
+            eprintln!(
+                "worker activated (card pickup) after {:.1}s",
+                start.elapsed().as_secs_f64()
+            );
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -409,11 +435,7 @@ async fn sse_board_event_speed() {
         .unwrap();
 
     let start = Instant::now();
-    let sse_resp = sse_c
-        .get(format!("{API}/api/events"))
-        .send()
-        .await
-        .unwrap();
+    let sse_resp = sse_c.get(format!("{API}/api/events")).send().await.unwrap();
 
     if !sse_resp.status().is_success() {
         eprintln!("SKIP: SSE endpoint returned {}", sse_resp.status());
@@ -435,18 +457,21 @@ async fn sse_board_event_speed() {
         .unwrap();
     let card_id = card["id"].as_str().unwrap_or("?");
     let mutation_time = start.elapsed();
-    eprintln!("card created in {:.0}ms: {card_id}", mutation_time.as_millis());
+    eprintln!(
+        "card created in {:.0}ms: {card_id}",
+        mutation_time.as_millis()
+    );
 
     // SSE delivers via chunked transfer; we just need the endpoint to
     // respond promptly. The real SSE test would parse events, but the
     // connection being established is the main gate.
-    eprintln!("SSE connection established in {:.0}ms", start.elapsed().as_millis());
+    eprintln!(
+        "SSE connection established in {:.0}ms",
+        start.elapsed().as_millis()
+    );
 
     // Clean up
-    let _ = c
-        .delete(format!("{API}/api/board/{card_id}"))
-        .send()
-        .await;
+    let _ = c.delete(format!("{API}/api/board/{card_id}")).send().await;
 
     assert!(
         mutation_time < Duration::from_secs(2),
@@ -462,15 +487,24 @@ async fn sse_board_event_speed() {
 async fn concurrent_sends_both_complete() {
     let c = client();
     let w = "opencode-test-1";
-    assert!(wait_idle(&c, w, Duration::from_secs(120)).await, "worker not idle");
+    assert!(
+        wait_idle(&c, w, Duration::from_secs(120)).await,
+        "worker not idle"
+    );
 
     // Send two messages rapidly
     let r1 = send_message(&c, w, "Reply with exactly: CONC_A").await;
     let r2 = send_message(&c, w, "Reply with exactly: CONC_B").await;
 
     assert!(r1["message"]["id"].is_string(), "first send failed: {r1:?}");
-    assert!(r2["message"]["id"].is_string(), "second send failed: {r2:?}");
-    eprintln!("both sends accepted: {} and {}", r1["message"]["id"], r2["message"]["id"]);
+    assert!(
+        r2["message"]["id"].is_string(),
+        "second send failed: {r2:?}"
+    );
+    eprintln!(
+        "both sends accepted: {} and {}",
+        r1["message"]["id"], r2["message"]["id"]
+    );
 
     // Both should eventually complete
     assert!(

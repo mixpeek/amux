@@ -59,9 +59,12 @@ async fn status(State(state): State<AppState>) -> Response {
 }
 
 async fn list_mappings(State(state): State<AppState>) -> Response {
-    match state.store.read().map_err(|e| e.to_string()).and_then(|conn| {
-        tg_db::list(&conn).map_err(|e| e.to_string())
-    }) {
+    match state
+        .store
+        .read()
+        .map_err(|e| e.to_string())
+        .and_then(|conn| tg_db::list(&conn).map_err(|e| e.to_string()))
+    {
         Ok(rows) => (StatusCode::OK, Json(json!({ "mappings": rows }))).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
     }
@@ -89,9 +92,15 @@ struct CreateMappingReq {
 /// Telegram side, for an operator who wants to pre-link a chat_id (e.g.
 /// looked up via `getUpdates` before the bot has ever received `/link`) or
 /// fix a mapping without going through the chat.
-async fn create_mapping(State(state): State<AppState>, Json(body): Json<CreateMappingReq>) -> Response {
+async fn create_mapping(
+    State(state): State<AppState>,
+    Json(body): Json<CreateMappingReq>,
+) -> Response {
     if body.session.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "session is required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "session is required" }),
+        );
     }
     let known = super::session_verbs::all_lane_names();
     if !known.iter().any(|n| n == &body.session) {
@@ -130,7 +139,10 @@ async fn create_mapping(State(state): State<AppState>, Json(body): Json<CreateMa
         .store
         .write_async(move |conn| {
             tg_db::upsert(conn, chat_id, &session, None, &chat_type)?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
         .map_err(|e| e.to_string());
@@ -145,13 +157,19 @@ async fn delete_mapping(State(state): State<AppState>, Path(chat_id): Path<i64>)
         .store
         .write_async(move |conn| {
             let removed = tg_db::remove(conn, chat_id)?;
-            Ok(crate::db::WriteOutcome { applied: removed, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: removed,
+                events: vec![],
+            })
         })
         .await
         .map_err(|e| e.to_string());
     match result {
         Ok(reply) if reply.applied => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => err(StatusCode::NOT_FOUND, json!({ "error": "no mapping for that chat_id" })),
+        Ok(_) => err(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "no mapping for that chat_id" }),
+        ),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
     }
 }
@@ -176,7 +194,10 @@ struct SendReq {
 
 async fn send(State(state): State<AppState>, Json(body): Json<SendReq>) -> Response {
     if body.text.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "text is required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "text is required" }),
+        );
     }
     let chat_id = match (body.chat_id, body.session.as_deref()) {
         (Some(id), _) => Some(id),
@@ -197,15 +218,31 @@ async fn send(State(state): State<AppState>, Json(body): Json<SendReq>) -> Respo
             }
         }
         (None, None) => {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": "one of chat_id or session is required" }))
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "one of chat_id or session is required" }),
+            )
         }
     };
-    let Some(chat_id) = chat_id else { unreachable!() };
-    let Some(token) = std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.trim().is_empty()) else {
-        return err(StatusCode::PRECONDITION_FAILED, json!({ "error": "TELEGRAM_BOT_TOKEN not set" }));
+    let Some(chat_id) = chat_id else {
+        unreachable!()
     };
-    match telegram_poll::send_message(&token, chat_id, &body.text, body.parse_mode.as_deref()).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "sent": true, "chat_id": chat_id }))).into_response(),
+    let Some(token) = std::env::var("TELEGRAM_BOT_TOKEN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return err(
+            StatusCode::PRECONDITION_FAILED,
+            json!({ "error": "TELEGRAM_BOT_TOKEN not set" }),
+        );
+    };
+    match telegram_poll::send_message(&token, chat_id, &body.text, body.parse_mode.as_deref()).await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "sent": true, "chat_id": chat_id })),
+        )
+            .into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
     }
 }

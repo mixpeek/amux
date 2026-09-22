@@ -532,7 +532,8 @@ struct WindowScan {
 /// warns and reports a base rate that belongs to neither, which is worse than
 /// the missing denominator this exists to supply.
 fn log_pattern_key(line: &str) -> String {
-    let body = line.split_once(" INFO ")
+    let body = line
+        .split_once(" INFO ")
         .or_else(|| line.split_once(" WARN "))
         .or_else(|| line.split_once(" ERROR "))
         .map(|(_, rest)| rest)
@@ -573,7 +574,9 @@ fn log_line_ts(line: &[u8]) -> Option<f64> {
     }
     let end = line.iter().position(|b| *b == b' ')?;
     let s = std::str::from_utf8(&line[..end]).ok()?;
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|t| t.timestamp() as f64 + f64::from(t.timestamp_subsec_millis()) / 1000.0)
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.timestamp() as f64 + f64::from(t.timestamp_subsec_millis()) / 1000.0)
 }
 
 /// Is this a line a reader would act on? WARN and ERROR only: INFO during a
@@ -607,7 +610,9 @@ where
     let mut span: Option<(f64, f64)> = None;
     for line in lines {
         let line = line.as_ref();
-        let Some(ts) = log_line_ts(line) else { continue };
+        let Some(ts) = log_line_ts(line) else {
+            continue;
+        };
         // AMUX-4857: the denominator, gathered in this same pass. The span is
         // taken over EVERY timestamped line, not just actionable ones, because
         // it measures how long the generation covers — which is the period the
@@ -631,7 +636,11 @@ where
         if ts >= start && ts <= end && is_actionable_log_line(line) {
             if hits.len() < WINDOW_SCAN_CAP {
                 let s = String::from_utf8_lossy(line);
-                let cut = s.char_indices().nth(WINDOW_SCAN_LINE_BYTES).map(|(i, _)| i).unwrap_or(s.len());
+                let cut = s
+                    .char_indices()
+                    .nth(WINDOW_SCAN_LINE_BYTES)
+                    .map(|(i, _)| i)
+                    .unwrap_or(s.len());
                 hits.push(s[..cut].trim_end().to_string());
             } else {
                 dropped += 1;
@@ -660,7 +669,11 @@ fn base_rate_verdict(scan: &WindowScan, line: &str, window_s: f64) -> Option<Str
     let key = log_pattern_key(line);
     let total = *scan.base_counts.get(&key)?;
     let per_min = total as f64 * 60.0 / span_s;
-    let observed = scan.hits.iter().filter(|h| log_pattern_key(h) == key).count() as f64;
+    let observed = scan
+        .hits
+        .iter()
+        .filter(|h| log_pattern_key(h) == key)
+        .count() as f64;
     let expected = total as f64 * window_s / span_s;
     // The comparison is the point, and the verdict is BINARY on purpose.
     //
@@ -712,8 +725,12 @@ fn warns_during_request(start: f64, end: f64) -> WindowScan {
         span: None,
     };
     for name in ["server-rs.log.1", "server-rs.log"] {
-        let Ok(f) = std::fs::File::open(dir.join(name)) else { continue };
-        let lines = std::io::BufReader::new(f).split(b'\n').filter_map(Result::ok);
+        let Ok(f) = std::fs::File::open(dir.join(name)) else {
+            continue;
+        };
+        let lines = std::io::BufReader::new(f)
+            .split(b'\n')
+            .filter_map(Result::ok);
         let scan = scan_lines_for_window(lines, start, end);
         out.covered |= scan.covered;
         out.dropped += scan.dropped;
@@ -786,7 +803,9 @@ fn logged_during_worst_request(scan: &WindowScan, start: f64, end: f64) -> Strin
         .iter()
         .map(|h| match base_rate_verdict(scan, h, window_s) {
             Some(rate) => format!("  {h}\n      {rate}"),
-            None => format!("  {h}\n      [no base rate: the log generation is too short to give one]"),
+            None => {
+                format!("  {h}\n      [no base rate: the log generation is too short to give one]")
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -1891,7 +1910,10 @@ fn p95_finding(h: &P95Hit, mult: f64, min_n: i64, now: f64) -> Finding {
             // from win_n, and the thin-window clause only appears when it is
             // true, so neither half can be a constant wearing a variable's
             // clothes.
-            ("p95_position".into(), p95_position(h.win_n, h.p95_w / h.p95_b)),
+            (
+                "p95_position".into(),
+                p95_position(h.win_n, h.p95_w / h.p95_b),
+            ),
             // WHETHER THE SCAN SAW THE WHOLE PERIOD (AMUX-3910, ethos rule 4).
             // The row cap used to truncate the NEWEST rows — the window itself —
             // and say nothing on the card: one filed "p95 7173ms over 30
@@ -2001,17 +2023,15 @@ fn detect_latency_with_scan_cap(
            AND (req_meta IS NULL OR req_meta NOT LIKE '%\"slow_ok\"%') \
          ORDER BY ts DESC LIMIT ?2",
     ) {
-        if let Ok(rows) =
-            stmt.query_map(rusqlite::params![b_start, scan_cap as i64], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, f64>(1)?,
-                    r.get::<_, f64>(2)?,
-                    r.get::<_, Option<f64>>(3)?,
-                    r.get::<_, Option<f64>>(4)?,
-                ))
-            })
-        {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![b_start, scan_cap as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, Option<f64>>(3)?,
+                r.get::<_, Option<f64>>(4)?,
+            ))
+        }) {
             // A REQUEST WHOSE CLOCK SPANS A RESTART IS NOT A SLOW REQUEST
             // (AF-175). `latency_ms` is wall time from arrival to completion,
             // so a request that arrived before this process started and
@@ -2470,7 +2490,13 @@ fn detect_latency_with_scan_cap(
             return "not measured: no rows in this window carried a client_ip (AMUX-4818)."
                 .to_string();
         }
-        let pct = |o: u64, t: u64| if t == 0 { None } else { Some(o as f64 * 100.0 / t as f64) };
+        let pct = |o: u64, t: u64| {
+            if t == 0 {
+                None
+            } else {
+                Some(o as f64 * 100.0 / t as f64)
+            }
+        };
         match (pct(lo, lt), pct(ro, rt)) {
             (Some(l), Some(r)) if l > 0.0 => format!(
                 "on-box {l:.2}% of requests slow ({lo}/{lt}) | off-box {r:.2}% ({ro}/{rt}) | \
@@ -2744,7 +2770,11 @@ fn detect_latency_with_scan_cap(
                 COUNT(*) FROM _amux_request_log WHERE ts >= ?1 GROUP BY path, is_local",
     ) {
         if let Ok(trows) = tstmt.query_map(rusqlite::params![w_start], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         }) {
             for (tpath, is_local, cnt) in trows.flatten() {
                 let e = totals
@@ -3661,7 +3691,11 @@ fn schedule_error_pattern(note: &str) -> String {
         }
     }
     let out = out.trim();
-    if out.is_empty() { "(empty error note)".into() } else { out.into() }
+    if out.is_empty() {
+        "(empty error note)".into()
+    } else {
+        out.into()
+    }
 }
 
 /// `server_downtime` rows that could explain a missing-Messages run in this
@@ -3685,7 +3719,12 @@ fn known_downtime_windows(conn: &Connection, since: i64) -> Vec<(i64, f64, f64, 
         }
     };
     let rows = stmt.query_map([since as f64 - pad], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, f64>(1)?,
+            r.get::<_, f64>(2)?,
+            r.get::<_, String>(3)?,
+        ))
     });
     match rows {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
@@ -3702,7 +3741,11 @@ fn known_downtime_windows(conn: &Connection, since: i64) -> Vec<(i64, f64, f64, 
 
 /// The `id` of the first known downtime window whose padded span covers
 /// `ran_at`, or `None` if no recorded restart explains it.
-fn downtime_window_covering(ran_at: f64, windows: &[(i64, f64, f64, String)], pad: f64) -> Option<i64> {
+fn downtime_window_covering(
+    ran_at: f64,
+    windows: &[(i64, f64, f64, String)],
+    pad: f64,
+) -> Option<i64> {
     windows
         .iter()
         .find(|(_, down_from, up_at, _)| ran_at >= down_from - pad && ran_at <= up_at + pad)
@@ -3721,10 +3764,7 @@ fn schedule_id_from_origin(origin: &str) -> Option<String> {
 /// Repeated run errors and the cross-surface invariant for a delivered tmux
 /// run: there must be a corresponding row in Messages. These are scheduler
 /// failures even when the firing loop itself is ticking normally.
-fn detect_schedule_run_health(
-    conn: &Connection,
-    now: f64,
-) -> (Vec<Finding>, Vec<Suppressed>) {
+fn detect_schedule_run_health(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Suppressed>) {
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
     let cutoff = (now - window_h() * 3600.0) as i64;
@@ -3776,14 +3816,19 @@ fn detect_schedule_run_health(
         by_schedule.entry(&row.id).or_default().push(row);
     }
     for (id, runs) in by_schedule {
-        let streak: Vec<&ScheduleRunObservation> =
-            runs.iter().copied().take_while(|r| r.status == "error").collect();
+        let streak: Vec<&ScheduleRunObservation> = runs
+            .iter()
+            .copied()
+            .take_while(|r| r.status == "error")
+            .collect();
         if streak.len() >= schedule_error_streak() {
             let newest = streak[0];
             let oldest = streak[streak.len() - 1];
             let mut patterns: BTreeMap<String, usize> = BTreeMap::new();
             for run in &streak {
-                *patterns.entry(schedule_error_pattern(&run.note)).or_default() += 1;
+                *patterns
+                    .entry(schedule_error_pattern(&run.note))
+                    .or_default() += 1;
             }
             let pattern_text = patterns
                 .into_iter()
@@ -3830,7 +3875,11 @@ fn detect_schedule_run_health(
         .filter(|r| r.status == "delivered" && (r.ran_at as f64) <= grace_before)
     {
         let expected_id = format!("%[{}]%", run.id);
-        let legacy_title = if run.title.is_empty() { run.id.as_str() } else { run.title.as_str() };
+        let legacy_title = if run.title.is_empty() {
+            run.id.as_str()
+        } else {
+            run.title.as_str()
+        };
         let from_ms = run.ran_at.saturating_sub(60) * 1000;
         let to_ms = run.ran_at.saturating_add(120) * 1000;
         let message_exists = conn
@@ -3907,28 +3956,37 @@ fn detect_schedule_run_health(
     // Finding per outage naming every schedule it touched — still visible,
     // never suppressed, just not miscounted as N unrelated faults.
     for (window_id, missing) in missing_by_outage {
-        let Some((_, down_from, up_at, cause)) =
-            downtime_windows.iter().find(|w| w.0 == window_id)
+        let Some((_, down_from, up_at, cause)) = downtime_windows.iter().find(|w| w.0 == window_id)
         else {
             continue;
         };
         let mut by_schedule: BTreeMap<&str, (u64, &str, &str)> = BTreeMap::new();
         for run in &missing {
-            let entry = by_schedule
-                .entry(run.id.as_str())
-                .or_insert((0, run.title.as_str(), run.session.as_str()));
+            let entry = by_schedule.entry(run.id.as_str()).or_insert((
+                0,
+                run.title.as_str(),
+                run.session.as_str(),
+            ));
             entry.0 += 1;
         }
-        let mut breakdown: Vec<(&str, u64, &str, &str)> =
-            by_schedule.into_iter().map(|(id, (n, title, session))| (id, n, title, session)).collect();
+        let mut breakdown: Vec<(&str, u64, &str, &str)> = by_schedule
+            .into_iter()
+            .map(|(id, (n, title, session))| (id, n, title, session))
+            .collect();
         breakdown.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         let schedules_text = breakdown
             .iter()
             .map(|(id, n, title, session)| format!("{id} x{n} ({title}, {session})"))
             .collect::<Vec<_>>()
             .join("; ");
-        let newest = missing.iter().max_by_key(|r| r.ran_at).expect("non-empty group");
-        let oldest = missing.iter().min_by_key(|r| r.ran_at).expect("non-empty group");
+        let newest = missing
+            .iter()
+            .max_by_key(|r| r.ran_at)
+            .expect("non-empty group");
+        let oldest = missing
+            .iter()
+            .min_by_key(|r| r.ran_at)
+            .expect("non-empty group");
         tracing::warn!(
             downtime_id = window_id,
             schedules_affected = breakdown.len(),
@@ -5012,8 +5070,11 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
             entity.clone()
         };
         // Episode identity, same reason as the ROLLUP arm above (AMUX-3633).
-        let signature =
-            format!("invariant|{id}|{sig_entity}|{}{}", first as i64, episode_sig(episode));
+        let signature = format!(
+            "invariant|{id}|{sig_entity}|{}{}",
+            first as i64,
+            episode_sig(episode)
+        );
         if occ < min_occ {
             suppressed.push(sup(
                 DetectorKind::InvariantBreach,
@@ -5734,7 +5795,10 @@ fn disk_snapshot_evidence(snaps: Option<usize>) -> Vec<(String, String)> {
         "disk_snapshot_context"
     );
     let mut evidence = vec![
-        ("apfs_local_snapshots_measured".into(), snaps.is_some().to_string()),
+        (
+            "apfs_local_snapshots_measured".into(),
+            snaps.is_some().to_string(),
+        ),
         (
             "apfs_local_snapshots_n_considered".into(),
             snaps.unwrap_or(0).to_string(),
@@ -5742,10 +5806,13 @@ fn disk_snapshot_evidence(snaps: Option<usize>) -> Vec<(String, String)> {
         ("apfs_retention".into(), retention.into()),
         (
             "apfs_local_snapshots".into(),
-            snaps.map(super::storage::apfs_snapshot_note).unwrap_or_else(|| {
-                "Local snapshot retention is unmeasured. Do not infer that snapshots \
-                 are absent or that deleting them is necessary.".into()
-            }),
+            snaps
+                .map(super::storage::apfs_snapshot_note)
+                .unwrap_or_else(|| {
+                    "Local snapshot retention is unmeasured. Do not infer that snapshots \
+                 are absent or that deleting them is necessary."
+                        .into()
+                }),
         ),
     ];
     if snaps.is_none() {
@@ -7266,13 +7333,13 @@ fn open_rollup_coverage(conn: &Connection) -> Vec<(std::collections::BTreeSet<St
     )) else {
         return out;
     };
-    let Ok(rows) = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    }) else {
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) else {
         return out;
     };
     for (source_ref, created) in rows.flatten() {
-        let Some(i) = source_ref.find(PREFIX) else { continue };
+        let Some(i) = source_ref.find(PREFIX) else {
+            continue;
+        };
         let targets: std::collections::BTreeSet<String> = source_ref[i + PREFIX.len()..]
             .split(',')
             .filter(|t| !t.is_empty())
@@ -7308,7 +7375,9 @@ fn covered_by_open_rollup(
         .iter()
         .filter(|(targets, through)| targets.contains(target) && last_ts <= *through)
         .map(|(_, through)| *through)
-        .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a| a.max(t))))
+        .fold(None, |acc: Option<f64>, t| {
+            Some(acc.map_or(t, |a| a.max(t)))
+        })
 }
 
 fn open_card_for_fault(conn: &Connection, signature: &str) -> Option<String> {
@@ -8634,14 +8703,7 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
             // `AMUX_CI_POLL_MIN`, so a 120s tick is not 720 API calls a day.
             let (ci_runs, ci_sup) = fetch_ci_runs(unix_now()).await;
             let system_issues = crate::runtime_jobs::registry::health_issues(unix_now());
-            let r = autofix_tick_with_inputs(
-                &state,
-                &home,
-                &ci_runs,
-                ci_sup,
-                &system_issues,
-            )
-            .await;
+            let r = autofix_tick_with_inputs(&state, &home, &ci_runs, ci_sup, &system_issues).await;
             if !r.filed.is_empty() || !r.errors.is_empty() {
                 tracing::info!(
                     filed = r.filed.len(),
@@ -8801,10 +8863,23 @@ mod tests {
         let header = "Snapshots for volume group containing disk /:\n";
         assert_eq!(parse_local_snapshot_count(header.as_bytes()), Some(0));
         assert_eq!(parse_local_snapshot_count(format!("{header}com.apple.TimeMachine.2026-09-13-010000.local\ncom.apple.TimeMachine.2026-09-13-020000.local\n").as_bytes()), Some(2));
-        for output in ["", "\n", "backupd unavailable", "error com.apple.TimeMachine.failure", "Snapshots for /"] {
-            assert_eq!(parse_local_snapshot_count(output.as_bytes()), None, "{output:?}");
+        for output in [
+            "",
+            "\n",
+            "backupd unavailable",
+            "error com.apple.TimeMachine.failure",
+            "Snapshots for /",
+        ] {
+            assert_eq!(
+                parse_local_snapshot_count(output.as_bytes()),
+                None,
+                "{output:?}"
+            );
         }
-        assert_eq!(parse_local_snapshot_count(format!("{header}permission denied\n").as_bytes()), None);
+        assert_eq!(
+            parse_local_snapshot_count(format!("{header}permission denied\n").as_bytes()),
+            None
+        );
         assert_eq!(parse_local_snapshot_count(b"\xff"), None);
     }
 
@@ -8818,21 +8893,45 @@ mod tests {
                 self.0.lock().unwrap().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
-        for (count, verdict) in [(Some(0), "absent"), (Some(24), "possible"), (None, "unknown")] {
+        for (count, verdict) in [
+            (Some(0), "absent"),
+            (Some(24), "possible"),
+            (None, "unknown"),
+        ] {
             let bytes = Arc::new(Mutex::new(Vec::new()));
             let writer = Writer(bytes.clone());
-            let subscriber = tracing_subscriber::fmt().with_ansi(false).without_time()
-                .with_writer(move || writer.clone()).finish();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(move || writer.clone())
+                .finish();
             let evidence: std::collections::BTreeMap<_, _> =
                 tracing::subscriber::with_default(subscriber, || disk_snapshot_evidence(count))
-                    .into_iter().collect();
-            let note = evidence.get("apfs_local_snapshots").expect("missing measurement is explicit");
-            assert!(!note.contains("Thin them first"), "a snapshot count cannot justify backup deletion: {note}");
-            assert!(!note.contains("deleting files frees NOTHING"), "count is not retained bytes: {note}");
-            assert_eq!(evidence["apfs_local_snapshots_measured"], count.is_some().to_string());
-            assert_eq!(evidence["apfs_local_snapshots_n_considered"], count.unwrap_or(0).to_string());
+                    .into_iter()
+                    .collect();
+            let note = evidence
+                .get("apfs_local_snapshots")
+                .expect("missing measurement is explicit");
+            assert!(
+                !note.contains("Thin them first"),
+                "a snapshot count cannot justify backup deletion: {note}"
+            );
+            assert!(
+                !note.contains("deleting files frees NOTHING"),
+                "count is not retained bytes: {note}"
+            );
+            assert_eq!(
+                evidence["apfs_local_snapshots_measured"],
+                count.is_some().to_string()
+            );
+            assert_eq!(
+                evidence["apfs_local_snapshots_n_considered"],
+                count.unwrap_or(0).to_string()
+            );
             assert_eq!(evidence["apfs_retention"], verdict);
             if count.is_none() {
                 assert!(!evidence["apfs_local_snapshots_why_unmeasured"].is_empty());
@@ -8841,8 +8940,14 @@ mod tests {
             }
             let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
             assert!(logs.contains("disk_snapshot_context"), "{logs}");
-            assert!(logs.contains(&format!("measured={}", count.is_some())), "{logs}");
-            assert!(logs.contains(&format!("n_considered={}", count.unwrap_or(0))), "{logs}");
+            assert!(
+                logs.contains(&format!("measured={}", count.is_some())),
+                "{logs}"
+            );
+            assert!(
+                logs.contains(&format!("n_considered={}", count.unwrap_or(0))),
+                "{logs}"
+            );
             assert!(logs.contains(&format!("retention=\"{verdict}\"")), "{logs}");
         }
     }
@@ -8898,7 +9003,9 @@ mod tests {
             .unwrap();
         }
         let (two, _) = super::detect_schedule_run_health(&conn, now as f64);
-        assert!(!two.iter().any(|f| f.signature == "silent|schedule-errors|SCHED-9"));
+        assert!(!two
+            .iter()
+            .any(|f| f.signature == "silent|schedule-errors|SCHED-9"));
 
         conn.execute(
             "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'error','Traceback line 43','cron-rs')",
@@ -8911,7 +9018,10 @@ mod tests {
             .find(|f| f.signature == "silent|schedule-errors|SCHED-9")
             .expect("third consecutive error must become one stable incident");
         assert_eq!(f.count, 3);
-        assert!(f.evidence.iter().any(|(k, v)| k == "patterns" && v.contains("#")));
+        assert!(f
+            .evidence
+            .iter()
+            .any(|(k, v)| k == "patterns" && v.contains("#")));
 
         conn.execute(
             "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'refused','account reserve','cron-rs')",
@@ -8920,7 +9030,9 @@ mod tests {
         .unwrap();
         let (broken, _) = super::detect_schedule_run_health(&conn, now as f64);
         assert!(
-            !broken.iter().any(|f| f.signature == "silent|schedule-errors|SCHED-9"),
+            !broken
+                .iter()
+                .any(|f| f.signature == "silent|schedule-errors|SCHED-9"),
             "an honest refused outcome is not an error and must break the streak"
         );
     }
@@ -8993,7 +9105,8 @@ mod tests {
             .unwrap();
             let (f, _) = super::detect_schedule_run_health(&conn, now as f64);
             assert!(
-                !f.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
+                !f.iter()
+                    .any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
                 "source={source}: the writer's own origin must satisfy the detector"
             );
         }
@@ -9020,7 +9133,9 @@ mod tests {
         .unwrap();
         let (renamed, _) = super::detect_schedule_run_health(&conn, now as f64);
         assert!(
-            !renamed.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
+            !renamed
+                .iter()
+                .any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
             "a schedule renamed after its run must still link by id — this is ts-gke's \
              false report, and the title arms cannot see it"
         );
@@ -9034,8 +9149,11 @@ mod tests {
         // their confirmation near the SAME recorded restart, must produce ONE
         // finding naming both, not two per-schedule findings.
         let conn = schedule_health_conn();
-        conn.execute("INSERT INTO schedules VALUES ('SCHED-10','Other sync','worker-b',1,NULL)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO schedules VALUES ('SCHED-10','Other sync','worker-b',1,NULL)",
+            [],
+        )
+        .unwrap();
         let now = 1_788_000_000i64;
         let crash_at = now - 900;
         let restart_at = now - 800;
@@ -9055,21 +9173,44 @@ mod tests {
         }
         let (findings, _) = super::detect_schedule_run_health(&conn, now as f64);
         assert!(
-            !findings.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
+            !findings
+                .iter()
+                .any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
             "a run inside a known restart window must not also file its own per-schedule finding"
         );
-        assert!(!findings.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-10"));
+        assert!(!findings
+            .iter()
+            .any(|f| f.signature == "silent|schedule-message-missing|SCHED-10"));
         let combined: Vec<_> = findings
             .iter()
-            .filter(|f| f.signature.starts_with("silent|schedule-message-missing-outage|"))
+            .filter(|f| {
+                f.signature
+                    .starts_with("silent|schedule-message-missing-outage|")
+            })
             .collect();
-        assert_eq!(combined.len(), 1, "one outage must produce exactly one combined finding");
+        assert_eq!(
+            combined.len(),
+            1,
+            "one outage must produce exactly one combined finding"
+        );
         let f = combined[0];
         assert_eq!(f.count, 2);
-        let schedules = f.evidence.iter().find(|(k, _)| k == "schedules").unwrap().1.clone();
+        let schedules = f
+            .evidence
+            .iter()
+            .find(|(k, _)| k == "schedules")
+            .unwrap()
+            .1
+            .clone();
         assert!(schedules.contains("SCHED-9"), "{schedules}");
         assert!(schedules.contains("SCHED-10"), "{schedules}");
-        let affected = f.evidence.iter().find(|(k, _)| k == "schedules_affected").unwrap().1.clone();
+        let affected = f
+            .evidence
+            .iter()
+            .find(|(k, _)| k == "schedules_affected")
+            .unwrap()
+            .1
+            .clone();
         assert_eq!(affected, "2");
     }
 
@@ -9092,12 +9233,14 @@ mod tests {
         .unwrap();
         let (findings, _) = super::detect_schedule_run_health(&conn, now as f64);
         assert!(
-            findings.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
+            findings
+                .iter()
+                .any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"),
             "an unrelated downtime window must not suppress a genuinely unexplained miss"
         );
-        assert!(!findings
-            .iter()
-            .any(|f| f.signature.starts_with("silent|schedule-message-missing-outage|")));
+        assert!(!findings.iter().any(|f| f
+            .signature
+            .starts_with("silent|schedule-message-missing-outage|")));
     }
 
     #[test]
@@ -9119,10 +9262,12 @@ mod tests {
         )
         .unwrap();
         let (inside, _) = super::detect_schedule_run_health(&conn, now as f64);
-        assert!(inside
+        assert!(inside.iter().any(|f| f
+            .signature
+            .starts_with("silent|schedule-message-missing-outage|")));
+        assert!(!inside
             .iter()
-            .any(|f| f.signature.starts_with("silent|schedule-message-missing-outage|")));
-        assert!(!inside.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"));
+            .any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"));
 
         let conn2 = schedule_health_conn();
         conn2.execute(
@@ -9137,17 +9282,27 @@ mod tests {
         )
         .unwrap();
         let (outside, _) = super::detect_schedule_run_health(&conn2, now as f64);
-        assert!(!outside
+        assert!(!outside.iter().any(|f| f
+            .signature
+            .starts_with("silent|schedule-message-missing-outage|")));
+        assert!(outside
             .iter()
-            .any(|f| f.signature.starts_with("silent|schedule-message-missing-outage|")));
-        assert!(outside.iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"));
+            .any(|f| f.signature == "silent|schedule-message-missing|SCHED-9"));
     }
 
     #[test]
     fn the_combined_finding_orders_schedules_worst_offender_first() {
         let conn = schedule_health_conn();
-        conn.execute("INSERT INTO schedules VALUES ('SCHED-1','A','worker-a',1,NULL)", []).unwrap();
-        conn.execute("INSERT INTO schedules VALUES ('SCHED-2','B','worker-b',1,NULL)", []).unwrap();
+        conn.execute(
+            "INSERT INTO schedules VALUES ('SCHED-1','A','worker-a',1,NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedules VALUES ('SCHED-2','B','worker-b',1,NULL)",
+            [],
+        )
+        .unwrap();
         let now = 1_788_000_000i64;
         let down_from = now - 500;
         let up_at = now - 480;
@@ -9171,9 +9326,18 @@ mod tests {
         let (findings, _) = super::detect_schedule_run_health(&conn, now as f64);
         let f = findings
             .iter()
-            .find(|f| f.signature.starts_with("silent|schedule-message-missing-outage|"))
+            .find(|f| {
+                f.signature
+                    .starts_with("silent|schedule-message-missing-outage|")
+            })
             .expect("combined finding must exist");
-        let schedules = f.evidence.iter().find(|(k, _)| k == "schedules").unwrap().1.clone();
+        let schedules = f
+            .evidence
+            .iter()
+            .find(|(k, _)| k == "schedules")
+            .unwrap()
+            .1
+            .clone();
         let sched2_pos = schedules.find("SCHED-2").expect("SCHED-2 named");
         let sched1_pos = schedules.find("SCHED-1").expect("SCHED-1 named");
         assert!(
@@ -9270,7 +9434,9 @@ mod tests {
             "must not file a card from an unmeasured state"
         );
         assert!(
-            suppressed.iter().any(|s| s.signature == "stuck-composer|removed"),
+            suppressed
+                .iter()
+                .any(|s| s.signature == "stuck-composer|removed"),
             "the removal must be DISCLOSED as a suppression: {suppressed:?}"
         );
     }
@@ -9445,7 +9611,15 @@ mod tests {
     #[test]
     fn an_unchanged_measurement_writes_nothing_however_old() {
         let t = "disk: 4.2 GB free, below the 50 GB floor";
-        assert!(!super::should_refresh_with_counts(t, t, 0, 365 * 86_400, 6 * 3600, None, 0));
+        assert!(!super::should_refresh_with_counts(
+            t,
+            t,
+            0,
+            365 * 86_400,
+            6 * 3600,
+            None,
+            0
+        ));
     }
 
     /// The rate gate. A value oscillating across a rounding boundary would
@@ -9454,7 +9628,15 @@ mod tests {
     #[test]
     fn a_moved_measurement_still_waits_out_the_rate_gate() {
         let now = 1_000_000;
-        assert!(!super::should_refresh_with_counts("a", "b", now - 60, now, 6 * 3600, None, 0));
+        assert!(!super::should_refresh_with_counts(
+            "a",
+            "b",
+            now - 60,
+            now,
+            6 * 3600,
+            None,
+            0
+        ));
         assert!(super::should_refresh_with_counts(
             "a",
             "b",
@@ -9478,7 +9660,10 @@ mod tests {
     fn an_escalating_fault_refreshes_before_the_cooldown_but_a_steady_one_does_not() {
         let now = 1_000_000;
         let fresh = now - 60; // well inside the 6h cooldown
-        let (old_t, new_t) = ("… 4 request(s) across 3 route(s) …", "… 43 request(s) across 5 route(s) …");
+        let (old_t, new_t) = (
+            "… 4 request(s) across 3 route(s) …",
+            "… 43 request(s) across 5 route(s) …",
+        );
 
         // THE SPECIMEN: 4 -> 43 is more than a doubling, inside the cooldown.
         assert!(
@@ -9492,8 +9677,24 @@ mod tests {
             "a fault ticking along must wait for the cooldown, or every tick rewrites the card"
         );
         // EXACTLY 2x is the boundary the doubling rule names.
-        assert!(super::should_refresh_with_counts(old_t, new_t, fresh, now, 6 * 3600, Some(4), 8));
-        assert!(!super::should_refresh_with_counts(old_t, new_t, fresh, now, 6 * 3600, Some(4), 7));
+        assert!(super::should_refresh_with_counts(
+            old_t,
+            new_t,
+            fresh,
+            now,
+            6 * 3600,
+            Some(4),
+            8
+        ));
+        assert!(!super::should_refresh_with_counts(
+            old_t,
+            new_t,
+            fresh,
+            now,
+            6 * 3600,
+            Some(4),
+            7
+        ));
         // ABSENT old count leaves the cooldown in charge. Absence is not growth.
         assert!(
             !super::should_refresh_with_counts(old_t, new_t, fresh, now, 6 * 3600, None, 9_999),
@@ -9511,8 +9712,11 @@ mod tests {
     fn carded_count_reads_the_evidence_line_or_says_it_cannot() {
         let desc = "verdict: whatever\ncount: 4\ndistinct_clients: 1 (ip:100.108.219.90)\n";
         assert_eq!(super::carded_count(desc), Some(4));
-        assert_eq!(super::carded_count("no count here\n"), None,
-            "absent must be None, never 0 — 0 would read as a real measurement");
+        assert_eq!(
+            super::carded_count("no count here\n"),
+            None,
+            "absent must be None, never 0 — 0 would read as a real measurement"
+        );
         assert_eq!(super::carded_count("count: not-a-number\n"), None);
     }
 
@@ -11545,7 +11749,7 @@ mod tests {
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
                 auth_token: None,
-            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
             dir,
         )
@@ -11746,8 +11950,16 @@ mod tests {
     #[tokio::test]
     async fn a_group_spanning_restarts_says_so_and_one_confined_to_a_process_says_that() {
         for (boots, expect, forbid) in [
-            (vec![111.0_f64, 222.0, 333.0], "3", "confined to a single server process"),
-            (vec![111.0_f64, 111.0, 111.0], "confined to a single server process", "SERVER RESTARTS"),
+            (
+                vec![111.0_f64, 222.0, 333.0],
+                "3",
+                "confined to a single server process",
+            ),
+            (
+                vec![111.0_f64, 111.0, 111.0],
+                "confined to a single server process",
+                "SERVER RESTARTS",
+            ),
         ] {
             let (st, _d) = state();
             let now = unix_now();
@@ -11763,13 +11975,20 @@ mod tests {
                              '127.0.0.1','curl/8','','lane','native','{\"message\":\"boom\"}',?2)",
                             rusqlite::params![ts, b],
                         )?;
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events: vec![],
+                        })
                     })
                     .unwrap();
             }
             let _ = autofix_tick(&st, std::path::Path::new("/nonexistent")).await;
             let c = cards(&st);
-            assert_eq!(c.len(), 1, "three rows on one route are one card, got {c:#?}");
+            assert_eq!(
+                c.len(),
+                1,
+                "three rows on one route are one card, got {c:#?}"
+            );
             let body = format!("{:?}", c[0]);
             assert!(
                 body.contains(expect),
@@ -11991,7 +12210,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test-after-restart".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let r = autofix_tick(&restarted, std::path::Path::new("/nonexistent")).await;
         assert_eq!(
@@ -12758,14 +12977,29 @@ mod tests {
                          error_body) VALUES (?1,'POST',?2,?2,200,?3,?4,'ua','','','native','')",
                         rusqlite::params![ts, pa, ms, ia],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
         // A REAL SERVER FAULT: every call is slow, from both populations.
         for k in 0..6 {
-            log_ip(&st, now - 100.0 - k as f64, "/api/serverfault", 20_000.0, "127.0.0.1");
-            log_ip(&st, now - 200.0 - k as f64, "/api/serverfault", 20_000.0, "10.0.0.5");
+            log_ip(
+                &st,
+                now - 100.0 - k as f64,
+                "/api/serverfault",
+                20_000.0,
+                "127.0.0.1",
+            );
+            log_ip(
+                &st,
+                now - 200.0 - k as f64,
+                "/api/serverfault",
+                20_000.0,
+                "10.0.0.5",
+            );
         }
         // A CLIENT ARTIFACT: the server answers on-box calls instantly and
         // almost never stalls locally; off-box calls stall every time.
@@ -12774,7 +13008,13 @@ mod tests {
         }
         log_ip(&st, now - 380.0, "/api/beacon", 20_000.0, "127.0.0.1");
         for k in 0..6 {
-            log_ip(&st, now - 400.0 - k as f64, "/api/beacon", 20_000.0, "10.0.0.5");
+            log_ip(
+                &st,
+                now - 400.0 - k as f64,
+                "/api/beacon",
+                20_000.0,
+                "10.0.0.5",
+            );
         }
 
         let (found, _sup) = detect_latency_at(&st.store.read().unwrap(), now, None);
@@ -12782,8 +13022,15 @@ mod tests {
             found
                 .iter()
                 .find(|f| f.signature.contains(needle))
-                .unwrap_or_else(|| panic!("no finding for {needle}: {:?}",
-                    found.iter().map(|f| f.signature.clone()).collect::<Vec<_>>()))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no finding for {needle}: {:?}",
+                        found
+                            .iter()
+                            .map(|f| f.signature.clone())
+                            .collect::<Vec<_>>()
+                    )
+                })
                 .evidence
                 .iter()
                 .find(|(k, _)| k == "client_split")
@@ -13385,7 +13632,10 @@ mod tests {
         );
 
         // NEWEST IS GREEN: not failing, nothing to explain.
-        let green = vec![mk("checks", 20, "success", 5.0), mk("checks", 21, "failure", 60.0)];
+        let green = vec![
+            mk("checks", 20, "success", 5.0),
+            mk("checks", 21, "failure", 60.0),
+        ];
         assert!(
             workflows_needing_backfill(&green).is_empty(),
             "a workflow that is currently passing must not be backfilled"
@@ -13588,17 +13838,35 @@ mod tests {
         // breaches the budget. The live shape this reproduces: 52 of 99
         // requests over 48h passed 10s, exactly 1 passed 30s.
         for (i, ms) in [12_000.0, 14_000.0, 18_000.0, 22_000.0].iter().enumerate() {
-            log_row(&st, Row {
-                ts: now - 500.0 + i as f64,
-                method: "GET", path: "/api/email/inbox", family: "/api/email",
-                status: 200, body: "", worker: "", ua: "curl/8", ms: *ms,
-            });
+            log_row(
+                &st,
+                Row {
+                    ts: now - 500.0 + i as f64,
+                    method: "GET",
+                    path: "/api/email/inbox",
+                    family: "/api/email",
+                    status: 200,
+                    body: "",
+                    worker: "",
+                    ua: "curl/8",
+                    ms: *ms,
+                },
+            );
         }
-        log_row(&st, Row {
-            ts: now - 100.0,
-            method: "GET", path: "/api/email/inbox", family: "/api/email",
-            status: 200, body: "", worker: "", ua: "curl/8", ms: 59_621.0,
-        });
+        log_row(
+            &st,
+            Row {
+                ts: now - 100.0,
+                method: "GET",
+                path: "/api/email/inbox",
+                family: "/api/email",
+                status: 200,
+                body: "",
+                worker: "",
+                ua: "curl/8",
+                ms: 59_621.0,
+            },
+        );
 
         let (f, _) = detect_latency(&st.store.read().unwrap(), now);
         let card = f
@@ -13621,7 +13889,10 @@ mod tests {
             card.title
         );
         assert_eq!(ev["threshold_ms"], "30000", "threshold must be the budget");
-        assert_eq!(ev["n_over_floor"], "5", "the floor count stays available, just not as THE count");
+        assert_eq!(
+            ev["n_over_floor"], "5",
+            "the floor count stays available, just not as THE count"
+        );
         assert_eq!(ev["design_budget_ms"], "30000");
         assert!(
             ev["verdict"].contains("do NOT size the incident from that number"),
@@ -13643,11 +13914,20 @@ mod tests {
         let (st, _d) = state();
         let now = unix_now();
         for (i, ms) in [11_000.0, 12_000.0].iter().enumerate() {
-            log_row(&st, Row {
-                ts: now - 300.0 + i as f64,
-                method: "GET", path: "/api/no-such-budget", family: "/api/no-such-budget",
-                status: 200, body: "", worker: "", ua: "curl/8", ms: *ms,
-            });
+            log_row(
+                &st,
+                Row {
+                    ts: now - 300.0 + i as f64,
+                    method: "GET",
+                    path: "/api/no-such-budget",
+                    family: "/api/no-such-budget",
+                    status: 200,
+                    body: "",
+                    worker: "",
+                    ua: "curl/8",
+                    ms: *ms,
+                },
+            );
         }
         let (f, _) = detect_latency(&st.store.read().unwrap(), now);
         let card = f
@@ -13655,8 +13935,15 @@ mod tests {
             .find(|x| x.signature.contains("/api/no-such-budget"))
             .expect("an unbudgeted route over the floor must file");
         let ev: BTreeMap<_, _> = card.evidence.iter().cloned().collect();
-        assert!(ev["verdict"].starts_with("2 request(s)"), "{}", ev["verdict"]);
-        assert_eq!(ev["threshold_ms"], "10000", "no budget means the floor IS the bound");
+        assert!(
+            ev["verdict"].starts_with("2 request(s)"),
+            "{}",
+            ev["verdict"]
+        );
+        assert_eq!(
+            ev["threshold_ms"], "10000",
+            "no budget means the floor IS the bound"
+        );
         assert!(
             ev["verdict"].contains("the fix is a LONG_BY_DESIGN entry"),
             "an unbudgeted route must still get the original advice: {}",
@@ -14054,8 +14341,7 @@ mod tests {
         );
         let (f, _) = detect_latency(&st.store.read().unwrap(), now);
         assert!(
-            !f.iter()
-                .any(|x| x.signature.contains("/api/browser/start")),
+            !f.iter().any(|x| x.signature.contains("/api/browser/start")),
             "a launch inside its own 30s CDP-wait bound is designed behaviour: {f:?}"
         );
 
@@ -14216,7 +14502,8 @@ mod tests {
         );
         let (f, _) = detect_latency(&st.store.read().unwrap(), now);
         assert!(
-            !f.iter().any(|x| x.signature.contains("/api/gmail/accounts")),
+            !f.iter()
+                .any(|x| x.signature.contains("/api/gmail/accounts")),
             "inside its 30s design budget, a health-probe rollup must not file: {f:?}"
         );
 
@@ -14524,7 +14811,10 @@ mod tests {
                      '127.0.0.1','curl/8','','','native',?2)",
                     rusqlite::params![spanned_ts, spanned_ts + 1.0],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
 
@@ -14878,8 +15168,7 @@ mod tests {
         // environment import, a 3000ms poll after `unset ANTHROPIC_API_KEY`, a
         // 150ms settle before Enter, and the 20-iteration launch watch loop at
         // 500ms per turn.
-        let derived_ms =
-            2.0 * 100.0 + 2.0 * 3_000.0 + 3_000.0 + 3_000.0 + 150.0 + 20.0 * 500.0;
+        let derived_ms = 2.0 * 100.0 + 2.0 * 3_000.0 + 3_000.0 + 3_000.0 + 150.0 + 20.0 * 500.0;
         assert_eq!(
             b, derived_ms,
             "budget {b} must BE the wake path's own ladder ({derived_ms}ms), not a number chosen to cover a sample"
@@ -15011,7 +15300,12 @@ mod tests {
         // `tmux_capture` pinned at its own 10s timeout puts the request past the
         // ladder, and that is the one latency story this route can still tell.
         let (st2, _d2) = state();
-        insert(&st2, now - 300.0, 22_350.0 + 10_000.0, "/api/workers/gtm-engine/resume");
+        insert(
+            &st2,
+            now - 300.0,
+            22_350.0 + 10_000.0,
+            "/api/workers/gtm-engine/resume",
+        );
         let conn2 = st2.store.read().unwrap();
         let (f2, _s2) = detect_latency_at(&conn2, now, None);
         assert!(
@@ -15633,7 +15927,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "after-restart".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         assert!(
             file_finding(&restarted, &f2[0]).await.unwrap().is_none(),
@@ -16200,7 +16494,11 @@ mod tests {
         // A REOPEN earns a new one. This is the case that was impossible
         // before: the incident row is reused and `first_seen` never moves, so
         // without the episode component these two are byte-identical.
-        assert_ne!(sig(1), sig(2), "a recurrence must not dedupe against the old card");
+        assert_ne!(
+            sig(1),
+            sig(2),
+            "a recurrence must not dedupe against the old card"
+        );
         assert_ne!(sig(2), sig(3), "and each later episode is distinct again");
         assert!(
             sig(2).starts_with(&sig(1)),
@@ -16445,12 +16743,18 @@ mod tests {
                          VALUES (?1,'GET',?2,?2,200,?3,'127.0.0.1','curl/8','','','native')",
                         rusqlite::params![ts, path, ms],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         };
-        let file_rollup = |st: &AppState, id: &'static str, status: &'static str,
-                           targets: String, created: i64| {
+        let file_rollup = |st: &AppState,
+                           id: &'static str,
+                           status: &'static str,
+                           targets: String,
+                           created: i64| {
             st.store
                 .write(move |conn| {
                     conn.execute(
@@ -16464,7 +16768,10 @@ mod tests {
                             format!("autofix:latency|outlier|ROLLUP|{targets}")
                         ],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         };
@@ -16486,8 +16793,9 @@ mod tests {
         let (f, _) = detect_latency(&st.store.read().unwrap(), now);
         let per_endpoint = |f: &[Finding]| -> Vec<String> {
             f.iter()
-                .filter(|x| x.signature.starts_with("latency|outlier|")
-                    && !x.signature.contains("|ROLLUP|"))
+                .filter(|x| {
+                    x.signature.starts_with("latency|outlier|") && !x.signature.contains("|ROLLUP|")
+                })
                 .map(|x| x.signature.clone())
                 .collect()
         };
@@ -16499,7 +16807,13 @@ mod tests {
         );
 
         // Now the rollup that already reported both, filed AFTER them.
-        file_rollup(&st, "AMUX-T4701", "todo", format!("{A},{B}"), (now - 600.0) as i64);
+        file_rollup(
+            &st,
+            "AMUX-T4701",
+            "todo",
+            format!("{A},{B}"),
+            (now - 600.0) as i64,
+        );
         let (f2, s2) = detect_latency(&st.store.read().unwrap(), now);
         assert!(
             per_endpoint(&f2).is_empty(),
@@ -16536,7 +16850,10 @@ mod tests {
         st.store
             .write(|conn| {
                 conn.execute("UPDATE issues SET status='done' WHERE id='AMUX-T4701'", [])?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         let (f3, _) = detect_latency(&st.store.read().unwrap(), now);
@@ -16564,7 +16881,9 @@ mod tests {
         //    card stays open.
         let rollup_at = now - 3600.0;
         let cov = vec![(
-            [A.to_string()].into_iter().collect::<std::collections::BTreeSet<_>>(),
+            [A.to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
             rollup_at,
         )];
         assert!(
@@ -16648,7 +16967,11 @@ mod window_scan_tests {
         );
         assert!(scan.covered, "the fixture spans the window");
         assert_eq!(scan.hits.len(), 1, "got {:?}", scan.hits);
-        assert!(scan.hits[0].contains("gmail batch transport error"), "{:?}", scan.hits);
+        assert!(
+            scan.hits[0].contains("gmail batch transport error"),
+            "{:?}",
+            scan.hits
+        );
         assert!(
             !scan.hits.iter().any(|h| h.contains("connector_auth")),
             "warns outside the window must not be reported: {:?}",
@@ -16677,12 +17000,12 @@ mod window_scan_tests {
     #[test]
     fn a_log_that_starts_after_the_window_is_not_covered() {
         let late: Vec<Vec<u8>> = breach_log().into_iter().skip(2).collect();
-        let scan = scan_lines_for_window(
-            late,
-            at("2026-09-18T04:37:33Z"),
-            at("2026-09-18T04:38:33Z"),
+        let scan =
+            scan_lines_for_window(late, at("2026-09-18T04:37:33Z"), at("2026-09-18T04:38:33Z"));
+        assert!(
+            !scan.covered,
+            "nothing at or before the window start was seen"
         );
-        assert!(!scan.covered, "nothing at or before the window start was seen");
     }
 
     /// Covered with no hits is a REAL answer and must read differently from
@@ -16691,13 +17014,28 @@ mod window_scan_tests {
     fn covered_and_empty_reads_differently_from_uncovered() {
         let start = at("2026-09-18T04:37:33Z");
         let end = at("2026-09-18T04:38:33Z");
-        let quiet = WindowScan { hits: vec![], covered: true, dropped: 0, base_counts: Default::default(), span: None };
-        let blind = WindowScan { hits: vec![], covered: false, dropped: 0, base_counts: Default::default(), span: None };
+        let quiet = WindowScan {
+            hits: vec![],
+            covered: true,
+            dropped: 0,
+            base_counts: Default::default(),
+            span: None,
+        };
+        let blind = WindowScan {
+            hits: vec![],
+            covered: false,
+            dropped: 0,
+            base_counts: Default::default(),
+            span: None,
+        };
         let quiet_s = logged_during_worst_request(&quiet, start, end);
         let blind_s = logged_during_worst_request(&blind, start, end);
         assert!(quiet_s.starts_with("none."), "{quiet_s}");
         assert!(blind_s.starts_with("NOT MEASURED"), "{blind_s}");
-        assert_ne!(quiet_s, blind_s, "an absence of warnings is not an absence of coverage");
+        assert_ne!(
+            quiet_s, blind_s,
+            "an absence of warnings is not an absence of coverage"
+        );
         assert!(
             blind_s.contains("not an absence of warnings"),
             "the uncovered branch must say what it could not do: {blind_s}"
@@ -16792,8 +17130,16 @@ mod window_scan_tests {
         }
         let start = at("2026-09-18T04:59:00Z");
         let end = at("2026-09-18T05:00:00Z");
-        lines.push("2026-09-18T04:00:00.000000Z  INFO gen start".as_bytes().to_vec());
-        lines.push("2026-09-18T05:00:30.000000Z  INFO gen end".as_bytes().to_vec());
+        lines.push(
+            "2026-09-18T04:00:00.000000Z  INFO gen start"
+                .as_bytes()
+                .to_vec(),
+        );
+        lines.push(
+            "2026-09-18T05:00:30.000000Z  INFO gen end"
+                .as_bytes()
+                .to_vec(),
+        );
 
         let scan = scan_lines_for_window(lines, start, end);
         let out = logged_during_worst_request(&scan, start, end);
@@ -16843,22 +17189,30 @@ mod window_scan_tests {
     #[test]
     fn the_cap_reports_what_it_dropped() {
         let many: Vec<Vec<u8>> = (0..20)
-            .map(|i| format!("2026-09-18T04:38:{:02}.000000Z  WARN x: line {i}", i % 60).into_bytes())
+            .map(|i| {
+                format!("2026-09-18T04:38:{:02}.000000Z  WARN x: line {i}", i % 60).into_bytes()
+            })
             .chain(std::iter::once(
-                "2026-09-18T04:37:33.000000Z  INFO start".as_bytes().to_vec(),
+                "2026-09-18T04:37:33.000000Z  INFO start"
+                    .as_bytes()
+                    .to_vec(),
             ))
             .chain(std::iter::once(
                 "2026-09-18T04:38:33.000000Z  INFO end".as_bytes().to_vec(),
             ))
             .collect();
-        let scan = scan_lines_for_window(
-            many,
+        let scan =
+            scan_lines_for_window(many, at("2026-09-18T04:37:33Z"), at("2026-09-18T04:38:33Z"));
+        assert_eq!(scan.hits.len(), WINDOW_SCAN_CAP);
+        assert!(
+            scan.dropped > 0,
+            "the overflow must be counted, not dropped silently"
+        );
+        let s = logged_during_worst_request(
+            &scan,
             at("2026-09-18T04:37:33Z"),
             at("2026-09-18T04:38:33Z"),
         );
-        assert_eq!(scan.hits.len(), WINDOW_SCAN_CAP);
-        assert!(scan.dropped > 0, "the overflow must be counted, not dropped silently");
-        let s = logged_during_worst_request(&scan, at("2026-09-18T04:37:33Z"), at("2026-09-18T04:38:33Z"));
         assert!(s.contains("more, capped"), "{s}");
     }
 }

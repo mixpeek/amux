@@ -90,7 +90,10 @@ async fn every_nested_api_root_answers_the_same_with_or_without_a_trailing_slash
 #[tokio::test]
 async fn an_undeclared_path_still_404s_with_or_without_the_slash() {
     let (app, _dir) = app();
-    for path in ["/api/definitely-not-a-route", "/api/definitely-not-a-route/"] {
+    for path in [
+        "/api/definitely-not-a-route",
+        "/api/definitely-not-a-route/",
+    ] {
         assert_eq!(
             status_of(&app, path).await,
             StatusCode::NOT_FOUND,

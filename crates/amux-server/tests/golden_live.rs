@@ -39,8 +39,8 @@ use amux_core::session::BackendId;
 use amux_core::worker::{WorkerConfig as CoreWorkerConfig, WorkerState};
 use amux_server::api::{router, AppState};
 use amux_server::backend::{
-    backend_ref, herdr::HerdrBackend, tmux::TmuxBackend, BackendStatus, ProcessRef,
-    SessionBackend, SessionSpec,
+    backend_ref, herdr::HerdrBackend, tmux::TmuxBackend, BackendStatus, ProcessRef, SessionBackend,
+    SessionSpec,
 };
 use amux_server::db::queries::{self, SessionRow, WorkerRow};
 use amux_server::db::{board_store, SharedStore, Store, WriteOutcome};
@@ -131,7 +131,11 @@ fn rig() -> Rig {
         auth_token: None,
         reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
-    Rig { app: router(state), store, _dir: dir }
+    Rig {
+        app: router(state),
+        store,
+        _dir: dir,
+    }
 }
 
 /// The runtime under test: breaker permissive, no unowned pickup (the task
@@ -179,7 +183,9 @@ async fn send_with(
     };
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let v = if bytes.is_empty() {
         Value::Null
     } else {
@@ -230,7 +236,13 @@ fn command_rows(store: &SharedStore, worker: &WorkerId) -> Vec<(String, String)>
 fn turn_rows(
     store: &SharedStore,
     worker: &WorkerId,
-) -> Vec<(String, Option<String>, Option<String>, Option<String>, String)> {
+) -> Vec<(
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+)> {
     let conn = store.read().unwrap();
     let mut stmt = conn
         .prepare(
@@ -248,14 +260,24 @@ fn turn_rows(
 
 fn worker_durable_state(store: &SharedStore, worker: &WorkerId) -> WorkerState {
     let conn = store.read().unwrap();
-    queries::get_worker(&conn, worker.as_str()).unwrap().unwrap().state
+    queries::get_worker(&conn, worker.as_str())
+        .unwrap()
+        .unwrap()
+        .state
 }
 
 /// Everything a hang/timeout needs to name where it got stuck (the task's
 /// own rule: "a hang must name where").
-fn dump_state(store: &SharedStore, worker: &WorkerId, events_log: &Arc<Mutex<Vec<String>>>) -> String {
+fn dump_state(
+    store: &SharedStore,
+    worker: &WorkerId,
+    events_log: &Arc<Mutex<Vec<String>>>,
+) -> String {
     let mut out = String::new();
-    out.push_str(&format!("worker durable state: {:?}\n", worker_durable_state(store, worker)));
+    out.push_str(&format!(
+        "worker durable state: {:?}\n",
+        worker_durable_state(store, worker)
+    ));
     out.push_str("commands:\n");
     for (cmd, st) in command_rows(store, worker) {
         out.push_str(&format!("  {st}  <-  {cmd}\n"));
@@ -357,7 +379,7 @@ async fn golden_live_happy_path_claude() {
         CliWorkerConfig {
             provider: CliProvider::ClaudeCode,
             cwd: ws_path.clone(),
-            binary: None, // real `claude` resolved via PATH
+            binary: None,       // real `claude` resolved via PATH
             model: None, // structured::WorkerConfig grew `model` mid-flight (other lane); None = CLI default
             conversation: None, // and `conversation` with AMUX-2613; None = fresh
         },
@@ -379,7 +401,10 @@ async fn golden_live_happy_path_claude() {
         rig.store
             .write(move |conn| {
                 queries::insert_session(conn, &row)?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -526,7 +551,10 @@ async fn golden_live_happy_path_claude() {
     let turns = turn_rows(&rig.store, &wid);
     assert_eq!(turns.len(), 1, "exactly one turn in the ledger: {turns:?}");
     let (turn_id, ses_id, ended, outcome, tokens) = &turns[0];
-    assert!(ses_id.is_some(), "turn should carry the live session row: {turns:?}");
+    assert!(
+        ses_id.is_some(),
+        "turn should carry the live session row: {turns:?}"
+    );
     assert!(ended.is_some(), "turn must be ended: {turns:?}");
     let outcome = outcome.as_deref().expect("turn must record an outcome");
     let outcome_v: Value = serde_json::from_str(outcome).unwrap();
@@ -536,13 +564,22 @@ async fn golden_live_happy_path_claude() {
     );
     let tokens_v: Value = serde_json::from_str(tokens).expect("tokens column is JSON");
     if let Some(total) = tokens_v.get("reported_total") {
-        assert!(total.as_u64().unwrap_or(0) > 0, "recorded tokens must be nonzero: {tokens}");
+        assert!(
+            total.as_u64().unwrap_or(0) > 0,
+            "recorded tokens must be nonzero: {tokens}"
+        );
     }
 
     // The worker claims completion on the board (todo -> doing -> done with
     // the exact type-derived gate criteria), then /api/verify proves it with
     // a typed FileExists criterion -> verified.
-    let v = patch_ok(app, &sem, json!({ "status": "doing", "gate_ack": true }), "live-claude").await;
+    let v = patch_ok(
+        app,
+        &sem,
+        json!({ "status": "doing", "gate_ack": true }),
+        "live-claude",
+    )
+    .await;
     assert_eq!(v["status"], json!("doing"), "{v}");
     let v = patch_ok(
         app,
@@ -708,7 +745,10 @@ async fn run_live_backend_lifecycle(backend: Arc<dyn SessionBackend>, label: &st
                         exit_reason: None,
                     },
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -725,7 +765,10 @@ async fn run_live_backend_lifecycle(backend: Arc<dyn SessionBackend>, label: &st
         .spawn(&spec)
         .await
         .unwrap_or_else(|e| panic!("[{label}] spawn failed: {e}"));
-    assert_eq!(proc.backend_ref, ref_, "[{label}] spawn must return the canonical ref");
+    assert_eq!(
+        proc.backend_ref, ref_,
+        "[{label}] spawn must return the canonical ref"
+    );
 
     // Everything until terminate is collected, never panicked (guard idiom).
     let mid: Result<(String, Vec<String>, usize), String> = async {
@@ -774,7 +817,9 @@ async fn run_live_backend_lifecycle(backend: Arc<dyn SessionBackend>, label: &st
     // The host must report the session gone (NotFound or an honest corpse).
     match backend.status(&proc).await {
         Ok(BackendStatus::NotFound) | Ok(BackendStatus::Completed { .. }) => {}
-        Ok(other) => panic!("[{label}] status after terminate: expected NotFound/Completed, got {other:?}"),
+        Ok(other) => {
+            panic!("[{label}] status after terminate: expected NotFound/Completed, got {other:?}")
+        }
         Err(e) => panic!("[{label}] status after terminate errored: {e}"),
     }
 
@@ -804,7 +849,10 @@ async fn run_live_backend_lifecycle(backend: Arc<dyn SessionBackend>, label: &st
         )
         .unwrap()
     };
-    assert!(ended.is_some(), "[{label}] session row must be ended after reconcile");
+    assert!(
+        ended.is_some(),
+        "[{label}] session row must be ended after reconcile"
+    );
 
     eprintln!(
         "[{label}] PASS in {:.0}s — ref {ref_}; scanned={scanned:?} (scan events applied: \

@@ -2729,9 +2729,11 @@ pub(crate) fn classify(
                         obj.insert("window_s".into(), json!(*w as i64));
                         obj.insert(
                             "why_window".into(),
-                            json!("this observer's Bash command ran this long; a long \
+                            json!(
+                                "this observer's Bash command ran this long; a long \
                                    window sees every concurrent writer, so the longer \
-                                   it is the less this names anyone"),
+                                   it is the less this names anyone"
+                            ),
                         );
                     }
                     row
@@ -4931,9 +4933,7 @@ mod tests {
 
     #[test]
     fn no_paths_is_not_a_possessive_claim() {
-        let (all_settled, all_mine) = victim_flags(&[],
-        &[],
-    );
+        let (all_settled, all_mine) = victim_flags(&[], &[]);
         assert!(all_settled, "nothing listed is nothing at risk");
         assert!(
             !all_mine,
@@ -5749,9 +5749,15 @@ mod tests {
         )]);
         let row = &v.observations[0]["observers"][0];
         assert_eq!(row["session"], "amux-cloud");
-        assert_eq!(row["window_s"], 900, "the measured window must reach the notice");
+        assert_eq!(
+            row["window_s"], 900,
+            "the measured window must reach the notice"
+        );
         assert!(
-            row["why_window"].as_str().unwrap_or("").contains("less this names anyone"),
+            row["why_window"]
+                .as_str()
+                .unwrap_or("")
+                .contains("less this names anyone"),
             "the window must arrive with what it MEANS, or a reader takes a big \
              number as strong evidence rather than weak: {row}"
         );
@@ -5764,7 +5770,10 @@ mod tests {
             row.get("window_s").is_none(),
             "an unmeasured window must be omitted, never rendered as 0: {row}"
         );
-        assert!(row.get("why_window").is_none(), "and its explanation with it: {row}");
+        assert!(
+            row.get("why_window").is_none(),
+            "and its explanation with it: {row}"
+        );
 
         // A WINDOW FOR AN OBSERVER THAT HAS NO OBSERVATION HERE IS DISCARDED.
         // The two maps are loaded independently and only the timestamp one is
@@ -5795,7 +5804,10 @@ mod tests {
                 ),
             ],
         );
-        let attached = g.observed_windows.get(&path).expect("the real observer's window");
+        let attached = g
+            .observed_windows
+            .get(&path)
+            .expect("the real observer's window");
         assert_eq!(attached.get("amux-cloud"), Some(&900.0));
         assert_eq!(
             attached.get("some-other-lane"),
@@ -6218,16 +6230,31 @@ mod tests {
         ]});
         let rows = parse_observed_reports(&body, now);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].2, Some(900.0), "a measured window must reach the store");
-        assert_eq!(rows[1].2, None, "an object with no window_s measured nothing");
+        assert_eq!(
+            rows[0].2,
+            Some(900.0),
+            "a measured window must reach the store"
+        );
+        assert_eq!(
+            rows[1].2, None,
+            "an object with no window_s measured nothing"
+        );
         assert_eq!(rows[2].2, None, "a bare string is an older hook copy");
         // The timestamp is untouched by any of this.
         assert_eq!(rows[0].1, 1500.0);
-        assert_eq!(rows[2].1, now, "a bare string still stamps with the server clock");
+        assert_eq!(
+            rows[2].1, now,
+            "a bare string still stamps with the server clock"
+        );
 
         // JUNK IS REJECTED, NOT DEFAULTED. A negative or non-finite window is
         // not a measurement, and passing it through would render as evidence.
-        for junk in [json!(-1.0), json!("900"), json!(null), json!(f64::MAX * 2.0)] {
+        for junk in [
+            json!(-1.0),
+            json!("900"),
+            json!(null),
+            json!(f64::MAX * 2.0),
+        ] {
             let b = json!({"paths": [
                 {"path": "/repo/j.rs", "mtime": 1500.0, "window_s": junk},
             ]});
@@ -7652,8 +7679,14 @@ mod tests {
             why.contains("git diff --cached"),
             "no way to check it: {why}"
         );
-        assert!(why.contains("git diff HEAD") && why.contains("temporary index"), "{why}");
-        assert!(why.contains("empty diff is not ownership verification"), "{why}");
+        assert!(
+            why.contains("git diff HEAD") && why.contains("temporary index"),
+            "{why}"
+        );
+        assert!(
+            why.contains("empty diff is not ownership verification"),
+            "{why}"
+        );
         // It blocks via `foreign` specifically, because that is the only field
         // installed hooks act on (module docs). A new key would be ignored by
         // every hook already on disk.

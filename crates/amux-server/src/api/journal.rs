@@ -54,7 +54,10 @@ pub fn routes() -> Router<AppState> {
         .route("/config", get(get_config).post(set_config))
         .route("/import", axum::routing::post(import_entries))
         .route("/media/{id}", get(serve_media).delete(delete_media))
-        .route("/{id}", get(get_entry).patch(patch_entry).delete(delete_entry))
+        .route(
+            "/{id}",
+            get(get_entry).patch(patch_entry).delete(delete_entry),
+        )
         .route("/{id}/media", axum::routing::post(upload_media))
         // Python's trailing `{"error": "journal route not found"}` for
         // anything else under /api/journal/.
@@ -68,7 +71,10 @@ fn err(status: StatusCode, body: Value) -> Response {
 use super::internal;
 
 fn journal_not_found() -> Response {
-    err(StatusCode::NOT_FOUND, json!({ "error": "journal route not found" }))
+    err(
+        StatusCode::NOT_FOUND,
+        json!({ "error": "journal route not found" }),
+    )
 }
 
 fn ev(entity: &str, id: &str, mutation: MutationKind) -> PendingEvent {
@@ -109,12 +115,17 @@ fn media_id() -> String {
 
 /// Python `body.get(k, "")`.
 fn body_str(body: &Value, k: &str) -> String {
-    body.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+    body.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Python truthiness for `1 if body.get("starred") else 0`.
 fn starred_int(body: &Value) -> i64 {
-    body.get("starred").map(super::settings::truthy).unwrap_or(false) as i64
+    body.get("starred")
+        .map(super::settings::truthy)
+        .unwrap_or(false) as i64
 }
 
 /// Python's tags normalization: a list joins trimmed non-empty items with
@@ -283,7 +294,9 @@ async fn get_config(State(state): State<AppState>) -> Response {
 }
 
 async fn set_config(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let vals: Vec<String> = (1..=3).map(|i| body_str(&body, &format!("prompt{i}"))).collect();
+    let vals: Vec<String> = (1..=3)
+        .map(|i| body_str(&body, &format!("prompt{i}")))
+        .collect();
     let write = state
         .store
         .write_async(move |conn| {
@@ -311,7 +324,11 @@ async fn create_entry(State(state): State<AppState>, Json(body): Json<Value>) ->
     let now = chrono::Utc::now().timestamp();
     let date_val = {
         let d = body_str(&body, "date");
-        if d.is_empty() { chrono::Local::now().format("%Y-%m-%d").to_string() } else { d }
+        if d.is_empty() {
+            chrono::Local::now().format("%Y-%m-%d").to_string()
+        } else {
+            d
+        }
     };
     let tags = tags_str(&body, "tags");
     let text = body_str(&body, "text");
@@ -319,7 +336,9 @@ async fn create_entry(State(state): State<AppState>, Json(body): Json<Value>) ->
     let starred = starred_int(&body);
     let lat = sql_value(body.get("lat").unwrap_or(&Value::Null));
     let lng = sql_value(body.get("lng").unwrap_or(&Value::Null));
-    let prompts: Vec<String> = (1..=3).map(|i| body_str(&body, &format!("prompt{i}"))).collect();
+    let prompts: Vec<String> = (1..=3)
+        .map(|i| body_str(&body, &format!("prompt{i}")))
+        .collect();
 
     let slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -356,7 +375,11 @@ async fn create_entry(State(state): State<AppState>, Json(body): Json<Value>) ->
 /// created/updated. An unparseable date falls back to now where Python
 /// would 500 — the whole import failing on one bad row helps nobody.
 async fn import_entries(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let entries = body.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
+    let entries = body
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let photos_dir = body_str(&body, "photos_dir");
     let now = chrono::Utc::now().timestamp();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -505,7 +528,10 @@ async fn delete_media(State(state): State<AppState>, AxPath(mid): AxPath<String>
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -544,7 +570,16 @@ async fn get_entry(State(state): State<AppState>, AxPath(id): AxPath<String>) ->
 }
 
 const PATCH_FIELDS: [&str; 10] = [
-    "text", "date", "lat", "lng", "place_name", "starred", "tags", "prompt1", "prompt2", "prompt3",
+    "text",
+    "date",
+    "lat",
+    "lng",
+    "place_name",
+    "starred",
+    "tags",
+    "prompt1",
+    "prompt2",
+    "prompt3",
 ];
 
 async fn patch_entry(
@@ -574,7 +609,10 @@ async fn patch_entry(
         .write_async(move |conn| {
             if fields.is_empty() {
                 // Python's `if fields:` guard — no UPDATE, no `updated` bump.
-                return Ok(WriteOutcome { applied: false, events: vec![] });
+                return Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
             }
             let now = chrono::Utc::now().timestamp();
             let set_cl: Vec<String> = fields.iter().map(|(k, _)| format!("{k}=?")).collect();
@@ -583,7 +621,10 @@ async fn patch_entry(
             params.push(rusqlite::types::Value::Integer(now));
             params.push(rusqlite::types::Value::Text(id_w.clone()));
             let n = conn.execute(
-                &format!("UPDATE journal_entries SET {}, updated=? WHERE id=?", set_cl.join(", ")),
+                &format!(
+                    "UPDATE journal_entries SET {}, updated=? WHERE id=?",
+                    set_cl.join(", ")
+                ),
                 rusqlite::params_from_iter(params),
             )?;
             let events = if n > 0 {
@@ -591,7 +632,10 @@ async fn patch_entry(
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -619,7 +663,10 @@ async fn delete_entry(State(state): State<AppState>, AxPath(id): AxPath<String>)
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -648,11 +695,20 @@ async fn upload_media(
     let cleaned: String = b64.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     let data = match base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes()) {
         Ok(d) => d,
-        Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": format!("invalid base64 data: {e}") })),
+        Err(e) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("invalid base64 data: {e}") }),
+            )
+        }
     };
     let fname = {
         let f = body_str(&body, "name");
-        if f.is_empty() { "photo.jpg".to_string() } else { f }
+        if f.is_empty() {
+            "photo.jpg".to_string()
+        } else {
+            f
+        }
     };
     // Extension/mime from MAGIC BYTES, never from the client (Python parity).
     let (ext, mime) = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -692,7 +748,10 @@ async fn upload_media(
                 rusqlite::params![mid_w, id_w, fname, mime, pos, now],
             )?;
             let events = vec![ev("journal_media", &mid_w, MutationKind::Created)];
-            Ok(WriteOutcome { applied: true, events })
+            Ok(WriteOutcome {
+                applied: true,
+                events,
+            })
         })
         .await;
     match write {
@@ -721,9 +780,11 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        let router = Router::new().nest("/api/journal", routes()).with_state(state);
+        let router = Router::new()
+            .nest("/api/journal", routes())
+            .with_state(state);
         (router, dir)
     }
 
@@ -743,7 +804,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
@@ -756,8 +819,10 @@ mod tests {
             &app,
             "POST",
             "/api/journal",
-            Some(json!({ "text": "first entry", "tags": ["a", " b ", ""], "starred": true,
-                         "lat": 40.7, "lng": -74.0, "place_name": "NYC" })),
+            Some(
+                json!({ "text": "first entry", "tags": ["a", " b ", ""], "starred": true,
+                         "lat": 40.7, "lng": -74.0, "place_name": "NYC" }),
+            ),
         )
         .await;
         assert_eq!(st, StatusCode::CREATED, "{res}");
@@ -766,7 +831,11 @@ mod tests {
         let (st, e) = send(&app, "GET", "/api/journal/JRN-1", None).await;
         assert_eq!(st, StatusCode::OK, "{e}");
         assert_eq!(e["text"], json!("first entry"));
-        assert_eq!(e["tags"], json!("a,b"), "list tags join trimmed, empties dropped");
+        assert_eq!(
+            e["tags"],
+            json!("a,b"),
+            "list tags join trimmed, empties dropped"
+        );
         assert_eq!(e["starred"], json!(1), "Python truthiness -> 1");
         assert_eq!(e["lat"], json!(40.7));
         assert_eq!(e["place_name"], json!("NYC"));
@@ -779,8 +848,10 @@ mod tests {
             &app,
             "PATCH",
             "/api/journal/JRN-1",
-            Some(json!({ "text": "edited", "tags": ["x", "y"], "starred": false,
-                         "id": "JRN-999", "created": 1 })),
+            Some(
+                json!({ "text": "edited", "tags": ["x", "y"], "starred": false,
+                         "id": "JRN-999", "created": 1 }),
+            ),
         )
         .await;
         assert_eq!(st, StatusCode::OK);
@@ -794,7 +865,13 @@ mod tests {
         assert_ne!(e2["created"], json!(1), "created is not a patchable field");
 
         // Empty PATCH: ok, but no UPDATE ran (Python's `if fields:` guard).
-        let (st, r) = send(&app, "PATCH", "/api/journal/JRN-1", Some(json!({ "nope": 1 }))).await;
+        let (st, r) = send(
+            &app,
+            "PATCH",
+            "/api/journal/JRN-1",
+            Some(json!({ "nope": 1 })),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(r, json!({ "ok": true }));
 
@@ -847,12 +924,20 @@ mod tests {
         assert_eq!(e["prompt3"], json!(""));
         assert_eq!(e["deleted"], Value::Null);
         let m = &e["media"].as_array().unwrap()[0];
-        assert_eq!(m, &json!({ "id": "tokAbc123XyzQ", "filename": "bridge.jpeg",
-                               "mime": "image/jpeg", "position": 0 }));
+        assert_eq!(
+            m,
+            &json!({ "id": "tokAbc123XyzQ", "filename": "bridge.jpeg",
+                               "mime": "image/jpeg", "position": 0 })
+        );
 
         // PATCH round-trip on the Python-shaped row.
-        let (_, r) = send(&app, "PATCH", "/api/journal/JRN-42",
-                          Some(json!({ "place_name": "DUMBO" }))).await;
+        let (_, r) = send(
+            &app,
+            "PATCH",
+            "/api/journal/JRN-42",
+            Some(json!({ "place_name": "DUMBO" })),
+        )
+        .await;
         assert_eq!(r, json!({ "ok": true }));
         let (_, e2) = send(&app, "GET", "/api/journal/JRN-42", None).await;
         assert_eq!(e2["place_name"], json!("DUMBO"));
@@ -877,8 +962,12 @@ mod tests {
         }
         // Order: date DESC.
         let (_, all) = send(&app, "GET", "/api/journal", None).await;
-        let ids: Vec<&str> =
-            all.as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec!["JRN-3", "JRN-2", "JRN-1"]);
         // q searches text (and tags — "summer" matches JRN-1 via tags too).
         let (_, hits) = send(&app, "GET", "/api/journal?q=summer", None).await;
@@ -890,7 +979,13 @@ mod tests {
         let (_, hits) = send(&app, "GET", "/api/journal?tag=each", None).await;
         assert_eq!(hits.as_array().unwrap().len(), 0);
         // Date range.
-        let (_, hits) = send(&app, "GET", "/api/journal?from=2026-08-01&to=2026-08-04", None).await;
+        let (_, hits) = send(
+            &app,
+            "GET",
+            "/api/journal?from=2026-08-01&to=2026-08-04",
+            None,
+        )
+        .await;
         assert_eq!(hits.as_array().unwrap().len(), 1);
         assert_eq!(hits[0]["id"], json!("JRN-2"));
         // has_location.
@@ -913,13 +1008,21 @@ mod tests {
         let (app, _dir) = app();
         let (_, cfg) = send(&app, "GET", "/api/journal/config", None).await;
         assert_eq!(cfg, json!({ "prompt1": "", "prompt2": "", "prompt3": "" }));
-        let (st, r) = send(&app, "POST", "/api/journal/config",
-                           Some(json!({ "prompt1": "Grateful for?", "prompt3": "Tomorrow?" }))).await;
+        let (st, r) = send(
+            &app,
+            "POST",
+            "/api/journal/config",
+            Some(json!({ "prompt1": "Grateful for?", "prompt3": "Tomorrow?" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(r, json!({ "ok": true }));
         let (_, cfg) = send(&app, "GET", "/api/journal/config", None).await;
         // Python writes ALL THREE keys — an omitted prompt is cleared to "".
-        assert_eq!(cfg, json!({ "prompt1": "Grateful for?", "prompt2": "", "prompt3": "Tomorrow?" }));
+        assert_eq!(
+            cfg,
+            json!({ "prompt1": "Grateful for?", "prompt2": "", "prompt3": "Tomorrow?" })
+        );
     }
 
     #[tokio::test]
@@ -927,7 +1030,13 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _env = crate::api::settings::test_env::set_home(home.path());
         let (app, _dir) = app();
-        let (_, _) = send(&app, "POST", "/api/journal", Some(json!({ "text": "with photo" }))).await;
+        let (_, _) = send(
+            &app,
+            "POST",
+            "/api/journal",
+            Some(json!({ "text": "with photo" })),
+        )
+        .await;
 
         // A real 1x1 PNG header + payload; magic bytes must pick .png even
         // though the client said .jpg.
@@ -943,8 +1052,13 @@ mod tests {
         assert_eq!(st, StatusCode::CREATED, "{up}");
         let mid = up["id"].as_str().unwrap().to_string();
         assert_eq!(mid.len(), 14, "token_urlsafe(10) shape");
-        assert!(home.path().join("journal-media").join(format!("{mid}.png")).exists(),
-                "bytes on disk under the temp home, ext from magic bytes");
+        assert!(
+            home.path()
+                .join("journal-media")
+                .join(format!("{mid}.png"))
+                .exists(),
+            "bytes on disk under the temp home, ext from magic bytes"
+        );
 
         // Entry now carries the media row; has_media filter sees it.
         let (_, e) = send(&app, "GET", "/api/journal/JRN-1", None).await;
@@ -964,25 +1078,43 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers()[header::CONTENT_TYPE], "image/png");
-        assert_eq!(res.headers()[header::CACHE_CONTROL], "public, max-age=86400");
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            res.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(body.as_ref(), png.as_slice());
 
         // Second upload gets position 1.
         let jpg = [b"\xff\xd8".as_slice(), &[0u8; 8]].concat();
         let b64 = base64::engine::general_purpose::STANDARD.encode(&jpg);
-        let (_, up2) = send(&app, "POST", "/api/journal/JRN-1/media",
-                            Some(json!({ "data": b64 }))).await;
+        let (_, up2) = send(
+            &app,
+            "POST",
+            "/api/journal/JRN-1/media",
+            Some(json!({ "data": b64 })),
+        )
+        .await;
         let (_, e) = send(&app, "GET", "/api/journal/JRN-1", None).await;
         assert_eq!(e["media"].as_array().unwrap().len(), 2);
         assert_eq!(e["media"][1]["position"], json!(1));
-        assert_eq!(e["media"][1]["filename"], json!("photo.jpg"), "default name");
+        assert_eq!(
+            e["media"][1]["filename"],
+            json!("photo.jpg"),
+            "default name"
+        );
 
         // Delete removes row AND file.
         let (st, r) = send(&app, "DELETE", &format!("/api/journal/media/{mid}"), None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(r, json!({ "ok": true }));
-        assert!(!home.path().join("journal-media").join(format!("{mid}.png")).exists());
+        assert!(!home
+            .path()
+            .join("journal-media")
+            .join(format!("{mid}.png"))
+            .exists());
         let (_, e) = send(&app, "GET", "/api/journal/JRN-1", None).await;
         assert_eq!(e["media"].as_array().unwrap().len(), 1);
 
@@ -991,11 +1123,20 @@ mod tests {
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert_eq!(nf["error"], json!("not found"));
         // Bad base64 is a 400 (documented deviation from Python's 500).
-        let (st, _) = send(&app, "POST", "/api/journal/JRN-1/media",
-                           Some(json!({ "data": "!!not-base64!!" }))).await;
+        let (st, _) = send(
+            &app,
+            "POST",
+            "/api/journal/JRN-1/media",
+            Some(json!({ "data": "!!not-base64!!" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         let (_, up3) = send(&app, "GET", "/api/journal/JRN-1", None).await;
-        assert_eq!(up3["media"].as_array().unwrap().len(), 1, "failed upload wrote nothing");
+        assert_eq!(
+            up3["media"].as_array().unwrap().len(),
+            1,
+            "failed upload wrote nothing"
+        );
         drop(up2);
     }
 
@@ -1041,12 +1182,18 @@ mod tests {
         assert_eq!(media[0]["mime"], json!("image/jpeg"));
         // The photo bytes were copied into the temp home's media dir.
         let mid = media[0]["id"].as_str().unwrap();
-        assert!(home.path().join("journal-media").join(format!("{mid}.jpeg")).exists());
+        assert!(home
+            .path()
+            .join("journal-media")
+            .join(format!("{mid}.jpeg"))
+            .exists());
 
         // Second entry: today's date, no location, no media.
         let (_, e2) = send(&app, "GET", "/api/journal/JRN-2", None).await;
-        assert_eq!(e2["date"].as_str().unwrap(),
-                   chrono::Local::now().format("%Y-%m-%d").to_string());
+        assert_eq!(
+            e2["date"].as_str().unwrap(),
+            chrono::Local::now().format("%Y-%m-%d").to_string()
+        );
         assert_eq!(e2["place_name"], json!(""));
         assert_eq!(e2["media"], json!([]));
     }

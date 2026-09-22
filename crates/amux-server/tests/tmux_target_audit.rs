@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 const ALLOWED: &[&str] = &["st", "pt", "stq", "ptq"];
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -79,13 +81,13 @@ fn scan(src: &str) -> Vec<(usize, String)> {
         // carry no Command::new in the statement, so they are unaffected;
         // a literal `Command::new("tmux")` is still audited (name == tmux).
         let before = &src[..at];
-        let stmt_start = before
-            .rfind([';', '{', '}'])
-            .map(|i| i + 1)
-            .unwrap_or(0);
+        let stmt_start = before.rfind([';', '{', '}']).map(|i| i + 1).unwrap_or(0);
         if let Some(cn) = before[stmt_start..].rfind("Command::new(") {
             let after = &before[stmt_start + cn + "Command::new(".len()..];
-            let name = after.trim_start().strip_prefix('"').and_then(|s| s.split('"').next());
+            let name = after
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(|s| s.split('"').next());
             if matches!(name, Some(n) if n != "tmux") {
                 continue;
             }
@@ -93,7 +95,9 @@ fn scan(src: &str) -> Vec<(usize, String)> {
         // Skip the separator after the literal, then take the argument up
         // to the next `,` / `]` / `)` at this nesting level.
         let rest = &src[from..];
-        let Some(comma) = rest.find(',') else { continue };
+        let Some(comma) = rest.find(',') else {
+            continue;
+        };
         let tail = &rest[comma + 1..];
         let mut depth = 0i32;
         let mut end = tail.len();
@@ -127,7 +131,11 @@ fn offenders() -> Vec<String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rust_sources(&root, &mut files);
-    assert!(!files.is_empty(), "found no sources to audit under {}", root.display());
+    assert!(
+        !files.is_empty(),
+        "found no sources to audit under {}",
+        root.display()
+    );
 
     let mut bad = Vec::new();
     for f in files {
@@ -177,8 +185,14 @@ fn the_audit_detects_a_planted_non_exact_target() {
         2,
         "the scanner must flag BOTH planted offenders and leave `stq` alone; got {found:?}"
     );
-    assert!(found.iter().any(|f| f.contains("format!")), "missed the format! target: {found:?}");
-    assert!(found.iter().any(|f| f.contains("\"amux-amux\"")), "missed the literal prefix target: {found:?}");
+    assert!(
+        found.iter().any(|f| f.contains("format!")),
+        "missed the format! target: {found:?}"
+    );
+    assert!(
+        found.iter().any(|f| f.contains("\"amux-amux\"")),
+        "missed the literal prefix target: {found:?}"
+    );
 }
 
 /// The `Command::new("x")` exemption (8db43264), in BOTH directions.
@@ -206,7 +220,11 @@ fn the_non_tmux_exemption_silences_touch_but_never_tmux() {
                 .unwrap();
         };
     "#;
-    assert!(scan(touch).is_empty(), "touch -t is a timestamp, not a pane: {:?}", scan(touch));
+    assert!(
+        scan(touch).is_empty(),
+        "touch -t is a timestamp, not a pane: {:?}",
+        scan(touch)
+    );
 
     // CONTROL. Same shape, program `tmux`: still an offender.
     let tmux_cmd = r#"
@@ -216,8 +234,15 @@ fn the_non_tmux_exemption_silences_touch_but_never_tmux() {
             .unwrap();
     "#;
     let f: Vec<String> = scan(tmux_cmd).into_iter().map(|(_, e)| e).collect();
-    assert_eq!(f.len(), 1, "a literal Command::new(\"tmux\") target must still be flagged: {f:?}");
-    assert!(f[0].contains("amux-amux"), "wrong expression captured: {f:?}");
+    assert_eq!(
+        f.len(),
+        1,
+        "a literal Command::new(\"tmux\") target must still be flagged: {f:?}"
+    );
+    assert!(
+        f[0].contains("amux-amux"),
+        "wrong expression captured: {f:?}"
+    );
 
     // FAIL-SAFE. api/metrics.rs's real shape: tmux reached through a helper, so
     // there is no literal program to attribute. Absent positive evidence the site
@@ -225,12 +250,20 @@ fn the_non_tmux_exemption_silences_touch_but_never_tmux() {
     let helper = r#"
         let _ = cmd_output("tmux", &["list-panes", "-t", "amux-amux", "-F", "x"]);
     "#;
-    assert_eq!(scan(helper).len(), 1, "a helper-invoked tmux target must stay audited");
+    assert_eq!(
+        scan(helper).len(),
+        1,
+        "a helper-invoked tmux target must stay audited"
+    );
 
     // And an ALLOWED target reached the same way is still allowed, so the guard
     // is discriminating on the expression rather than on the call shape.
     let ok = r#"
         let _ = cmd_output("tmux", &["list-panes", "-t", &pt, "-F", "x"]);
     "#;
-    assert!(scan(ok).is_empty(), "pane_target() output must pass: {:?}", scan(ok));
+    assert!(
+        scan(ok).is_empty(),
+        "pane_target() output must pass: {:?}",
+        scan(ok)
+    );
 }

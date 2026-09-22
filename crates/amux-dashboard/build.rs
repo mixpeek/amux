@@ -5,7 +5,10 @@ fn watch(path: &Path) {
     // whose assets were embedded. Track files as well as directory additions.
     println!("cargo:rerun-if-changed={}", path.display());
     if path.is_dir() {
-        for entry in fs::read_dir(path).expect("dashboard asset directory").flatten() {
+        for entry in fs::read_dir(path)
+            .expect("dashboard asset directory")
+            .flatten()
+        {
             watch(&entry.path());
         }
     }

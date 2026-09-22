@@ -65,7 +65,10 @@ pub fn routes() -> Router<AppState> {
         .route("/history/{id}", axum::routing::delete(delete_history))
         .route("/history/{id}/edit", axum::routing::post(edit_history))
         .route("/dict", get(list_dict).post(add_dict))
-        .route("/dict/{id}", axum::routing::patch(patch_dict).delete(delete_dict))
+        .route(
+            "/dict/{id}",
+            axum::routing::patch(patch_dict).delete(delete_dict),
+        )
         // Config describes/configures the NATIVE transcription engine
         // (AMUX-2598: `local`/`engine`/`source` report the engine
         // /api/dictate itself uses). `any`: Python answers its dictation
@@ -78,7 +81,10 @@ pub fn routes() -> Router<AppState> {
         // nested fallback, so the fallback answered index.html/generic 404
         // instead of this module's Python-shape 404 (caught live on 18940).
         .route("/", axum::routing::any(|| async { route_not_found() }))
-        .route("/{*rest}", axum::routing::any(|| async { route_not_found() }))
+        .route(
+            "/{*rest}",
+            axum::routing::any(|| async { route_not_found() }),
+        )
 }
 
 // ---- shared helpers -------------------------------------------------------
@@ -90,7 +96,10 @@ fn err(status: StatusCode, body: Value) -> Response {
 use super::internal;
 
 fn route_not_found() -> Response {
-    err(StatusCode::NOT_FOUND, json!({ "error": "dictation route not found" }))
+    err(
+        StatusCode::NOT_FOUND,
+        json!({ "error": "dictation route not found" }),
+    )
 }
 
 fn ev(entity: &str, id: &str, mutation: MutationKind) -> PendingEvent {
@@ -160,7 +169,11 @@ pub async fn dictate(
         .trim()
         .to_lowercase();
     let q_session = truncate_chars(q.session.as_deref().unwrap_or("").trim(), 64);
-    let q_dur = q.dur_ms.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let q_dur = q
+        .dur_ms
+        .as_deref()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
 
     // (base64 for Gemini, decoded bytes for whisper, mime, session, dur_ms)
     let (b64, raw_audio, mime, session, dur_ms): (String, Option<Vec<u8>>, String, String, i64);
@@ -175,17 +188,26 @@ pub async fn dictate(
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
         if clen > DICTATION_MAX_BYTES {
-            return err(StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": "audio too large (max 25MB)" }));
+            return err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({ "error": "audio too large (max 25MB)" }),
+            );
         }
         let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
             Ok(b) => b,
             Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e.to_string() })),
         };
         if bytes.len() > DICTATION_MAX_BYTES {
-            return err(StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": "audio too large (max 25MB)" }));
+            return err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({ "error": "audio too large (max 25MB)" }),
+            );
         }
         if bytes.is_empty() {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": "audio required" }));
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "audio required" }),
+            );
         }
         b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         raw_audio = Some(bytes.to_vec());
@@ -202,23 +224,47 @@ pub async fn dictate(
         };
         // Python's `_read_body` tolerance: unparseable reads as `{}`.
         let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-        let audio = body.get("audio").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let audio = body
+            .get("audio")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if audio.is_empty() {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": "audio required" }));
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "audio required" }),
+            );
         }
         if audio.len() > DICTATION_MAX_BYTES * 4 / 3 {
-            return err(StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": "audio too large (max ~25MB)" }));
+            return err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({ "error": "audio too large (max ~25MB)" }),
+            );
         }
         b64 = audio;
         raw_audio = None;
-        let m = body.get("mime").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("audio/webm");
+        let m = body
+            .get("mime")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("audio/webm");
         mime = m.split(';').next().unwrap_or("").to_string();
-        let s = body.get("session").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(&q_session);
+        let s = body
+            .get("session")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&q_session);
         session = truncate_chars(s.trim(), 64);
         // `int(body.get("dur_ms") or 0)`
         dur_ms = body
             .get("dur_ms")
-            .map(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)).or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0))
+            .map(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_f64().map(|f| f as i64))
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                    .unwrap_or(0)
+            })
             .unwrap_or(0);
     }
 
@@ -237,7 +283,10 @@ pub async fn dictate(
                 // Python's b64decode would raise out of the handler here; an
                 // honest 500 beats handing Gemini the same broken payload.
                 Err(e) => {
-                    return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("bad base64 audio: {e}") }))
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": format!("bad base64 audio: {e}") }),
+                    )
                 }
             },
         };
@@ -284,7 +333,8 @@ pub async fn dictate(
                 // {"text": "Testing 123"} on a real speech clip (AMUX-4627).
                 engine = "whisper";
                 tracing::info!(
-                    measured = true, n_considered = 1,
+                    measured = true,
+                    n_considered = 1,
                     verdict = "dictation_local_empty_is_a_result",
                     "[dictation] local engine heard no speech; returning an empty transcription \
                      rather than escalating to the paid engine"
@@ -310,12 +360,14 @@ pub async fn dictate(
     if text.is_empty() && engine.is_empty() {
         let store = state.store.clone();
         let sess = session.clone();
-        let keyed = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, &'static str, String)> {
-            let conn = store.read()?;
-            let (key, src) = dictation_key(&conn);
-            let prompt = dictation_prompt(&conn, &sess);
-            Ok((key, src, prompt))
-        })
+        let keyed = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<(String, &'static str, String)> {
+                let conn = store.read()?;
+                let (key, src) = dictation_key(&conn);
+                let prompt = dictation_prompt(&conn, &sess);
+                Ok((key, src, prompt))
+            },
+        )
         .await;
         let (key, src, prompt) = match keyed {
             Ok(Ok(v)) => v,
@@ -405,7 +457,12 @@ const HISTORY_COLS: &str = "id, session, ts, text, raw_text, prev_text, ai_edite
 pub async fn history(State(state): State<AppState>, Query(p): Query<HistoryParams>) -> Response {
     let sess = p.session.unwrap_or_default();
     // Python: min(int(limit or 200), 500) — no lower clamp (kept as-is).
-    let limit = p.limit.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(200).min(500);
+    let limit = p
+        .limit
+        .as_deref()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(200)
+        .min(500);
     let count_mode = p.count.as_deref().is_some_and(|c| !c.is_empty());
     let store = state.store.clone();
     let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
@@ -425,9 +482,7 @@ pub async fn history(State(state): State<AppState>, Query(p): Query<HistoryParam
         let items = if sess.is_empty() {
             query_rows_json(
                 &conn,
-                &format!(
-                    "SELECT {HISTORY_COLS} FROM dictation_history ORDER BY ts DESC LIMIT ?1"
-                ),
+                &format!("SELECT {HISTORY_COLS} FROM dictation_history ORDER BY ts DESC LIMIT ?1"),
                 &[&limit],
             )?
         } else {
@@ -467,11 +522,18 @@ pub async fn delete_history(State(state): State<AppState>, Path(id): Path<String
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM dictation_history WHERE id=?1", [rid])?;
             let events = if n > 0 {
-                vec![ev("dictation_history", &rid.to_string(), MutationKind::Deleted)]
+                vec![ev(
+                    "dictation_history",
+                    &rid.to_string(),
+                    MutationKind::Deleted,
+                )]
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -505,7 +567,13 @@ pub async fn edit_history(
                 .query_row(
                     "SELECT text, raw_text, prev_text FROM dictation_history WHERE id=?1",
                     [rid],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .map(Some)
                 .or_else(|e| match e {
@@ -525,7 +593,11 @@ pub async fn edit_history(
 
     if is_truthy(body.get("undo")) {
         // Pure-DB undo: `prev_text or raw_text` (Python falsy-string chain).
-        let prev = if prev_text.is_empty() { raw_text } else { prev_text };
+        let prev = if prev_text.is_empty() {
+            raw_text
+        } else {
+            prev_text
+        };
         let prev_w = prev.clone();
         let write = state
             .store
@@ -535,11 +607,18 @@ pub async fn edit_history(
                     rusqlite::params![prev_w, rid],
                 )?;
                 let events = if n > 0 {
-                    vec![ev("dictation_history", &rid.to_string(), MutationKind::Updated)]
+                    vec![ev(
+                        "dictation_history",
+                        &rid.to_string(),
+                        MutationKind::Updated,
+                    )]
                 } else {
                     vec![]
                 };
-                Ok(WriteOutcome { applied: n > 0, events })
+                Ok(WriteOutcome {
+                    applied: n > 0,
+                    events,
+                })
             })
             .await;
         return match write {
@@ -572,7 +651,10 @@ pub async fn edit_history(
         Err(e) => return internal(e),
     };
     if key.is_empty() {
-        return err(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": "no Gemini key configured" }));
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "error": "no Gemini key configured" }),
+        );
     }
     let parts = json!([{ "text": format!(
         "Edit this dictated text per the instruction. Output ONLY the edited text, \
@@ -591,11 +673,18 @@ pub async fn edit_history(
                 rusqlite::params![new_w, old_w, rid],
             )?;
             let events = if n > 0 {
-                vec![ev("dictation_history", &rid.to_string(), MutationKind::Updated)]
+                vec![ev(
+                    "dictation_history",
+                    &rid.to_string(),
+                    MutationKind::Updated,
+                )]
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -632,11 +721,17 @@ enum DictInsert {
 
 pub async fn add_dict(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let word = truncate_chars(
-        body.get("word").and_then(Value::as_str).unwrap_or("").trim(),
+        body.get("word")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim(),
         120,
     );
     let correct = truncate_chars(
-        body.get("correct").and_then(Value::as_str).unwrap_or("").trim(),
+        body.get("correct")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim(),
         120,
     );
     if word.is_empty() {
@@ -665,7 +760,10 @@ pub async fn add_dict(State(state): State<AppState>, Json(body): Json<Value>) ->
                     if e.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
                     *slot_w.lock().expect("slot") = Some(DictInsert::Already);
-                    Ok(WriteOutcome { applied: false, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    })
                 }
                 Err(other) => Err(other),
             }
@@ -694,9 +792,20 @@ pub async fn patch_dict(
     };
     // Python sets BOTH columns from `(body.get(k) or "")` — a missing field
     // blanks the column. Kept identical.
-    let word = truncate_chars(body.get("word").and_then(Value::as_str).unwrap_or("").trim(), 120);
-    let correct =
-        truncate_chars(body.get("correct").and_then(Value::as_str).unwrap_or("").trim(), 120);
+    let word = truncate_chars(
+        body.get("word")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim(),
+        120,
+    );
+    let correct = truncate_chars(
+        body.get("correct")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim(),
+        120,
+    );
     let write = state
         .store
         .write_async(move |conn| {
@@ -705,11 +814,18 @@ pub async fn patch_dict(
                 rusqlite::params![word, correct, did],
             )?;
             let events = if n > 0 {
-                vec![ev("dictation_dict", &did.to_string(), MutationKind::Updated)]
+                vec![ev(
+                    "dictation_dict",
+                    &did.to_string(),
+                    MutationKind::Updated,
+                )]
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -727,11 +843,18 @@ pub async fn delete_dict(State(state): State<AppState>, Path(id): Path<String>) 
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM dictation_dict WHERE id=?1", [did])?;
             let events = if n > 0 {
-                vec![ev("dictation_dict", &did.to_string(), MutationKind::Deleted)]
+                vec![ev(
+                    "dictation_dict",
+                    &did.to_string(),
+                    MutationKind::Deleted,
+                )]
             } else {
                 vec![]
             };
-            Ok(WriteOutcome { applied: n > 0, events })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -758,10 +881,17 @@ use crate::config::amux_home;
 /// are not hermetic under parallel tests).
 fn env_gemini_key() -> String {
     #[cfg(test)]
-    if let Some(v) = tests::GEMINI_KEY_OVERRIDE.lock().expect("key override").clone() {
+    if let Some(v) = tests::GEMINI_KEY_OVERRIDE
+        .lock()
+        .expect("key override")
+        .clone()
+    {
         return v;
     }
-    std::env::var("GOOGLE_API_KEY").unwrap_or_default().trim().to_string()
+    std::env::var("GOOGLE_API_KEY")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// py:27226 `_dictation_key` — (key, source). BYO key from prefs wins
@@ -769,7 +899,11 @@ fn env_gemini_key() -> String {
 /// the server's env key.
 fn dictation_key(conn: &rusqlite::Connection) -> (String, &'static str) {
     let byo: Option<String> = conn
-        .query_row("SELECT value FROM prefs WHERE key='dictation_gemini_key'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM prefs WHERE key='dictation_gemini_key'",
+            [],
+            |r| r.get(0),
+        )
         .ok();
     if let Some(k) = byo {
         let k = k.trim().to_string();
@@ -800,10 +934,16 @@ fn dictation_vocab(conn: &rusqlite::Connection) -> String {
     }
     let mut out: Vec<String> = Vec::new();
     if !terms.is_empty() {
-        out.push(format!("Spell these terms EXACTLY as written: {}", terms.join(", ")));
+        out.push(format!(
+            "Spell these terms EXACTLY as written: {}",
+            terms.join(", ")
+        ));
     }
     if !fixes.is_empty() {
-        out.push(format!("Always apply these corrections: {}", fixes.join("; ")));
+        out.push(format!(
+            "Always apply these corrections: {}",
+            fixes.join("; ")
+        ));
     }
     out.join("\n")
 }
@@ -872,7 +1012,11 @@ fn b64_decode_lenient(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
 
 fn gemini_base() -> String {
     #[cfg(test)]
-    if let Some(v) = tests::GEMINI_BASE_OVERRIDE.lock().expect("gemini base override").clone() {
+    if let Some(v) = tests::GEMINI_BASE_OVERRIDE
+        .lock()
+        .expect("gemini base override")
+        .clone()
+    {
         return v;
     }
     "https://generativelanguage.googleapis.com".into()
@@ -893,7 +1037,12 @@ async fn gemini_generate(key: &str, parts: Value, timeout_s: u64) -> (String, St
         .build()
     {
         Ok(c) => c,
-        Err(e) => return (String::new(), format!("gemini error: {}", truncate_chars(&e.to_string(), 200))),
+        Err(e) => {
+            return (
+                String::new(),
+                format!("gemini error: {}", truncate_chars(&e.to_string(), 200)),
+            )
+        }
     };
     let body = json!({ "contents": [{ "parts": parts }] }).to_string();
     let resp = client
@@ -904,7 +1053,12 @@ async fn gemini_generate(key: &str, parts: Value, timeout_s: u64) -> (String, St
         .await;
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return (String::new(), format!("gemini error: {}", truncate_chars(&e.to_string(), 200))),
+        Err(e) => {
+            return (
+                String::new(),
+                format!("gemini error: {}", truncate_chars(&e.to_string(), 200)),
+            )
+        }
     };
     let status = resp.status();
     let bytes = resp.bytes().await.unwrap_or_default();
@@ -918,16 +1072,31 @@ async fn gemini_generate(key: &str, parts: Value, timeout_s: u64) -> (String, St
                     .map(|s| truncate_chars(s, 200))
             })
             .unwrap_or_default();
-        let detail = if detail.is_empty() { "request failed".to_string() } else { detail };
-        return (String::new(), format!("gemini {}: {}", status.as_u16(), detail));
+        let detail = if detail.is_empty() {
+            "request failed".to_string()
+        } else {
+            detail
+        };
+        return (
+            String::new(),
+            format!("gemini {}: {}", status.as_u16(), detail),
+        );
     }
     let d: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
-        Err(e) => return (String::new(), format!("gemini error: {}", truncate_chars(&e.to_string(), 200))),
+        Err(e) => {
+            return (
+                String::new(),
+                format!("gemini error: {}", truncate_chars(&e.to_string(), 200)),
+            )
+        }
     };
     let cands = d.get("candidates").and_then(Value::as_array);
     let Some(first) = cands.and_then(|c| c.first()) else {
-        return (String::new(), "no transcription returned (audio may be silent)".into());
+        return (
+            String::new(),
+            "no transcription returned (audio may be silent)".into(),
+        );
     };
     let text = first
         .get("content")
@@ -971,7 +1140,10 @@ for line in sys.stdin:
 "#;
 
 fn whisper_model_name() -> String {
-    std::env::var("AMUX_WHISPER_MODEL").unwrap_or_else(|_| "base".into()).trim().to_string()
+    std::env::var("AMUX_WHISPER_MODEL")
+        .unwrap_or_else(|_| "base".into())
+        .trim()
+        .to_string()
 }
 
 /// py:27324 `_whisper_weights_path` — local weights file, or None. Checked
@@ -987,7 +1159,10 @@ fn whisper_model_name() -> String {
 /// Gemini. The cache stays a fallback so a host that only has the old copy
 /// keeps working.
 fn whisper_weights_path(name: &str) -> Option<PathBuf> {
-    whisper_weights_in(&PathBuf::from(std::env::var("HOME").unwrap_or_default()), name)
+    whisper_weights_in(
+        &PathBuf::from(std::env::var("HOME").unwrap_or_default()),
+        name,
+    )
 }
 
 fn whisper_weights_in(home: &std::path::Path, name: &str) -> Option<PathBuf> {
@@ -1007,7 +1182,11 @@ fn whisper_weights_dir() -> String {
 
 /// Run `cmd` with args, killed after `timeout` — std::process has no
 /// native timeout and the import probe must never wedge startup.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Option<std::process::ExitStatus> {
+fn run_with_timeout(
+    cmd: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
     let mut child = std::process::Command::new(cmd)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -1116,8 +1295,10 @@ struct WhisperState {
     failed: bool,
 }
 
-static WHISPER: tokio::sync::Mutex<WhisperState> =
-    tokio::sync::Mutex::const_new(WhisperState { worker: None, failed: false });
+static WHISPER: tokio::sync::Mutex<WhisperState> = tokio::sync::Mutex::const_new(WhisperState {
+    worker: None,
+    failed: false,
+});
 
 /// py:27362 `_whisper_available` — same checks, same order (weights before
 /// interpreter discovery so hosts without models short-circuit cheaply).
@@ -1165,7 +1346,10 @@ async fn whisper_available() -> bool {
 /// loading costs 0.6-2.6s, paying it per request would erase the latency
 /// win the local path exists for). Called with the WHISPER lock held.
 async fn whisper_start(st: &mut WhisperState) {
-    let py = tokio::task::spawn_blocking(whisper_python_blocking).await.ok().flatten();
+    let py = tokio::task::spawn_blocking(whisper_python_blocking)
+        .await
+        .ok()
+        .flatten();
     let Some(py) = py else { return };
     let spawned = tokio::process::Command::new(&py)
         .args(["-u", "-c", WHISPER_WORKER_PY])
@@ -1204,8 +1388,11 @@ async fn whisper_start(st: &mut WhisperState) {
             while let Ok(Some(l)) = lines.next_line().await {
                 let l = l.trim();
                 if !l.is_empty() {
-                    tracing::warn!(verdict = "dictation_whisper_stderr", "[dictation] whisper worker: {}",
-                                   truncate_chars(l, 300));
+                    tracing::warn!(
+                        verdict = "dictation_whisper_stderr",
+                        "[dictation] whisper worker: {}",
+                        truncate_chars(l, 300)
+                    );
                 }
             }
         });
@@ -1219,7 +1406,10 @@ async fn whisper_start(st: &mut WhisperState) {
     if !ok {
         let _ = child.start_kill();
         st.failed = true;
-        tracing::warn!("[dictation] whisper worker failed to start: {}", truncate_chars(line.trim(), 160));
+        tracing::warn!(
+            "[dictation] whisper worker failed to start: {}",
+            truncate_chars(line.trim(), 160)
+        );
         return;
     }
     tracing::info!(
@@ -1227,7 +1417,11 @@ async fn whisper_start(st: &mut WhisperState) {
         whisper_model_name(),
         whisper_weights_dir()
     );
-    st.worker = Some(WhisperWorker { child, stdin, stdout });
+    st.worker = Some(WhisperWorker {
+        child,
+        stdin,
+        stdout,
+    });
 }
 
 /// py:27400 `_whisper_transcribe` — (text, err) from the warm local worker.
@@ -1304,7 +1498,10 @@ async fn whisper_transcribe(raw: &[u8], mime: &str) -> (String, String) {
     }
     let wrote = {
         let w = st.worker.as_mut().expect("worker present");
-        w.stdin.write_all(format!("{path}\n").as_bytes()).await.is_ok()
+        w.stdin
+            .write_all(format!("{path}\n").as_bytes())
+            .await
+            .is_ok()
             && w.stdin.flush().await.is_ok()
     };
     if !wrote {
@@ -1324,7 +1521,11 @@ async fn whisper_transcribe(raw: &[u8], mime: &str) -> (String, String) {
     match read {
         Ok(Ok(n)) if n > 0 => {
             let d: Value = serde_json::from_str(&line).unwrap_or_else(|_| json!({}));
-            let text = d.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = d
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let err = d
                 .get("error")
                 .and_then(Value::as_str)
@@ -1357,8 +1558,8 @@ const DN_STOP: &[&str] = &[
     "get", "go", "had", "has", "have", "he", "her", "him", "his", "how", "i", "if", "in", "is",
     "it", "its", "me", "my", "no", "not", "of", "on", "or", "our", "out", "ping", "put", "say",
     "see", "she", "so", "tell", "than", "that", "the", "then", "there", "they", "this", "to",
-    "try", "up", "us", "was", "we", "what", "when", "where", "which", "who", "why", "will",
-    "with", "you", "your",
+    "try", "up", "us", "was", "we", "what", "when", "where", "which", "who", "why", "will", "with",
+    "you", "your",
 ];
 
 /// py `_DN_SUB` — order matters; the replacements are sequential.
@@ -1402,7 +1603,10 @@ fn dn_phon(x: &str) -> String {
         }
         prev = Some(c);
     }
-    collapsed.chars().filter(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u')).collect()
+    collapsed
+        .chars()
+        .filter(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+        .collect()
 }
 
 /// difflib `SequenceMatcher` total matching characters — the exact CPython
@@ -1431,7 +1635,11 @@ fn sm_matches(a: &[u8], b: &[u8]) -> usize {
                     if j >= bhi {
                         break; // js is ascending
                     }
-                    let k = if j > 0 { j2len.get(&(j - 1)).copied().unwrap_or(0) + 1 } else { 1 };
+                    let k = if j > 0 {
+                        j2len.get(&(j - 1)).copied().unwrap_or(0) + 1
+                    } else {
+                        1
+                    };
                     new_j2len.insert(j, k);
                     if k > bestsize {
                         besti = i + 1 - k;
@@ -1506,7 +1714,11 @@ fn dict_target_names(conn: &rusqlite::Connection) -> Vec<String> {
             stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         {
             for (word, correct) in rows.flatten() {
-                let w = if correct.trim().is_empty() { word } else { correct };
+                let w = if correct.trim().is_empty() {
+                    word
+                } else {
+                    correct
+                };
                 let w = w.trim().to_string();
                 if !w.is_empty() {
                     names.push(w);
@@ -1660,11 +1872,12 @@ pub async fn config(State(state): State<AppState>, req: Request) -> Response {
     match *req.method() {
         axum::http::Method::GET => {
             let store = state.store.clone();
-            let keyed = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, &'static str)> {
-                let conn = store.read()?;
-                Ok(dictation_key(&conn))
-            })
-            .await;
+            let keyed =
+                tokio::task::spawn_blocking(move || -> anyhow::Result<(String, &'static str)> {
+                    let conn = store.read()?;
+                    Ok(dictation_key(&conn))
+                })
+                .await;
             let (key, src) = match keyed {
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => return internal(e),
@@ -1678,7 +1891,14 @@ pub async fn config(State(state): State<AppState>, req: Request) -> Response {
                     ("source", json!(if key.is_empty() { "none" } else { src })),
                     ("model", json!(dictation_model())),
                     ("local", json!(local)),
-                    ("local_model", json!(if local { whisper_model_name() } else { String::new() })),
+                    (
+                        "local_model",
+                        json!(if local {
+                            whisper_model_name()
+                        } else {
+                            String::new()
+                        }),
+                    ),
                     ("engine", json!(if local { "whisper" } else { "gemini" })),
                 ],
             )
@@ -1689,7 +1909,12 @@ pub async fn config(State(state): State<AppState>, req: Request) -> Response {
                 Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e.to_string() })),
             };
             let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-            let k = body.get("key").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let k = body
+                .get("key")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let k_w = k.clone();
             let write = state
                 .store
@@ -1718,11 +1943,12 @@ pub async fn config(State(state): State<AppState>, req: Request) -> Response {
                 return internal(e);
             }
             let store = state.store.clone();
-            let keyed = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, &'static str)> {
-                let conn = store.read()?;
-                Ok(dictation_key(&conn))
-            })
-            .await;
+            let keyed =
+                tokio::task::spawn_blocking(move || -> anyhow::Result<(String, &'static str)> {
+                    let conn = store.read()?;
+                    Ok(dictation_key(&conn))
+                })
+                .await;
             match keyed {
                 Ok(Ok((k2, src2))) => py_json_response(
                     StatusCode::OK,
@@ -1838,11 +2064,17 @@ pub(crate) mod tests {
         let cache = home.path().join(".cache/whisper");
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("base.pt"), b"w").unwrap();
-        assert_eq!(super::whisper_weights_in(home.path(), "base"), Some(cache.join("base.pt")));
+        assert_eq!(
+            super::whisper_weights_in(home.path(), "base"),
+            Some(cache.join("base.pt"))
+        );
         let models = home.path().join(".amux/models/whisper");
         std::fs::create_dir_all(&models).unwrap();
         std::fs::write(models.join("base.pt"), b"w").unwrap();
-        assert_eq!(super::whisper_weights_in(home.path(), "base"), Some(models.join("base.pt")));
+        assert_eq!(
+            super::whisper_weights_in(home.path(), "base"),
+            Some(models.join("base.pt"))
+        );
         assert_eq!(super::whisper_weights_in(home.path(), "small"), None);
     }
 
@@ -1854,7 +2086,7 @@ pub(crate) mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let router = Router::new()
             .nest("/api/dictation", routes())
@@ -1879,7 +2111,9 @@ pub(crate) mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
@@ -1935,7 +2169,13 @@ pub(crate) mod tests {
         // count mode: one integer, no transcript payload.
         let (_, c) = send(&app, "GET", "/api/dictation/history?count=1", None).await;
         assert_eq!(c, json!({ "count": 2 }));
-        let (_, c2) = send(&app, "GET", "/api/dictation/history?count=1&session=orch", None).await;
+        let (_, c2) = send(
+            &app,
+            "GET",
+            "/api/dictation/history?count=1&session=orch",
+            None,
+        )
+        .await;
         assert_eq!(c2, json!({ "count": 1 }));
 
         // limit applies.
@@ -1944,7 +2184,13 @@ pub(crate) mod tests {
 
         // DELETE — ok, row gone.
         let id = items[1]["id"].as_i64().unwrap();
-        let (st, r) = send(&app, "DELETE", &format!("/api/dictation/history/{id}"), None).await;
+        let (st, r) = send(
+            &app,
+            "DELETE",
+            &format!("/api/dictation/history/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(r["ok"], json!(true));
         let (_, after) = send(&app, "GET", "/api/dictation/history?count=1", None).await;
@@ -1966,7 +2212,10 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{r}");
-        assert_eq!(r, json!({ "ok": true, "text": "cleaner text before", "ai_edited": 0 }));
+        assert_eq!(
+            r,
+            json!({ "ok": true, "text": "cleaner text before", "ai_edited": 0 })
+        );
         let (_, v2) = send(&app, "GET", "/api/dictation/history", None).await;
         assert_eq!(v2["items"][0]["text"], json!("cleaner text before"));
         assert_eq!(v2["items"][0]["ai_edited"], json!(0));
@@ -2022,9 +2271,19 @@ pub(crate) mod tests {
 
         // The Gemini call carries the model route, the key, and Python's
         // exact edit prompt wrapping the instruction and the OLD text.
-        let seen = log.lock().unwrap().first().cloned().expect("edit reached fake gemini");
+        let seen = log
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("edit reached fake gemini");
         assert_eq!(seen.method, "POST");
-        assert!(seen.path_and_query.contains(":generateContent?key=test-key"), "{}", seen.path_and_query);
+        assert!(
+            seen.path_and_query
+                .contains(":generateContent?key=test-key"),
+            "{}",
+            seen.path_and_query
+        );
         let sent: Value = serde_json::from_slice(&seen.body).unwrap();
         let prompt = sent["contents"][0]["parts"][0]["text"].as_str().unwrap();
         assert!(prompt.starts_with(
@@ -2058,7 +2317,11 @@ pub(crate) mod tests {
         .await;
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert_eq!(e["error"], json!("not found"));
-        assert_eq!(log.lock().unwrap().len(), 1, "404 + undo made no Gemini calls");
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "404 + undo made no Gemini calls"
+        );
         set_overrides(None, None, None);
     }
 
@@ -2120,7 +2383,13 @@ pub(crate) mod tests {
         assert_eq!(dup, json!({ "ok": true, "already": true }));
 
         // word required.
-        let (st, e) = send(&app, "POST", "/api/dictation/dict", Some(json!({ "correct": "x" }))).await;
+        let (st, e) = send(
+            &app,
+            "POST",
+            "/api/dictation/dict",
+            Some(json!({ "correct": "x" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(e["error"], json!("word required"));
 
@@ -2146,7 +2415,13 @@ pub(crate) mod tests {
         assert_eq!(patched["correct"], json!(""));
 
         // DELETE.
-        let (st, r) = send(&app, "DELETE", &format!("/api/dictation/dict/{new_id}"), None).await;
+        let (st, r) = send(
+            &app,
+            "DELETE",
+            &format!("/api/dictation/dict/{new_id}"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(r["ok"], json!(true));
         let (_, list3) = send(&app, "GET", "/api/dictation/dict", None).await;
@@ -2164,12 +2439,22 @@ pub(crate) mod tests {
         // `{"configured": true, "source": "server", ...}`).
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/api/dictation/config").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/dictation/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        assert!(res.headers().get("x-amux-answered-by").is_none(), "must answer natively");
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            res.headers().get("x-amux-answered-by").is_none(),
+            "must answer natively"
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let expected = format!(
             "{{\"configured\": false, \"source\": \"none\", \"model\": {m}, \
              \"local\": false, \"local_model\": \"\", \"engine\": \"gemini\"}}",
@@ -2186,15 +2471,30 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{r}");
-        assert_eq!(r, json!({ "ok": true, "configured": true, "source": "byo" }));
+        assert_eq!(
+            r,
+            json!({ "ok": true, "configured": true, "source": "byo" })
+        );
         let (_, c) = send(&app, "GET", "/api/dictation/config", None).await;
         assert_eq!(c["configured"], json!(true));
         assert_eq!(c["source"], json!("byo"));
-        assert!(!c.to_string().contains("byo-secret-1"), "key must never be returned");
+        assert!(
+            !c.to_string().contains("byo-secret-1"),
+            "key must never be returned"
+        );
 
         // Clearing the key falls back to the (absent) env key.
-        let (_, r) = send(&app, "POST", "/api/dictation/config", Some(json!({ "key": "" }))).await;
-        assert_eq!(r, json!({ "ok": true, "configured": false, "source": "none" }));
+        let (_, r) = send(
+            &app,
+            "POST",
+            "/api/dictation/config",
+            Some(json!({ "key": "" })),
+        )
+        .await;
+        assert_eq!(
+            r,
+            json!({ "ok": true, "configured": false, "source": "none" })
+        );
 
         // Local engine present -> whisper reported, with the model name.
         set_overrides(Some(true), Some(""), None);
@@ -2225,8 +2525,11 @@ pub(crate) mod tests {
         // Whitespace is not speech either; the old check was `!t.is_empty()`,
         // which would have called a single newline a successful transcription.
         assert_eq!(read_local_result("   \n ", ""), LocalResult::NoSpeech);
-        assert_eq!(read_local_result("", "   "), LocalResult::NoSpeech,
-            "a blank error is no error; it must not read as a failure to escalate");
+        assert_eq!(
+            read_local_result("", "   "),
+            LocalResult::NoSpeech,
+            "a blank error is no error; it must not read as a failure to escalate"
+        );
 
         // A REAL failure still escalates, and carries its cause. "local
         // transcribe failed ()" naming nothing is what this replaces.
@@ -2329,12 +2632,26 @@ pub(crate) mod tests {
         assert_eq!(r["engine"], json!("gemini"));
         assert!(r["id"].as_i64().unwrap() > 0);
         assert!(r["secs"].is_number());
-        let seen = log.lock().unwrap().first().cloned().expect("reached fake gemini");
+        let seen = log
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("reached fake gemini");
         let sent: Value = serde_json::from_slice(&seen.body).unwrap();
         let prompt = sent["contents"][0]["parts"][0]["text"].as_str().unwrap();
-        assert!(prompt.ends_with("Transcribe and clean this dictation:"), "{prompt}");
-        assert_eq!(sent["contents"][0]["parts"][1]["inline_data"]["mime_type"], json!("audio/wav"));
-        assert_eq!(sent["contents"][0]["parts"][1]["inline_data"]["data"], json!(audio));
+        assert!(
+            prompt.ends_with("Transcribe and clean this dictation:"),
+            "{prompt}"
+        );
+        assert_eq!(
+            sent["contents"][0]["parts"][1]["inline_data"]["mime_type"],
+            json!("audio/wav")
+        );
+        assert_eq!(
+            sent["contents"][0]["parts"][1]["inline_data"]["data"],
+            json!(audio)
+        );
 
         // RAW binary shape (preferred by the SPA): query params carry the
         // metadata; the body is the audio itself.
@@ -2351,7 +2668,9 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let r2: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(r2["engine"], json!("gemini"));
 
@@ -2360,7 +2679,13 @@ pub(crate) mod tests {
         let (_, h) = send(&app, "GET", "/api/dictation/history", None).await;
         let items = h["items"].as_array().unwrap();
         assert_eq!(items.len(), 2);
-        let by_sess = |s: &str| items.iter().find(|i| i["session"] == json!(s)).cloned().unwrap();
+        let by_sess = |s: &str| {
+            items
+                .iter()
+                .find(|i| i["session"] == json!(s))
+                .cloned()
+                .unwrap()
+        };
         let orch = by_sess("orch");
         assert_eq!(orch["dur_ms"], json!(1200));
         assert_eq!(orch["raw_text"], json!("testing one two three"));
@@ -2406,7 +2731,11 @@ pub(crate) mod tests {
             ("mixbeak", "mixpeek", 0.7142857142857143),
             ("kbd", "abcdefg", 0.4),
         ] {
-            assert!((sm_ratio(a, b) - want).abs() < 1e-12, "ratio({a},{b}) = {} != {want}", sm_ratio(a, b));
+            assert!(
+                (sm_ratio(a, b) - want).abs() < 1e-12,
+                "ratio({a},{b}) = {} != {want}",
+                sm_ratio(a, b)
+            );
         }
     }
 
@@ -2430,25 +2759,38 @@ pub(crate) mod tests {
         let targets = ref_targets();
         for (input, want) in [
             // Whisper's classic manglings, from the Python benchmark.
-            ("send this to T-S-G-K-E please", "send this to ts-gke please"),
+            (
+                "send this to T-S-G-K-E please",
+                "send this to ts-gke please",
+            ),
             ("restart MBS Infra now", "restart mvs-infra now"),
             // "tell" is a stop word: the span guard protects it while the
             // single-word span still fixes the name (phonetic path).
             ("tell Mixbeak to deploy", "tell mixpeek to deploy"),
             // Multi-word span + Python's punctuation quirk (the comma sits
             // inside the replaced core and is dropped) — kept bug-for-bug.
-            ("check amux cloud, then report", "check amux-cloud then report"),
+            (
+                "check amux cloud, then report",
+                "check amux-cloud then report",
+            ),
             ("Mix peek is down!", "mixpeek is down!"),
             // Ordinary prose is left alone.
             ("the board is fine", "the board is fine"),
         ] {
-            assert_eq!(fix_names_with_targets(input, &targets, 0.86), want, "input: {input}");
+            assert_eq!(
+                fix_names_with_targets(input, &targets, 0.86),
+                want,
+                "input: {input}"
+            );
         }
         // Live-wire specimen (2026-08-09 e2e): whisper's raw "Testing 123."
         // for a `say` clip; BOTH origins rewrote it to the fleet's
         // `load-testing` session, byte-identically, once the target existed.
         let t = targets_from_names(["load-testing".to_string()]);
-        assert_eq!(fix_names_with_targets("Testing 123.", &t, 0.86), "load-testing 123.");
+        assert_eq!(
+            fix_names_with_targets("Testing 123.", &t, 0.86),
+            "load-testing 123."
+        );
     }
 
     #[tokio::test]
@@ -2474,11 +2816,17 @@ pub(crate) mod tests {
         // uppercase first) — the query has no ORDER BY, on either origin,
         // and sqlite serves it from the covering index the same way for
         // Python's sqlite3. Order only breaks dedupe ties.
-        assert_eq!(names, vec!["Cloudflare".to_string(), "amux".into(), "cf".into()]);
+        assert_eq!(
+            names,
+            vec!["Cloudflare".to_string(), "amux".into(), "cf".into()]
+        );
         let targets = targets_from_names(names);
         // "cf" is dropped (normalized length < 4); the rest carry norm+phon.
         assert_eq!(
-            targets.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>(),
+            targets
+                .iter()
+                .map(|(n, _, _)| n.as_str())
+                .collect::<Vec<_>>(),
             vec!["Cloudflare", "amux"]
         );
         // And the dict-fed target drives recovery, exactly as in Python.

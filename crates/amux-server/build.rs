@@ -13,16 +13,32 @@
 //   this fails SOFT to "unknown": presence/absence of .git drives the
 //   difference, never a build flag (single-codebase rule).
 fn main() {
-    let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("server manifest directory")).join("../..");
+    let root = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("server manifest directory"),
+    )
+    .join("../..");
     println!("cargo:rerun-if-changed={}", root.join("crates").display());
-    println!("cargo:rerun-if-changed={}", root.join("Cargo.toml").display());
-    println!("cargo:rerun-if-changed={}", root.join("Cargo.lock").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("Cargo.toml").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("Cargo.lock").display()
+    );
     let git = |args: &[&str]| -> Option<String> {
         // Pathspecs below are repository-relative. Running from this crate's
         // directory silently inspected nonexistent crates/crates and called
         // a dirty binary clean.
-        let o = std::process::Command::new("git").arg("-C").arg(&root).args(args).output().ok()?;
-        o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .ok()?;
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
     // Linked worktrees store .git as a FILE. Resolve metadata through Git;
     // watching root/.git/HEAD there tells Cargo to rebuild forever because that
@@ -52,14 +68,23 @@ fn main() {
     let mut sha = git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_default();
     if sha.is_empty() {
         sha = "unknown".into();
-    } else if git(&["status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
+    } else if git(&[
+        "status",
+        "--porcelain",
+        "--",
+        "crates",
+        "Cargo.toml",
+        "Cargo.lock",
+    ])
+    .map(|s| !s.is_empty())
+    .unwrap_or(false)
     {
         sha.push_str("-dirty");
     }
     let mut full = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    if sha.ends_with("-dirty") { full.push_str("-dirty"); }
+    if sha.ends_with("-dirty") {
+        full.push_str("-dirty");
+    }
     println!("cargo:rustc-env=AMUX_BUILD_COMMIT_FULL={full}");
     println!("cargo:rustc-env=AMUX_BUILD_COMMIT={sha}");
 }

@@ -200,7 +200,10 @@ pub fn has_real_page(targets: &[serde_json::Value]) -> bool {
         if t.get("type").and_then(serde_json::Value::as_str) != Some("page") {
             return false;
         }
-        let u = t.get("url").and_then(serde_json::Value::as_str).unwrap_or("");
+        let u = t
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         !(u.is_empty() || u == "about:blank" || u.starts_with("chrome://"))
     })
 }
@@ -259,7 +262,13 @@ pub async fn reap_stale_profiles(home: &std::path::Path) -> Vec<String> {
     let mut removed = vec![];
     for p in crate::integrations::browser::list_profiles(home, false) {
         let age_days = p.last_used.map(|lu| (now - lu as f64) / 86_400.0);
-        if !should_reap_profile(&p.name, p.registered, running.contains(&p.name), age_days, ttl) {
+        if !should_reap_profile(
+            &p.name,
+            p.registered,
+            running.contains(&p.name),
+            age_days,
+            ttl,
+        ) {
             continue;
         }
         match crate::integrations::browser::delete_profile(home, &p.name) {
@@ -281,7 +290,6 @@ pub async fn reap_stale_profiles(home: &std::path::Path) -> Vec<String> {
     removed
 }
 
-
 /// Why a browser was released. One variant per arm of `tick`, so the notice
 /// cannot drift from the reason the log line gives.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -297,7 +305,10 @@ pub enum ReapReason {
 impl ReapReason {
     fn sentence(&self) -> String {
         match *self {
-            ReapReason::NoActivity { since_verb_s, window_s } => format!(
+            ReapReason::NoActivity {
+                since_verb_s,
+                window_s,
+            } => format!(
                 "nothing had driven it for {}min (the activity window is {}min)",
                 since_verb_s / 60,
                 window_s / 60
@@ -375,7 +386,11 @@ async fn notify_owner_of_reap(
     }
     let text = reap_notice(profile, reason);
     match crate::api::session_verbs::steer_enqueue_store(
-        store, owner, &text, "browser-reaper", "browser-reaper",
+        store,
+        owner,
+        &text,
+        "browser-reaper",
+        "browser-reaper",
     )
     .await
     {
@@ -401,8 +416,13 @@ async fn tick(home: &std::path::Path, store: Option<&crate::db::SharedStore>) ->
     tick_with_limits(home, store, reap_after_s(), activity_reap_s(), ttl_s()).await
 }
 
-async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::SharedStore>,
-    after_s: u64, activity_ttl: u64, ttl: u64) -> Vec<String> {
+async fn tick_with_limits(
+    home: &std::path::Path,
+    store: Option<&crate::db::SharedStore>,
+    after_s: u64,
+    activity_ttl: u64,
+    ttl: u64,
+) -> Vec<String> {
     let mut reaped = vec![];
     let now = now_f64();
     // `None` when the process never recorded a boot (tests), which the log line
@@ -411,7 +431,9 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
     let boot = crate::runtime_jobs::heartbeat::boot_at();
     let prior = read_idle(home);
     let mut next: HashMap<String, f64> = HashMap::new();
-    for (profile, owner, started, _pid, port, last_verb) in crate::integrations::browser::running_all() {
+    for (profile, owner, started, _pid, port, last_verb) in
+        crate::integrations::browser::running_all()
+    {
         // ACTIVITY ARM: no verb for N seconds = abandoned, release it. Checked
         // before the page-presence arms because it fires fastest and the reason
         // is the most actionable ("nobody is driving this") not just "it is old".
@@ -424,12 +446,18 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
                     "browser: no activity for the whole window — releasing \
                      (AMUX_BROWSER_ACTIVITY_REAP_S). Logins survive on disk."
                 );
-                crate::integrations::browser::stop_profile_as(home, &profile, "activity-reaper").await;
+                crate::integrations::browser::stop_profile_as(home, &profile, "activity-reaper")
+                    .await;
                 if let Some(st) = store {
-                    notify_owner_of_reap(st, &owner, &profile, ReapReason::NoActivity {
-                        since_verb_s: since_verb as i64,
-                        window_s: activity_ttl,
-                    })
+                    notify_owner_of_reap(
+                        st,
+                        &owner,
+                        &profile,
+                        ReapReason::NoActivity {
+                            since_verb_s: since_verb as i64,
+                            window_s: activity_ttl,
+                        },
+                    )
                     .await;
                 }
                 next.remove(&profile);
@@ -450,10 +478,15 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
             );
             crate::integrations::browser::stop_profile_as(home, &profile, "ttl-reaper").await;
             if let Some(st) = store {
-                notify_owner_of_reap(st, &owner, &profile, ReapReason::Ttl {
-                    age_s: age_s as i64,
-                    ttl_s: ttl,
-                })
+                notify_owner_of_reap(
+                    st,
+                    &owner,
+                    &profile,
+                    ReapReason::Ttl {
+                        age_s: age_s as i64,
+                        ttl_s: ttl,
+                    },
+                )
                 .await;
             }
             next.remove(&profile);
@@ -461,7 +494,9 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
             continue;
         }
         // Disabling continuous-empty expiry must not disable the two age limits.
-        if after_s == 0 { continue; }
+        if after_s == 0 {
+            continue;
+        }
         // CDP SILENCE IS NOT EMPTINESS. A browser that will not answer is left
         // alone: killing it would turn a transient wedge into a destroyed
         // session, and this job's whole safety argument rests on knowing there
@@ -470,7 +505,10 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
         let Ok(listed) = crate::integrations::browser::cdp_list(port).await else {
             continue;
         };
-        let empty = listed.as_array().map(|a| !has_real_page(a)).unwrap_or(false);
+        let empty = listed
+            .as_array()
+            .map(|a| !has_real_page(a))
+            .unwrap_or(false);
         if !empty {
             // One real page anywhere resets the clock: the entry is simply not
             // carried into `next`, which is written back at the end.
@@ -496,10 +534,15 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
         // that vanished with nothing on record cost two sessions a morning.
         crate::integrations::browser::stop_profile_as(home, &profile, "idle-reaper").await;
         if let Some(st) = store {
-            notify_owner_of_reap(st, &owner, &profile, ReapReason::Idle {
-                idle_s: idle_s as i64,
-                window_s: after_s,
-            })
+            notify_owner_of_reap(
+                st,
+                &owner,
+                &profile,
+                ReapReason::Idle {
+                    idle_s: idle_s as i64,
+                    window_s: after_s,
+                },
+            )
             .await;
         }
         next.remove(&profile);
@@ -519,7 +562,10 @@ async fn tick_with_limits(home: &std::path::Path, store: Option<&crate::db::Shar
 /// memory, so a reaper that could never fire looked identical to one that was
 /// about to.
 pub fn idle_ages(home: &std::path::Path, now: f64) -> HashMap<String, f64> {
-    read_idle(home).into_iter().map(|(k, t)| (k, (now - t).max(0.0))).collect()
+    read_idle(home)
+        .into_iter()
+        .map(|(k, t)| (k, (now - t).max(0.0)))
+        .collect()
 }
 
 /// Spawn the loop, registered so a dead reaper is visible on
@@ -572,7 +618,10 @@ mod tests {
         // and this test deliberately does not take HomeGuard (see below), so a
         // fleet lane sharing the old literal name ("gtm-engine", paused on the
         // amux host since 2026-09-14) made this fail on that host and pass in CI.
-        let owner = format!("reaper-notice-{}", ulid::Ulid::new().to_string().to_lowercase());
+        let owner = format!(
+            "reaper-notice-{}",
+            ulid::Ulid::new().to_string().to_lowercase()
+        );
 
         // Prove the target exists through the durable worker row that the
         // enqueue chokepoint already understands. Do not take HomeGuard here:
@@ -620,11 +669,17 @@ mod tests {
             reaped
         })
         .await;
-        assert_eq!(reaped, vec!["hubspot".to_string()], "the activity arm did not fire");
+        assert_eq!(
+            reaped,
+            vec!["hubspot".to_string()],
+            "the activity arm did not fire"
+        );
 
         let rows: Vec<(String, String)> = {
             let conn = store.read().unwrap();
-            let mut st = conn.prepare("SELECT session, text FROM steering_queue").unwrap();
+            let mut st = conn
+                .prepare("SELECT session, text FROM steering_queue")
+                .unwrap();
             let out = st
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
                 .unwrap()
@@ -636,12 +691,12 @@ mod tests {
         crate::integrations::browser::test_seed_running_port("ttl-only", &owner, u32::MAX, 1);
         let expired = crate::integrations::browser::test_with_kill_capture(async {
             tick_with_limits(home.path(), Some(&store), 0, 0, 1).await
-        }).await;
+        })
+        .await;
         assert_eq!(expired, vec!["ttl-only".to_string()]);
         crate::integrations::browser::test_clear_running();
 
-        let mine: Vec<&(String, String)> =
-            rows.iter().filter(|(s, _)| *s == owner).collect();
+        let mine: Vec<&(String, String)> = rows.iter().filter(|(s, _)| *s == owner).collect();
         assert_eq!(
             mine.len(),
             1,
@@ -661,9 +716,18 @@ mod tests {
     /// and amux has no channel to them.
     #[test]
     fn the_notice_names_the_profile_the_reason_and_asks_the_lane_to_tell_the_person() {
-        let n = reap_notice("hubspot", ReapReason::Idle { idle_s: 1800, window_s: 900 });
+        let n = reap_notice(
+            "hubspot",
+            ReapReason::Idle {
+                idle_s: 1800,
+                window_s: 900,
+            },
+        );
         assert!(n.contains("hubspot"), "the profile is not named: {n}");
-        assert!(n.contains("no page open for 30min"), "the reason is not stated: {n}");
+        assert!(
+            n.contains("no page open for 30min"),
+            "the reason is not stated: {n}"
+        );
         assert!(
             n.contains("IF A PERSON WAS USING THAT WINDOW, TELL THEM"),
             "the notice never asks the lane to pass it on, which is the whole gap: {n}"
@@ -675,13 +739,28 @@ mod tests {
     #[test]
     fn the_notice_says_the_logins_survived() {
         for r in [
-            ReapReason::Idle { idle_s: 900, window_s: 900 },
-            ReapReason::Ttl { age_s: 7200, ttl_s: 3600 },
-            ReapReason::NoActivity { since_verb_s: 600, window_s: 600 },
+            ReapReason::Idle {
+                idle_s: 900,
+                window_s: 900,
+            },
+            ReapReason::Ttl {
+                age_s: 7200,
+                ttl_s: 3600,
+            },
+            ReapReason::NoActivity {
+                since_verb_s: 600,
+                window_s: 600,
+            },
         ] {
             let n = reap_notice("default", r);
-            assert!(n.contains("survive"), "no reassurance about saved state in {r:?}: {n}");
-            assert!(n.contains("/api/browser/start"), "no way back in {r:?}: {n}");
+            assert!(
+                n.contains("survive"),
+                "no reassurance about saved state in {r:?}: {n}"
+            );
+            assert!(
+                n.contains("/api/browser/start"),
+                "no way back in {r:?}: {n}"
+            );
         }
     }
 
@@ -691,9 +770,27 @@ mod tests {
     /// news, and a shared sentence would make them read as one.
     #[test]
     fn every_reap_reason_produces_its_own_sentence() {
-        let a = reap_notice("p", ReapReason::NoActivity { since_verb_s: 600, window_s: 600 });
-        let b = reap_notice("p", ReapReason::Ttl { age_s: 7200, ttl_s: 3600 });
-        let c = reap_notice("p", ReapReason::Idle { idle_s: 900, window_s: 900 });
+        let a = reap_notice(
+            "p",
+            ReapReason::NoActivity {
+                since_verb_s: 600,
+                window_s: 600,
+            },
+        );
+        let b = reap_notice(
+            "p",
+            ReapReason::Ttl {
+                age_s: 7200,
+                ttl_s: 3600,
+            },
+        );
+        let c = reap_notice(
+            "p",
+            ReapReason::Idle {
+                idle_s: 900,
+                window_s: 900,
+            },
+        );
         assert_ne!(a, b);
         assert_ne!(b, c);
         assert_ne!(a, c);
@@ -718,8 +815,17 @@ mod tests {
     /// byte what a detached browser answers. The driver has to say so.
     #[test]
     fn the_notice_names_the_keepalive_a_cdp_driver_can_send() {
-        let n = reap_notice("default", ReapReason::NoActivity { since_verb_s: 600, window_s: 600 });
-        assert!(n.contains("/api/browser/keepalive"), "the route is not named: {n}");
+        let n = reap_notice(
+            "default",
+            ReapReason::NoActivity {
+                since_verb_s: 600,
+                window_s: 600,
+            },
+        );
+        assert!(
+            n.contains("/api/browser/keepalive"),
+            "the route is not named: {n}"
+        );
         assert!(n.contains("raw CDP"), "nor the cause it addresses: {n}");
         assert!(
             n.contains("cdp.mjs"),
@@ -733,8 +839,18 @@ mod tests {
     /// more.
     #[test]
     fn the_notice_names_the_knobs_that_prevent_a_recurrence() {
-        let n = reap_notice("default", ReapReason::Ttl { age_s: 7200, ttl_s: 3600 });
-        for knob in ["AMUX_BROWSER_ACTIVITY_REAP_S", "AMUX_BROWSER_TTL_S", "AMUX_BROWSER_IDLE_REAP_S"] {
+        let n = reap_notice(
+            "default",
+            ReapReason::Ttl {
+                age_s: 7200,
+                ttl_s: 3600,
+            },
+        );
+        for knob in [
+            "AMUX_BROWSER_ACTIVITY_REAP_S",
+            "AMUX_BROWSER_TTL_S",
+            "AMUX_BROWSER_IDLE_REAP_S",
+        ] {
             assert!(n.contains(knob), "{knob} is not offered: {n}");
         }
     }
@@ -751,10 +867,15 @@ mod tests {
         assert!(!has_real_page(&[page("")]));
         assert!(!has_real_page(&[]), "no targets at all is empty");
         // Non-page targets (iframes, service workers) are not pages.
-        assert!(!has_real_page(&[json!({"type": "iframe", "url": "https://x.com/"})]));
+        assert!(!has_real_page(&[
+            json!({"type": "iframe", "url": "https://x.com/"})
+        ]));
         // CONTROL: one real page among blanks keeps it alive. A predicate that
         // ignored the real one would reap a browser someone is using.
-        assert!(has_real_page(&[page("about:blank"), page("https://x.com/")]));
+        assert!(has_real_page(&[
+            page("about:blank"),
+            page("https://x.com/")
+        ]));
     }
 
     /// Activity arm fires when no verb has been called for the whole window.
@@ -763,11 +884,15 @@ mod tests {
         let five_min = 300u64;
         let now = 10_000.0f64;
         // Last verb 6 minutes ago -> reap.
-        assert!(should_reap_ttl(now as i64 - 360, now, five_min),
-            "360s silence with 300s window should reap");
+        assert!(
+            should_reap_ttl(now as i64 - 360, now, five_min),
+            "360s silence with 300s window should reap"
+        );
         // Last verb 4 minutes ago -> keep.
-        assert!(!should_reap_ttl(now as i64 - 240, now, five_min),
-            "240s silence with 300s window should keep");
+        assert!(
+            !should_reap_ttl(now as i64 - 240, now, five_min),
+            "240s silence with 300s window should keep"
+        );
         // Disabled (0) -> never.
         assert!(!should_reap_ttl(0, now, 0));
     }
@@ -783,7 +908,11 @@ mod tests {
         // Started exactly at the boundary -> release (>= not >).
         assert!(should_reap_ttl(now as i64 - four_h as i64, now, four_h));
         // Started 1 second short of the TTL -> keep.
-        assert!(!should_reap_ttl(now as i64 - four_h as i64 + 1, now, four_h));
+        assert!(!should_reap_ttl(
+            now as i64 - four_h as i64 + 1,
+            now,
+            four_h
+        ));
         // TTL disabled (0) -> never reap, regardless of age.
         assert!(!should_reap_ttl(0, now, 0));
     }

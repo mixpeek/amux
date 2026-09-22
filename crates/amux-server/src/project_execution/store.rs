@@ -1,6 +1,6 @@
 use crate::db::{board_store as bs, PendingEvent, WriteOutcome};
 use amux_core::{
-    project::ExecutionPolicy,
+    project::{ExecutionPolicy, Phase},
     revision::{EntityType, MutationKind},
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -147,6 +147,42 @@ pub fn save(
     })
 }
 
+pub fn summary(conn: &Connection, project: &Project) -> anyhow::Result<Value> {
+    let rows = bs::project_issues(conn, &project.name)?;
+    let plans = super::planner::plan(conn, project)?;
+    let acceptance = super::acceptance::status(conn, project)?;
+    let retirement = super::acceptance::retirement_allowed(conn, &project.name)?;
+    let task_count = plans.len();
+    let verified_tasks = plans.iter().filter(|p| p.phase == Phase::Verified).count();
+    let closed_tasks = plans.iter().filter(|p| p.phase == Phase::Closed).count();
+    let waiting_tasks = plans.iter().filter(|p| p.phase == Phase::Waiting).count();
+    let active_tasks = task_count.saturating_sub(verified_tasks + closed_tasks);
+    let running_executions = plans
+        .iter()
+        .filter(|p| {
+            matches!(
+                p.execution.stage.as_str(),
+                "reserved" | "working" | "reported" | "verifying"
+            )
+        })
+        .count();
+    Ok(json!({
+        "task_count": task_count,
+        "verified_tasks": verified_tasks,
+        "closed_tasks": closed_tasks,
+        "active_tasks": active_tasks,
+        "waiting_tasks": waiting_tasks,
+        "running_executions": running_executions,
+        "acceptance_state": acceptance.get("state").and_then(Value::as_str).unwrap_or("unknown"),
+        "acceptance_reason": acceptance.get("reason").and_then(Value::as_str),
+        "retirement_state": retirement.get("state").and_then(Value::as_str).unwrap_or("unknown"),
+        "retirement_reason": retirement.get("reason").and_then(Value::as_str),
+        "worktree": project.policy.worktree,
+        "measured": true,
+        "n_considered": rows.len(),
+    }))
+}
+
 pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
     let project = get(conn, name)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
     let rows = bs::project_issues(conn, name)?;
@@ -165,13 +201,20 @@ pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
             card["phase"] = json!(plans.iter().find(|p| p.id == row.id).map(|p| p.phase));
             card["assignee"] = json!(row.session);
             card["execution_plan"] = json!(plans.iter().find(|p| p.id == row.id));
-            card["retry_available"] = json!(plans.iter().find(|p| p.id == row.id).is_some_and(|plan| super::task_retry::eligible(conn, &project, row, &plan.execution).is_ok()));
-            card["verification_retry_available"] = json!(plans.iter().find(|p| p.id == row.id).is_some_and(|plan| super::task_retry::verification_eligible(conn,&project,row,&plan.execution).is_ok()));
+            card["retry_available"] =
+                json!(plans.iter().find(|p| p.id == row.id).is_some_and(|plan| {
+                    super::task_retry::eligible(conn, &project, row, &plan.execution).is_ok()
+                }));
+            card["verification_retry_available"] =
+                json!(plans.iter().find(|p| p.id == row.id).is_some_and(|plan| {
+                    super::task_retry::verification_eligible(conn, &project, row, &plan.execution)
+                        .is_ok()
+                }));
             card
         })
         .collect();
-    let mut acceptance=super::acceptance::status(conn,&project)?;
-    acceptance["executor_retirement"]=super::acceptance::retirement_allowed(conn,name)?;
+    let mut acceptance = super::acceptance::status(conn, &project)?;
+    acceptance["executor_retirement"] = super::acceptance::retirement_allowed(conn, name)?;
     Ok(
         json!({"project":project,"pause_settled":pause_settled,"cards":cards,"migrations":migrations,"commands":super::intake::receipts(conn,name)?,"acceptance":acceptance,"measured":true,"n_considered":rows.len(),
         "usage":super::usage::summary(conn,name)?}),
@@ -266,8 +309,11 @@ pub fn preview(
             }
         }
     }
-    let changes:Vec<_>=rows.iter().map(|r|(r.id.clone(),bs::BoardOwner::new(Some(name),None))).collect();
-    if let Err(error)=bs::validate_owner_changes(conn,&changes) {
+    let changes: Vec<_> = rows
+        .iter()
+        .map(|r| (r.id.clone(), bs::BoardOwner::new(Some(name), None)))
+        .collect();
+    if let Err(error) = bs::validate_owner_changes(conn, &changes) {
         conflicts.push(format!("dependency ownership conflict: {error}"));
     }
     let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&(
@@ -361,6 +407,26 @@ mod tests {
         }).unwrap();
     }
     #[test]
+    fn project_summary_reports_real_lifecycle_state_without_full_board_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("db")).unwrap();
+        store.write(|c| {
+            save(c,"example",0,&policy(),"test").map_err(sql_error)?;
+            c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES('A-1','Outcome','verified','doc','example',1,1,'Review artifact','[\"artifact exists\"]')",[])?;
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let conn = store.read().unwrap();
+        let project = get(&conn, "example").unwrap().unwrap();
+        let view = summary(&conn, &project).unwrap();
+        assert_eq!(view["task_count"], 1);
+        assert_eq!(view["verified_tasks"], 1);
+        assert_eq!(view["active_tasks"], 0);
+        assert_eq!(view["running_executions"], 0);
+        assert_eq!(view["acceptance_state"], "not_configured");
+        assert_eq!(view["retirement_state"], "review_not_configured");
+        assert_eq!(view["worktree"], true);
+    }
+    #[test]
     fn preview_names_active_claims_and_foreign_edges_without_changing_cards() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("db")).unwrap();
@@ -396,17 +462,25 @@ mod tests {
         }).unwrap();
         let disabled = board(&store.read().unwrap(), "example").unwrap();
         assert_eq!(disabled["cards"][0]["phase"], "waiting");
-        assert_eq!(disabled["cards"][0]["execution_plan"]["waiting_reason"], "project_disabled");
+        assert_eq!(
+            disabled["cards"][0]["execution_plan"]["waiting_reason"],
+            "project_disabled"
+        );
         assert_eq!(disabled["cards"][0]["execution_plan"]["action"], "wait");
-        store.write(|c| {
-            let mut project = get(c, "example").map_err(sql_error)?.unwrap();
-            project.policy.enabled = true;
-            save(c, "example", project.revision, &project.policy, "test").map_err(sql_error)
-        }).unwrap();
+        store
+            .write(|c| {
+                let mut project = get(c, "example").map_err(sql_error)?.unwrap();
+                project.policy.enabled = true;
+                save(c, "example", project.revision, &project.policy, "test").map_err(sql_error)
+            })
+            .unwrap();
         // Once enabled, missing executable details still prevent verification.
         let before = board(&store.read().unwrap(), "example").unwrap();
         assert_eq!(before["cards"][0]["phase"], "waiting");
-        assert_eq!(before["cards"][0]["execution_plan"]["waiting_reason"], "intake_required");
+        assert_eq!(
+            before["cards"][0]["execution_plan"]["waiting_reason"],
+            "intake_required"
+        );
         assert_eq!(before["cards"][0]["execution_plan"]["action"], "wait");
         store
             .write(|c| {
@@ -425,9 +499,18 @@ mod tests {
         assert_eq!(view["cards"][0]["project_group"], "example");
         assert_eq!(view["cards"][0]["assignee"], "new-executor");
         assert_eq!(view["cards"][0]["phase"], "waiting");
-        assert_eq!(view["cards"][0]["execution_plan"]["waiting_reason"], "intake_required");
+        assert_eq!(
+            view["cards"][0]["execution_plan"]["waiting_reason"],
+            "intake_required"
+        );
         assert_eq!(view["cards"][0]["execution_plan"]["action"], "wait");
-        assert_eq!(bs::get_issue(&store.read().unwrap(), "A-1").unwrap().unwrap().status, "done");
+        assert_eq!(
+            bs::get_issue(&store.read().unwrap(), "A-1")
+                .unwrap()
+                .unwrap()
+                .status,
+            "done"
+        );
         assert_eq!(
             bs::get_issue(&store.read().unwrap(), "A-1")
                 .unwrap()
@@ -525,8 +608,17 @@ pub fn rollback_migration(conn: &Connection, name: &str, id: &str) -> anyhow::Re
             old.id
         );
     }
-    let changes:Vec<_>=before.rows.iter().map(|r|(r.id.clone(),bs::BoardOwner::new(None,r.session.as_deref()))).collect();
-    bs::validate_owner_changes(conn,&changes)?;
+    let changes: Vec<_> = before
+        .rows
+        .iter()
+        .map(|r| {
+            (
+                r.id.clone(),
+                bs::BoardOwner::new(None, r.session.as_deref()),
+            )
+        })
+        .collect();
+    bs::validate_owner_changes(conn, &changes)?;
     for old in &before.rows {
         conn.execute("UPDATE issues SET project_group=NULL,session=?2,rev=rev+1,version=version+1 WHERE id=?1",params![old.id,old.session])?;
     }

@@ -117,11 +117,17 @@ pub async fn daily(State(state): State<AppState>) -> Response {
     let rows = match rows {
         Ok(Ok(rows)) => rows,
         Ok(Err(e)) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
                 .into_response()
         }
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
                 .into_response()
         }
     };
@@ -136,10 +142,22 @@ pub async fn daily(State(state): State<AppState>) -> Response {
         total_in += input;
         total_out += output;
         let b = if session.is_empty() {
-            Bucket { name: "(untitled)".into(), proj_dir: String::new(), amux: false, input, output }
+            Bucket {
+                name: "(untitled)".into(),
+                proj_dir: String::new(),
+                amux: false,
+                input,
+                output,
+            }
         } else {
             let amux = amux_names.contains(&session);
-            Bucket { name: session.clone(), proj_dir: session.clone(), amux, input, output }
+            Bucket {
+                name: session.clone(),
+                proj_dir: session.clone(),
+                amux,
+                input,
+                output,
+            }
         };
         buckets.insert(b.proj_dir.clone(), b);
     }
@@ -157,15 +175,30 @@ pub async fn daily(State(state): State<AppState>) -> Response {
             b.input = (b.input - bl.get("input").and_then(Value::as_i64).unwrap_or(0)).max(0);
             b.output = (b.output - bl.get("output").and_then(Value::as_i64).unwrap_or(0)).max(0);
         }
-        total_in = (total_in - baseline.get("total_input").and_then(Value::as_i64).unwrap_or(0)).max(0);
-        total_out = (total_out - baseline.get("total_output").and_then(Value::as_i64).unwrap_or(0)).max(0);
+        total_in = (total_in
+            - baseline
+                .get("total_input")
+                .and_then(Value::as_i64)
+                .unwrap_or(0))
+        .max(0);
+        total_out = (total_out
+            - baseline
+                .get("total_output")
+                .and_then(Value::as_i64)
+                .unwrap_or(0))
+        .max(0);
     }
 
-    let mut sessions: Vec<&Bucket> =
-        buckets.values().filter(|b| b.input + b.output > 0).collect();
+    let mut sessions: Vec<&Bucket> = buckets
+        .values()
+        .filter(|b| b.input + b.output > 0)
+        .collect();
     sessions.sort_by_key(|b| -(b.input + b.output));
-    let amux_tokens: i64 =
-        sessions.iter().filter(|b| b.amux).map(|b| b.input + b.output).sum();
+    let amux_tokens: i64 = sessions
+        .iter()
+        .filter(|b| b.amux)
+        .map(|b| b.input + b.output)
+        .sum();
 
     Json(json!({
         "today": today,
@@ -219,11 +252,17 @@ pub async fn reset(State(state): State<AppState>) -> Response {
     let rows = match rows {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
                 .into_response()
         }
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
                 .into_response()
         }
     };
@@ -283,7 +322,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -304,7 +343,10 @@ mod tests {
                      VALUES (?1, ?2, '', '', ?3, ?4)",
                     rusqlite::params![ts, session, input, output],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await
             .unwrap();
@@ -313,11 +355,18 @@ mod tests {
     async fn get(app: &Router) -> Value {
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/api/stats/daily").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/daily")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -328,7 +377,11 @@ mod tests {
         // alpha is a REGISTERED amux session; beta is a titled conversation
         // that is not amux's (Python's exact amux_names rule).
         std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
-        std::fs::write(dir.path().join("sessions/alpha.env"), "CC_PROVIDER=claude\n").unwrap();
+        std::fs::write(
+            dir.path().join("sessions/alpha.env"),
+            "CC_PROVIDER=claude\n",
+        )
+        .unwrap();
 
         let state = state();
         let now = chrono::Local::now().timestamp();
@@ -336,14 +389,17 @@ mod tests {
         insert_row(&state, now, "alpha", 10, 5).await; // same session sums
         insert_row(&state, now, "beta", 7, 3).await;
         insert_row(&state, now, "", 1000, 0).await; // unowned conversation
-        // Yesterday's row: the control the day filter must EXCLUDE.
+                                                    // Yesterday's row: the control the day filter must EXCLUDE.
         insert_row(&state, now - 3 * 86_400, "alpha", 99_999, 99_999).await;
 
         let app = app(state);
         let v = get(&app).await;
 
         // Python's exact response keys.
-        assert_eq!(v["today"], json!(chrono::Local::now().format("%Y-%m-%d").to_string()));
+        assert_eq!(
+            v["today"],
+            json!(chrono::Local::now().format("%Y-%m-%d").to_string())
+        );
         assert_eq!(v["total_input"], json!(1117));
         assert_eq!(v["total_output"], json!(58));
         assert_eq!(v["total_tokens"], json!(1175));
@@ -367,7 +423,10 @@ mod tests {
         assert_eq!(sessions[2]["amux"], json!(false));
 
         // The excluded row is genuinely excluded — no 99_999 anywhere.
-        assert!(!v.to_string().contains("99999"), "day filter failed to exclude: {v}");
+        assert!(
+            !v.to_string().contains("99999"),
+            "day filter failed to exclude: {v}"
+        );
     }
 
     #[tokio::test]
@@ -454,7 +513,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["ok"], json!(true));
         // The baseline captures RAW totals, so the response echoes 150 even
@@ -487,15 +548,20 @@ mod tests {
         let res = app
             .clone()
             .oneshot(
-                Request::builder().method("POST").uri("/api/stats/reset").body(Body::empty()).unwrap(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/stats/reset")
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join("token_baseline.json")).unwrap())
-                .unwrap();
+        let written: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("token_baseline.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(written["sessions"]["alpha"]["input"], json!(10));
         assert!(
             written["sessions"].get("").is_none(),

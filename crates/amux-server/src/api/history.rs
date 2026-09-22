@@ -51,7 +51,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/", get(list_history).post(append_history).delete(clear_history))
+        .route(
+            "/",
+            get(list_history).post(append_history).delete(clear_history),
+        )
         .route("/import", axum::routing::post(import_history))
         // AMUX-4664: ask a question of these messages. A literal POST, like
         // `/import`, so the `/{id}` capture below does not take it.
@@ -95,10 +98,7 @@ fn linked_cards_sql(n: usize) -> String {
     )
 }
 
-fn attach_linked_cards(
-    conn: &rusqlite::Connection,
-    rows: &mut [Value],
-) -> rusqlite::Result<()> {
+fn attach_linked_cards(conn: &rusqlite::Connection, rows: &mut [Value]) -> rusqlite::Result<()> {
     let card_ids: BTreeSet<String> = rows
         .iter()
         .filter_map(|row| row.get("card_id").and_then(Value::as_str))
@@ -114,10 +114,15 @@ fn attach_linked_cards(
     }
 
     let sql = linked_cards_sql(card_ids.len());
-    let values: Vec<rusqlite::types::Value> =
-        card_ids.iter().cloned().map(rusqlite::types::Value::Text).collect();
-    let refs: Vec<&dyn rusqlite::types::ToSql> =
-        values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+    let values: Vec<rusqlite::types::Value> = card_ids
+        .iter()
+        .cloned()
+        .map(rusqlite::types::Value::Text)
+        .collect();
+    let refs: Vec<&dyn rusqlite::types::ToSql> = values
+        .iter()
+        .map(|v| v as &dyn rusqlite::types::ToSql)
+        .collect();
     let mut linked_by_card: HashMap<String, Vec<Value>> = HashMap::new();
     let mut stmt = conn.prepare(&sql)?;
     let linked = stmt.query_map(refs.as_slice(), |r| {
@@ -160,7 +165,11 @@ async fn get_history_item(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    let raw = id.trim().trim_start_matches("MSG-").trim_start_matches("msg-").trim();
+    let raw = id
+        .trim()
+        .trim_start_matches("MSG-")
+        .trim_start_matches("msg-")
+        .trim();
     let Ok(nid) = raw.parse::<i64>() else {
         return err(
             StatusCode::BAD_REQUEST,
@@ -221,7 +230,10 @@ async fn get_history_item(
     .await;
     match joined {
         Ok(Ok(Some(row))) => Json(row).into_response(),
-        Ok(Ok(None)) => err(StatusCode::NOT_FOUND, json!({ "error": format!("MSG-{nid} not found") })),
+        Ok(Ok(None)) => err(
+            StatusCode::NOT_FOUND,
+            json!({ "error": format!("MSG-{nid} not found") }),
+        ),
         Ok(Err(e)) => internal(e),
         Err(e) => internal(e),
     }
@@ -248,7 +260,11 @@ async fn get_history_item(
 /// `steering` encodes THREE input states, because collapsing the last two is the
 /// whole defect: None = no matching row; Some(None) = row found, unstamped;
 /// Some(Some(t)) = row found, delivered at t.
-fn delivery_truth(cmd_delivery: &str, submit_verdict: Option<&str>, steering: Option<Option<f64>>) -> (&'static str, &'static str) {
+fn delivery_truth(
+    cmd_delivery: &str,
+    submit_verdict: Option<&str>,
+    steering: Option<Option<f64>>,
+) -> (&'static str, &'static str) {
     // Direct is a transport choice. The same durable record can say its
     // submission stuck, was unverified, or has no outcome evidence at all.
     if cmd_delivery == "direct" {
@@ -259,7 +275,10 @@ fn delivery_truth(cmd_delivery: &str, submit_verdict: Option<&str>, steering: Op
         };
     }
     match steering {
-        Some(Some(_)) => ("delivered", "steering_history — stamped by the deliverer when it landed"),
+        Some(Some(_)) => (
+            "delivered",
+            "steering_history — stamped by the deliverer when it landed",
+        ),
         Some(None) => (
             "not delivered",
             "steering_history — the deliverer holds this row and has not stamped it",
@@ -292,8 +311,14 @@ fn ev(id: &str, mutation: MutationKind) -> PendingEvent {
 
 // ---- kind derivation (_MSG_KINDS / _msg_kind / _msg_is_queued) -------------
 
-const MSG_KINDS: [&str; 6] =
-    ["human", "session", "schedule", "amux", "unstamped", "unknown"];
+const MSG_KINDS: [&str; 6] = [
+    "human",
+    "session",
+    "schedule",
+    "amux",
+    "unstamped",
+    "unknown",
+];
 
 /// The stored types a HUMAN actually produces. An ALLOWLIST, deliberately.
 ///
@@ -443,13 +468,19 @@ pub(crate) fn group_members(home: &Path, group: &str) -> Vec<String> {
         if path.extension().and_then(|e| e.to_str()) != Some("env") {
             continue;
         }
-        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
         if blocked.contains(name) {
             continue;
         }
         let cfg = crate::config::parse_env_file(&path);
         let tags = cfg.get("CC_TAGS").map(String::as_str).unwrap_or("");
-        if tags.split(',').map(str::trim).any(|t| !t.is_empty() && t == group) {
+        if tags
+            .split(',')
+            .map(str::trim)
+            .any(|t| !t.is_empty() && t == group)
+        {
             members.push(name.to_string());
         }
     }
@@ -535,291 +566,319 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
     let was_clamped = requested_limit > HISTORY_MAX_LIMIT;
     if was_clamped {
         tracing::warn!(
-            requested = requested_limit, served = limit,
+            requested = requested_limit,
+            served = limit,
             "GET /api/history limit clamped — a caller asked for a full-table read; \
              page with &offset= instead"
         );
     }
-    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<(Value, Option<i64>)> {
-        let conn = store.read()?;
-        let offset: i64 = p.offset.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let session = p.session.clone().unwrap_or_default();
+    let joined =
+        crate::db::interactions::spawn_blocking(move || -> anyhow::Result<(Value, Option<i64>)> {
+            let conn = store.read()?;
+            let offset: i64 = p
+                .offset
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let session = p.session.clone().unwrap_or_default();
 
-        // ?sessions=1 — every session with ANY history, from the STORE, not
-        // the loaded page (AMUX-2548: the dropdown must see the corpus).
-        if flag(&p.sessions) {
-            let mut stmt = conn.prepare(
-                "SELECT session, COUNT(*) c FROM cmd_history \
-                 WHERE session != '' GROUP BY session ORDER BY session",
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(json!({ "session": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)? }))
-            })?;
-            return Ok((Value::Array(rows.flatten().collect()), None));
-        }
-
-        // ?counts=1 — true totals per kind (respecting ?session=), ignoring
-        // limit, so the UI's chips never read 0 for an unloaded kind.
-        if flag(&p.counts) {
-            let mut out: Map<String, Value> =
-                MSG_KINDS.iter().map(|k| (k.to_string(), json!(0))).collect();
-            let mut count_row = |mtype: String, c: i64| {
-                let k = msg_kind(&mtype);
-                let n = out.get(k).and_then(Value::as_i64).unwrap_or(0);
-                out.insert(k.to_string(), json!(n + c));
-            };
-            if !session.is_empty() {
+            // ?sessions=1 — every session with ANY history, from the STORE, not
+            // the loaded page (AMUX-2548: the dropdown must see the corpus).
+            if flag(&p.sessions) {
                 let mut stmt = conn.prepare(
-                    "SELECT type, COUNT(*) c FROM cmd_history WHERE session=?1 GROUP BY type",
+                    "SELECT session, COUNT(*) c FROM cmd_history \
+                 WHERE session != '' GROUP BY session ORDER BY session",
                 )?;
-                let rows =
-                    stmt.query_map([&session], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-                for (t, c) in rows.flatten() {
-                    count_row(t, c);
-                }
-            } else {
-                let mut stmt =
-                    conn.prepare("SELECT type, COUNT(*) c FROM cmd_history GROUP BY type")?;
-                let rows =
-                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-                for (t, c) in rows.flatten() {
-                    count_row(t, c);
-                }
+                let rows = stmt.query_map([], |r| {
+                    Ok(json!({ "session": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)? }))
+                })?;
+                return Ok((Value::Array(rows.flatten().collect()), None));
             }
-            let all: i64 = MSG_KINDS.iter().map(|k| out[*k].as_i64().unwrap_or(0)).sum();
-            out.insert("all".into(), json!(all));
 
-            // CONTEXT FACETS (AMUX-4695): which devices and places actually
-            // occur, with their counts, scoped by the same session filter.
-            //
-            // DERIVED FROM THE DATA, NEVER A FIXED LIST. The UI builds its
-            // filter options from this, so it can only ever offer a value that
-            // selects at least one message. A hardcoded menu would offer
-            // "Place" on a fleet where no message has ever carried one, which
-            // is a control that looks broken to whoever clicks it, and it would
-            // go stale the day a new device appears.
-            //
-            // The key is OMITTED when nothing has that field, rather than sent
-            // as an empty object, so the client's "is there anything to filter
-            // by" test is the presence of the key. Same rule as the row
-            // renderer: an absence is not a value.
-            for field in ["device", "place"] {
-                let mut sql = format!(
+            // ?counts=1 — true totals per kind (respecting ?session=), ignoring
+            // limit, so the UI's chips never read 0 for an unloaded kind.
+            if flag(&p.counts) {
+                let mut out: Map<String, Value> = MSG_KINDS
+                    .iter()
+                    .map(|k| (k.to_string(), json!(0)))
+                    .collect();
+                let mut count_row = |mtype: String, c: i64| {
+                    let k = msg_kind(&mtype);
+                    let n = out.get(k).and_then(Value::as_i64).unwrap_or(0);
+                    out.insert(k.to_string(), json!(n + c));
+                };
+                if !session.is_empty() {
+                    let mut stmt = conn.prepare(
+                        "SELECT type, COUNT(*) c FROM cmd_history WHERE session=?1 GROUP BY type",
+                    )?;
+                    let rows = stmt.query_map([&session], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                    })?;
+                    for (t, c) in rows.flatten() {
+                        count_row(t, c);
+                    }
+                } else {
+                    let mut stmt =
+                        conn.prepare("SELECT type, COUNT(*) c FROM cmd_history GROUP BY type")?;
+                    let rows =
+                        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                    for (t, c) in rows.flatten() {
+                        count_row(t, c);
+                    }
+                }
+                let all: i64 = MSG_KINDS
+                    .iter()
+                    .map(|k| out[*k].as_i64().unwrap_or(0))
+                    .sum();
+                out.insert("all".into(), json!(all));
+
+                // CONTEXT FACETS (AMUX-4695): which devices and places actually
+                // occur, with their counts, scoped by the same session filter.
+                //
+                // DERIVED FROM THE DATA, NEVER A FIXED LIST. The UI builds its
+                // filter options from this, so it can only ever offer a value that
+                // selects at least one message. A hardcoded menu would offer
+                // "Place" on a fleet where no message has ever carried one, which
+                // is a control that looks broken to whoever clicks it, and it would
+                // go stale the day a new device appears.
+                //
+                // The key is OMITTED when nothing has that field, rather than sent
+                // as an empty object, so the client's "is there anything to filter
+                // by" test is the presence of the key. Same rule as the row
+                // renderer: an absence is not a value.
+                for field in ["device", "place"] {
+                    let mut sql = format!(
                     "SELECT json_extract(client_meta,'$.{field}') v, COUNT(*) c FROM cmd_history \
                      WHERE json_extract(client_meta,'$.{field}') IS NOT NULL"
                 );
-                if !session.is_empty() {
-                    sql.push_str(" AND session=?1");
+                    if !session.is_empty() {
+                        sql.push_str(" AND session=?1");
+                    }
+                    sql.push_str(" GROUP BY v ORDER BY c DESC, v ASC");
+                    let mut stmt = conn.prepare(&sql)?;
+                    let map_row =
+                        |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?));
+                    let rows: Vec<(String, i64)> = if session.is_empty() {
+                        stmt.query_map([], map_row)?.flatten().collect()
+                    } else {
+                        stmt.query_map([&session], map_row)?.flatten().collect()
+                    };
+                    if !rows.is_empty() {
+                        let facet: Map<String, Value> =
+                            rows.into_iter().map(|(v, c)| (v, json!(c))).collect();
+                        out.insert(format!("{field}s"), Value::Object(facet));
+                    }
                 }
-                sql.push_str(" GROUP BY v ORDER BY c DESC, v ASC");
-                let mut stmt = conn.prepare(&sql)?;
-                let map_row =
-                    |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?));
-                let rows: Vec<(String, i64)> = if session.is_empty() {
-                    stmt.query_map([], map_row)?.flatten().collect()
-                } else {
-                    stmt.query_map([&session], map_row)?.flatten().collect()
-                };
-                if !rows.is_empty() {
-                    let facet: Map<String, Value> =
-                        rows.into_iter().map(|(v, c)| (v, json!(c))).collect();
-                    out.insert(format!("{field}s"), Value::Object(facet));
-                }
+                return Ok((Value::Object(out), None));
             }
-            return Ok((Value::Object(out), None));
-        }
 
-        // The list window. Every predicate lands in SQL, before the LIMIT.
-        let mut where_cl: Vec<String> = Vec::new();
-        let mut params: Vec<rusqlite::types::Value> = Vec::new();
-        if !session.is_empty() {
-            where_cl.push("session=?".into());
-            params.push(rusqlite::types::Value::Text(session.clone()));
-        }
-        let group = p.group.as_deref().unwrap_or("").trim().to_string();
-        if !group.is_empty() && session.is_empty() {
-            let members = group_members(&amux_home(), &group);
-            if !members.is_empty() {
-                where_cl.push(format!("session IN ({})", vec!["?"; members.len()].join(",")));
-                for m in members {
-                    params.push(rusqlite::types::Value::Text(m));
-                }
-            } else {
-                // An empty group must return NOTHING, not everything — the
-                // whole fleet's history under a group name is a wrong answer
-                // that looks like a working feature.
-                where_cl.push("1=0".into());
+            // The list window. Every predicate lands in SQL, before the LIMIT.
+            let mut where_cl: Vec<String> = Vec::new();
+            let mut params: Vec<rusqlite::types::Value> = Vec::new();
+            if !session.is_empty() {
+                where_cl.push("session=?".into());
+                params.push(rusqlite::types::Value::Text(session.clone()));
             }
-        }
-        let q = p.q.as_deref().unwrap_or("").trim().to_string();
-        if !q.is_empty() {
-            if let Some(message_id) = prefixed_message_id(&q) {
-                where_cl.push("id=?".into());
-                params.push(rusqlite::types::Value::Integer(message_id));
-            } else {
-                where_cl.push("text LIKE ? ESCAPE '\\'".into());
-                let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-                params.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
-            }
-        }
-        // CONTEXT FILTERS (AMUX-4695). `client_meta` is JSON text, so the
-        // predicate is a json_extract, which this database already relies on in
-        // 24 other places.
-        //
-        // AN EXACT MATCH, not a LIKE. "Mac" must not also select a device
-        // called "Mac mini", because the filter's whole job is to answer "which
-        // of these" and a substring match silently merges two answers into one.
-        //
-        // A filter for a value nothing has returns NOTHING, deliberately. No
-        // row currently carries `$.place` (measured: 0 of 11,591), so
-        // `?place=Office` is an empty list today rather than an error or a
-        // silent no-op. An empty list is the truthful answer to "messages sent
-        // from the office" when the place was never recorded; ignoring the
-        // parameter would answer a different question than the one asked.
-        for (field, raw) in [("device", p.device.as_deref()), ("place", p.place.as_deref())] {
-            let v = raw.unwrap_or("").trim();
-            if v.is_empty() {
-                continue;
-            }
-            where_cl.push(format!("json_extract(client_meta,'$.{field}')=?"));
-            params.push(rusqlite::types::Value::Text(v.to_string()));
-        }
-        let want: Vec<String> = p
-            .kind
-            .as_deref()
-            .unwrap_or("")
-            .split(',')
-            .map(|k| k.trim().to_lowercase())
-            .filter(|k| MSG_KINDS.contains(&k.as_str()))
-            .collect();
-        if !want.is_empty() {
-            let mut ors: Vec<String> = Vec::new();
-            // THE FILTER IS THE CLASSIFIER WRITTEN A SECOND TIME, so it is
-            // built from the SAME lists rather than restated (AMUX-3737). It
-            // used to say `type NOT IN ('session','schedule','system')` for
-            // `human` — the denylist, matching msg_kind's old fallback exactly,
-            // which is the problem: the two agreed, and both were wrong. A
-            // filter that reproduces a misclassification is worse than one that
-            // drifts from it, because the badge and the filter corroborate each
-            // other.
-            let inlist = |types: &[&str], params: &mut Vec<rusqlite::types::Value>| {
-                for t in types {
-                    params.push(rusqlite::types::Value::Text((*t).to_string()));
-                }
-                format!(
-                    "COALESCE(type,'') IN ({})",
-                    types.iter().map(|_| "?").collect::<Vec<_>>().join(",")
-                )
-            };
-            for k in &want {
-                match k.as_str() {
-                    "human" => ors.push(inlist(&HUMAN_TYPES, &mut params)),
-                    "amux" => ors.push(inlist(&AMUX_TYPES, &mut params)),
-                    "unstamped" => ors.push(inlist(&UNSTAMPED_TYPES, &mut params)),
-                    // Anything this build does not classify. Selecting it is how
-                    // you FIND the types nobody taught msg_kind about, which is
-                    // the whole reason `unknown` exists as a kind.
-                    "unknown" => {
-                        let known: Vec<&str> = HUMAN_TYPES
-                            .iter()
-                            .chain(AMUX_TYPES.iter())
-                            .chain(UNSTAMPED_TYPES.iter())
-                            .chain(["session", "schedule"].iter())
-                            .copied()
-                            .collect();
-                        ors.push(format!("NOT {}", inlist(&known, &mut params)));
+            let group = p.group.as_deref().unwrap_or("").trim().to_string();
+            if !group.is_empty() && session.is_empty() {
+                let members = group_members(&amux_home(), &group);
+                if !members.is_empty() {
+                    where_cl.push(format!(
+                        "session IN ({})",
+                        vec!["?"; members.len()].join(",")
+                    ));
+                    for m in members {
+                        params.push(rusqlite::types::Value::Text(m));
                     }
-                    other => {
-                        ors.push("type=?".to_string());
-                        params.push(rusqlite::types::Value::Text(other.to_string()));
-                    }
+                } else {
+                    // An empty group must return NOTHING, not everything — the
+                    // whole fleet's history under a group name is a wrong answer
+                    // that looks like a working feature.
+                    where_cl.push("1=0".into());
                 }
             }
-            where_cl.push(format!("({})", ors.join(" OR ")));
-        }
-        let mut sql =
-            String::from(
-            // delivery/queued_at/delivered_at are migration 0014. They are
-            // NULL on the 12.4k pre-existing rows and must reach the client AS
-            // NULL — the UI distinguishes "not recorded" from "direct", and
-            // coalescing here would assert a delivery path nobody observed.
-            "SELECT id, text, type, session, ts, origin, card_id, \
+            let q = p.q.as_deref().unwrap_or("").trim().to_string();
+            if !q.is_empty() {
+                if let Some(message_id) = prefixed_message_id(&q) {
+                    where_cl.push("id=?".into());
+                    params.push(rusqlite::types::Value::Integer(message_id));
+                } else {
+                    where_cl.push("text LIKE ? ESCAPE '\\'".into());
+                    let escaped = q
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
+                    params.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
+                }
+            }
+            // CONTEXT FILTERS (AMUX-4695). `client_meta` is JSON text, so the
+            // predicate is a json_extract, which this database already relies on in
+            // 24 other places.
+            //
+            // AN EXACT MATCH, not a LIKE. "Mac" must not also select a device
+            // called "Mac mini", because the filter's whole job is to answer "which
+            // of these" and a substring match silently merges two answers into one.
+            //
+            // A filter for a value nothing has returns NOTHING, deliberately. No
+            // row currently carries `$.place` (measured: 0 of 11,591), so
+            // `?place=Office` is an empty list today rather than an error or a
+            // silent no-op. An empty list is the truthful answer to "messages sent
+            // from the office" when the place was never recorded; ignoring the
+            // parameter would answer a different question than the one asked.
+            for (field, raw) in [
+                ("device", p.device.as_deref()),
+                ("place", p.place.as_deref()),
+            ] {
+                let v = raw.unwrap_or("").trim();
+                if v.is_empty() {
+                    continue;
+                }
+                where_cl.push(format!("json_extract(client_meta,'$.{field}')=?"));
+                params.push(rusqlite::types::Value::Text(v.to_string()));
+            }
+            let want: Vec<String> = p
+                .kind
+                .as_deref()
+                .unwrap_or("")
+                .split(',')
+                .map(|k| k.trim().to_lowercase())
+                .filter(|k| MSG_KINDS.contains(&k.as_str()))
+                .collect();
+            if !want.is_empty() {
+                let mut ors: Vec<String> = Vec::new();
+                // THE FILTER IS THE CLASSIFIER WRITTEN A SECOND TIME, so it is
+                // built from the SAME lists rather than restated (AMUX-3737). It
+                // used to say `type NOT IN ('session','schedule','system')` for
+                // `human` — the denylist, matching msg_kind's old fallback exactly,
+                // which is the problem: the two agreed, and both were wrong. A
+                // filter that reproduces a misclassification is worse than one that
+                // drifts from it, because the badge and the filter corroborate each
+                // other.
+                let inlist = |types: &[&str], params: &mut Vec<rusqlite::types::Value>| {
+                    for t in types {
+                        params.push(rusqlite::types::Value::Text((*t).to_string()));
+                    }
+                    format!(
+                        "COALESCE(type,'') IN ({})",
+                        types.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+                    )
+                };
+                for k in &want {
+                    match k.as_str() {
+                        "human" => ors.push(inlist(&HUMAN_TYPES, &mut params)),
+                        "amux" => ors.push(inlist(&AMUX_TYPES, &mut params)),
+                        "unstamped" => ors.push(inlist(&UNSTAMPED_TYPES, &mut params)),
+                        // Anything this build does not classify. Selecting it is how
+                        // you FIND the types nobody taught msg_kind about, which is
+                        // the whole reason `unknown` exists as a kind.
+                        "unknown" => {
+                            let known: Vec<&str> = HUMAN_TYPES
+                                .iter()
+                                .chain(AMUX_TYPES.iter())
+                                .chain(UNSTAMPED_TYPES.iter())
+                                .chain(["session", "schedule"].iter())
+                                .copied()
+                                .collect();
+                            ors.push(format!("NOT {}", inlist(&known, &mut params)));
+                        }
+                        other => {
+                            ors.push("type=?".to_string());
+                            params.push(rusqlite::types::Value::Text(other.to_string()));
+                        }
+                    }
+                }
+                where_cl.push(format!("({})", ors.join(" OR ")));
+            }
+            let mut sql = String::from(
+                // delivery/queued_at/delivered_at are migration 0014. They are
+                // NULL on the 12.4k pre-existing rows and must reach the client AS
+                // NULL — the UI distinguishes "not recorded" from "direct", and
+                // coalescing here would assert a delivery path nobody observed.
+                "SELECT id, text, type, session, ts, origin, card_id, \
              delivery, queued_at, delivered_at, submit_verdict, capture_pending, client_meta, \
              (SELECT title FROM issues WHERE issues.id=cmd_history.card_id) AS card_title, \
              (SELECT status FROM issues WHERE issues.id=cmd_history.card_id) AS card_status, \
              (SELECT archived FROM issues WHERE issues.id=cmd_history.card_id) AS card_archived, \
              (SELECT deleted FROM issues WHERE issues.id=cmd_history.card_id) AS card_deleted \
              FROM cmd_history",
-        );
-        if !where_cl.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&where_cl.join(" AND "));
-        }
-        // AMUX-4666: the size of the population this page came from, counted
-        // with the same WHERE and the same params the rows use. Counting with
-        // anything else is the trap this codebase already records: a number
-        // that measures the query rather than the thing.
-        let mut count_sql = String::from("SELECT COUNT(*) FROM cmd_history");
-        if !where_cl.is_empty() {
-            count_sql.push_str(" WHERE ");
-            count_sql.push_str(&where_cl.join(" AND "));
-        }
-        let total: i64 = {
-            let refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
-            conn.query_row(&count_sql, refs.as_slice(), |r| r.get(0))?
-        };
+            );
+            if !where_cl.is_empty() {
+                sql.push_str(" WHERE ");
+                sql.push_str(&where_cl.join(" AND "));
+            }
+            // AMUX-4666: the size of the population this page came from, counted
+            // with the same WHERE and the same params the rows use. Counting with
+            // anything else is the trap this codebase already records: a number
+            // that measures the query rather than the thing.
+            let mut count_sql = String::from("SELECT COUNT(*) FROM cmd_history");
+            if !where_cl.is_empty() {
+                count_sql.push_str(" WHERE ");
+                count_sql.push_str(&where_cl.join(" AND "));
+            }
+            let total: i64 = {
+                let refs: Vec<&dyn rusqlite::types::ToSql> = params
+                    .iter()
+                    .map(|p| p as &dyn rusqlite::types::ToSql)
+                    .collect();
+                conn.query_row(&count_sql, refs.as_slice(), |r| r.get(0))?
+            };
 
-        sql.push_str(" ORDER BY ts DESC LIMIT ? OFFSET ?");
-        params.push(rusqlite::types::Value::Integer(limit));
-        params.push(rusqlite::types::Value::Integer(offset));
-        let refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
-        let mut rows = super::calendar::query_rows_json(&conn, &sql, &refs)?;
-        for d in &mut rows {
-            let mtype = d.get("type").and_then(Value::as_str).unwrap_or("").to_string();
-            d["kind"] = json!(msg_kind(&mtype));
-            d["queued"] = json!(msg_is_queued(&mtype));
-            // `delivery` is the RECORDED fact; `queued` above is the inference
-            // from `type`. Both are sent: the inference keeps every historical
-            // row classifiable, the recorded value is authoritative when
-            // present, and the client prefers it. Where they disagree on a NEW
-            // row that is a contradiction worth seeing, not one to smooth over.
-            // `client_meta` is stored as a JSON STRING. Hand the client a parsed
-            // object, and when there is nothing to hand over REMOVE THE KEY.
-            //
-            // Absence is not a value here (AMUX-4694). 11,526 of 11,591 rows
-            // predate the capture and every client that sends none will add
-            // more, so this is the common case, not the edge. A `null` would
-            // reach the renderer as a present-but-empty field and tempt a
-            // placeholder chip; a missing key cannot. `d.get("client_meta")` is
-            // then falsy in JS for exactly one reason.
-            let parsed = d
-                .get("client_meta")
-                .and_then(Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                .filter(Value::is_object);
-            match parsed {
-                Some(obj) => d["client_meta"] = obj,
-                None => {
-                    if let Some(map) = d.as_object_mut() {
-                        map.remove("client_meta");
+            sql.push_str(" ORDER BY ts DESC LIMIT ? OFFSET ?");
+            params.push(rusqlite::types::Value::Integer(limit));
+            params.push(rusqlite::types::Value::Integer(offset));
+            let refs: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|p| p as &dyn rusqlite::types::ToSql)
+                .collect();
+            let mut rows = super::calendar::query_rows_json(&conn, &sql, &refs)?;
+            for d in &mut rows {
+                let mtype = d
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                d["kind"] = json!(msg_kind(&mtype));
+                d["queued"] = json!(msg_is_queued(&mtype));
+                // `delivery` is the RECORDED fact; `queued` above is the inference
+                // from `type`. Both are sent: the inference keeps every historical
+                // row classifiable, the recorded value is authoritative when
+                // present, and the client prefers it. Where they disagree on a NEW
+                // row that is a contradiction worth seeing, not one to smooth over.
+                // `client_meta` is stored as a JSON STRING. Hand the client a parsed
+                // object, and when there is nothing to hand over REMOVE THE KEY.
+                //
+                // Absence is not a value here (AMUX-4694). 11,526 of 11,591 rows
+                // predate the capture and every client that sends none will add
+                // more, so this is the common case, not the edge. A `null` would
+                // reach the renderer as a present-but-empty field and tempt a
+                // placeholder chip; a missing key cannot. `d.get("client_meta")` is
+                // then falsy in JS for exactly one reason.
+                let parsed = d
+                    .get("client_meta")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .filter(Value::is_object);
+                match parsed {
+                    Some(obj) => d["client_meta"] = obj,
+                    None => {
+                        if let Some(map) = d.as_object_mut() {
+                            map.remove("client_meta");
+                        }
+                    }
+                }
+                if let Some(q) = d.get("queued_at").and_then(Value::as_i64) {
+                    if let Some(dl) = d.get("delivered_at").and_then(Value::as_i64) {
+                        if dl > q {
+                            d["queue_wait_ms"] = json!(dl - q);
+                        }
                     }
                 }
             }
-            if let Some(q) = d.get("queued_at").and_then(Value::as_i64) {
-                if let Some(dl) = d.get("delivered_at").and_then(Value::as_i64) {
-                    if dl > q {
-                        d["queue_wait_ms"] = json!(dl - q);
-                    }
-                }
-            }
-        }
-        attach_linked_cards(&conn, &mut rows)?;
-        Ok((Value::Array(rows), Some(total)))
-    })
-    .await;
+            attach_linked_cards(&conn, &mut rows)?;
+            Ok((Value::Array(rows), Some(total)))
+        })
+        .await;
     match joined {
         Ok(Ok((v, total))) => {
             let mut resp = Json(v).into_response();
@@ -964,15 +1023,33 @@ fn ts_or_now(v: Option<&Value>) -> i64 {
 }
 
 async fn append_history(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let text = body.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let text = body
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if text.is_empty() {
         return err(StatusCode::BAD_REQUEST, json!({ "error": "text required" }));
     }
-    let htype = body.get("type").and_then(Value::as_str).unwrap_or("user").to_string();
-    let session = body.get("session").and_then(Value::as_str).unwrap_or("").to_string();
+    let htype = body
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("user")
+        .to_string();
+    let session = body
+        .get("session")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let ts = ts_or_now(body.get("ts"));
-    let origin: String =
-        body.get("origin").and_then(Value::as_str).unwrap_or("").chars().take(80).collect();
+    let origin: String = body
+        .get("origin")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect();
     let (text, hits) = redact_secrets(&text);
     if hits > 0 {
         tracing::info!(
@@ -1010,9 +1087,16 @@ async fn append_history(State(state): State<AppState>, Json(body): Json<Value>) 
 // ---- POST /api/history/import ----------------------------------------------
 
 async fn import_history(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let entries = body.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
+    let entries = body
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if entries.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "entries required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "entries required" }),
+        );
     }
     let slot: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
     let slot_w = slot.clone();
@@ -1021,7 +1105,12 @@ async fn import_history(State(state): State<AppState>, Json(body): Json<Value>) 
         .write_async(move |conn| {
             let mut count = 0usize;
             for e in &entries {
-                let text = e.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                let text = e
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if text.is_empty() {
                     continue;
                 }
@@ -1061,9 +1150,15 @@ async fn clear_history(State(state): State<AppState>) -> Response {
         .store
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM cmd_history", [])?;
-            let events =
-                if n > 0 { vec![ev("all", MutationKind::Deleted)] } else { vec![] };
-            Ok(WriteOutcome { applied: n > 0, events })
+            let events = if n > 0 {
+                vec![ev("all", MutationKind::Deleted)]
+            } else {
+                vec![]
+            };
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -1099,7 +1194,9 @@ mod tests {
             auth_token: None,
             reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        let router = Router::new().nest("/api/history", routes()).with_state(state.clone());
+        let router = Router::new()
+            .nest("/api/history", routes())
+            .with_state(state.clone());
         (router, state, dir)
     }
 
@@ -1119,13 +1216,19 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
     }
 
-    fn capture_log() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard, tracing::Dispatch) {
+    fn capture_log() -> (
+        Arc<Mutex<Vec<u8>>>,
+        tracing::subscriber::DefaultGuard,
+        tracing::Dispatch,
+    ) {
         #[derive(Clone)]
         struct LogBytes(Arc<Mutex<Vec<u8>>>);
         impl std::io::Write for LogBytes {
@@ -1199,7 +1302,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "backlog");
-        assert_eq!(conn.query_row("SELECT session FROM issues WHERE id='FIX-1'", [], |r| r.get::<_,String>(0)).unwrap(), "existing-owner", "linking source context must not reassign work");
+        assert_eq!(
+            conn.query_row("SELECT session FROM issues WHERE id='FIX-1'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "existing-owner",
+            "linking source context must not reassign work"
+        );
         assert_eq!(desc, "Reviewed original work");
         assert_eq!(log.matches("Original MSG-1 linked").count(), 1);
         assert_eq!(
@@ -1385,14 +1495,27 @@ mod tests {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), expected_status);
             assert_eq!(response.headers()["x-amux-interaction-id"], id);
-            let (status, receipt) = send(&app, "GET", &format!("/api/interactions/{id}"), None).await;
+            let (status, receipt) =
+                send(&app, "GET", &format!("/api/interactions/{id}"), None).await;
             assert_eq!(status, StatusCode::OK, "{receipt}");
-            assert_eq!(receipt["phase"], expected_phase, "the full middleware must classify the actual endpoint response: {receipt}");
+            assert_eq!(
+                receipt["phase"], expected_phase,
+                "the full middleware must classify the actual endpoint response: {receipt}"
+            );
             assert_eq!(receipt["measured"], true, "{receipt}");
         }
         let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-        assert!(!log.lines().any(|line| line.contains("interaction_outcome") && (line.contains("link-first") || line.contains("link-repeat"))), "successful calls must not emit unknown-outcome warnings: {log}");
-        assert!(log.lines().any(|line| line.contains("interaction_outcome") && line.contains("link-refused") && line.contains("refused")), "positive control: the real refusal must reach the same collector: {log}");
+        assert!(
+            !log.lines().any(|line| line.contains("interaction_outcome")
+                && (line.contains("link-first") || line.contains("link-repeat"))),
+            "successful calls must not emit unknown-outcome warnings: {log}"
+        );
+        assert!(
+            log.lines().any(|line| line.contains("interaction_outcome")
+                && line.contains("link-refused")
+                && line.contains("refused")),
+            "positive control: the real refusal must reach the same collector: {log}"
+        );
     }
 
     /// Rows carrying `client_meta`, written through the store because
@@ -1401,13 +1524,30 @@ mod tests {
     /// column is the point, since the filter reads it with json_extract.
     async fn seed_context(state: &AppState) {
         for (text, session, ts, meta) in [
-            ("from the mac", "ctx", 6000i64,
-             r#"{"device":"Mac","platform":"MacIntel","app_ver":"0.9.971","tz":"America/New_York"}"#),
-            ("from the mac again", "ctx", 7000,
-             r#"{"device":"Mac","platform":"MacIntel","app_ver":"0.9.971","tz":"America/New_York"}"#),
-            ("from the phone", "other", 8000,
-             r#"{"device":"iPhone","platform":"iPhone","app_ver":"0.9.971","tz":"America/New_York"}"#),
-            ("from the mac mini", "other", 9000, r#"{"device":"Mac mini"}"#),
+            (
+                "from the mac",
+                "ctx",
+                6000i64,
+                r#"{"device":"Mac","platform":"MacIntel","app_ver":"0.9.971","tz":"America/New_York"}"#,
+            ),
+            (
+                "from the mac again",
+                "ctx",
+                7000,
+                r#"{"device":"Mac","platform":"MacIntel","app_ver":"0.9.971","tz":"America/New_York"}"#,
+            ),
+            (
+                "from the phone",
+                "other",
+                8000,
+                r#"{"device":"iPhone","platform":"iPhone","app_ver":"0.9.971","tz":"America/New_York"}"#,
+            ),
+            (
+                "from the mac mini",
+                "other",
+                9000,
+                r#"{"device":"Mac mini"}"#,
+            ),
         ] {
             let (t, se, m) = (text.to_string(), session.to_string(), meta.to_string());
             state
@@ -1418,7 +1558,10 @@ mod tests {
                          VALUES (?1, 'direct', ?2, ?3, '', ?4)",
                         rusqlite::params![t, se, ts, m],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .await
                 .unwrap();
@@ -1499,8 +1642,12 @@ mod tests {
         // The filter must reach the same verdict. Selecting Human must not
         // return either of them.
         let (_, humans) = send(&app, "GET", "/api/history?kind=human", None).await;
-        let texts: Vec<&str> =
-            humans.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        let texts: Vec<&str> = humans
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
         assert_eq!(
             texts,
             vec!["queued steer", "hello from me"],
@@ -1510,16 +1657,27 @@ mod tests {
 
         // And selecting amux must FIND the pickup, or the row is simply lost.
         let (_, amux) = send(&app, "GET", "/api/history?kind=amux", None).await;
-        let texts: Vec<&str> =
-            amux.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
-        assert_eq!(texts, vec!["[amux] you went idle holding RC-53", "amux nudge"]);
+        let texts: Vec<&str> = amux
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["[amux] you went idle holding RC-53", "amux nudge"]
+        );
 
         // `unknown` is selectable, which is how you find the types nobody
         // taught msg_kind about. A kind you cannot filter on is a kind nobody
         // will ever go looking for.
         let (_, unk) = send(&app, "GET", "/api/history?kind=unknown", None).await;
-        let texts: Vec<&str> =
-            unk.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        let texts: Vec<&str> = unk
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
         assert_eq!(texts, vec!["from the future"]);
 
         // Every row lands in exactly one kind: the four buckets must partition
@@ -1561,7 +1719,11 @@ mod tests {
         // verified) and not `amux` (a person probably did type it).
         assert_eq!(msg_kind("raw-tmux-fallback"), "unstamped");
         // THE SPECIMEN: the type on MSG-33250, the row in Ethan's screenshot.
-        assert_eq!(msg_kind("pickup"), "amux", "an auto-pickup nudge is not a person");
+        assert_eq!(
+            msg_kind("pickup"),
+            "amux",
+            "an auto-pickup nudge is not a person"
+        );
         // THE SHAPE, which is what actually matters. Fixing only `pickup` would
         // pass every line above and leave the next new type reading Human in
         // silence.
@@ -1576,11 +1738,20 @@ mod tests {
         // The two lists the SQL filter is built from must stay disjoint, or a
         // type would match both `kind=human` and `kind=amux`.
         for h in HUMAN_TYPES {
-            assert!(!AMUX_TYPES.contains(&h), "{h:?} cannot be both human and amux");
-            assert!(!UNSTAMPED_TYPES.contains(&h), "{h:?} cannot be both human and unstamped");
+            assert!(
+                !AMUX_TYPES.contains(&h),
+                "{h:?} cannot be both human and amux"
+            );
+            assert!(
+                !UNSTAMPED_TYPES.contains(&h),
+                "{h:?} cannot be both human and unstamped"
+            );
         }
         for a in AMUX_TYPES {
-            assert!(!UNSTAMPED_TYPES.contains(&a), "{a:?} cannot be both amux and unstamped");
+            assert!(
+                !UNSTAMPED_TYPES.contains(&a),
+                "{a:?} cannot be both amux and unstamped"
+            );
         }
     }
 
@@ -1595,11 +1766,20 @@ mod tests {
             }
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).await.unwrap();
-        for (id, expected) in [(1,"delivered"),(2,"not delivered"),(3,"delivered"),
-            (4,"unknown"),(5,"unknown"),(6,"unknown")] {
-            let (status, value) = send(&app,"GET",&format!("/api/history/{id}"),None).await;
-            assert_eq!(status,StatusCode::OK,"{value}");
-            assert_eq!(value["delivered"],expected,"actual history endpoint row {id}: {value}");
+        for (id, expected) in [
+            (1, "delivered"),
+            (2, "not delivered"),
+            (3, "delivered"),
+            (4, "unknown"),
+            (5, "unknown"),
+            (6, "unknown"),
+        ] {
+            let (status, value) = send(&app, "GET", &format!("/api/history/{id}"), None).await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            assert_eq!(
+                value["delivered"], expected,
+                "actual history endpoint row {id}: {value}"
+            );
         }
     }
 
@@ -1616,16 +1796,25 @@ mod tests {
         // silent, and the deliverer's own table says it landed in 2 seconds.
         let (v, src) = delivery_truth("queued", None, Some(Some(1_787_779_179.0)));
         assert_eq!(v, "delivered");
-        assert!(src.contains("steering_history"), "must name the instrument that answered: {src}");
+        assert!(
+            src.contains("steering_history"),
+            "must name the instrument that answered: {src}"
+        );
 
         // A row the deliverer HOLDS and has not stamped is real evidence of
         // non-delivery, and must not be flattened into the unknown case.
-        assert_eq!(delivery_truth("queued", None, Some(None)).0, "not delivered");
+        assert_eq!(
+            delivery_truth("queued", None, Some(None)).0,
+            "not delivered"
+        );
 
         // NO ROW IS NOT A NEGATIVE. This is the assertion that stops the whole
         // class: absence of a lookup result is a fact about the lookup.
         let (v3, src3) = delivery_truth("queued", None, None);
-        assert_eq!(v3, "unknown", "no steering row means we cannot tell, not that it failed");
+        assert_eq!(
+            v3, "unknown",
+            "no steering row means we cannot tell, not that it failed"
+        );
         assert_ne!(v3, "not delivered");
         assert!(
             src3.contains("NOT stamped"),
@@ -1643,13 +1832,20 @@ mod tests {
         let mut uniq = all.to_vec();
         uniq.sort_unstable();
         uniq.dedup();
-        assert_eq!(uniq.len(), 3, "three input states must yield three verdicts: {all:?}");
+        assert_eq!(
+            uniq.len(),
+            3,
+            "three input states must yield three verdicts: {all:?}"
+        );
 
         // A confirmed direct submission is answerable from its durable verdict,
         // without requiring an unrelated steering-history record.
         let (v4, src4) = delivery_truth("direct", Some("confirmed"), None);
         assert_eq!(v4, "delivered");
-        assert!(src4.contains("cmd_history"), "and it must say which instrument: {src4}");
+        assert!(
+            src4.contains("cmd_history"),
+            "and it must say which instrument: {src4}"
+        );
     }
 
     #[test]
@@ -1721,15 +1917,30 @@ mod tests {
         assert_eq!(row["card_archived"], json!(0));
         assert!(row["card_deleted"].is_null());
         assert_eq!(row["kind"], json!("human"), "steering displays as human");
-        assert_eq!(row["queued"], json!(true), "steering is the queued delivery detail");
+        assert_eq!(
+            row["queued"],
+            json!(true),
+            "steering is the queued delivery detail"
+        );
         let linked = row["linked_cards"].as_array().unwrap();
         assert_eq!(
-            linked.iter().map(|c| c["id"].as_str().unwrap()).collect::<Vec<_>>(),
+            linked
+                .iter()
+                .map(|c| c["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
             vec!["AMUX-9", "AMUX-10", "AMUX-12"],
             "the root and both live children are returned; deleted=1 is excluded"
         );
-        assert_eq!(linked[1]["archived"], json!(false), "deleted=0 is a live card");
-        assert_eq!(linked[2]["archived"], json!(true), "archived lineage stays navigable");
+        assert_eq!(
+            linked[1]["archived"],
+            json!(false),
+            "deleted=0 is a live card"
+        );
+        assert_eq!(
+            linked[2]["archived"],
+            json!(true),
+            "archived lineage stays navigable"
+        );
         assert!(linked.iter().all(|c| c["id"] != json!("AMUX-11")));
 
         let standalone = list
@@ -1769,13 +1980,23 @@ mod tests {
         seed_context(&state).await;
 
         let texts = |v: &Value| -> Vec<String> {
-            v.as_array().unwrap().iter()
-                .map(|r| r["text"].as_str().unwrap_or("").to_string()).collect()
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["text"].as_str().unwrap_or("").to_string())
+                .collect()
         };
         let total_for = |app: axum::Router, uri: String| async move {
-            let req = axum::http::Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+            let req = axum::http::Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
             let res = app.oneshot(req).await.unwrap();
-            res.headers().get("x-amux-total").and_then(|v| v.to_str().ok()).map(str::to_string)
+            res.headers()
+                .get("x-amux-total")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
         };
 
         let (_, mac) = send(&app, "GET", "/api/history?device=Mac", None).await;
@@ -1785,7 +2006,10 @@ mod tests {
 
         // THE COUNT IS OF THE FILTERED POPULATION, not of the page. With
         // limit=1 the page holds one row and the total must still say two.
-        assert_eq!(total_for(app.clone(), "/api/history?device=Mac&limit=1".into()).await, Some("2".into()));
+        assert_eq!(
+            total_for(app.clone(), "/api/history?device=Mac&limit=1".into()).await,
+            Some("2".into())
+        );
         let (_, one) = send(&app, "GET", "/api/history?device=Mac&limit=1", None).await;
         assert_eq!(one.as_array().unwrap().len(), 1, "the page really is short");
 
@@ -1795,8 +2019,10 @@ mod tests {
         // everything.
         for uri in ["/api/history?device=Mac", "/api/history?device=iPhone"] {
             let (_, v) = send(&app, "GET", uri, None).await;
-            assert!(!texts(&v).iter().any(|t| t == "hello from me"),
-                "{uri} must not return a message that carries no metadata");
+            assert!(
+                !texts(&v).iter().any(|t| t == "hello from me"),
+                "{uri} must not return a message that carries no metadata"
+            );
         }
 
         // A VALUE NOTHING HAS RETURNS NOTHING. No row carries `$.place`, so
@@ -1805,7 +2031,10 @@ mod tests {
         let (st, none) = send(&app, "GET", "/api/history?place=Office", None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(none.as_array().unwrap().len(), 0);
-        assert_eq!(total_for(app.clone(), "/api/history?place=Office".into()).await, Some("0".into()));
+        assert_eq!(
+            total_for(app.clone(), "/api/history?place=Office".into()).await,
+            Some("0".into())
+        );
 
         // EXACT MATCH, not a prefix: "Mac" must not also select "Mac mini", or
         // the filter silently merges two answers into one.
@@ -1828,14 +2057,18 @@ mod tests {
 
         // THE KEY IS ABSENT, not an empty object. Nothing carries a place, and
         // a `places: {}` would render as a filter control with no options.
-        assert!(counts.get("places").is_none(),
-            "a facet nothing has must be omitted, not sent empty: {counts}");
+        assert!(
+            counts.get("places").is_none(),
+            "a facet nothing has must be omitted, not sent empty: {counts}"
+        );
 
         // Scoped by session, like the kind counts beside it.
         let (_, scoped) = send(&app, "GET", "/api/history?counts=1&session=ctx", None).await;
         assert_eq!(scoped["devices"]["Mac"], json!(2));
-        assert!(scoped["devices"].get("iPhone").is_none(),
-            "the iPhone row belongs to another session: {scoped}");
+        assert!(
+            scoped["devices"].get("iPhone").is_none(),
+            "the iPhone row belongs to another session: {scoped}"
+        );
     }
 
     /// AMUX-4666: paging by PAGE NUMBER needs a page count, and a page count is
@@ -1848,26 +2081,51 @@ mod tests {
         seed(&app).await;
 
         let total_for = |app: axum::Router, uri: &'static str| async move {
-            let req = axum::http::Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+            let req = axum::http::Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
             let res = app.oneshot(req).await.unwrap();
-            res.headers().get("x-amux-total").and_then(|v| v.to_str().ok()).map(str::to_string)
+            res.headers()
+                .get("x-amux-total")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
         };
 
         // A short page still reports the whole population.
-        assert_eq!(total_for(app.clone(), "/api/history?limit=2").await, Some("5".into()));
+        assert_eq!(
+            total_for(app.clone(), "/api/history?limit=2").await,
+            Some("5".into())
+        );
         // ...and every filter moves it, because it is the SAME predicate.
-        assert_eq!(total_for(app.clone(), "/api/history?kind=human&limit=1").await, Some("2".into()));
-        assert_eq!(total_for(app.clone(), "/api/history?session=alpha&limit=1").await, Some("3".into()));
-        assert_eq!(total_for(app.clone(), "/api/history?q=steer&limit=1").await, Some("1".into()));
+        assert_eq!(
+            total_for(app.clone(), "/api/history?kind=human&limit=1").await,
+            Some("2".into())
+        );
+        assert_eq!(
+            total_for(app.clone(), "/api/history?session=alpha&limit=1").await,
+            Some("3".into())
+        );
+        assert_eq!(
+            total_for(app.clone(), "/api/history?q=steer&limit=1").await,
+            Some("1".into())
+        );
         // A page past the end is empty and still says how many exist, so a
         // pager can send the reader back rather than showing a blank list.
         let (_, past) = send(&app, "GET", "/api/history?limit=2&offset=99", None).await;
         assert_eq!(past.as_array().unwrap().len(), 0);
-        assert_eq!(total_for(app.clone(), "/api/history?limit=2&offset=99").await, Some("5".into()));
+        assert_eq!(
+            total_for(app.clone(), "/api/history?limit=2&offset=99").await,
+            Some("5".into())
+        );
 
         // CONTROL: the answers that are not pages do not claim a page total.
         assert_eq!(total_for(app.clone(), "/api/history?counts=1").await, None);
-        assert_eq!(total_for(app.clone(), "/api/history?sessions=1").await, None);
+        assert_eq!(
+            total_for(app.clone(), "/api/history?sessions=1").await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -1877,14 +2135,31 @@ mod tests {
 
         // Full list: ts DESC.
         let (_, all) = send(&app, "GET", "/api/history", None).await;
-        let texts: Vec<&str> =
-            all.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
-        assert_eq!(texts, vec!["amux nudge", "cron fire", "session relay", "queued steer", "hello from me"]);
+        let texts: Vec<&str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "amux nudge",
+                "cron fire",
+                "session relay",
+                "queued steer",
+                "hello from me"
+            ]
+        );
 
         // kind=human excludes session/schedule/system.
         let (_, humans) = send(&app, "GET", "/api/history?kind=human", None).await;
-        let texts: Vec<&str> =
-            humans.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        let texts: Vec<&str> = humans
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
         assert_eq!(texts, vec!["queued steer", "hello from me"]);
         // Comma-separated kinds OR together.
         let (_, some) = send(&app, "GET", "/api/history?kind=schedule,amux", None).await;
@@ -1911,8 +2186,12 @@ mod tests {
 
         // limit/offset window.
         let (_, page) = send(&app, "GET", "/api/history?limit=2&offset=1", None).await;
-        let texts: Vec<&str> =
-            page.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        let texts: Vec<&str> = page
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
         assert_eq!(texts, vec!["cron fire", "session relay"]);
 
         // AF-213: `limit` IS CLAMPED, and an over-limit request is TOLD.
@@ -1933,7 +2212,9 @@ mod tests {
                 .unwrap();
             let res = app.clone().oneshot(over).await.unwrap();
             assert_eq!(
-                res.headers().get("x-amux-limit-clamped").and_then(|v| v.to_str().ok()),
+                res.headers()
+                    .get("x-amux-limit-clamped")
+                    .and_then(|v| v.to_str().ok()),
                 Some("500"),
                 "an over-limit request must be told the ceiling it was cut to — a silent \
                  truncation reads as data, not as truncation"
@@ -1985,7 +2266,11 @@ mod tests {
         assert_eq!(hits.as_array().unwrap().len(), 1);
         assert_eq!(hits[0]["text"], json!("progress 100%"));
         let (_, hits) = send(&app, "GET", "/api/history?q=%25", None).await;
-        assert_eq!(hits.as_array().unwrap().len(), 1, "bare %% matches only the literal");
+        assert_eq!(
+            hits.as_array().unwrap().len(),
+            1,
+            "bare %% matches only the literal"
+        );
     }
 
     #[tokio::test]
@@ -2013,12 +2298,27 @@ mod tests {
         assert_eq!(row["type"], json!("user"));
         assert_eq!(row["session"], json!(""));
         assert_eq!(row["origin"].as_str().unwrap().len(), 80);
-        assert!(row["ts"].as_i64().unwrap() > 1_700_000_000_000, "ts is milliseconds");
-        assert!(row["text"].as_str().unwrap().contains("[REDACTED-CREDENTIAL]"),
-                "credential paste redacted on the way in: {}", row["text"]);
+        assert!(
+            row["ts"].as_i64().unwrap() > 1_700_000_000_000,
+            "ts is milliseconds"
+        );
+        assert!(
+            row["text"]
+                .as_str()
+                .unwrap()
+                .contains("[REDACTED-CREDENTIAL]"),
+            "credential paste redacted on the way in: {}",
+            row["text"]
+        );
 
         // Import: entries required; empty texts skipped; defaults type=direct.
-        let (st, e) = send(&app, "POST", "/api/history/import", Some(json!({ "entries": [] }))).await;
+        let (st, e) = send(
+            &app,
+            "POST",
+            "/api/history/import",
+            Some(json!({ "entries": [] })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(e["error"], json!("entries required"));
         let (st, r) = send(
@@ -2091,9 +2391,14 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert!(plan.iter().any(|d| d.contains("idx_issues_epic")), "the epic arm must use idx_issues_epic: {plan:#?}");
         assert!(
-            !plan.iter().any(|d| d.trim_start().starts_with("SCAN linked")),
+            plan.iter().any(|d| d.contains("idx_issues_epic")),
+            "the epic arm must use idx_issues_epic: {plan:#?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|d| d.trim_start().starts_with("SCAN linked")),
             "no full scan of issues per message card: {plan:#?}"
         );
     }

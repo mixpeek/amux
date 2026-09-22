@@ -164,7 +164,9 @@ pub fn replay_state(conn: &Connection, up_to_rev: u64) -> rusqlite::Result<Repla
         // An unparseable payload is treated as absent, not silently dropped
         // into a partial state: absence routes the entity into the horizon
         // report where a human sees it.
-        let payload: Option<Value> = payload_raw.as_deref().and_then(|p| serde_json::from_str(p).ok());
+        let payload: Option<Value> = payload_raw
+            .as_deref()
+            .and_then(|p| serde_json::from_str(p).ok());
         if PAYLOAD_BEARING.contains(&etype.as_str()) && payload.is_none() {
             payloadless_revs.push(rev);
         }
@@ -324,7 +326,8 @@ fn push_capped<T>(list: &mut Vec<T>, item: T) {
 /// Audit replay at HEAD: fold the journal, compare payload-bearing entities
 /// against their live tables, and name every disagreement individually.
 pub fn verify_replay(conn: &Connection) -> rusqlite::Result<ReplayReport> {
-    let head_rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
+    let head_rev: u64 =
+        conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
     let replayed = replay_state(conn, head_rev)?;
 
     // Live snapshots, via the SAME serialization the event writers journal
@@ -460,8 +463,15 @@ mod tests {
     /// Insert a journal row exactly as the writer stores it (adjacent-tagged
     /// entity_type object, mutation JSON, optional payload), bumping the
     /// global rev like `apply_write` does.
-    fn journal(conn: &Connection, etype: &str, eid: &str, mutation: &str, payload: Option<Value>) -> u64 {
-        conn.execute("UPDATE _amux_rev SET rev = rev + 1 WHERE id = 1", []).unwrap();
+    fn journal(
+        conn: &Connection,
+        etype: &str,
+        eid: &str,
+        mutation: &str,
+        payload: Option<Value>,
+    ) -> u64 {
+        conn.execute("UPDATE _amux_rev SET rev = rev + 1 WHERE id = 1", [])
+            .unwrap();
         let rev: u64 = conn
             .query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))
             .unwrap();
@@ -485,7 +495,10 @@ mod tests {
     fn entity_tag_reads_stored_and_bare_shapes() {
         // What the writer actually stores today:
         assert_eq!(entity_tag("{\"kind\":\"worker\"}"), "worker");
-        assert_eq!(entity_tag("{\"kind\":\"other\",\"data\":\"probe\"}"), "probe");
+        assert_eq!(
+            entity_tag("{\"kind\":\"other\",\"data\":\"probe\"}"),
+            "probe"
+        );
         // What a fixed writer would store:
         assert_eq!(entity_tag("worker"), "worker");
         assert_eq!(entity_tag("\"task\""), "task");
@@ -494,8 +507,20 @@ mod tests {
     #[test]
     fn fold_keeps_last_snapshot_and_slices_by_rev() {
         let conn = test_conn();
-        let r1 = journal(&conn, "task", "T-1", "created", Some(json!({"id": "T-1", "title": "a"})));
-        let r2 = journal(&conn, "task", "T-1", "updated", Some(json!({"id": "T-1", "title": "b"})));
+        let r1 = journal(
+            &conn,
+            "task",
+            "T-1",
+            "created",
+            Some(json!({"id": "T-1", "title": "a"})),
+        );
+        let r2 = journal(
+            &conn,
+            "task",
+            "T-1",
+            "updated",
+            Some(json!({"id": "T-1", "title": "b"})),
+        );
 
         // At HEAD: the last payload wins.
         let s = replay_state(&conn, r2).unwrap();
@@ -508,20 +533,32 @@ mod tests {
         // Sliced at r1: replay reproduces the EARLIER state, which is the
         // whole point of a replayable journal.
         let s = replay_state(&conn, r1).unwrap();
-        assert_eq!(s.entities["task"]["T-1"].state, Some(json!({"id": "T-1", "title": "a"})));
+        assert_eq!(
+            s.entities["task"]["T-1"].state,
+            Some(json!({"id": "T-1", "title": "a"}))
+        );
     }
 
     #[test]
     fn payloadless_event_clears_state_and_reports_horizon() {
         let conn = test_conn();
-        let r1 = journal(&conn, "task", "T-1", "created", Some(json!({"id": "T-1", "title": "a"})));
+        let r1 = journal(
+            &conn,
+            "task",
+            "T-1",
+            "created",
+            Some(json!({"id": "T-1", "title": "a"})),
+        );
         // A mutation the journal did not capture a snapshot for: the OLD
         // snapshot must not be passed off as the state after it.
         let r2 = journal(&conn, "task", "T-1", "updated", None);
 
         let s = replay_state(&conn, r2).unwrap();
         let ent = &s.entities["task"]["T-1"];
-        assert_eq!(ent.state, None, "stale snapshot must not survive an uncaptured mutation");
+        assert_eq!(
+            ent.state, None,
+            "stale snapshot must not survive an uncaptured mutation"
+        );
         let h = s.pre_payload_horizon.expect("horizon must be reported");
         assert_eq!(h.payloadless_events, 1);
         assert_eq!(h.first_payloadless_rev, r2);

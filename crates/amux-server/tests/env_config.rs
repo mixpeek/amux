@@ -46,13 +46,17 @@ fn app(db_tag: &str) -> (axum::Router, std::sync::Arc<Store>) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), store)
 }
 
 async fn apply(app: &axum::Router, yaml: &str, dry: bool) -> (StatusCode, Value) {
-    let uri = if dry { "/api/env/apply?dry_run=1" } else { "/api/env/apply" };
+    let uri = if dry {
+        "/api/env/apply?dry_run=1"
+    } else {
+        "/api/env/apply"
+    };
     let req = Request::builder()
         .method("POST")
         .uri(uri)
@@ -61,7 +65,9 @@ async fn apply(app: &axum::Router, yaml: &str, dry: bool) -> (StatusCode, Value)
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, v)
 }
@@ -146,9 +152,18 @@ async fn apply_then_reapply_converges_to_unchanged() {
     // The worker env file landed, 0600, with the derived keys.
     let env_file = home().join("sessions").join(format!("{worker}.env"));
     let contents = std::fs::read_to_string(&env_file).expect("worker env file written");
-    assert!(contents.contains(&format!("CC_TAGS=\"{group}\"")), "groups -> CC_TAGS: {contents}");
-    assert!(contents.contains("CC_DESC=\"Backend API work\""), "desc -> CC_DESC: {contents}");
-    assert!(contents.contains("CC_FLAGS=\"--model sonnet\""), "model -> CC_FLAGS: {contents}");
+    assert!(
+        contents.contains(&format!("CC_TAGS=\"{group}\"")),
+        "groups -> CC_TAGS: {contents}"
+    );
+    assert!(
+        contents.contains("CC_DESC=\"Backend API work\""),
+        "desc -> CC_DESC: {contents}"
+    );
+    assert!(
+        contents.contains("CC_FLAGS=\"--model sonnet\""),
+        "model -> CC_FLAGS: {contents}"
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -181,7 +196,10 @@ groups:
     let (_, _) = apply(&app, base, false).await;
     let (st, body) = apply(&app, changed, false).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(action_for(&body, "group", "env2977-changing"), Some("update"));
+    assert_eq!(
+        action_for(&body, "group", "env2977-changing"),
+        Some("update")
+    );
     assert_eq!(
         group_row(&store, "env2977-changing").map(|(_, g)| g),
         Some("v2-revised".into())
@@ -202,7 +220,11 @@ global:
     let (st, body) = apply(&app, spec, true).await;
     assert_eq!(st, StatusCode::OK);
     let report = body["report"].as_array().unwrap();
-    let has = |kind: &str| report.iter().any(|e| e["kind"] == kind && e["action"] == "not-yet-applied");
+    let has = |kind: &str| {
+        report
+            .iter()
+            .any(|e| e["kind"] == kind && e["action"] == "not-yet-applied")
+    };
     assert!(has("columns"), "columns stanza must be announced");
     assert!(has("global"), "global stanza must be announced");
 }
@@ -224,7 +246,10 @@ async fn files_are_seeded_idempotently_and_relative_paths_error() {
     let report = body["report"].as_array().unwrap();
     let file_row = report.iter().find(|e| e["path"] == doc_s).unwrap();
     assert_eq!(file_row["action"], "create");
-    let rel_row = report.iter().find(|e| e["kind"] == "file" && e["action"] == "error").unwrap();
+    let rel_row = report
+        .iter()
+        .find(|e| e["kind"] == "file" && e["action"] == "error")
+        .unwrap();
     assert!(rel_row["detail"].as_str().unwrap().contains("absolute"));
     assert!(!doc.exists(), "dry run must not write the file");
 
@@ -236,7 +261,12 @@ async fn files_are_seeded_idempotently_and_relative_paths_error() {
 
     // Re-apply the same spec: the file reports unchanged.
     let (_, body) = apply(&app, &yaml, false).await;
-    let file_row = body["report"].as_array().unwrap().iter().find(|e| e["path"] == doc_s).unwrap();
+    let file_row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == doc_s)
+        .unwrap();
     assert_eq!(file_row["action"], "unchanged");
 }
 
@@ -266,7 +296,12 @@ schedules:
     // Dry run: reports create, writes no schedule.
     let (st, body) = apply(&app, yaml, true).await;
     assert_eq!(st, StatusCode::OK);
-    let row = body["report"].as_array().unwrap().iter().find(|e| e["kind"] == "schedule").unwrap();
+    let row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "schedule")
+        .unwrap();
     assert_eq!(row["action"], "create");
     assert_eq!(count(&store), 0, "dry run wrote a schedule");
 
@@ -289,7 +324,12 @@ schedules:
 
     // Re-apply the same spec: reports exists, does NOT duplicate.
     let (_, body) = apply(&app, yaml, false).await;
-    let row = body["report"].as_array().unwrap().iter().find(|e| e["kind"] == "schedule").unwrap();
+    let row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "schedule")
+        .unwrap();
     assert_eq!(row["action"], "exists");
     assert_eq!(count(&store), 1, "re-apply must not duplicate the schedule");
 }
@@ -318,7 +358,12 @@ cards:
     // Dry run: reports create, writes no card.
     let (st, body) = apply(&app, yaml, true).await;
     assert_eq!(st, StatusCode::OK);
-    let row = body["report"].as_array().unwrap().iter().find(|e| e["kind"] == "card").unwrap();
+    let row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "card")
+        .unwrap();
     assert_eq!(row["action"], "create");
     assert_eq!(count(&store), 0, "dry run wrote a card");
 
@@ -335,12 +380,20 @@ cards:
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(status, "backlog", "a seeded card defaults to backlog, not auto-dispatched");
+    assert_eq!(
+        status, "backlog",
+        "a seeded card defaults to backlog, not auto-dispatched"
+    );
     assert_eq!(itype, "code");
 
     // Re-apply: reports exists, does not duplicate.
     let (_, body) = apply(&app, yaml, false).await;
-    let row = body["report"].as_array().unwrap().iter().find(|e| e["kind"] == "card").unwrap();
+    let row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "card")
+        .unwrap();
     assert_eq!(row["action"], "exists");
     assert_eq!(count(&store), 1, "re-apply must not duplicate the card");
 }
@@ -370,14 +423,27 @@ async fn worker_prompt_steers_once_on_create_never_on_reapply() {
     // First apply CREATES the worker -> steers the prompt once.
     let (st, _) = apply(&app, &yaml, false).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(steers(&store), 1, "a newly-created worker is steered its first-run prompt");
+    assert_eq!(
+        steers(&store),
+        1,
+        "a newly-created worker is steered its first-run prompt"
+    );
 
     // Re-apply: the worker already exists (unchanged) -> no re-steer.
     let (st, body) = apply(&app, &yaml, false).await;
     assert_eq!(st, StatusCode::OK);
-    let row = body["report"].as_array().unwrap().iter().find(|e| e["kind"] == "worker").unwrap();
+    let row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "worker")
+        .unwrap();
     assert_eq!(row["action"], "unchanged");
-    assert_eq!(steers(&store), 1, "a re-apply of an existing worker must NOT re-steer the prompt");
+    assert_eq!(
+        steers(&store),
+        1,
+        "a re-apply of an existing worker must NOT re-steer the prompt"
+    );
 }
 
 #[tokio::test]
@@ -397,17 +463,32 @@ async fn a_workers_dir_is_created_on_apply_not_required_to_preexist() {
     // Dry run reports create, does NOT error on the absent dir, writes nothing.
     let (st, body) = apply(&app, &yaml, true).await;
     assert_eq!(st, StatusCode::OK);
-    let row = body["report"].as_array().unwrap().iter().find(|e| e["kind"] == "worker").unwrap();
-    assert_eq!(row["action"], "create", "an absent workdir must NOT be an error: {row}");
+    let row = body["report"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "worker")
+        .unwrap();
+    assert_eq!(
+        row["action"], "create",
+        "an absent workdir must NOT be an error: {row}"
+    );
     assert!(!wdir.exists(), "dry run must not create the dir");
 
     // Apply CREATES the workdir and the worker, in ONE pass (no 2nd apply needed).
     let (st, body) = apply(&app, &yaml, false).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(body["errors"].as_array().map(|a| a.len()), Some(0), "no error: {body}");
+    assert_eq!(
+        body["errors"].as_array().map(|a| a.len()),
+        Some(0),
+        "no error: {body}"
+    );
     assert!(wdir.is_dir(), "apply must create the worker's workdir");
     let env_file = home().join("sessions").join("env2977-bootstrap.env");
-    assert!(env_file.exists(), "and the worker env file, in the same apply");
+    assert!(
+        env_file.exists(),
+        "and the worker env file, in the same apply"
+    );
 }
 
 #[tokio::test]
@@ -415,5 +496,8 @@ async fn invalid_yaml_is_a_400_not_a_panic() {
     let (app, _store) = app("badyaml");
     let (st, body) = apply(&app, "groups: [unterminated", false).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    assert!(body["error"].as_str().unwrap_or("").contains("invalid YAML"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("invalid YAML"));
 }

@@ -191,7 +191,11 @@ async fn executing_worker_inherits_untrusted_context_without_a_spoofable_header(
     let task_id_w = task_id.clone();
     store
         .write(move |conn| {
-            let row = create_issue(conn, &new_issue("context-bound delete", "todo"), 1_800_000_000)?;
+            let row = create_issue(
+                conn,
+                &new_issue("context-bound delete", "todo"),
+                1_800_000_000,
+            )?;
             let task = internal_id(&row.id);
             conn.execute(
                 "INSERT INTO _amux_workers (id,display_name,created_at,updated_at)
@@ -343,16 +347,37 @@ async fn verification_uses_only_stored_criteria_and_persists_independent_evidenc
             "verifier": {"kind":"file_exists", "path": marker}, "required":true}],
         "authored_by":{"kind":"document"}, "version":999
     });
-    let (st, _, response) = send(&app, "PUT", &format!("/api/criteria/{task_id}"), Some(amended.clone()), &[]).await;
+    let (st, _, response) = send(
+        &app,
+        "PUT",
+        &format!("/api/criteria/{task_id}"),
+        Some(amended.clone()),
+        &[],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{response}");
     let (_, _, current) = send(&app, "GET", &format!("/api/criteria/{task_id}"), None, &[]).await;
     assert_eq!(current["version"], 5);
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{task_id}"), None, &[]).await;
     assert_eq!(detail["verification"]["state"], "needs_reverification");
     assert_eq!(detail["verification"]["verified_criteria_version"], 4);
-    let (st, _, rejected) = send(&app, "POST", &format!("/api/verify/{task_id}"), Some(json!({"criteria_version":4})), &[("x-amux-session","reviewer")]).await;
+    let (st, _, rejected) = send(
+        &app,
+        "POST",
+        &format!("/api/verify/{task_id}"),
+        Some(json!({"criteria_version":4})),
+        &[("x-amux-session", "reviewer")],
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{rejected}");
-    let (st, _, checked) = send(&app, "POST", &format!("/api/verify/{task_id}"), Some(json!({"criteria_version":5})), &[("x-amux-session","reviewer")]).await;
+    let (st, _, checked) = send(
+        &app,
+        "POST",
+        &format!("/api/verify/{task_id}"),
+        Some(json!({"criteria_version":5})),
+        &[("x-amux-session", "reviewer")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{checked}");
     assert_eq!(checked["new_status"], "verified");
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{task_id}"), None, &[]).await;
@@ -360,14 +385,46 @@ async fn verification_uses_only_stored_criteria_and_persists_independent_evidenc
     let (_, _, history) = send(&app, "GET", &format!("/api/verify/{task_id}"), None, &[]).await;
     assert_eq!(history["total"], 2);
     assert_eq!(history["items"][0]["criteria_version"], 5);
-    let (_, _, result) = send(&app, "PATCH", &format!("/api/board/{task_id}"), Some(json!({"gate":["New independent review requirement"]})), &[]).await;
+    let (_, _, result) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{task_id}"),
+        Some(json!({"gate":["New independent review requirement"]})),
+        &[],
+    )
+    .await;
     assert!(result["id"].is_string(), "{result}");
-    let (st, _, result) = send(&app, "POST", &format!("/api/verify/{task_id}"), Some(json!({"criteria_version":5})), &[("x-amux-session","reviewer")]).await;
-    assert_eq!(st, StatusCode::CONFLICT, "custom gate must not be bypassed by the harness: {result}");
-    let (st, _, result) = send(&app, "POST", &format!("/api/verify/{task_id}"), Some(json!({"criteria_version":5,"gate_checked":["New independent review requirement"]})), &[("x-amux-session","reviewer")]).await;
+    let (st, _, result) = send(
+        &app,
+        "POST",
+        &format!("/api/verify/{task_id}"),
+        Some(json!({"criteria_version":5})),
+        &[("x-amux-session", "reviewer")],
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "custom gate must not be bypassed by the harness: {result}"
+    );
+    let (st, _, result) = send(
+        &app,
+        "POST",
+        &format!("/api/verify/{task_id}"),
+        Some(json!({"criteria_version":5,"gate_checked":["New independent review requirement"]})),
+        &[("x-amux-session", "reviewer")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{result}");
     std::fs::remove_file(marker).unwrap();
-    let (st, _, failed) = send(&app, "POST", &format!("/api/verify/{task_id}"), Some(json!({"criteria_version":5,"gate_checked":["New independent review requirement"]})), &[("x-amux-session","reviewer")]).await;
+    let (st, _, failed) = send(
+        &app,
+        "POST",
+        &format!("/api/verify/{task_id}"),
+        Some(json!({"criteria_version":5,"gate_checked":["New independent review requirement"]})),
+        &[("x-amux-session", "reviewer")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{failed}");
     assert_eq!(failed["new_status"], "doing", "failed rechecks reopen work");
 }
@@ -429,35 +486,77 @@ async fn criteria_amended_during_execution_cannot_be_certified() {
     let started = dir.path().join("started");
     let release = dir.path().join("release");
     // Both paths are generated by tempfile; quote them to preserve spaces.
-    let command = format!("touch '{}'; while [ ! -f '{}' ]; do sleep 0.05; done", started.display(), release.display());
+    let command = format!(
+        "touch '{}'; while [ ! -f '{}' ]; do sleep 0.05; done",
+        started.display(),
+        release.display()
+    );
     let task_id = Arc::new(std::sync::Mutex::new(String::new()));
     let slot = task_id.clone();
-    store.write(move |conn| {
-        let row = create_issue(conn,&new_issue("criteria execution race","done"),1_800_000_000)?;
-        *slot.lock().unwrap() = row.id;
-        Ok(WriteOutcome {applied:true,events:vec![]})
-    }).unwrap();
+    store
+        .write(move |conn| {
+            let row = create_issue(
+                conn,
+                &new_issue("criteria execution race", "done"),
+                1_800_000_000,
+            )?;
+            *slot.lock().unwrap() = row.id;
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let id = task_id.lock().unwrap().clone();
     let criteria = json!({"criteria":[{"id":CriterionId::from_ulid(ulid::Ulid::new()),
         "description":"Wait for explicit test release", "verifier":{"kind":"command","cmd":command,"expected_exit":0},"required":true}],
         "authored_by":{"kind":"document"},"version":1});
-    let (status,_,body) = send(&app,"PUT",&format!("/api/criteria/{id}"),Some(criteria.clone()),&[]).await;
-    assert_eq!(status,StatusCode::OK,"{body}");
-    let verification_app = app.clone(); let verification_id = id.clone();
+    let (status, _, body) = send(
+        &app,
+        "PUT",
+        &format!("/api/criteria/{id}"),
+        Some(criteria.clone()),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let verification_app = app.clone();
+    let verification_id = id.clone();
     let verification = tokio::spawn(async move {
-        send(&verification_app,"POST",&format!("/api/verify/{verification_id}"),Some(json!({"criteria_version":1})),&[("x-amux-session","independent-reviewer")]).await
+        send(
+            &verification_app,
+            "POST",
+            &format!("/api/verify/{verification_id}"),
+            Some(json!({"criteria_version":1})),
+            &[("x-amux-session", "independent-reviewer")],
+        )
+        .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(10),async {
-        while !started.exists() { tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
-    }).await.expect("verification command must actually start");
-    let (status,_,body) = send(&app,"PUT",&format!("/api/criteria/{id}"),Some(criteria),&[]).await;
-    assert_eq!(status,StatusCode::OK,"{body}");
-    std::fs::write(release,"release").unwrap();
-    let (status,_,body) = verification.await.unwrap();
-    assert_eq!(status,StatusCode::CONFLICT,"{body}");
-    assert!(body.as_str().unwrap().contains("criteria changed during verification"));
-    let (_,_,history) = send(&app,"GET",&format!("/api/verify/{id}"),None,&[]).await;
-    assert_eq!(history["total"],0);
-    let (_,_,task) = send(&app,"GET",&format!("/api/board/{id}"),None,&[]).await;
-    assert_eq!(task["status"],"done");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !started.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("verification command must actually start");
+    let (status, _, body) = send(
+        &app,
+        "PUT",
+        &format!("/api/criteria/{id}"),
+        Some(criteria),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    std::fs::write(release, "release").unwrap();
+    let (status, _, body) = verification.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body
+        .as_str()
+        .unwrap()
+        .contains("criteria changed during verification"));
+    let (_, _, history) = send(&app, "GET", &format!("/api/verify/{id}"), None, &[]).await;
+    assert_eq!(history["total"], 0);
+    let (_, _, task) = send(&app, "GET", &format!("/api/board/{id}"), None, &[]).await;
+    assert_eq!(task["status"], "done");
 }

@@ -17,7 +17,7 @@
 //! ask it a trivial question; if that fails (no CLI, no auth), skip. A probe
 //! beats guessing which of several credential sources is present.
 
-use amux_server::api::mdai::{connect_edge, run_dag, CliModel, ModelClient, MdaiError};
+use amux_server::api::mdai::{connect_edge, run_dag, CliModel, MdaiError, ModelClient};
 use amux_server::db::Store;
 use std::path::Path;
 
@@ -89,11 +89,14 @@ fn probe_answered(reply: &str) -> bool {
 #[test]
 fn live_model_tests_stay_out_of_the_default_suite() {
     let src = include_str!("mdai_live_e2e.rs");
-    let live = ["mdai_live_e2e_real_files_real_model", "mdai_live_connect_then_run"];
+    let live = [
+        "mdai_live_e2e_real_files_real_model",
+        "mdai_live_connect_then_run",
+    ];
     for name in live {
-        let at = src
-            .find(&format!("fn {name}("))
-            .unwrap_or_else(|| panic!("{name} is gone; update this list or the guard covers nothing"));
+        let at = src.find(&format!("fn {name}(")).unwrap_or_else(|| {
+            panic!("{name} is gone; update this list or the guard covers nothing")
+        });
         let head = &src[..at];
         let attr_start = head
             .rfind("#[test]")
@@ -128,7 +131,9 @@ fn the_probe_reads_the_answer_rather_than_its_length() {
     // THE SPECIMEN, verbatim from the failing run on 2026-09-02. Non-empty, so
     // the old `!s.trim().is_empty()` called it available and ran both tests,
     // which then failed comparing this sentence against expected content.
-    assert!(!probe_answered("You've hit your session limit · resets 7pm (America/New_York)"));
+    assert!(!probe_answered(
+        "You've hit your session limit · resets 7pm (America/New_York)"
+    ));
 
     // Other ways a CLI answers without answering.
     assert!(!probe_answered("Please run `claude login` to continue."));
@@ -254,7 +259,10 @@ fn mdai_live_e2e_real_files_real_model() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(count >= 1, "a history entry must be recorded for brief.mdai");
+    assert!(
+        count >= 1,
+        "a history entry must be recorded for brief.mdai"
+    );
     drop(conn);
 
     // Changing a source changes the output (and history grows).
@@ -267,7 +275,10 @@ fn mdai_live_e2e_real_files_real_model() {
     let r2 = run_dag(&store, root, "brief.mdai", &model, Some("test-e2e"))
         .expect("re-run after a source change");
     // The entry node recomputed (its context changed), so it was not a cache hit.
-    assert!(!r2.cached, "changing a source must recompute the entry node");
+    assert!(
+        !r2.cached,
+        "changing a source must recompute the entry node"
+    );
 
     // Newest-first history: the two entry-node runs come back with the newest id
     // first.
@@ -280,19 +291,33 @@ fn mdai_live_e2e_real_files_real_model() {
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
-    assert!(ids.len() >= 2, "history should have grown after the second run");
+    assert!(
+        ids.len() >= 2,
+        "history should have grown after the second run"
+    );
     assert!(ids[0] > ids[1], "history must be newest-first");
     drop(stmt);
     drop(conn);
 
     // A cyclic graph errors, naming the cycle.
-    write(root, "loopA.mdai", "---\nsources:\n  - path: loopB.mdai\n---\nA");
-    write(root, "loopB.mdai", "---\nsources:\n  - path: loopA.mdai\n---\nB");
+    write(
+        root,
+        "loopA.mdai",
+        "---\nsources:\n  - path: loopB.mdai\n---\nA",
+    );
+    write(
+        root,
+        "loopB.mdai",
+        "---\nsources:\n  - path: loopA.mdai\n---\nB",
+    );
     let err = run_dag(&store, root, "loopA.mdai", &model, None).unwrap_err();
     match err {
         MdaiError::Cycle(chain) => {
             let j = chain.join(" -> ");
-            assert!(j.contains("loopA.mdai") && j.contains("loopB.mdai"), "cycle names both: {j}");
+            assert!(
+                j.contains("loopA.mdai") && j.contains("loopB.mdai"),
+                "cycle names both: {j}"
+            );
         }
         other => panic!("expected a cycle error, got {other}"),
     }
@@ -314,14 +339,26 @@ fn mdai_live_connect_then_run() {
     let store = Store::open(&root.join("mdai-connect.db")).unwrap();
     let model = CliModel;
 
-    write(root, "ingredient.md", "The secret ingredient is smoked paprika.");
-    write(root, "recipe.mdai", "---\nsources: []\n---\n# Recipe\nName the secret ingredient from the connected source.");
+    write(
+        root,
+        "ingredient.md",
+        "The secret ingredient is smoked paprika.",
+    );
+    write(
+        root,
+        "recipe.mdai",
+        "---\nsources: []\n---\n# Recipe\nName the secret ingredient from the connected source.",
+    );
 
-    connect_edge("ingredient.md", "recipe.mdai", "This names the secret ingredient.")
-        .expect("connect should write a valid edge");
+    connect_edge(
+        "ingredient.md",
+        "recipe.mdai",
+        "This names the secret ingredient.",
+    )
+    .expect("connect should write a valid edge");
 
-    let r = run_dag(&store, root, "recipe.mdai", &model, None)
-        .expect("the connected graph should run");
+    let r =
+        run_dag(&store, root, "recipe.mdai", &model, None).expect("the connected graph should run");
     assert!(
         lower(&r.output).contains("paprika"),
         "the connected source should reach the output; got: {}",

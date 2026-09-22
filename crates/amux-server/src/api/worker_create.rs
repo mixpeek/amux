@@ -85,7 +85,11 @@ async fn templates() -> Response {
         return Json(Value::Array(vec![])).into_response();
     };
     let mut dirs: Vec<_> = match std::fs::read_dir(&root) {
-        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect(),
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
         Err(_) => return Json(Value::Array(vec![])).into_response(),
     };
     dirs.sort();
@@ -116,7 +120,10 @@ async fn templates() -> Response {
 
 fn qs_dir(q: &Option<String>) -> String {
     let params = parse_qs(q.as_deref().unwrap_or(""));
-    qs_get(&params, "dir").unwrap_or_default().trim().to_string()
+    qs_get(&params, "dir")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 async fn git_check(RawQuery(q): RawQuery) -> Response {
@@ -131,9 +138,7 @@ async fn git_check(RawQuery(q): RawQuery) -> Response {
     )
     .await
     {
-        Some(out) => {
-            out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
-        }
+        Some(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true",
         None => false,
     };
     Json(json!({"is_git": is_git})).into_response()
@@ -153,8 +158,7 @@ async fn git_branches(RawQuery(q): RawQuery) -> Response {
     else {
         return Json(json!({"branches": []})).into_response();
     };
-    Json(json!({"branches": sort_branches(&String::from_utf8_lossy(&out.stdout))}))
-        .into_response()
+    Json(json!({"branches": sort_branches(&String::from_utf8_lossy(&out.stdout))})).into_response()
 }
 
 /// py:71834 — drop `main`, then `session/*` first, alphabetical within each
@@ -197,7 +201,8 @@ async fn suggest_branch(Json(body): Json<Value>) -> Response {
         return Json(json!({"suggestions": fallback, "via": "deterministic"})).into_response();
     }
 
-    let mut ask = format!("Suggest 4 git branch names for a coding session.\nSession name: {name:?}");
+    let mut ask =
+        format!("Suggest 4 git branch names for a coding session.\nSession name: {name:?}");
     if !dir.is_empty() {
         ask.push_str(&format!("\nProject directory: {dir:?}"));
     }
@@ -238,10 +243,20 @@ fn slugify(name: &str) -> String {
     let s: String = name
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let s = s.trim_matches('-').to_string();
-    if s.is_empty() { "session".into() } else { s }
+    if s.is_empty() {
+        "session".into()
+    } else {
+        s
+    }
 }
 
 fn deterministic_branches(name: &str) -> Vec<String> {
@@ -294,7 +309,11 @@ async fn tmux_sessions() -> Response {
     // is why every `-F` format in this repo agrees on that.
     let Some(out) = run(
         "tmux",
-        &["list-sessions", "-F", "#{session_name}:#{pane_current_path}"],
+        &[
+            "list-sessions",
+            "-F",
+            "#{session_name}:#{pane_current_path}",
+        ],
         OP_TIMEOUT,
     )
     .await
@@ -347,7 +366,10 @@ async fn iterm2_sessions() -> Response {
     // time this route 404'd — so when it legitimately cannot list panes, say
     // which of the two it was rather than leaving the UI to guess again.
     let (panes, err) = match out {
-        None => (vec![], Some("osascript did not answer within 5s".to_string())),
+        None => (
+            vec![],
+            Some("osascript did not answer within 5s".to_string()),
+        ),
         Some(o) if !o.status.success() => (
             vec![],
             Some(
@@ -358,11 +380,18 @@ async fn iterm2_sessions() -> Response {
                     .collect::<String>(),
             ),
         ),
-        Some(o) => (parse_iterm2_panes(&String::from_utf8_lossy(&o.stdout)), None),
+        Some(o) => (
+            parse_iterm2_panes(&String::from_utf8_lossy(&o.stdout)),
+            None,
+        ),
     };
     let mut body = json!({"panes": panes});
     if let Some(e) = err {
-        body["error"] = json!(if e.is_empty() { "iTerm2 is not running".into() } else { e });
+        body["error"] = json!(if e.is_empty() {
+            "iTerm2 is not running".into()
+        } else {
+            e
+        });
     }
     Json(body).into_response()
 }
@@ -413,7 +442,12 @@ mod tests {
         let got = deterministic_branches("My Worker!! 2");
         assert_eq!(
             got,
-            vec!["session/my-worker---2", "feat/my-worker---2", "wip/my-worker---2", "my-worker---2"]
+            vec![
+                "session/my-worker---2",
+                "feat/my-worker---2",
+                "wip/my-worker---2",
+                "my-worker---2"
+            ]
         );
         // An empty/garbage name still yields usable names rather than "session/".
         assert_eq!(deterministic_branches("***")[0], "session/session");
@@ -429,7 +463,12 @@ mod tests {
                    Let me know if you want more!";
         assert_eq!(
             parse_suggestions(raw),
-            vec!["feat/offline-queue", "session/offline-queue", "offline-upload-queue", "oq"],
+            vec![
+                "feat/offline-queue",
+                "session/offline-queue",
+                "offline-upload-queue",
+                "oq"
+            ],
             "only bare branch-shaped tokens survive"
         );
     }

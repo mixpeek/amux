@@ -41,10 +41,8 @@ async fn list(State(state): State<AppState>) -> Response {
     let mut out = Vec::new();
     if let Some(rows) = rows {
         for row in rows.flatten() {
-            let hidden: Value =
-                serde_json::from_str(&row.1).unwrap_or_else(|_| json!([]));
-            let tab_order: Value =
-                serde_json::from_str(&row.2).unwrap_or_else(|_| json!([]));
+            let hidden: Value = serde_json::from_str(&row.1).unwrap_or_else(|_| json!([]));
+            let tab_order: Value = serde_json::from_str(&row.2).unwrap_or_else(|_| json!([]));
             out.push(json!({
                 "name": row.0,
                 "hidden": hidden,

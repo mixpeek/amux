@@ -54,7 +54,8 @@ async fn board_graph(State(state): State<AppState>) -> Response {
     let read = tokio::task::spawn_blocking(move || {
         let conn = store.read()?;
         crate::db::task_graph_store::snapshot(&conn)
-    }).await;
+    })
+    .await;
     match read {
         Ok(Ok(snapshot)) => {
             if !snapshot.verification.valid {
@@ -68,12 +69,18 @@ async fn board_graph(State(state): State<AppState>) -> Response {
         }
         result => {
             let why = match result {
-                Ok(Err(e)) => e.to_string(), Err(e) => e.to_string(), _ => unreachable!(),
+                Ok(Err(e)) => e.to_string(),
+                Err(e) => e.to_string(),
+                _ => unreachable!(),
             };
             tracing::warn!(target: "amux::board", verdict = "task_graph_unmeasured", %why,
                 "board graph snapshot could not be read");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"measured":false,"n_considered":0,
-                "why_unmeasured":why,"error":"board graph unavailable"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"measured":false,"n_considered":0,
+                "why_unmeasured":why,"error":"board graph unavailable"})),
+            )
+                .into_response()
         }
     }
 }
@@ -104,11 +111,19 @@ async fn verify_board_graph(State(state): State<AppState>) -> Response {
     match read {
         Ok(Ok(value)) => Json(value).into_response(),
         result => {
-            let why = match result { Ok(Err(e)) => e.to_string(), Err(e) => e.to_string(), _ => unreachable!() };
+            let why = match result {
+                Ok(Err(e)) => e.to_string(),
+                Err(e) => e.to_string(),
+                _ => unreachable!(),
+            };
             tracing::warn!(target: "amux::board", verdict = "task_graph_unmeasured", %why,
                 "board graph preflight could not be measured");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"measured":false,"n_considered":0,
-                "why_unmeasured":why,"error":"board graph preflight unavailable"}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"measured":false,"n_considered":0,
+                "why_unmeasured":why,"error":"board graph preflight unavailable"})),
+            )
+                .into_response()
         }
     }
 }
@@ -280,7 +295,11 @@ async fn fleet_graph(State(state): State<AppState>) -> Response {
         let status = {
             let st = s.get("status").and_then(Value::as_str).unwrap_or("").trim();
             if st.is_empty() {
-                if running { "running" } else { "stopped" }
+                if running {
+                    "running"
+                } else {
+                    "stopped"
+                }
             } else {
                 st
             }
@@ -339,21 +358,43 @@ async fn import_vault(
     AxPath(gid): AxPath<String>,
     body: Option<Json<Value>>,
 ) -> Response {
-    if gid == "board" { return board_graph_read_only(); }
+    if gid == "board" {
+        return board_graph_read_only();
+    }
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let vault_path = body.get("path").and_then(Value::as_str).unwrap_or("").trim();
+    let vault_path = body
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if vault_path.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "path required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "path required"})),
+        )
+            .into_response();
     }
     let vp = super::fs::expanduser(vault_path);
     let Ok(vp) = vp.canonicalize() else {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "not a directory"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "not a directory"})),
+        )
+            .into_response();
     };
     if !vp.is_dir() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "not a directory"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "not a directory"})),
+        )
+            .into_response();
     }
     if !super::fs::is_path_allowed(&vp) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": "path not allowed"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "path not allowed"})),
+        )
+            .into_response();
     }
 
     // Parse the vault OFF the writer: walking + reading a big vault is pure
@@ -373,7 +414,9 @@ async fn import_vault(
         let mut notes: BTreeMap<String, Note> = BTreeMap::new();
         let mut label_to_key: BTreeMap<String, String> = BTreeMap::new();
         for md in files {
-            let Ok(rel) = md.strip_prefix(&vp) else { continue };
+            let Ok(rel) = md.strip_prefix(&vp) else {
+                continue;
+            };
             let parts: Vec<_> = rel.components().collect();
             let folder = if parts.len() > 1 {
                 parts[0].as_os_str().to_string_lossy().to_string()
@@ -399,7 +442,13 @@ async fn import_vault(
             label_to_key.entry(label.clone()).or_insert(key.clone());
             notes.insert(
                 key,
-                Note { label, body: content, folder, links, path: md.to_string_lossy().to_string() },
+                Note {
+                    label,
+                    body: content,
+                    folder,
+                    links,
+                    path: md.to_string_lossy().to_string(),
+                },
             );
         }
         (notes, label_to_key)
@@ -492,7 +541,9 @@ fn walk_md(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = vec![];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             let is_symlink = e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
@@ -513,7 +564,9 @@ async fn patch_node(
     AxPath((gid, nid)): AxPath<(String, String)>,
     body: Option<Json<Value>>,
 ) -> Response {
-    if gid == "board" { return board_graph_read_only(); }
+    if gid == "board" {
+        return board_graph_read_only();
+    }
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
     // Whitelisted fields, python parity. Values pass through as their JSON
     // types (x/y numbers, pinned 0/1, strings for the rest).
@@ -530,7 +583,10 @@ async fn patch_node(
                 Value::Bool(b) => rusqlite::types::Value::Integer(*b as i64),
                 Value::Null => rusqlite::types::Value::Null,
                 other => rusqlite::types::Value::Text(
-                    other.as_str().map(String::from).unwrap_or_else(|| other.to_string()),
+                    other
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| other.to_string()),
                 ),
             });
         }
@@ -551,7 +607,10 @@ async fn patch_node(
                 sets.join(",")
             );
             conn.execute(&sql, rusqlite::params_from_iter(vals))?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     match write {

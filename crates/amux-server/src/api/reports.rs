@@ -199,8 +199,17 @@ async fn list(State(state): State<AppState>) -> Response {
 
 async fn create(State(state): State<AppState>, body: Option<Json<Value>>) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let name = body.get("name").and_then(Value::as_str).unwrap_or("New Report").trim().to_string();
-    let rtype = body.get("type").and_then(Value::as_str).unwrap_or("infra-spend").to_string();
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("New Report")
+        .trim()
+        .to_string();
+    let rtype = body
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("infra-spend")
+        .to_string();
     let config = body.get("config").cloned().unwrap_or(json!({})).to_string();
     let position = body.get("position").and_then(Value::as_i64).unwrap_or(0);
     // id = rpt-<ms>, python parity. The one millis stamp we need — passed in
@@ -231,7 +240,11 @@ async fn create(State(state): State<AppState>, body: Option<Json<Value>>) -> Res
         .await;
     match res {
         Ok(_) => {
-            let v = slot.lock().expect("slot").take().unwrap_or(json!({ "id": id }));
+            let v = slot
+                .lock()
+                .expect("slot")
+                .take()
+                .unwrap_or(json!({ "id": id }));
             (StatusCode::CREATED, Json(v)).into_response()
         }
         Err(e) => internal(e),
@@ -251,7 +264,10 @@ async fn delete_report(State(state): State<AppState>, AxPath(id): AxPath<String>
         .store
         .write_async(move |conn| {
             conn.execute("DELETE FROM reports WHERE id=?1", [&id])?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     match res {
@@ -262,7 +278,11 @@ async fn delete_report(State(state): State<AppState>, AxPath(id): AxPath<String>
 
 // ---- PATCH /api/reports/{id} (rename) --------------------------------------
 
-async fn rename(State(state): State<AppState>, AxPath(id): AxPath<String>, body: Option<Json<Value>>) -> Response {
+async fn rename(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    body: Option<Json<Value>>,
+) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let slot: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -270,14 +290,20 @@ async fn rename(State(state): State<AppState>, AxPath(id): AxPath<String>, body:
         .store
         .write_async(move |conn| {
             if let Some(name) = body.get("name").and_then(Value::as_str) {
-                conn.execute("UPDATE reports SET name=?1 WHERE id=?2", rusqlite::params![name, &id])?;
+                conn.execute(
+                    "UPDATE reports SET name=?1 WHERE id=?2",
+                    rusqlite::params![name, &id],
+                )?;
             }
             let mut st = conn.prepare(&format!("SELECT {COLS} FROM reports WHERE id=?1"))?;
             let mut rows = st.query([&id])?;
             if let Some(r) = rows.next()? {
                 *slot_w.lock().expect("slot") = Some(row_json(r)?);
             }
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     match res {
@@ -313,7 +339,9 @@ async fn data(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Resp
     .await;
     match res {
         Ok(Ok(Some(v))) => Json(v).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        Ok(Ok(None)) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
         Ok(Err(e)) => internal(e),
         Err(e) => internal(anyhow::anyhow!("join: {e}")),
     }
@@ -342,12 +370,18 @@ async fn refresh(State(state): State<AppState>, AxPath(id): AxPath<String>) -> R
     .await;
     let (rtype, config) = match loaded {
         Ok(Ok(Some(v))) => v,
-        Ok(Ok(None)) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        Ok(Ok(None)) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
         Ok(Err(e)) => return internal(e),
         Err(e) => return internal(anyhow::anyhow!("join: {e}")),
     };
     let Some(t) = find_type(&rtype) else {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown report type '{rtype}'") }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown report type '{rtype}'") })),
+        )
+            .into_response();
     };
 
     // Run the fetch(es) — async HTTP, off the DB thread.
@@ -381,7 +415,10 @@ async fn refresh(State(state): State<AppState>, AxPath(id): AxPath<String>) -> R
                 "UPDATE reports SET last_refresh=?1, cached_data=?2 WHERE id=?3",
                 rusqlite::params![now, &cached, &id_w],
             )?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     Json(json!({ "ok": true, "data": results, "refreshed_at": now })).into_response()
@@ -398,7 +435,13 @@ async fn ops_fetch(kind: SingleKind, config: &Value) -> Value {
             "/api/dashboard/spend",
             "months",
             12,
-            &["render", "gcp_cloud_run", "mongodb_atlas", "gke", "qdrant_cloud"],
+            &[
+                "render",
+                "gcp_cloud_run",
+                "mongodb_atlas",
+                "gke",
+                "qdrant_cloud",
+            ],
         ),
         SingleKind::PosthogAnalytics => (
             "/api/dashboard/posthog",
@@ -416,11 +459,17 @@ async fn ops_fetch(kind: SingleKind, config: &Value) -> Value {
     };
     let url = s("ops_url", "AMUX_MIXPEEK_OPS_URL");
     let token = s("ops_token", "AMUX_MIXPEEK_OPS_TOKEN");
-    let period = config.get(period_key).and_then(Value::as_i64).unwrap_or(period_default);
+    let period = config
+        .get(period_key)
+        .and_then(Value::as_i64)
+        .unwrap_or(period_default);
     let err_shape = |msg: &str| -> Value {
         let mut m = serde_json::Map::new();
         for v in vendors {
-            m.insert(v.to_string(), json!({ "name": v, "error": msg, "daily": [], "monthly": [] }));
+            m.insert(
+                v.to_string(),
+                json!({ "name": v, "error": msg, "daily": [], "monthly": [] }),
+            );
         }
         Value::Object(m)
     };
@@ -437,8 +486,20 @@ async fn ops_fetch(kind: SingleKind, config: &Value) -> Value {
         Ok(c) => c,
         Err(e) => return err_shape(&e.to_string()),
     };
-    let full = format!("{}{}?{}={}", url.trim_end_matches('/'), path, period_key, period);
-    match client.get(&full).bearer_auth(&token).header("Accept", "application/json").send().await {
+    let full = format!(
+        "{}{}?{}={}",
+        url.trim_end_matches('/'),
+        path,
+        period_key,
+        period
+    );
+    match client
+        .get(&full)
+        .bearer_auth(&token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
         Ok(resp) => {
             // NON-2xx IS AN ERROR, python-parity. urllib.urlopen RAISES on
             // 4xx/5xx, so the python fetcher returned its per-vendor err_shape
@@ -484,6 +545,9 @@ mod tests {
         let v = ops_fetch(SingleKind::PosthogAnalytics, &json!({})).await;
         let obj = v.as_object().unwrap();
         assert!(obj.contains_key("active_users"));
-        assert_eq!(obj["active_users"]["error"], json!("AMUX_MIXPEEK_OPS_URL not set"));
+        assert_eq!(
+            obj["active_users"]["error"],
+            json!("AMUX_MIXPEEK_OPS_URL not set")
+        );
     }
 }

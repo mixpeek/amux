@@ -84,14 +84,17 @@ fn app(lanes: &[&str]) -> Rig {
         )
         .unwrap();
     }
-    let db = home.join(format!("db-{}.sqlite", lanes.first().copied().unwrap_or("rig")));
+    let db = home.join(format!(
+        "db-{}.sqlite",
+        lanes.first().copied().unwrap_or("rig")
+    ));
     let store = std::sync::Arc::new(Store::open(&db).unwrap());
     let state = AppState {
         store: store.clone(),
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), store)
 }
@@ -112,7 +115,9 @@ async fn post(
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, v)
 }
@@ -124,7 +129,11 @@ async fn post(
 fn stored_report(store: &Store, lane: &str) -> Value {
     let conn = store.read().expect("store readable");
     let raw: String = conn
-        .query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM prefs WHERE key='session_reports'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or_else(|_| "{}".into());
     let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     v[lane].clone()
@@ -144,7 +153,11 @@ async fn a_foreign_session_cannot_report_state_for_another_lane() {
         &[("X-Amux-Session", lane)],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "a lane must be able to report its own state");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a lane must be able to report its own state"
+    );
 
     // Now the incident: a DIFFERENT session writes idle onto it.
     let (st, body) = post(
@@ -159,7 +172,11 @@ async fn a_foreign_session_cannot_report_state_for_another_lane() {
         StatusCode::FORBIDDEN,
         "a stamped cross-session report must be refused, got body {body}"
     );
-    assert_eq!(body["origin"], json!(OTHER), "the refusal must name who tried");
+    assert_eq!(
+        body["origin"],
+        json!(OTHER),
+        "the refusal must name who tried"
+    );
     assert_eq!(body["target"], json!(lane));
 
     // And it must be refused at the STORE, not merely in the response. A 403
@@ -171,7 +188,11 @@ async fn a_foreign_session_cannot_report_state_for_another_lane() {
         json!("active"),
         "the refused write must not have landed: {rep}"
     );
-    assert_eq!(rep["source"], json!("prompt-hook"), "source must be the lane's own: {rep}");
+    assert_eq!(
+        rep["source"],
+        json!("prompt-hook"),
+        "source must be the lane's own: {rep}"
+    );
 }
 
 /// A lane reporting its own state records the SERVER-VERIFIED writer beside
@@ -214,10 +235,18 @@ async fn an_unstamped_report_is_still_accepted_and_marked_unattributed() {
         &[],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the shipped hooks send no header — they must keep working");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the shipped hooks send no header — they must keep working"
+    );
     let rep = stored_report(&store, lane);
     assert_eq!(rep["state"], json!("waiting"));
-    assert_eq!(rep["origin"], json!(""), "unattributed must READ as unattributed: {rep}");
+    assert_eq!(
+        rep["origin"],
+        json!(""),
+        "unattributed must READ as unattributed: {rep}"
+    );
 }
 
 /// The isolation guard. Everything above is worthless if the suite can reach
@@ -229,7 +258,11 @@ async fn this_suite_cannot_reach_the_live_amux_home() {
     let (_app, store) = app(&["amux2646-isolation-probe"]);
     let set = std::env::var("AMUX_HOME").expect("AMUX_HOME must be set by the rig");
     let set = std::path::Path::new(&set);
-    assert_eq!(set, home(), "every rig in this file must share the one temp home");
+    assert_eq!(
+        set,
+        home(),
+        "every rig in this file must share the one temp home"
+    );
     let real = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux");
     assert_ne!(set, real, "a test must never target the live ~/.amux");
     assert!(
@@ -317,8 +350,16 @@ async fn a_heartbeat_without_a_model_does_not_erase_the_one_already_reported() {
     .await;
     assert_eq!(st, StatusCode::OK);
     let rep = stored_report(&store, lane);
-    assert_eq!(rep["model"], json!("claude-opus-5"), "model was erased: {rep}");
-    assert_eq!(rep["tokens"]["total"], json!(15), "tokens were erased: {rep}");
+    assert_eq!(
+        rep["model"],
+        json!("claude-opus-5"),
+        "model was erased: {rep}"
+    );
+    assert_eq!(
+        rep["tokens"]["total"],
+        json!(15),
+        "tokens were erased: {rep}"
+    );
 }
 
 /// An all-zero token payload is what an UNINSTRUMENTED caller sends. Recording

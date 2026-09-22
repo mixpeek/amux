@@ -22,11 +22,11 @@
 use super::AppState;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::Stream;
 use futures::StreamExt;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// LIVE SSE CONNECTIONS, and the cumulative count of opens (AF-262).
@@ -79,7 +79,10 @@ impl Drop for ConnGuard {
 
 /// `(live, opened_total)` for the debug surface.
 pub fn conn_stats() -> (i64, u64) {
-    (SSE_LIVE.load(Ordering::Relaxed), SSE_OPENED.load(Ordering::Relaxed))
+    (
+        SSE_LIVE.load(Ordering::Relaxed),
+        SSE_OPENED.load(Ordering::Relaxed),
+    )
 }
 
 pub async fn events(
@@ -88,101 +91,99 @@ pub async fn events(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = state.store.subscribe();
     let current = state.store.current_rev().map(|r| r.0).unwrap_or(0);
-    let scoped_member = super::org::local_member_scope(&headers)
-        .is_some_and(|scope| !scope.is_global());
+    let scoped_member =
+        super::org::local_member_scope(&headers).is_some_and(|scope| !scope.is_global());
 
-    let stream = async_stream(current, move |yielder: tokio::sync::mpsc::Sender<Event>| async move {
-        // No initial snapshot (AMUX-3503): `hello` above carries the rev, and
-        // the client renders from its cache then conditional-fetches — a 304
-        // when nothing changed, 176KB gzipped when something did, versus the
-        // 1,060KB raw this used to push on every (re)connect.
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    // Revision payloads may contain a full entity snapshot. A
-                    // scoped human needs the wake-up, not a copy of a card or
-                    // worker outside their grant; their subsequent list fetch
-                    // is filtered at the authoritative read boundary.
-                    if !scoped_member {
+    let stream = async_stream(
+        current,
+        move |yielder: tokio::sync::mpsc::Sender<Event>| async move {
+            // No initial snapshot (AMUX-3503): `hello` above carries the rev, and
+            // the client renders from its cache then conditional-fetches — a 304
+            // when nothing changed, 176KB gzipped when something did, versus the
+            // 1,060KB raw this used to push on every (re)connect.
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        // Revision payloads may contain a full entity snapshot. A
+                        // scoped human needs the wake-up, not a copy of a card or
+                        // worker outside their grant; their subsequent list fetch
+                        // is filtered at the authoritative read boundary.
+                        if !scoped_member {
+                            let payload = serde_json::json!({
+                                "type": "state",
+                                "payload": ev,
+                            });
+                            if yielder
+                                .send(Event::default().data(payload.to_string()))
+                                .await
+                                .is_err()
+                            {
+                                break; // client went away
+                            }
+                        }
+                        // Coalesce this event plus everything already queued:
+                        // a burst of N writes = one invalidate signal.
+                        let mut board_dirty =
+                            matches!(ev.entity_type, amux_core::revision::EntityType::Task);
+                        let mut sessions_dirty = matches!(
+                            ev.entity_type,
+                            amux_core::revision::EntityType::Worker
+                                | amux_core::revision::EntityType::Session
+                        );
+                        let mut messages_dirty =
+                            matches!(ev.entity_type, amux_core::revision::EntityType::Message);
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        while let Ok(more) = rx.try_recv() {
+                            board_dirty |=
+                                matches!(more.entity_type, amux_core::revision::EntityType::Task);
+                            sessions_dirty |= matches!(
+                                more.entity_type,
+                                amux_core::revision::EntityType::Worker
+                                    | amux_core::revision::EntityType::Session
+                            );
+                            messages_dirty |= matches!(
+                                more.entity_type,
+                                amux_core::revision::EntityType::Message
+                            );
+                        }
+                        if board_dirty || sessions_dirty || messages_dirty {
+                            let ev =
+                                invalidate_payload(board_dirty, sessions_dirty, messages_dirty);
+                            if yielder.send(Event::default().data(ev)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        // Backpressure (Invariant 26): a slow client that missed
+                        // events is TOLD so, with the count — it must delta-sync,
+                        // not assume continuity. The invalidate makes the SPA
+                        // refetch both lists through the conditional path, which
+                        // IS its recovery.
                         let payload = serde_json::json!({
-                            "type": "state",
-                            "payload": ev,
+                            "type": "lagged",
+                            "missed": missed,
                         });
                         if yielder
                             .send(Event::default().data(payload.to_string()))
                             .await
                             .is_err()
                         {
-                            break; // client went away
+                            break;
                         }
-                    }
-                    // Coalesce this event plus everything already queued:
-                    // a burst of N writes = one invalidate signal.
-                    let mut board_dirty = matches!(
-                        ev.entity_type,
-                        amux_core::revision::EntityType::Task
-                    );
-                    let mut sessions_dirty = matches!(
-                        ev.entity_type,
-                        amux_core::revision::EntityType::Worker
-                            | amux_core::revision::EntityType::Session
-                    );
-                    let mut messages_dirty = matches!(
-                        ev.entity_type,
-                        amux_core::revision::EntityType::Message
-                    );
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    while let Ok(more) = rx.try_recv() {
-                        board_dirty |= matches!(
-                            more.entity_type,
-                            amux_core::revision::EntityType::Task
-                        );
-                        sessions_dirty |= matches!(
-                            more.entity_type,
-                            amux_core::revision::EntityType::Worker
-                                | amux_core::revision::EntityType::Session
-                        );
-                        messages_dirty |= matches!(
-                            more.entity_type,
-                            amux_core::revision::EntityType::Message
-                        );
-                    }
-                    if board_dirty || sessions_dirty || messages_dirty {
-                        let ev = invalidate_payload(board_dirty, sessions_dirty, messages_dirty);
-                        if yielder.send(Event::default().data(ev)).await.is_err() {
+                        if yielder
+                            .send(Event::default().data(invalidate_payload(true, true, true)))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    // Backpressure (Invariant 26): a slow client that missed
-                    // events is TOLD so, with the count — it must delta-sync,
-                    // not assume continuity. The invalidate makes the SPA
-                    // refetch both lists through the conditional path, which
-                    // IS its recovery.
-                    let payload = serde_json::json!({
-                        "type": "lagged",
-                        "missed": missed,
-                    });
-                    if yielder
-                        .send(Event::default().data(payload.to_string()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                    if yielder
-                        .send(Event::default().data(invalidate_payload(true, true, true)))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
-        }
-    });
+        },
+    );
 
     Sse::new(stream).keep_alive(
         // The keep-alive IS the ping contract: 10s cadence, real data event.
@@ -267,18 +268,15 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(256);
-    let hello = Event::default().data(
-        serde_json::json!({"type": "hello", "rev": current_rev}).to_string(),
-    );
+    let hello =
+        Event::default().data(serde_json::json!({"type": "hello", "rev": current_rev}).to_string());
     tokio::spawn(producer(tx));
     // The guard rides in the STREAM STATE so it drops exactly when axum drops
     // the response body — i.e. on client disconnect (AF-262).
     let guard = ConnGuard::open();
     futures::stream::once(async move { Ok(hello) }).chain(futures::stream::unfold(
         (rx, guard),
-        |(mut rx, guard)| async move {
-            rx.recv().await.map(|ev| (Ok(ev), (rx, guard)))
-        },
+        |(mut rx, guard)| async move { rx.recv().await.map(|ev| (Ok(ev), (rx, guard))) },
     ))
 }
 
@@ -307,7 +305,11 @@ mod ping_tests {
         let g1 = ConnGuard::open();
         let (live1, opened1) = conn_stats();
         assert_eq!(live1, live0 + 1, "open must increment live");
-        assert_eq!(opened1, opened0 + 1, "open must increment the cumulative total");
+        assert_eq!(
+            opened1,
+            opened0 + 1,
+            "open must increment the cumulative total"
+        );
 
         let g2 = ConnGuard::open();
         assert_eq!(conn_stats().0, live0 + 2, "two streams, two live");
@@ -321,7 +323,11 @@ mod ping_tests {
         );
 
         drop(g1);
-        assert_eq!(conn_stats().0, live0, "live returns to baseline when all streams drop");
+        assert_eq!(
+            conn_stats().0,
+            live0,
+            "live returns to baseline when all streams drop"
+        );
         assert_eq!(
             conn_stats().1,
             opened0 + 2,

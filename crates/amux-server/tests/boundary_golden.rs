@@ -33,7 +33,11 @@ const FIXTURE: &str = include_str!("fixtures/boundary/live_recorded.json");
 
 fn build_tree(root: &std::path::Path) {
     std::fs::create_dir_all(root.join("sub")).unwrap();
-    std::fs::write(root.join("a.txt"), "hello world\nsecond line with needle here\n").unwrap();
+    std::fs::write(
+        root.join("a.txt"),
+        "hello world\nsecond line with needle here\n",
+    )
+    .unwrap();
     std::fs::write(root.join("bin.dat"), b"h\xc3\xa9llo binary\x00tail").unwrap();
     std::fs::write(root.join("sub/nested.md"), "needle in sub\n").unwrap();
     std::fs::write(root.join("utf8.txt"), "café\n").unwrap();
@@ -65,10 +69,12 @@ fn normalize(v: &Value, roots: &[(String, String)], case: &str) -> Value {
     match v {
         Value::String(s) => Value::String(subst(s, roots)),
         Value::Array(items) => {
-            let mut arr: Vec<Value> =
-                items.iter().map(|i| normalize(i, roots, case)).collect();
+            let mut arr: Vec<Value> = items.iter().map(|i| normalize(i, roots, case)).collect();
             // Search results: rg's parallel order is nondeterministic.
-            if arr.iter().all(|i| i.get("line").is_some() && i.get("path").is_some()) && !arr.is_empty()
+            if arr
+                .iter()
+                .all(|i| i.get("line").is_some() && i.get("path").is_some())
+                && !arr.is_empty()
             {
                 arr.sort_by_key(|i| {
                     (
@@ -153,7 +159,7 @@ async fn native_output_matches_recorded_python_fixtures() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     // Placeholder mapping applied to BOTH sides.
@@ -203,22 +209,33 @@ async fn native_output_matches_recorded_python_fixtures() {
             .unwrap()
             .replace(&urlenc(&recorded_root), &urlenc(&root_s))
             .replace(&recorded_root, &root_s)
-            .replace(&urlenc(&format!("{recorded_home}/.ssh")), &urlenc(&format!("{local_home}/.ssh")))
-            .replace(&format!("{recorded_home}/.ssh"), &format!("{local_home}/.ssh"));
+            .replace(
+                &urlenc(&format!("{recorded_home}/.ssh")),
+                &urlenc(&format!("{local_home}/.ssh")),
+            )
+            .replace(
+                &format!("{recorded_home}/.ssh"),
+                &format!("{local_home}/.ssh"),
+            );
         let res = app
             .clone()
             .oneshot(Request::builder().uri(&url).body(Body::empty()).unwrap())
             .await
             .unwrap();
         let status = res.status().as_u16();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 
         let want_status = case["status"].as_u64().unwrap() as u16;
         let want = normalize(&case["body"], &recorded_roots, name);
         let got = normalize(&body, &local_roots, name);
         assert_eq!(status, want_status, "{name}: {url} -> {body}");
-        assert_eq!(got, want, "{name}: native body diverges from recorded python");
+        assert_eq!(
+            got, want,
+            "{name}: native body diverges from recorded python"
+        );
         compared += 1;
     }
     assert!(
@@ -229,11 +246,18 @@ async fn native_output_matches_recorded_python_fixtures() {
     // Compare group CONTRACT strings independently of fleet composition.
     let res = app
         .clone()
-        .oneshot(Request::builder().uri("/api/groups").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/groups")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let native: Value = serde_json::from_slice(&bytes).unwrap();
     let recorded = &fixture["cases"]["groups_dashboard"]["body"];
     // AF-649 deliberately added native Rust worker membership after the Python

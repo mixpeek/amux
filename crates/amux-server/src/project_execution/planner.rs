@@ -77,9 +77,14 @@ pub(crate) struct DeliveryReceipt {
     pub submitted_at: f64,
     pub outcome: String,
 }
-pub(crate) fn settled_delivery(conn:&Connection,e:&Execution)->rusqlite::Result<Option<DeliveryReceipt>> {
+pub(crate) fn settled_delivery(
+    conn: &Connection,
+    e: &Execution,
+) -> rusqlite::Result<Option<DeliveryReceipt>> {
     let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1 AND (id=?2 OR delivering_since IS NOT NULL))",params![e.worker,e.delivery_id],|r|r.get(0))?;
-    if pending {return Ok(None)}
+    if pending {
+        return Ok(None);
+    }
     conn.query_row("SELECT delivered_at,outcome,COALESCE((SELECT MAX(ts) FROM session_events WHERE session=?2 AND type='project.delivery_started' AND json_extract(data,'$.delivery_id')=?1),delivered_at) FROM steering_history WHERE id=?1 AND session=?2 AND (outcome LIKE 'sent%' OR outcome LIKE 'interrupted:%')",params![e.delivery_id,e.worker],|r|Ok(DeliveryReceipt{completed_at:r.get(0)?,outcome:r.get(1)?,submitted_at:r.get(2)?})).optional()
 }
 
@@ -88,7 +93,7 @@ pub(crate) fn settled_delivery(conn:&Connection,e:&Execution)->rusqlite::Result<
 pub(crate) fn settle_superseded_packets(conn: &Connection) -> rusqlite::Result<WriteOutcome> {
     let candidates = {
         let mut q = conn.prepare("SELECT id,session FROM steering_queue WHERE guard='project-execution' AND delivering_since IS NULL")?;
-        let rows = q.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?;
+        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     let mut settled = 0;
@@ -97,7 +102,7 @@ pub(crate) fn settle_superseded_packets(conn: &Connection) -> rusqlite::Result<W
         // project, generation and input. Never parse packet prose or ID prefixes.
         let witnesses = {
             let mut q = conn.prepare("SELECT data FROM session_events WHERE session=?1 AND source='project-driver' AND json_valid(data) AND json_extract(data,'$.execution.delivery_id')=?2")?;
-            let rows = q.query_map(params![worker,id], |r| r.get::<_,String>(0))?;
+            let rows = q.query_map(params![worker, id], |r| r.get::<_, String>(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let mut binding = None;
@@ -106,42 +111,80 @@ pub(crate) fn settle_superseded_packets(conn: &Connection) -> rusqlite::Result<W
             let witness = (|| {
                 let v: Value = serde_json::from_str(&raw).ok()?;
                 let e: Execution = serde_json::from_value(v.get("execution")?.clone()).ok()?;
-                if e.worker != worker || e.delivery_id != id || e.input_hash.is_empty() { return None; }
-                Some((v.get("task")?.as_str()?.to_string(), v.get("project_group")?.as_str()?.to_string(), e.generation, e.input_hash))
+                if e.worker != worker || e.delivery_id != id || e.input_hash.is_empty() {
+                    return None;
+                }
+                Some((
+                    v.get("task")?.as_str()?.to_string(),
+                    v.get("project_group")?.as_str()?.to_string(),
+                    e.generation,
+                    e.input_hash,
+                ))
             })();
-            let Some(witness) = witness else { proven = false; break; };
-            if binding.as_ref().is_some_and(|b| b != &witness) { proven = false; break; }
+            let Some(witness) = witness else {
+                proven = false;
+                break;
+            };
+            if binding.as_ref().is_some_and(|b| b != &witness) {
+                proven = false;
+                break;
+            }
             binding = Some(witness);
         }
-        if !proven { continue; }
-        let Some((task, project, old_generation, _old_input)) = binding else { continue; };
+        if !proven {
+            continue;
+        }
+        let Some((task, project, old_generation, _old_input)) = binding else {
+            continue;
+        };
         // get_issue filters deleted IS NULL in this same writer transaction;
         // soft-deleted cards cannot authorize packet settlement.
-        let Some(row) = bs::get_issue(conn, &task)? else { continue; };
+        let Some(row) = bs::get_issue(conn, &task)? else {
+            continue;
+        };
         let current = execution(conn, &task).map_err(store::sql_error)?;
-        if store::get(conn, &project).map_err(store::sql_error)?.is_none()
-            || old_generation <= 0 || row.archived != 0 || row.session.as_deref() != Some(worker.as_str())
-            || row.project_group.as_deref() != Some(project.as_str()) || current.worker != worker
-            || current.input_hash != input_hash(&row) || current.generation <= old_generation
-            || current.delivery_id.is_empty() || current.delivery_id == id {
+        if store::get(conn, &project)
+            .map_err(store::sql_error)?
+            .is_none()
+            || old_generation <= 0
+            || row.archived != 0
+            || row.session.as_deref() != Some(worker.as_str())
+            || row.project_group.as_deref() != Some(project.as_str())
+            || current.worker != worker
+            || current.input_hash != input_hash(&row)
+            || current.generation <= old_generation
+            || current.delivery_id.is_empty()
+            || current.delivery_id == id
+        {
             continue;
         }
         // A conflicting receipt is not permission to overwrite history or drop
         // queued bytes. Successful transactions leave no queue/history overlap.
-        let history: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steering_history WHERE id=?1)", [&id], |r| r.get(0))?;
-        if history { continue; }
+        let history: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steering_history WHERE id=?1)",
+            [&id],
+            |r| r.get(0),
+        )?;
+        if history {
+            continue;
+        }
         let now = crate::config::now_f64();
         let inserted = conn.execute(
             "INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) SELECT id,session,text,queued_at,?3,'void:project-execution-superseded',guard,sender FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution' AND delivering_since IS NULL",
             params![id,worker,now],
         )?;
-        if inserted == 0 { continue; }
+        if inserted == 0 {
+            continue;
+        }
         conn.execute("DELETE FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-execution' AND delivering_since IS NULL", params![id,worker])?;
         conn.execute("INSERT OR IGNORE INTO session_events(ts,session,type,data,idem,source) VALUES(?1,?2,'message.voided',?3,?4,'steering')", params![now,worker,json!({"id":id,"task":task,"project":project,"old_generation":old_generation,"current_generation":current.generation,"current_delivery_id":current.delivery_id,"reason":"project-execution-superseded","delivered":false,"measured":true,"n_considered":1}).to_string(),format!("void:{id}")])?;
         tracing::info!(session=%worker,delivery_id=%id,task=%task,old_generation,current_generation=current.generation,measured=true,n_considered=1,verdict="project_execution_packet_superseded","superseded unsent packet retained in history; not delivered");
         settled += inserted;
     }
-    Ok(WriteOutcome { applied: settled > 0, events: vec![] })
+    Ok(WriteOutcome {
+        applied: settled > 0,
+        events: vec![],
+    })
 }
 
 pub fn input_hash(row: &bs::IssueRow) -> String {
@@ -169,24 +212,30 @@ pub struct CardPlan {
 }
 
 /// Short presentation is harness-owned; arbitrary command output stays in details.
-fn waiting_label(reason:&str,e:&Execution)->String {
+fn waiting_label(reason: &str, e: &Execution) -> String {
     match reason {
-        "project_disabled"=>"Project disabled",
-        "project_paused"=>"Project paused",
-        "attempts_exhausted"=>"Attempt limit reached",
-        "authorization_required"=>"Authorization required",
-        "requirements_changed"=>"Requirements changed",
-        "intake_required"=>"Intake required",
-        "executor_capacity"=>"Waiting for executor capacity",
-        "token_budget_reached"=>"Token budget reached",
-        "cost_budget_reached"=>"Cost budget reached",
-        "budget_usage_unmeasured"=>"Token usage unmeasured",
-        "budget_cost_unmeasured"=>"Cost unmeasured",
-        _ if reason.starts_with("required_output:")=>"Required output",
-        _ if reason.starts_with("invalid_dependency:")=>"Invalid dependency",
-        _ if e.report.is_some() && e.waiting.as_deref()==Some(reason) && e.wait_category.is_none()=>"Verification failed",
-        _=>"Execution held",
-    }.into()
+        "project_disabled" => "Project disabled",
+        "project_paused" => "Project paused",
+        "attempts_exhausted" => "Attempt limit reached",
+        "authorization_required" => "Authorization required",
+        "requirements_changed" => "Requirements changed",
+        "intake_required" => "Intake required",
+        "executor_capacity" => "Waiting for executor capacity",
+        "token_budget_reached" => "Token budget reached",
+        "cost_budget_reached" => "Cost budget reached",
+        "budget_usage_unmeasured" => "Token usage unmeasured",
+        "budget_cost_unmeasured" => "Cost unmeasured",
+        _ if reason.starts_with("required_output:") => "Required output",
+        _ if reason.starts_with("invalid_dependency:") => "Invalid dependency",
+        _ if e.report.is_some()
+            && e.waiting.as_deref() == Some(reason)
+            && e.wait_category.is_none() =>
+        {
+            "Verification failed"
+        }
+        _ => "Execution held",
+    }
+    .into()
 }
 
 pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<CardPlan>> {
@@ -302,7 +351,7 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             id: row.id.clone(),
             phase,
             action: action.into(),
-            waiting_label: waiting.as_deref().map(|r|waiting_label(r,&state)),
+            waiting_label: waiting.as_deref().map(|r| waiting_label(r, &state)),
             waiting_reason: waiting,
             execution: state,
         });
@@ -442,7 +491,7 @@ pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<Write
     save_execution(conn, &row, &state, "project.claimed")
 }
 
-pub(crate) fn validate_report(row:&bs::IssueRow,report:&Report)->anyhow::Result<()> {
+pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Result<()> {
     let criteria: Vec<String> =
         serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
     anyhow::ensure!(
@@ -512,13 +561,18 @@ pub fn record_report(
         );
         return Err(error);
     }
-    let policy=store::get(conn,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
-    let criteria: Vec<String> = serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    let policy = store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project missing"))?;
+    let criteria: Vec<String> =
+        serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
     super::acceptance::contract_binding(&criteria, report, policy.policy.acceptance.as_ref())?;
-    let workspace=if policy.policy.worktree {
+    let workspace = if policy.policy.worktree {
         let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
             .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
-        anyhow::ensure!(crate::fanout_workspace::same_repository(&workspace.repo,&policy.policy.repository) && workspace.branch==format!("amux/fanout/{worker}"),"registered workspace does not match project executor");
+        anyhow::ensure!(
+            crate::fanout_workspace::same_repository(&workspace.repo, &policy.policy.repository)
+                && workspace.branch == format!("amux/fanout/{worker}"),
+            "registered workspace does not match project executor"
+        );
         workspace
     } else {
         crate::fanout_workspace::Workspace {
@@ -528,7 +582,11 @@ pub fn record_report(
             base: String::new(),
         }
     };
-    if let Err(error)=super::driver::validated_verification_commands(&workspace,&policy.policy.verify_command,report) {
+    if let Err(error) = super::driver::validated_verification_commands(
+        &workspace,
+        &policy.policy.verify_command,
+        report,
+    ) {
         tracing::warn!(project,task=id,worker,generation,measured=true,n_considered=report.checks.len()+1,verdict="project.report_commands_refused",%error,"report unchanged; correct candidate-relative commands and resubmit this generation");
         anyhow::bail!("report command refused before verification; correct the command and resubmit the same generation: {error}");
     }
@@ -568,8 +626,18 @@ pub fn delivery_current(
 
 #[cfg(test)]
 pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
-    let home=crate::config::amux_home();
-    crate::fanout_workspace::save(&home,worker,&crate::fanout_workspace::Workspace{repo:repo.into(),path:home.join("worktrees").join(worker).to_string_lossy().into(),branch:format!("amux/fanout/{worker}"),base:"a".repeat(40)}).unwrap();
+    let home = crate::config::amux_home();
+    crate::fanout_workspace::save(
+        &home,
+        worker,
+        &crate::fanout_workspace::Workspace {
+            repo: repo.into(),
+            path: home.join("worktrees").join(worker).to_string_lossy().into(),
+            branch: format!("amux/fanout/{worker}"),
+            base: "a".repeat(40),
+        },
+    )
+    .unwrap();
 }
 
 #[cfg(test)]
@@ -596,7 +664,21 @@ mod tests {
     }
     #[test]
     fn project_superseded_packet_reconciliation_preserves_identity_and_guards() {
-        for case in ["superseded", "current", "inflight", "owner", "foreign-worker", "foreign-project", "unproven", "input-changed", "history-conflict", "ambiguous", "deleted", "archived", "equal-generation"] {
+        for case in [
+            "superseded",
+            "current",
+            "inflight",
+            "owner",
+            "foreign-worker",
+            "foreign-project",
+            "unproven",
+            "input-changed",
+            "history-conflict",
+            "ambiguous",
+            "deleted",
+            "archived",
+            "equal-generation",
+        ] {
             let (_dir, db) = fixture();
             db.write(move |c| {
                 claim(c,"sample","A").unwrap();
@@ -648,15 +730,39 @@ mod tests {
 
     #[test]
     fn project_failure_label_never_uses_a_passing_stdout_prefix() {
-        let failure="tree-revert: OK\nrepository guard: refused invalid source";
-        let e=Execution{stage:"waiting".into(),waiting:Some(failure.into()),report:Some(Report{head:"a".repeat(40),summary:String::new(),assets:vec![],checks:vec![]}),..Default::default()};
-        assert_eq!(waiting_label(failure,&e),"Verification failed");
-        assert_eq!(e.waiting.as_deref(),Some(failure));
-        assert_eq!(waiting_label("untrusted: PASS",&Execution::default()),"Execution held");
-        assert_eq!(waiting_label("required_output:B",&e),"Required output");
-        for (reason,label) in [("token_budget_reached","Token budget reached"),("cost_budget_reached","Cost budget reached"),("budget_usage_unmeasured","Token usage unmeasured"),("budget_cost_unmeasured","Cost unmeasured")] {
-            assert_eq!(waiting_label(reason,&e),label);
-            assert_eq!(waiting_label(&format!("{reason}: unrelated stdout"),&Execution::default()),"Execution held");
+        let failure = "tree-revert: OK\nrepository guard: refused invalid source";
+        let e = Execution {
+            stage: "waiting".into(),
+            waiting: Some(failure.into()),
+            report: Some(Report {
+                head: "a".repeat(40),
+                summary: String::new(),
+                assets: vec![],
+                checks: vec![],
+            }),
+            ..Default::default()
+        };
+        assert_eq!(waiting_label(failure, &e), "Verification failed");
+        assert_eq!(e.waiting.as_deref(), Some(failure));
+        assert_eq!(
+            waiting_label("untrusted: PASS", &Execution::default()),
+            "Execution held"
+        );
+        assert_eq!(waiting_label("required_output:B", &e), "Required output");
+        for (reason, label) in [
+            ("token_budget_reached", "Token budget reached"),
+            ("cost_budget_reached", "Cost budget reached"),
+            ("budget_usage_unmeasured", "Token usage unmeasured"),
+            ("budget_cost_unmeasured", "Cost unmeasured"),
+        ] {
+            assert_eq!(waiting_label(reason, &e), label);
+            assert_eq!(
+                waiting_label(
+                    &format!("{reason}: unrelated stdout"),
+                    &Execution::default()
+                ),
+                "Execution held"
+            );
         }
     }
     #[test]
@@ -699,7 +805,7 @@ mod tests {
     #[test]
     fn project_result_settles_only_its_exact_delivery_even_after_sender_restart() {
         let (_dir, db) = fixture();
-        let _home=crate::api::settings::test_env::set_home(_dir.path());
+        let _home = crate::api::settings::test_env::set_home(_dir.path());
         db.write(|c| {
             claim(c,"sample","A").map_err(store::sql_error)?;
             let e=execution(c,"A").unwrap();
@@ -788,11 +894,11 @@ mod tests {
     #[test]
     fn project_reports_bind_identity_generation_requirements_and_criteria() {
         let (_dir, db) = fixture();
-        let _home=crate::api::settings::test_env::set_home(_dir.path());
+        let _home = crate::api::settings::test_env::set_home(_dir.path());
         db.write(|c| claim(c, "sample", "A").map_err(store::sql_error))
             .unwrap();
         let e = execution(&db.read().unwrap(), "A").unwrap();
-        register_test_workspace(&e.worker,"/repo");
+        register_test_workspace(&e.worker, "/repo");
         let report = Report {
             assets: vec![fixture_asset()],
             head: "a".repeat(40),

@@ -55,10 +55,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/quarantine/{id}", axum::routing::delete(purge_quarantine))
         .route("/snapshots", axum::routing::get(list_snapshots))
-        .route(
-            "/skipped",
-            axum::routing::get(list_skipped).delete(unskip),
-        )
+        .route("/skipped", axum::routing::get(list_skipped).delete(unskip))
 }
 
 /// Mark scans left `running` by a previous process as interrupted.
@@ -90,7 +87,10 @@ pub(crate) fn reap_orphaned_scans(store: &crate::db::SharedStore) {
               WHERE status='running'",
             rusqlite::params![now_secs()],
         )?;
-        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        Ok(crate::db::WriteOutcome {
+            applied: n > 0,
+            events: vec![],
+        })
     });
     match res {
         Ok(r) if r.applied => {
@@ -245,7 +245,10 @@ fn load_skips(store: &crate::db::SharedStore) -> std::collections::HashSet<PathB
                 ],
             )?;
         }
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        Ok(crate::db::WriteOutcome {
+            applied: true,
+            events: vec![],
+        })
     });
 
     let mut out = std::collections::HashSet::new();
@@ -284,7 +287,10 @@ fn record_stalled_dir(store: &crate::db::SharedStore, path: String, detail: Stri
                last_seen=excluded.last_seen, hits=hits+1",
             rusqlite::params![path, detail, now],
         )?;
-        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        Ok(crate::db::WriteOutcome {
+            applied: n > 0,
+            events: vec![],
+        })
     });
     if let Err(e) = res {
         tracing::error!(error = %e, "failed to record a stalled reclaim directory");
@@ -351,7 +357,10 @@ fn touch_skips(store: &crate::db::SharedStore, paths: Vec<String>) {
                 rusqlite::params![p, now],
             )?;
         }
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        Ok(crate::db::WriteOutcome {
+            applied: true,
+            events: vec![],
+        })
     });
     if let Err(e) = res {
         tracing::error!(error = %e, "failed to refresh reclaim skip last_seen");
@@ -450,8 +459,16 @@ fn devtool_roots() -> Vec<(PathBuf, &'static str, &'static str)> {
     vec![
         (home.join(".ollama/models"), "devtool", "Ollama model blobs"),
         (home.join(".docker"), "devtool", "Docker data"),
-        (home.join(".cargo/registry"), "devtool", "Cargo registry cache"),
-        (home.join(".rustup/toolchains"), "devtool", "Rust toolchains"),
+        (
+            home.join(".cargo/registry"),
+            "devtool",
+            "Cargo registry cache",
+        ),
+        (
+            home.join(".rustup/toolchains"),
+            "devtool",
+            "Rust toolchains",
+        ),
         (home.join(".npm"), "devtool", "npm cache"),
         (home.join(".cache"), "cache", "Generic tool cache"),
         (home.join("Library/Caches"), "cache", "Application caches"),
@@ -548,8 +565,10 @@ fn kind_of(name: &str) -> &'static str {
             "archive"
         }
         Some("db" | "sqlite" | "sqlite3" | "raw" | "vmdk" | "qcow2") => "data",
-        Some("rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "h" | "cpp" | "java"
-        | "rb" | "sh" | "json" | "toml" | "yaml" | "yml" | "md" | "html" | "css") => "code",
+        Some(
+            "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "h" | "cpp" | "java" | "rb"
+            | "sh" | "json" | "toml" | "yaml" | "yml" | "md" | "html" | "css",
+        ) => "code",
         Some("o" | "a" | "so" | "dylib" | "rlib" | "class" | "pyc" | "d" | "rmeta") => "build",
         Some("pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "key" | "pages") => "doc",
         _ => "other",
@@ -576,8 +595,15 @@ fn guard_path(p: &FsPath) -> Result<(), String> {
 
     // System trees: never.
     for sys in [
-        "/System", "/usr", "/bin", "/sbin", "/Library/Apple", "/Applications", "/private/var/db",
-        "/dev", "/Volumes",
+        "/System",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/Library/Apple",
+        "/Applications",
+        "/private/var/db",
+        "/dev",
+        "/Volumes",
     ] {
         if s == sys || s.starts_with(&format!("{sys}/")) {
             return Err(format!("system path ({sys})"));
@@ -589,7 +615,11 @@ fn guard_path(p: &FsPath) -> Result<(), String> {
         return Err("home directory itself".into());
     }
     if p.parent() == Some(home.as_path()) {
-        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         // The few depth-1 dirs that ARE pure caches stay eligible.
         if !matches!(name.as_str(), ".cache" | ".npm") {
             return Err(format!("top-level home directory (~/{name})"));
@@ -597,7 +627,13 @@ fn guard_path(p: &FsPath) -> Result<(), String> {
     }
     // amux's own state. rust-build-target is regenerable and stays eligible;
     // the store, sessions, memory and logs are not.
-    for protected in [".amux/amux.db", ".amux/sessions", ".amux/memory", ".amux/logs", ".amux/quarantine"] {
+    for protected in [
+        ".amux/amux.db",
+        ".amux/sessions",
+        ".amux/memory",
+        ".amux/logs",
+        ".amux/quarantine",
+    ] {
         let full = home.join(protected);
         if p == full || s.starts_with(&format!("{}/", full.to_string_lossy())) {
             return Err(format!("amux state (~/{protected})"));
@@ -688,8 +724,11 @@ struct ScanCfg {
 fn set_background_io() {
     // IOPOL_TYPE_DISK = 0, IOPOL_SCOPE_THREAD = 1, IOPOL_THROTTLE = 3
     unsafe extern "C" {
-        fn setiopolicy_np(iotype: libc::c_int, scope: libc::c_int, policy: libc::c_int)
-            -> libc::c_int;
+        fn setiopolicy_np(
+            iotype: libc::c_int,
+            scope: libc::c_int,
+            policy: libc::c_int,
+        ) -> libc::c_int;
     }
     unsafe {
         setiopolicy_np(0, 1, 3);
@@ -753,7 +792,11 @@ fn walk(
         bytes: 0,
         skipped: Vec::new(),
     };
-    let devtools = if cfg.include_devtools { devtool_roots() } else { vec![] };
+    let devtools = if cfg.include_devtools {
+        devtool_roots()
+    } else {
+        vec![]
+    };
     let now = now_secs();
     // size -> paths, for the duplicate fingerprint pass
     let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
@@ -1029,7 +1072,9 @@ fn walk(
             // position has to advance here too or the watchdog reads the
             // duplicate pass as a wedge on whatever directory came last.
             pos.set(p, "fingerprint");
-            let Some(fp) = fingerprint(p, *sz) else { continue };
+            let Some(fp) = fingerprint(p, *sz) else {
+                continue;
+            };
             if let Some(first) = seen.get(&fp) {
                 out.findings.push(Finding {
                     category: "duplicate",
@@ -1073,7 +1118,9 @@ fn subtree_totals(root: &FsPath, dev_filter: u64, cancel: &AtomicBool, pos: &Sca
         // watchdog would read a legitimately-working scan as wedged, which is
         // the false positive that turns a detector into noise.
         pos.set(&dir, "prune");
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let Ok(md) = entry.metadata() else { continue };
             if md.is_symlink() {
@@ -1146,15 +1193,19 @@ fn default_roots() -> Vec<PathBuf> {
 /// either changed, and the drift would be invisible because both still work.
 /// So the handler is a thin wrapper over this.
 pub(crate) async fn start_background_scan(state: &AppState) -> Result<String, String> {
-    begin_scan(state, StartScan { roots: vec![], large_file_mb: None, stale_days: None }, "disk-watch")
-        .await
+    begin_scan(
+        state,
+        StartScan {
+            roots: vec![],
+            large_file_mb: None,
+            stale_days: None,
+        },
+        "disk-watch",
+    )
+    .await
 }
 
-async fn begin_scan(
-    state: &AppState,
-    body: StartScan,
-    session: &str,
-) -> Result<String, String> {
+async fn begin_scan(state: &AppState, body: StartScan, session: &str) -> Result<String, String> {
     // One scan at a time: two concurrent walkers on a loaded disk is exactly
     // the disruption this feature is supposed to avoid.
     if let Ok(conn) = state.store.read() {
@@ -1190,7 +1241,10 @@ async fn begin_scan(
     let (free, total) = df_bytes(&home_dir()).unwrap_or((0, 0));
     let snaps = read_snapshots().await.map(|v| v.len() as i64);
     let roots_json = serde_json::to_string(
-        &roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+        &roots
+            .iter()
+            .map(|p| p.to_string_lossy())
+            .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| "[]".into());
 
@@ -1245,8 +1299,9 @@ async fn start_scan(
         .to_string();
 
     match begin_scan(&state, body, &session).await {
-        Ok(scan_id) => Json(json!({"ok": true, "scan_id": scan_id, "status": "running"}))
-            .into_response(),
+        Ok(scan_id) => {
+            Json(json!({"ok": true, "scan_id": scan_id, "status": "running"})).into_response()
+        }
         Err(e) if e.contains("already running") => (
             StatusCode::CONFLICT,
             Json(json!({
@@ -1353,7 +1408,10 @@ fn spawn_stall_watchdog(
                            WHERE id=?1 AND status='running'",
                         rusqlite::params![sid, now_secs()],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: n > 0,
+                        events: vec![],
+                    })
                 });
                 return;
             }
@@ -1398,7 +1456,10 @@ fn spawn_stall_watchdog(
                       WHERE id=?1 AND status='running'",
                     rusqlite::params![sid, now_secs(), err, p, phase],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: n > 0,
+                    events: vec![],
+                })
             });
             if let Err(e) = res {
                 tracing::error!(scan = %scan_id, error = %e, "could not mark a stalled scan");
@@ -1428,21 +1489,24 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
     let mut flushed_findings = 0usize;
     let out = {
         let pos_p = pos.clone();
-        let mut progress =
-            |dirs: u64, files: u64, bytes: u64, cur: &FsPath, pending: &mut Vec<Finding>| {
-                if last_flush.elapsed() < std::time::Duration::from_millis(700) {
-                    return;
-                }
-                last_flush = std::time::Instant::now();
-                let (sid, cur_s) = (sid_p.clone(), cur.to_string_lossy().into_owned());
-                let batch: Vec<Finding> = std::mem::take(pending);
-                flushed_findings += batch.len();
-                // The phase flip is what separates "the disk is not answering"
-                // from "the write lock is not answering" when this never
-                // returns. Both freeze dirs_walked identically.
-                pos_p.phase("flush");
-                let phase_s = "flush";
-                let _ = store_p.write(move |c| {
+        let mut progress = |dirs: u64,
+                            files: u64,
+                            bytes: u64,
+                            cur: &FsPath,
+                            pending: &mut Vec<Finding>| {
+            if last_flush.elapsed() < std::time::Duration::from_millis(700) {
+                return;
+            }
+            last_flush = std::time::Instant::now();
+            let (sid, cur_s) = (sid_p.clone(), cur.to_string_lossy().into_owned());
+            let batch: Vec<Finding> = std::mem::take(pending);
+            flushed_findings += batch.len();
+            // The phase flip is what separates "the disk is not answering"
+            // from "the write lock is not answering" when this never
+            // returns. Both freeze dirs_walked identically.
+            pos_p.phase("flush");
+            let phase_s = "flush";
+            let _ = store_p.write(move |c| {
                     c.execute(
                         "UPDATE reclaim_scans SET dirs_walked=?2, files_walked=?3, bytes_seen=?4, current_path=?5, current_phase=?6 WHERE id=?1",
                         rusqlite::params![sid, dirs as i64, files as i64, bytes as i64, cur_s, phase_s],
@@ -1452,8 +1516,8 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
                     }
                     Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
                 });
-                pos_p.set(cur, "readdir");
-            };
+            pos_p.set(cur, "readdir");
+        };
         walk(&cfg, &cancel, &pos, &skip, &mut progress)
     };
     // Before the finalize write, so a slow rollup is not mistaken for a wedge.
@@ -1548,7 +1612,10 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     });
 
-    cancel_registry().lock().map(|mut m| m.remove(&scan_id)).ok();
+    cancel_registry()
+        .lock()
+        .map(|mut m| m.remove(&scan_id))
+        .ok();
 
     match res {
         Ok(_) => tracing::info!(
@@ -1655,7 +1722,11 @@ async fn get_scan(
         },
     );
     let Ok(scan) = scan else {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": "no such scan"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no such scan"})),
+        )
+            .into_response();
     };
 
     let limit = q.limit.unwrap_or(300).clamp(1, 2000);
@@ -1770,7 +1841,10 @@ async fn unskip(State(state): State<AppState>, Query(q): Query<SkipPath>) -> Res
     let path = q.path.clone();
     match state.store.write(move |c| {
         let n = c.execute("DELETE FROM reclaim_skipped WHERE path=?1", [&path])?;
-        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        Ok(crate::db::WriteOutcome {
+            applied: n > 0,
+            events: vec![],
+        })
     }) {
         Ok(r) if r.applied => {
             tracing::info!(path = %q.path, "reclaim skip cleared; next scan will try it again");
@@ -1956,9 +2030,9 @@ async fn create_quarantine(
         }
         // Sizing one quarantine candidate, not a scan: no watchdog is reading
         // this position, so it gets its own throwaway.
-        let sz = subtree_totals(&p, 0, &cancel, &ScanPos::new()).bytes.max(
-            std::fs::symlink_metadata(&p).map(|m| m.len()).unwrap_or(0),
-        );
+        let sz = subtree_totals(&p, 0, &cancel, &ScanPos::new())
+            .bytes
+            .max(std::fs::symlink_metadata(&p).map(|m| m.len()).unwrap_or(0));
         // Preserve the original path shape under the batch dir so restore is
         // unambiguous and a human can read the staging area directly.
         let rel = p.strip_prefix("/").unwrap_or(&p);
@@ -1969,7 +2043,11 @@ async fn create_quarantine(
         match crate::cargo_target_guard::rename(&p, &dest) {
             Ok(_) => {
                 total += sz;
-                moved.push((p.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned(), sz));
+                moved.push((
+                    p.to_string_lossy().into_owned(),
+                    dest.to_string_lossy().into_owned(),
+                    sz,
+                ));
             }
             Err(e) => {
                 tracing::warn!(path = %p.display(), error = %e, "quarantine move failed");
@@ -2107,7 +2185,9 @@ async fn restore_quarantine(State(state): State<AppState>, Path(id): Path<String
     for (orig, staged) in &pairs {
         let op = PathBuf::from(orig);
         if op.exists() {
-            failed.push(json!({"path": orig, "reason": "something already exists at the original path"}));
+            failed.push(
+                json!({"path": orig, "reason": "something already exists at the original path"}),
+            );
             continue;
         }
         if let Some(parent) = op.parent() {
@@ -2173,7 +2253,11 @@ async fn purge_quarantine(
     }
     let dir = quarantine_root().join(&id);
     if !dir.starts_with(quarantine_root()) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "bad batch id"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "bad batch id"})),
+        )
+            .into_response();
     }
     let (free_before, _) = df_bytes(&home_dir()).unwrap_or((0, 0));
     // Older versions could stage a live Cargo target. Keep the original paths
@@ -2184,7 +2268,8 @@ async fn purge_quarantine(
             Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
         };
         let result = (|| -> rusqlite::Result<Vec<String>> {
-            let mut stmt = conn.prepare("SELECT original_path FROM reclaim_quarantine_items WHERE batch_id=?1")?;
+            let mut stmt = conn
+                .prepare("SELECT original_path FROM reclaim_quarantine_items WHERE batch_id=?1")?;
             let rows = stmt.query_map([&id], |row| row.get(0))?;
             rows.collect()
         })();
@@ -2194,7 +2279,11 @@ async fn purge_quarantine(
         }
     };
     if let Err(e) = crate::cargo_target_guard::purge(&dir, &originals) {
-        return (StatusCode::CONFLICT, Json(json!({"error": e, "verdict": "cargo_reclaim_deferred"}))).into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": e, "verdict": "cargo_reclaim_deferred"})),
+        )
+            .into_response();
     }
     let (free_after, _) = df_bytes(&home_dir()).unwrap_or((0, 0));
     let snaps = read_snapshots().await.map(|v| v.len());
@@ -2250,7 +2339,10 @@ mod tests {
         assert!(unknown["count"].is_null());
         assert!(unknown["snapshots"].is_null());
         assert_eq!(unknown["n_considered"], 0);
-        assert!(unknown["why_unmeasured"].as_str().unwrap().contains("unmeasured"));
+        assert!(unknown["why_unmeasured"]
+            .as_str()
+            .unwrap()
+            .contains("unmeasured"));
         let zero = snapshot_payload(Some(vec![]), 100, 200);
         assert_eq!(zero["measured"], true);
         assert_eq!(zero["count"], 0);
@@ -2289,7 +2381,9 @@ mod tests {
             PathBuf::from("relative/path"),
             PathBuf::from("/Users/ethan/Dev/../../etc"),
             PathBuf::from("/private/tmp/claude-501"),
-            PathBuf::from("/private/tmp/claude-501/-Users-ethan-Dev/some-session/scratchpad/file.txt"),
+            PathBuf::from(
+                "/private/tmp/claude-501/-Users-ethan-Dev/some-session/scratchpad/file.txt",
+            ),
         ];
         for p in must_refuse {
             assert!(
@@ -2334,7 +2428,9 @@ mod tests {
     fn ephemeral_tmp_root_matches_only_the_roots_themselves() {
         assert!(is_ephemeral_tmp_root(FsPath::new("/private/tmp")));
         assert!(is_ephemeral_tmp_root(&std::env::temp_dir()));
-        assert!(!is_ephemeral_tmp_root(FsPath::new("/private/tmp/some-orphan-dir")));
+        assert!(!is_ephemeral_tmp_root(FsPath::new(
+            "/private/tmp/some-orphan-dir"
+        )));
         assert!(!is_ephemeral_tmp_root(FsPath::new("/private")));
         assert!(!is_ephemeral_tmp_root(&home_dir()));
     }
@@ -2391,7 +2487,10 @@ mod tests {
         let ma = std::fs::symlink_metadata(&a).expect("stat a");
         let mb = std::fs::symlink_metadata(&b).expect("stat b");
         assert!(seen.count(&ma), "first sighting of a hardlink must count");
-        assert!(!seen.count(&mb), "second path to the same inode must NOT count");
+        assert!(
+            !seen.count(&mb),
+            "second path to the same inode must NOT count"
+        );
 
         // A plain file with nlink == 1 must always count, even twice-seen
         // metadata objects, or ordinary files would go missing from totals.
@@ -2451,7 +2550,10 @@ mod tests {
         // Non-vacuity: a walk that produced nothing would satisfy the stray
         // check trivially, and an empty filter result is indistinguishable from
         // a correct one on the rows alone.
-        assert!(!out.tree.is_empty(), "the walk must have recorded something");
+        assert!(
+            !out.tree.is_empty(),
+            "the walk must have recorded something"
+        );
 
         let root = dir.path();
         let strays: Vec<String> = out
@@ -2491,21 +2593,23 @@ mod tests {
         let mut mismatches: Vec<String> = Vec::new();
         let mut calls = 0usize;
         {
-            let mut progress =
-                |_d: u64, _f: u64, _b: u64, cur: &FsPath, _p: &mut Vec<Finding>| {
-                    calls += 1;
-                    let (path, phase, _) = pos.read();
-                    if path != cur.to_string_lossy() || phase != "readdir" {
-                        mismatches.push(format!("at {cur:?}: published {phase} at {path}"));
-                    }
-                };
+            let mut progress = |_d: u64, _f: u64, _b: u64, cur: &FsPath, _p: &mut Vec<Finding>| {
+                calls += 1;
+                let (path, phase, _) = pos.read();
+                if path != cur.to_string_lossy() || phase != "readdir" {
+                    mismatches.push(format!("at {cur:?}: published {phase} at {path}"));
+                }
+            };
             walk(&cfg_for(dir.path()), &cancel, &pos, &skip, &mut progress);
         }
 
         // The 700ms throttle lives in run_scan's callback, not here, so every
         // directory reports — 13 of them (root + 12 subdirectories).
         assert!(calls >= 13, "progress must fire per directory, saw {calls}");
-        assert!(mismatches.is_empty(), "position lagged the walk: {mismatches:?}");
+        assert!(
+            mismatches.is_empty(),
+            "position lagged the walk: {mismatches:?}"
+        );
     }
 
     /// A directory on the skip list is stepped over, and SAID to be stepped
@@ -2531,7 +2635,11 @@ mod tests {
         let mut noop = |_: u64, _: u64, _: u64, _: &FsPath, _: &mut Vec<Finding>| {};
         let out = walk(&cfg_for(dir.path()), &cancel, &pos, &skip, &mut noop);
 
-        assert_eq!(out.skipped, vec![hazard.clone()], "the skip must be reported");
+        assert_eq!(
+            out.skipped,
+            vec![hazard.clone()],
+            "the skip must be reported"
+        );
         assert!(
             out.bytes >= 4_000 && out.bytes < 40_000,
             "sibling walked, hazard not: got {} bytes",
@@ -2570,7 +2678,10 @@ mod tests {
                              '/Users/ethan/Library/Mobile Documents', 'readdir')",
                     [],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .expect("seed");
 
@@ -2585,7 +2696,10 @@ mod tests {
             )
             .expect("row");
         assert_eq!(status, "interrupted");
-        assert_eq!(path.as_deref(), Some("/Users/ethan/Library/Mobile Documents"));
+        assert_eq!(
+            path.as_deref(),
+            Some("/Users/ethan/Library/Mobile Documents")
+        );
         assert!(
             err.contains("readdir at /Users/ethan/Library/Mobile Documents"),
             "the error must name where it died, got: {err}"
@@ -2604,7 +2718,10 @@ mod tests {
 
         let skips = load_skips(&store);
         let icloud = home_dir().join("Library/Mobile Documents");
-        assert!(skips.contains(&icloud), "iCloud provider root must be skipped by default");
+        assert!(
+            skips.contains(&icloud),
+            "iCloud provider root must be skipped by default"
+        );
 
         // Seeding twice must not duplicate or resurrect a cleared row.
         let again = load_skips(&store);
@@ -2614,14 +2731,21 @@ mod tests {
         store
             .write(move |c| {
                 let n = c.execute("DELETE FROM reclaim_skipped WHERE path=?1", [&p])?;
-                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: n > 0,
+                    events: vec![],
+                })
             })
             .expect("delete");
         let conn = store.read().expect("read");
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM reclaim_skipped", [], |r| r.get(0))
             .expect("count");
-        assert_eq!(n as usize, skips.len() - 1, "clearing a skip must remove exactly one");
+        assert_eq!(
+            n as usize,
+            skips.len() - 1,
+            "clearing a skip must remove exactly one"
+        );
     }
 
     /// A learned skip records WHY, so a future reader can tell an intentional
@@ -2674,8 +2798,16 @@ mod tests {
         let store: crate::db::SharedStore =
             Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
 
-        record_stalled_dir(&store, "/mnt/dead-nfs".into(), "readdir did not return after 45s".into());
-        record_stalled_dir(&store, "/mnt/dead-nfs".into(), "readdir did not return after 45s".into());
+        record_stalled_dir(
+            &store,
+            "/mnt/dead-nfs".into(),
+            "readdir did not return after 45s".into(),
+        );
+        record_stalled_dir(
+            &store,
+            "/mnt/dead-nfs".into(),
+            "readdir did not return after 45s".into(),
+        );
 
         let conn = store.read().expect("read");
         let (reason, detail, hits): (String, String, i64) = conn
@@ -2686,8 +2818,14 @@ mod tests {
             )
             .expect("row");
         assert_eq!(reason, "stalled");
-        assert!(detail.contains("45s"), "detail must carry the stall duration: {detail}");
-        assert_eq!(hits, 2, "a repeat stall must increment rather than insert a second row");
+        assert!(
+            detail.contains("45s"),
+            "detail must carry the stall duration: {detail}"
+        );
+        assert_eq!(
+            hits, 2,
+            "a repeat stall must increment rather than insert a second row"
+        );
     }
 
     /// Being routed around must not COUNT as evidence for being routed around.
@@ -2726,9 +2864,16 @@ mod tests {
         let hits: i64 = store
             .read()
             .expect("read")
-            .query_row("SELECT hits FROM reclaim_skipped WHERE path=?1", [victim], |r| r.get(0))
+            .query_row(
+                "SELECT hits FROM reclaim_skipped WHERE path=?1",
+                [victim],
+                |r| r.get(0),
+            )
             .expect("row");
-        assert_eq!(hits, 1, "hits counts stalls only; ten skips must add none, got {hits}");
+        assert_eq!(
+            hits, 1,
+            "hits counts stalls only; ten skips must add none, got {hits}"
+        );
         assert!(
             !load_skips(&store).contains(&victim_path),
             "a directory must not become permanently exempt by being skipped"
@@ -2761,7 +2906,10 @@ mod tests {
                      VALUES (?1,'stalled','seeded',100,100,1)",
                     [p],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .expect("seed");
 

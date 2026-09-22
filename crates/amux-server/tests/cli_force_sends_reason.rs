@@ -38,9 +38,9 @@ fn repo_root() -> PathBuf {
 /// the prose that happens to precede it is one comment away from reading the
 /// wrong lines, and this file's own history has that failure in it.
 fn body_builder_snippet(cli: &str) -> String {
-    let start = cli
-        .find(r#"b = {"status": os.environ["S"]}"#)
-        .expect("the transition body builder moved or was renamed — find it and re-anchor this test");
+    let start = cli.find(r#"b = {"status": os.environ["S"]}"#).expect(
+        "the transition body builder moved or was renamed — find it and re-anchor this test",
+    );
     let rest = &cli[start..];
     let end = rest
         .find("print(json.dumps(b))")

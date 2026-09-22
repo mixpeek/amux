@@ -155,7 +155,10 @@ fn closed_cards(
             ),
         ))
     })?;
-    Ok(rows.flatten().filter(|(_, (_, shas))| !shas.is_empty()).collect())
+    Ok(rows
+        .flatten()
+        .filter(|(_, (_, shas))| !shas.is_empty())
+        .collect())
 }
 
 async fn git_toplevel(dir: &str) -> Option<String> {
@@ -174,7 +177,10 @@ async fn git_output(repo: &str, args: &[&str]) -> Option<std::process::Output> {
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    tokio::time::timeout(GIT_TIMEOUT, cmd.output()).await.ok()?.ok()
+    tokio::time::timeout(GIT_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()
 }
 
 /// Feed `stdin` to a git subcommand and return stdout. One process for N shas.
@@ -203,7 +209,10 @@ async fn git_stdin(repo: &str, args: &[&str], stdin: String) -> Option<String> {
         let (_, output) = tokio::join!(writer, child.wait_with_output());
         output.ok()
     };
-    let out = tokio::time::timeout(GIT_TIMEOUT, run).await.ok().flatten()?;
+    let out = tokio::time::timeout(GIT_TIMEOUT, run)
+        .await
+        .ok()
+        .flatten()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -215,16 +224,26 @@ async fn git_stdin(repo: &str, args: &[&str], stdin: String) -> Option<String> {
 /// "nothing was deleted".
 async fn resolve_shas(repo: &str, shas: &BTreeSet<String>) -> BTreeMap<String, String> {
     let list: Vec<&String> = shas.iter().take(MAX_SHAS).collect();
-    let stdin: String =
-        list.iter().map(|s| format!("{s}\n")).collect::<Vec<_>>().concat();
-    let Some(out) = git_stdin(repo, &["cat-file", "--batch-check=%(objectname) %(objecttype)"], stdin).await
+    let stdin: String = list
+        .iter()
+        .map(|s| format!("{s}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let Some(out) = git_stdin(
+        repo,
+        &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        stdin,
+    )
+    .await
     else {
         return BTreeMap::new();
     };
     let mut map = BTreeMap::new();
     for (line, abbrev) in out.lines().zip(list.iter()) {
         let mut it = line.split_whitespace();
-        let (Some(full), Some(kind)) = (it.next(), it.next()) else { continue };
+        let (Some(full), Some(kind)) = (it.next(), it.next()) else {
+            continue;
+        };
         if kind == "commit" && full.len() == 40 {
             map.insert((*abbrev).clone(), full.to_string());
         }
@@ -234,7 +253,11 @@ async fn resolve_shas(repo: &str, shas: &BTreeSet<String>) -> BTreeMap<String, S
 
 /// full sha -> the paths that commit touched. One process for N commits.
 async fn paths_of(repo: &str, fulls: &BTreeSet<String>) -> BTreeMap<String, Vec<String>> {
-    let stdin: String = fulls.iter().map(|s| format!("{s}\n")).collect::<Vec<_>>().concat();
+    let stdin: String = fulls
+        .iter()
+        .map(|s| format!("{s}\n"))
+        .collect::<Vec<_>>()
+        .concat();
     // NO `--no-commit-id`: with `--stdin` the sha line is what attributes the
     // following paths to a commit, so suppressing it would merge every commit's
     // paths into one anonymous list.
@@ -265,7 +288,10 @@ async fn live_paths(repo: &str) -> BTreeSet<String> {
     let Some(out) = git_output(repo, &["ls-tree", "-r", "HEAD", "--name-only"]).await else {
         return BTreeSet::new();
     };
-    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 pub async fn deleted_substrate(
@@ -329,8 +355,10 @@ async fn payload(state: &AppState, p: Params) -> (StatusCode, Value) {
         })
         .filter(|d| !d.is_empty())
         .collect();
-    let all_shas: BTreeSet<String> =
-        cards.values().flat_map(|(_, s)| s.iter().cloned()).collect();
+    let all_shas: BTreeSet<String> = cards
+        .values()
+        .flat_map(|(_, s)| s.iter().cloned())
+        .collect();
     let scan = async {
         use futures::stream::{self, StreamExt};
 
@@ -346,8 +374,8 @@ async fn payload(state: &AppState, p: Params) -> (StatusCode, Value) {
         let resolution_failed = tops.iter().any(Option::is_none);
         let repos: BTreeSet<String> = tops.into_iter().flatten().collect();
 
-        let repo_verdicts: Vec<BTreeMap<String, Value>> = stream::iter(
-            repos.iter().cloned().map(|repo| {
+        let repo_verdicts: Vec<BTreeMap<String, Value>> =
+            stream::iter(repos.iter().cloned().map(|repo| {
                 let all_shas = &all_shas;
                 async move {
                     let resolved = resolve_shas(&repo, all_shas).await;
@@ -374,13 +402,12 @@ async fn payload(state: &AppState, p: Params) -> (StatusCode, Value) {
                         })
                         .collect()
                 }
-            }),
-        )
-        // Preserve BTreeSet repo order while allowing four repos to make
-        // progress concurrently, so "first repo wins" remains deterministic.
-        .buffered(GIT_CONCURRENCY)
-        .collect()
-        .await;
+            }))
+            // Preserve BTreeSet repo order while allowing four repos to make
+            // progress concurrently, so "first repo wins" remains deterministic.
+            .buffered(GIT_CONCURRENCY)
+            .collect()
+            .await;
 
         // sha (as written in the log) -> (repo, verdict, deleted/live paths).
         let mut verdict: BTreeMap<String, Value> = BTreeMap::new();
@@ -443,7 +470,10 @@ async fn payload(state: &AppState, p: Params) -> (StatusCode, Value) {
             })
         };
         n(b).cmp(&n(a)).then_with(|| {
-            a["id"].as_str().unwrap_or("").cmp(b["id"].as_str().unwrap_or(""))
+            a["id"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["id"].as_str().unwrap_or(""))
         })
     });
 
@@ -468,8 +498,11 @@ async fn payload(state: &AppState, p: Params) -> (StatusCode, Value) {
     }
     let mut ranked: Vec<(&str, usize)> = path_freq.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    let top: Vec<Value> =
-        ranked.iter().take(20).map(|(p, n)| json!({ "path": p, "commits": n })).collect();
+    let top: Vec<Value> = ranked
+        .iter()
+        .take(20)
+        .map(|(p, n)| json!({ "path": p, "commits": n }))
+        .collect();
     let dominant = ranked.first().map(|(p, n)| (p.to_string(), *n));
 
     (
@@ -542,12 +575,18 @@ mod tests {
         // 40 is a full sha; 41 hex chars is not a sha and must not be truncated
         // into one, which is the failure that would silently mis-resolve.
         let full = "a".repeat(40);
-        assert_eq!(shas_in_log(&format!("commit {full} — yes")), vec![full.clone()]);
+        assert_eq!(
+            shas_in_log(&format!("commit {full} — yes")),
+            vec![full.clone()]
+        );
         assert!(shas_in_log(&format!("commit {}1 — no", "a".repeat(40))).is_empty());
         // Hex run followed by a letter is a word, not a sha.
         assert!(shas_in_log("commit deadbeefz — no").is_empty());
         // Case-folded, so the same commit written two ways is one sha.
-        assert_eq!(shas_in_log("commit ABC1234 and commit abc1234"), vec!["abc1234"]);
+        assert_eq!(
+            shas_in_log("commit ABC1234 and commit abc1234"),
+            vec!["abc1234"]
+        );
     }
 
     /// `git diff-tree --stdin` output is attributed by the sha LINE, and this

@@ -47,7 +47,10 @@ async fn missing_question_is_a_measured_json_refusal() {
     assert_eq!(value["error"], "missing question");
     assert_eq!(value["measured"], false);
     assert_eq!(value["n_considered"], 0);
-    assert!(value["why_unmeasured"].as_str().unwrap().contains("validation"));
+    assert!(value["why_unmeasured"]
+        .as_str()
+        .unwrap()
+        .contains("validation"));
 }
 
 #[tokio::test]

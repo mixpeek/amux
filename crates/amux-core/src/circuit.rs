@@ -55,14 +55,19 @@ pub enum FleetState {
     },
     /// Low-power loop: re-evaluate blocked items, audit progress, close the
     /// circuit if runnable work is found (Invariant 48 steps 3-4).
-    Reconciling { since: DateTime<Utc> },
+    Reconciling {
+        since: DateTime<Utc>,
+    },
 }
 
 impl FleetState {
     /// Open the circuit. The timestamp is a parameter — core is pure and
     /// never reads a clock.
     pub fn open(reason: CircuitOpenReason, at: DateTime<Utc>) -> FleetState {
-        FleetState::CircuitOpen { reason, opened_at: at }
+        FleetState::CircuitOpen {
+            reason,
+            opened_at: at,
+        }
     }
 
     /// `CircuitOpen` or `Reconciling` — the states in which the fleet is
@@ -171,7 +176,8 @@ impl FleetCircuitBreaker {
     /// evaluation instant is actually consumed, which is why `evaluate`
     /// itself does not take a clock.
     pub fn trip(&self, window: &WindowStats, at: DateTime<Utc>) -> Option<FleetState> {
-        self.evaluate(window).map(|reason| FleetState::open(reason, at))
+        self.evaluate(window)
+            .map(|reason| FleetState::open(reason, at))
     }
 
     /// Whether an emergency state may close on this observation.
@@ -297,7 +303,9 @@ mod tests {
         w.tasks_completed = 0;
         assert_eq!(
             breaker().evaluate(&w),
-            Some(CircuitOpenReason::NoProgress { window_secs: 14_400 })
+            Some(CircuitOpenReason::NoProgress {
+                window_secs: 14_400
+            })
         );
 
         // min 0 disables the no-progress trip entirely.
@@ -430,7 +438,9 @@ mod tests {
             reason: CircuitOpenReason::AllItemsBlocked,
             opened_at: t0(),
         }));
-        assert!(!stall_check_enabled(&FleetState::Reconciling { since: t0() }));
+        assert!(!stall_check_enabled(&FleetState::Reconciling {
+            since: t0()
+        }));
     }
 
     #[test]

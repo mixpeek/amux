@@ -143,9 +143,11 @@ pub fn declare(
             proposed.push(output.clone());
         }
     }
-    super::graph::validate(conn, project, id, &proposed, "required_outputs").map_err(|e| anyhow::anyhow!("{e}"))?;
+    super::graph::validate(conn, project, id, &proposed, "required_outputs")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     for output in &request.required_outputs {
-        let target = bs::get_issue(conn, output)?.ok_or_else(|| anyhow::anyhow!("required output missing: {output}"))?;
+        let target = bs::get_issue(conn, output)?
+            .ok_or_else(|| anyhow::anyhow!("required output missing: {output}"))?;
         anyhow::ensure!(
             !authorization_hold(conn, &target)?,
             "authorization wait is not a required output: {output}"
@@ -313,13 +315,20 @@ pub(crate) mod tests {
         planner::execution(c, "A").unwrap().worker
     }
     fn current_verified(c: &Connection, id: &str) {
-        c.execute("UPDATE issues SET status='verified',evidence='Integrated current output' WHERE id=?1", [id]).unwrap();
+        c.execute(
+            "UPDATE issues SET status='verified',evidence='Integrated current output' WHERE id=?1",
+            [id],
+        )
+        .unwrap();
         let row = bs::get_issue(c, id).unwrap().unwrap();
         let mut execution = planner::execution(c, id).unwrap();
         execution.stage = "verified".into();
         execution.input_hash = planner::input_hash(&row);
         execution.report = Some(planner::Report {
-            assets: vec![], head: "b".repeat(40), checks: vec![], summary: "verified output".into(),
+            assets: vec![],
+            head: "b".repeat(40),
+            checks: vec![],
+            summary: "verified output".into(),
         });
         planner::save_execution(c, &row, &execution, "test.verified").unwrap();
     }
@@ -372,39 +381,109 @@ pub(crate) mod tests {
     #[test]
     fn project_outputs_continue_once_without_spending_attempt_or_erasing_failure() {
         let (_dir, db, request) = fixture();
-        db.write(move|c| {
-            let before=planner::execution(c,"A").unwrap();let attempts=attempts::list_for_card(c,"A")?;
+        db.write(move |c| {
+            let before = planner::execution(c, "A").unwrap();
+            let attempts = attempts::list_for_card(c, "A")?;
             // Negative control: even a Verified producer cannot wake a prose wait.
             current_verified(c, "B");
-            assert!(!resume(c,"sample","A").unwrap().applied);
-            let view=store::board(c,"sample").unwrap();
-            assert_eq!(view["cards"].as_array().unwrap().iter().find(|c|c["id"]=="A").unwrap()["phase"],"waiting");
-            c.execute("UPDATE issues SET status='review' WHERE id='B'",[])?;
-            assert!(declare(c,"sample","A",&before.worker,&request).unwrap().applied);
-            assert!(!declare(c,"sample","A",&before.worker,&request).unwrap().applied);
-            assert!(!resume(c,"sample","A").unwrap().applied,"reported is not Verified");
-            let waiting=planner::execution(c,"A").unwrap();
-            assert_eq!(waiting.output_wait.as_ref().unwrap().previous_wait,before.waiting);
-            assert_eq!(waiting.last_failure,before.last_failure);
+            assert!(!resume(c, "sample", "A").unwrap().applied);
+            let view = store::board(c, "sample").unwrap();
+            assert_eq!(
+                view["cards"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["id"] == "A")
+                    .unwrap()["phase"],
+                "waiting"
+            );
+            c.execute("UPDATE issues SET status='review' WHERE id='B'", [])?;
+            assert!(
+                declare(c, "sample", "A", &before.worker, &request)
+                    .unwrap()
+                    .applied
+            );
+            assert!(
+                !declare(c, "sample", "A", &before.worker, &request)
+                    .unwrap()
+                    .applied
+            );
+            assert!(
+                !resume(c, "sample", "A").unwrap().applied,
+                "reported is not Verified"
+            );
+            let waiting = planner::execution(c, "A").unwrap();
+            assert_eq!(
+                waiting.output_wait.as_ref().unwrap().previous_wait,
+                before.waiting
+            );
+            assert_eq!(waiting.last_failure, before.last_failure);
             current_verified(c, "B");
-            assert!(resume(c,"sample","A").unwrap().applied);
-            assert!(!resume(c,"sample","A").unwrap().applied);
-            let after=planner::execution(c,"A").unwrap();
-            assert_eq!(after.attempt,2);assert_eq!(after.generation,before.generation+1);
-            assert_ne!(after.delivery_id,before.delivery_id);assert_eq!(after.last_failure,before.last_failure);
-            assert_eq!(attempts::list_for_card(c,"A")?,attempts,"ended attempt history is immutable");
-            assert!(!declare(c,"sample","A",&before.worker,&request).unwrap().applied);
-            assert!(planner::delivery_current(c,"sample",&after.worker,&after.delivery_id).unwrap());
-            assert!(!planner::delivery_current(c,"sample",&before.worker,&before.delivery_id).unwrap());
+            assert!(resume(c, "sample", "A").unwrap().applied);
+            assert!(!resume(c, "sample", "A").unwrap().applied);
+            let after = planner::execution(c, "A").unwrap();
+            assert_eq!(after.attempt, 2);
+            assert_eq!(after.generation, before.generation + 1);
+            assert_ne!(after.delivery_id, before.delivery_id);
+            assert_eq!(after.last_failure, before.last_failure);
+            assert_eq!(
+                attempts::list_for_card(c, "A")?,
+                attempts,
+                "ended attempt history is immutable"
+            );
+            assert!(
+                !declare(c, "sample", "A", &before.worker, &request)
+                    .unwrap()
+                    .applied
+            );
+            assert!(
+                planner::delivery_current(c, "sample", &after.worker, &after.delivery_id).unwrap()
+            );
+            assert!(
+                !planner::delivery_current(c, "sample", &before.worker, &before.delivery_id)
+                    .unwrap()
+            );
             // Output regression after the reservation must prevent delivery.
-            c.execute("UPDATE issues SET status='review' WHERE id='B'",[])?;
-            assert!(!planner::delivery_current(c,"sample",&after.worker,&after.delivery_id).unwrap());
-            let report=planner::Report{assets:vec![],head:"a".repeat(40),summary:"claim success".into(),checks:vec![]};
-            assert!(planner::record_report(c,"sample","A",&before.worker,before.generation,&before.input_hash,&report).is_err());
-            assert!(planner::record_report(c,"sample","A",&after.worker,after.generation,&after.input_hash,&report).is_err(),"executable criteria still required");
-            assert_eq!(bs::get_issue(c,"A")?.unwrap().status,"doing");
-            Ok(WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
+            c.execute("UPDATE issues SET status='review' WHERE id='B'", [])?;
+            assert!(
+                !planner::delivery_current(c, "sample", &after.worker, &after.delivery_id).unwrap()
+            );
+            let report = planner::Report {
+                assets: vec![],
+                head: "a".repeat(40),
+                summary: "claim success".into(),
+                checks: vec![],
+            };
+            assert!(planner::record_report(
+                c,
+                "sample",
+                "A",
+                &before.worker,
+                before.generation,
+                &before.input_hash,
+                &report
+            )
+            .is_err());
+            assert!(
+                planner::record_report(
+                    c,
+                    "sample",
+                    "A",
+                    &after.worker,
+                    after.generation,
+                    &after.input_hash,
+                    &report
+                )
+                .is_err(),
+                "executable criteria still required"
+            );
+            assert_eq!(bs::get_issue(c, "A")?.unwrap().status, "doing");
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     }
     #[test]
     fn project_outputs_refuse_foreign_stale_missing_cycles_and_authorization_holds() {

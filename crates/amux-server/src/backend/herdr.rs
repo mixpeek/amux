@@ -195,9 +195,7 @@ impl HerdrBackend {
                 shell_pid = sp.map(|p| p as u32);
                 let fg = info["foreground_processes"].as_array();
                 let ready = match (sp, fg) {
-                    (Some(sp), Some(fg)) => {
-                        fg.len() == 1 && fg[0]["pid"].as_u64() == Some(sp)
-                    }
+                    (Some(sp), Some(fg)) => fg.len() == 1 && fg[0]["pid"].as_u64() == Some(sp),
                     _ => false,
                 };
                 if ready {
@@ -252,9 +250,7 @@ impl HerdrBackend {
             if let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) {
                 if let Some((code, message)) = envelope_error(&v) {
                     return Err(match code.as_str() {
-                        "pane_not_found" | "workspace_not_found" => {
-                            BackendError::NotFound(message)
-                        }
+                        "pane_not_found" | "workspace_not_found" => BackendError::NotFound(message),
                         _ => BackendError::CommandFailed(format!("{code}: {message}")),
                     });
                 }
@@ -291,7 +287,8 @@ impl HerdrBackend {
                 );
             }
         }
-        self.run_json(&["agent", "prompt", pane, text], PROMPT_TIMEOUT).await?;
+        self.run_json(&["agent", "prompt", pane, text], PROMPT_TIMEOUT)
+            .await?;
         Ok(())
     }
 }
@@ -369,7 +366,9 @@ impl SessionBackend for HerdrBackend {
         if !out.status.success() {
             // Half-spawned workspace must not leak: close it, best effort.
             if let Ok(Some(ws)) = self.find_workspace(&ref_).await {
-                let _ = self.run_json(&["workspace", "close", &ws], OP_TIMEOUT).await;
+                let _ = self
+                    .run_json(&["workspace", "close", &ws], OP_TIMEOUT)
+                    .await;
             }
             return Err(BackendError::SpawnFailed(format!(
                 "pane run failed: {} {}",
@@ -386,12 +385,25 @@ impl SessionBackend for HerdrBackend {
         // 2026-08-09; note the CLI wants the positional ID BEFORE flags).
         // Display-only and best-effort: a metadata miss must never fail a
         // spawn that succeeded.
-        if let Some(name) = spec.human_label.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(name) = spec
+            .human_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if let Some(ws_id) = v["result"]["root_pane"]["workspace_id"].as_str() {
                 let token = format!("worker={name}");
                 if let Err(e) = self
                     .run_json(
-                        &["workspace", "report-metadata", ws_id, "--source", "amux", "--token", &token],
+                        &[
+                            "workspace",
+                            "report-metadata",
+                            ws_id,
+                            "--source",
+                            "amux",
+                            "--token",
+                            &token,
+                        ],
                         OP_TIMEOUT,
                     )
                     .await
@@ -618,8 +630,13 @@ fn parse_workspace_statuses(v: &Value) -> Vec<(String, String)> {
 /// herdr does no quoting of its own.
 fn sh_quote(s: &str) -> String {
     if !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/' | b'=' | b':' | b'@' | b'%' | b'+' | b','))
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'_' | b'-' | b'.' | b'/' | b'=' | b':' | b'@' | b'%' | b'+' | b','
+                )
+        })
     {
         return s.to_string();
     }
@@ -641,16 +658,21 @@ mod tests {
         let v = super::parse_envelope("", REAL_STDERR_WHEN_SERVER_DOWN)
             .expect("the real down-server specimen must parse");
         let (code, _msg) = super::envelope_error(&v).expect("it is an error envelope");
-        assert_eq!(code, "server_not_running",
+        assert_eq!(
+            code, "server_not_running",
             "reconcile keys its empty-host arm on this exact code; if it does not \
-             surface, that arm stays unreachable and the WARN storm returns");
+             surface, that arm stays unreachable and the WARN storm returns"
+        );
     }
 
     #[test]
     fn stdout_still_wins_when_it_carries_the_envelope() {
         let v = super::parse_envelope(r#"{"id":"x","workspaces":[]}"#, "ignored noise")
             .expect("normal success path");
-        assert!(v.get("workspaces").is_some(), "stdout must take precedence over stderr");
+        assert!(
+            v.get("workspaces").is_some(),
+            "stdout must take precedence over stderr"
+        );
     }
 
     /// The control. Without it, a `parse_envelope` that returned Some(Null) for

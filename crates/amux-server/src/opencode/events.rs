@@ -57,7 +57,16 @@ fn summarize(text: &str) -> String {
 /// that carry the action (a Bash `command`, an Edit `file_path`), fall back
 /// to compact JSON. Never the full payload — that goes to logs.
 fn tool_detail(input: &Value) -> Option<String> {
-    for key in ["command", "cmd", "description", "file_path", "path", "pattern", "query", "url"] {
+    for key in [
+        "command",
+        "cmd",
+        "description",
+        "file_path",
+        "path",
+        "pattern",
+        "query",
+        "url",
+    ] {
         if let Some(s) = input.get(key).and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 return Some(summarize(s));
@@ -179,7 +188,10 @@ pub fn translate_claude(line: &str, turn: &TurnId) -> Vec<WorkerEvent> {
         // `user` lines carry tool RESULTS — logs, not events (Invariant 30).
         Some("result") => {
             let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-            let subtype = v.get("subtype").and_then(Value::as_str).unwrap_or("unknown");
+            let subtype = v
+                .get("subtype")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
             let text = v.get("result").and_then(Value::as_str).unwrap_or("");
             if !is_error && subtype == "success" {
                 let outcome = if text.trim().is_empty() {
@@ -621,13 +633,20 @@ pub(crate) fn output_text(payload: &Value) -> String {
     match payload.get("output") {
         Some(Value::String(s)) => clean_tool_output(s),
         Some(Value::Array(blocks)) => {
-            let text = blocks.iter().filter_map(|block| {
-                if matches!(block["type"].as_str(), Some("text" | "input_text" | "output_text")) {
-                    block["text"].as_str()
-                } else {
-                    None // Images are not terminal text or base64 scrollback.
-                }
-            }).collect::<Vec<_>>().join("\n");
+            let text = blocks
+                .iter()
+                .filter_map(|block| {
+                    if matches!(
+                        block["type"].as_str(),
+                        Some("text" | "input_text" | "output_text")
+                    ) {
+                        block["text"].as_str()
+                    } else {
+                        None // Images are not terminal text or base64 scrollback.
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             clean_tool_output(&text)
         }
         Some(other) => other
@@ -812,7 +831,10 @@ pub(crate) mod tests {
 
     #[test]
     fn claude_init_is_started() {
-        assert_eq!(translate_claude(CLAUDE_INIT, &turn()), vec![WorkerEvent::Started]);
+        assert_eq!(
+            translate_claude(CLAUDE_INIT, &turn()),
+            vec![WorkerEvent::Started]
+        );
     }
 
     #[test]
@@ -895,8 +917,12 @@ pub(crate) mod tests {
     fn claude_error_result_is_failed_then_turn_completed() {
         let evs = translate_claude(CLAUDE_RESULT_ERROR, &turn());
         assert_eq!(evs.len(), 2);
-        assert!(matches!(&evs[0], WorkerEvent::Failed(f) if f.reason.contains("error_during_execution")));
-        assert!(matches!(&evs[1], WorkerEvent::TurnCompleted(r) if r.outcome == "error_during_execution"));
+        assert!(
+            matches!(&evs[0], WorkerEvent::Failed(f) if f.reason.contains("error_during_execution"))
+        );
+        assert!(
+            matches!(&evs[1], WorkerEvent::TurnCompleted(r) if r.outcome == "error_during_execution")
+        );
     }
 
     // -- Codex CLI 0.141.0 (REAL captures) ----------------------------------
@@ -970,7 +996,9 @@ pub(crate) mod tests {
         let evs = translate_codex(CODEX_TURN_FAILED, &turn());
         assert_eq!(evs.len(), 2);
         assert!(matches!(&evs[0], WorkerEvent::RateLimited(_)));
-        assert!(matches!(&evs[1], WorkerEvent::TurnCompleted(r) if r.outcome.starts_with("failed:")));
+        assert!(
+            matches!(&evs[1], WorkerEvent::TurnCompleted(r) if r.outcome.starts_with("failed:"))
+        );
     }
 
     #[test]
@@ -1006,7 +1034,10 @@ pub(crate) mod tests {
 
     #[test]
     fn gemini_init_is_started() {
-        assert_eq!(translate_gemini(GEMINI_INIT, &turn()), vec![WorkerEvent::Started]);
+        assert_eq!(
+            translate_gemini(GEMINI_INIT, &turn()),
+            vec![WorkerEvent::Started]
+        );
     }
 
     #[test]
@@ -1074,9 +1105,9 @@ pub(crate) mod tests {
             r#""a bare string""#,
             r#"{"no_type_field":true}"#,
             r#"{"type":"something_new_from_a_future_cli","payload":{}}"#,
-            r#"{"type":"assistant"}"#,          // missing message.content
-            r#"{"type":"item.completed"}"#,     // missing item
-            r#"{"type":"rate_limit_event"}"#,   // missing rate_limit_info
+            r#"{"type":"assistant"}"#,        // missing message.content
+            r#"{"type":"item.completed"}"#,   // missing item
+            r#"{"type":"rate_limit_event"}"#, // missing rate_limit_info
         ];
         let t = turn();
         for line in cases {
@@ -1120,7 +1151,10 @@ pub(crate) mod tests {
     const RO_AGENT_MSG_MIRROR: &str = r#"{"timestamp":"2026-05-02T21:41:21.660Z","type":"event_msg","payload":{"type":"agent_message","message":"I’ll first map the repo structure, current git state, docs, and test surface.","phase":"commentary"}}"#;
 
     fn rollout(lines: &[&str]) -> Vec<Value> {
-        lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect()
+        lines
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     #[test]
@@ -1149,10 +1183,18 @@ pub(crate) mod tests {
             }
             other => panic!("expected User first, got {other:?}"),
         }
-        assert!(matches!(&evs[1], TranscriptEvent::Reasoning { text } if text.contains("Checking RESOURCES")));
-        assert!(matches!(&evs[2], TranscriptEvent::Assistant { text } if text.starts_with("I’ll first map")));
+        assert!(
+            matches!(&evs[1], TranscriptEvent::Reasoning { text } if text.contains("Checking RESOURCES"))
+        );
+        assert!(
+            matches!(&evs[2], TranscriptEvent::Assistant { text } if text.starts_with("I’ll first map"))
+        );
         match &evs[3] {
-            TranscriptEvent::Tool { tool, detail, output } => {
+            TranscriptEvent::Tool {
+                tool,
+                detail,
+                output,
+            } => {
                 assert_eq!(tool, "exec_command");
                 assert_eq!(detail.as_deref(), Some("git status --short --branch"));
                 // metadata preamble stripped; output correlated by call_id.

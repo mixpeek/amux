@@ -60,7 +60,9 @@ fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -154,7 +156,10 @@ fn the_migrated_test_db_carries_the_newest_columns() {
         "callback_fired_at",
         "callback_error",
     ] {
-        assert!(cols.contains(&newest.to_string()), "{newest} missing from {cols:?}");
+        assert!(
+            cols.contains(&newest.to_string()),
+            "{newest} missing from {cols:?}"
+        );
     }
     // And the constraints the old fixtures relaxed are really there, since that
     // divergence is what let tests pass against a schema that does not exist.
@@ -212,6 +217,9 @@ fn the_indexes_that_carry_a_query_are_in_the_migrated_schema() {
              which is the only reason the cmd_history half was diagnosable.",
         ),
     ] {
-        assert!(have.contains(&idx.to_string()), "{idx} missing. {why}\ngot {have:?}");
+        assert!(
+            have.contains(&idx.to_string()),
+            "{idx} missing. {why}\ngot {have:?}"
+        );
     }
 }

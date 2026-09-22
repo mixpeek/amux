@@ -14,8 +14,8 @@
 //! or block other sessions. The user can always resend from the session via curl if needed.
 
 use super::registry;
-use crate::api::sessions_legacy::{is_chrome_line, strip_ansi};
 use crate::api::session_verbs::tmux_capture;
+use crate::api::sessions_legacy::{is_chrome_line, strip_ansi};
 use crate::api::AppState;
 use crate::db::telegram as tg_db;
 use std::time::Duration;
@@ -46,7 +46,9 @@ async fn relay_cycle(state: &AppState) -> Result<(), String> {
             // Log but continue — don't let one session's error block others
             tracing::debug!(
                 "telegram_relay: chat {} (watching '{}'): {}",
-                mapping.chat_id, mapping.routed_session(), e
+                mapping.chat_id,
+                mapping.routed_session(),
+                e
             );
         }
     }
@@ -80,11 +82,16 @@ fn extract_reply(raw_output: &str) -> Option<(String, i64)> {
     let lines: Vec<&str> = output.lines().collect();
 
     // Find the LAST `[from Telegram @...]` line
-    let tg_idx = lines.iter().rposition(|line| line.contains("[from Telegram @"))?;
+    let tg_idx = lines
+        .iter()
+        .rposition(|line| line.contains("[from Telegram @"))?;
 
     // Extract new output lines AFTER the Telegram message, dropping chrome.
-    let reply_lines: Vec<&str> =
-        lines[(tg_idx + 1)..].iter().map(|s| s.trim()).filter(|s| !is_chrome_line(s)).collect();
+    let reply_lines: Vec<&str> = lines[(tg_idx + 1)..]
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !is_chrome_line(s))
+        .collect();
 
     if reply_lines.is_empty() {
         return None;
@@ -135,7 +142,10 @@ async fn check_and_relay(state: &AppState, mapping: &tg_db::TelegramMapping) -> 
                     let hash = reply_hash.clone();
                     move |conn| {
                         tg_db::mark_relayed(conn, chat_id, last_line, &hash)?;
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events: vec![],
+                        })
                     }
                 })
                 .await;
@@ -156,14 +166,20 @@ async fn check_and_relay(state: &AppState, mapping: &tg_db::TelegramMapping) -> 
                     let err_msg = e.clone();
                     move |conn| {
                         let _ = tg_db::mark_relay_error(conn, chat_id, &err_msg);
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events: vec![],
+                        })
                     }
                 })
                 .await;
 
             // On HTML format error, try plain text
             if e.contains("parse entities") {
-                tracing::warn!("telegram_relay: HTML format failed, retrying as plain text for chat {}", mapping.chat_id);
+                tracing::warn!(
+                    "telegram_relay: HTML format failed, retrying as plain text for chat {}",
+                    mapping.chat_id
+                );
                 let plain = strip_html(&html);
                 match send_reply_to_telegram(mapping.chat_id, &plain, None).await {
                     Ok(_) => {
@@ -176,7 +192,10 @@ async fn check_and_relay(state: &AppState, mapping: &tg_db::TelegramMapping) -> 
                                 let hash = reply_hash.clone();
                                 move |conn| {
                                     tg_db::mark_relayed(conn, chat_id, last_line, &hash)?;
-                                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                                    Ok(crate::db::WriteOutcome {
+                                        applied: true,
+                                        events: vec![],
+                                    })
                                 }
                             })
                             .await;
@@ -442,7 +461,9 @@ fn render_table(lines: &[&str]) -> (String, usize) {
 }
 
 fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Inline formatting for one non-fenced, non-quote line.
@@ -550,7 +571,9 @@ fn try_parse_link(rest: &str) -> Option<(String, String, usize)> {
     }
     // consumed = everything up to and including the ')', counted in chars
     // of `rest` (the caller already consumed the leading '[').
-    let consumed = rest[..close_bracket + 1 + 1 + close_paren + 1].chars().count();
+    let consumed = rest[..close_bracket + 1 + 1 + close_paren + 1]
+        .chars()
+        .count();
     Some((label.to_string(), url.to_string(), consumed))
 }
 
@@ -604,13 +627,19 @@ mod tests {
     #[test]
     fn unclosed_fence_still_closes_the_pre_tag() {
         let html = markdown_to_html("```\nno closing fence");
-        assert!(html.ends_with("</pre>\n") || html.ends_with("</pre>"), "{html:?}");
+        assert!(
+            html.ends_with("</pre>\n") || html.ends_with("</pre>"),
+            "{html:?}"
+        );
         assert!(html.contains("no closing fence"), "{html:?}");
     }
 
     #[test]
     fn bold_italic_and_inline_code_still_work() {
-        assert_eq!(markdown_to_html("**bold** and *italic* and `code`"), "<b>bold</b> and <i>italic</i> and <code>code</code>");
+        assert_eq!(
+            markdown_to_html("**bold** and *italic* and `code`"),
+            "<b>bold</b> and <i>italic</i> and <code>code</code>"
+        );
     }
 
     #[test]
@@ -644,7 +673,10 @@ mod tests {
 
     #[test]
     fn ampersand_and_angle_brackets_outside_any_span_are_escaped() {
-        assert_eq!(markdown_to_html("a < b && b > c"), "a &lt; b &amp;&amp; b &gt; c");
+        assert_eq!(
+            markdown_to_html("a < b && b > c"),
+            "a &lt; b &amp;&amp; b &gt; c"
+        );
     }
 
     /// Reproduces the incident's own artifact (ethos rule 7: test against
@@ -676,12 +708,30 @@ A shared Claude Code session on claude.ai/code";
         let (reply, last_line) = extract_reply(raw).expect("a reply was present");
 
         // The garbage that was reaching Telegram verbatim must be gone.
-        assert!(!reply.contains('\u{1b}'), "raw ANSI escape byte leaked: {reply:?}");
-        assert!(!reply.contains("[38;5;"), "an escape sequence's tail leaked as literal text: {reply:?}");
-        assert!(!reply.contains("bypass permissions"), "status-bar chrome leaked: {reply:?}");
-        assert!(!reply.contains("shift+tab"), "status-bar chrome leaked: {reply:?}");
-        assert!(!reply.contains("────"), "a box-drawing divider row leaked: {reply:?}");
-        assert!(!reply.contains("claude.ai/code/session_"), "the session-link card leaked: {reply:?}");
+        assert!(
+            !reply.contains('\u{1b}'),
+            "raw ANSI escape byte leaked: {reply:?}"
+        );
+        assert!(
+            !reply.contains("[38;5;"),
+            "an escape sequence's tail leaked as literal text: {reply:?}"
+        );
+        assert!(
+            !reply.contains("bypass permissions"),
+            "status-bar chrome leaked: {reply:?}"
+        );
+        assert!(
+            !reply.contains("shift+tab"),
+            "status-bar chrome leaked: {reply:?}"
+        );
+        assert!(
+            !reply.contains("────"),
+            "a box-drawing divider row leaked: {reply:?}"
+        );
+        assert!(
+            !reply.contains("claude.ai/code/session_"),
+            "the session-link card leaked: {reply:?}"
+        );
         assert!(
             !reply.lines().any(|l| l.trim() == "Claude Code"),
             "the session-link card's standalone heading leaked: {reply:?}"
@@ -690,14 +740,19 @@ A shared Claude Code session on claude.ai/code";
         // The actual reply content must survive, readable.
         assert!(reply.contains("Frame Phase 1 Status Update:"), "{reply:?}");
         assert!(reply.contains("Code Review Complete"), "{reply:?}");
-        assert!(reply.contains("Node.js Express app is 100% complete"), "{reply:?}");
+        assert!(
+            reply.contains("Node.js Express app is 100% complete"),
+            "{reply:?}"
+        );
 
         assert_eq!(last_line, raw.lines().count() as i64);
     }
 
     #[test]
     fn no_marker_in_pane_means_nothing_to_relay() {
-        assert!(extract_reply("some unrelated pane output\nwith no telegram marker at all").is_none());
+        assert!(
+            extract_reply("some unrelated pane output\nwith no telegram marker at all").is_none()
+        );
     }
 
     #[test]
@@ -746,7 +801,10 @@ A shared Claude Code session on claude.ai/code";
         // short `---` under a long header would misalign every row.
         let md = "| a | b |\n|-|-|\n| short | a much longer cell |";
         let html = markdown_to_html(md);
-        assert_eq!(html, "<pre>a     | b\n------+-------------------\nshort | a much longer cell\n</pre>");
+        assert_eq!(
+            html,
+            "<pre>a     | b\n------+-------------------\nshort | a much longer cell\n</pre>"
+        );
     }
 
     #[test]
@@ -782,7 +840,10 @@ A shared Claude Code session on claude.ai/code";
 
     #[test]
     fn heading_text_still_gets_inline_formatting() {
-        assert_eq!(markdown_to_html("## **Frame** Phase 1"), "<b><b>Frame</b> Phase 1</b>");
+        assert_eq!(
+            markdown_to_html("## **Frame** Phase 1"),
+            "<b><b>Frame</b> Phase 1</b>"
+        );
     }
 
     #[test]
@@ -790,7 +851,10 @@ A shared Claude Code session on claude.ai/code";
         // Claude's replies say "#123" (issue refs) and "#deploy" often enough
         // that guessing every leading '#' is a heading would be the more
         // common false positive.
-        assert_eq!(markdown_to_html("see #123 for context"), "see #123 for context");
+        assert_eq!(
+            markdown_to_html("see #123 for context"),
+            "see #123 for context"
+        );
         assert_eq!(markdown_to_html("#deploy"), "#deploy");
     }
 

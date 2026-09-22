@@ -146,7 +146,15 @@ pub fn record_lease_change(
     if let Some(worker) = new_holder {
         // A running attempt left by a bypass path would violate the one-running
         // index; close it honestly as orphaned rather than failing the claim.
-        close_running(conn, card, "orphaned", to_status, actor, Some("superseded by a new lease"), now)?;
+        close_running(
+            conn,
+            card,
+            "orphaned",
+            to_status,
+            actor,
+            Some("superseded by a new lease"),
+            now,
+        )?;
         let next: i64 = conn.query_row(
             "SELECT COALESCE(MAX(attempt), 0) + 1 FROM task_attempts WHERE card = ?1",
             [card],
@@ -193,7 +201,8 @@ fn list_for_card_inner(conn: &Connection, card: &str) -> rusqlite::Result<Vec<At
 /// set, which is bounded by the number of leased cards, not the board size.
 pub fn running_attempt_numbers(conn: &Connection) -> rusqlite::Result<HashMap<String, i64>> {
     let inner = || -> rusqlite::Result<HashMap<String, i64>> {
-        let mut st = conn.prepare("SELECT card, attempt FROM task_attempts WHERE ended_at IS NULL")?;
+        let mut st =
+            conn.prepare("SELECT card, attempt FROM task_attempts WHERE ended_at IS NULL")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         rows.collect()
     };
@@ -305,7 +314,18 @@ mod tests {
         assert_eq!(running_attempt_numbers(&conn).unwrap().get("C"), Some(&1));
 
         // Reaper reclaims: attempt 1 abandoned, nothing running.
-        record_lease_change(&conn, "C", Some("a"), None, 2, "todo", LEASE_REAPER_ACTOR, Some("silent"), 200).unwrap();
+        record_lease_change(
+            &conn,
+            "C",
+            Some("a"),
+            None,
+            2,
+            "todo",
+            LEASE_REAPER_ACTOR,
+            Some("silent"),
+            200,
+        )
+        .unwrap();
         assert!(running_attempt_numbers(&conn).unwrap().is_empty());
 
         // Re-claimed by b, then b hands it to c mid-doing.
@@ -315,11 +335,17 @@ mod tests {
         record_lease_change(&conn, "C", Some("c"), None, 5, "review", "c", None, 500).unwrap();
 
         let all = list_for_card(&conn, "C").unwrap();
-        let got: Vec<(i64, &str, Option<&str>)> =
-            all.iter().map(|a| (a.attempt, a.worker.as_str(), a.outcome.as_deref())).collect();
+        let got: Vec<(i64, &str, Option<&str>)> = all
+            .iter()
+            .map(|a| (a.attempt, a.worker.as_str(), a.outcome.as_deref()))
+            .collect();
         assert_eq!(
             got,
-            vec![(1, "a", Some("abandoned")), (2, "b", Some("reassigned")), (3, "c", Some("review"))]
+            vec![
+                (1, "a", Some("abandoned")),
+                (2, "b", Some("reassigned")),
+                (3, "c", Some("review"))
+            ]
         );
         assert_eq!(all[0].reason.as_deref(), Some("silent"));
     }
@@ -343,11 +369,18 @@ mod tests {
         record_lease_change(&conn, "KEEP", None, Some("a"), 1, "doing", "a", None, 1).unwrap();
         record_lease_change(&conn, "GONE", None, Some("a"), 1, "doing", "a", None, 1).unwrap();
         // A raw UPDATE, the way board hygiene discards: no choke point sees it.
-        conn.execute("UPDATE issues SET status='discarded', lease_owner=NULL WHERE id='GONE'", []).unwrap();
+        conn.execute(
+            "UPDATE issues SET status='discarded', lease_owner=NULL WHERE id='GONE'",
+            [],
+        )
+        .unwrap();
         assert_eq!(reconcile_orphans(&conn, 9).unwrap(), 1);
         let gone = list_for_card(&conn, "GONE").unwrap();
         assert_eq!(gone[0].outcome.as_deref(), Some("orphaned"));
         assert_eq!(gone[0].to_status.as_deref(), Some("discarded"));
-        assert_eq!(running_attempt_numbers(&conn).unwrap().get("KEEP"), Some(&1));
+        assert_eq!(
+            running_attempt_numbers(&conn).unwrap().get("KEEP"),
+            Some(&1)
+        );
     }
 }

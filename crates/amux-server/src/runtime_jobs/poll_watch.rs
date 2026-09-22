@@ -1,5 +1,9 @@
 //! Name synchronous job polls that hold a maintenance worker without yielding.
-use std::{future::Future, task::Poll, time::{Duration, Instant}};
+use std::{
+    future::Future,
+    task::Poll,
+    time::{Duration, Instant},
+};
 
 pub(super) async fn watch<T>(job: &str, future: impl Future<Output = T>) -> T {
     observe(future, |timing| {
@@ -24,16 +28,24 @@ struct PollTiming {
 // must not turn an 89s wall-clock poll into a claim of 89s spent burning CPU.
 #[cfg(unix)]
 fn thread_cpu() -> Option<Duration> {
-    let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: time is a valid writable timespec; no pointers outlive the call.
     if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } != 0 {
         return None;
     }
-    Some(Duration::new(time.tv_sec.try_into().ok()?, time.tv_nsec.try_into().ok()?))
+    Some(Duration::new(
+        time.tv_sec.try_into().ok()?,
+        time.tv_nsec.try_into().ok()?,
+    ))
 }
 
 #[cfg(not(unix))]
-fn thread_cpu() -> Option<Duration> { None }
+fn thread_cpu() -> Option<Duration> {
+    None
+}
 
 async fn observe<T>(future: impl Future<Output = T>, mut report: impl FnMut(PollTiming)) -> T {
     let mut future = std::pin::pin!(future);
@@ -46,7 +58,8 @@ async fn observe<T>(future: impl Future<Output = T>, mut report: impl FnMut(Poll
             cpu: cpu_started.and_then(|start| thread_cpu()?.checked_sub(start)),
         });
         result
-    }).await
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -57,16 +70,30 @@ mod tests {
     async fn reports_time_inside_poll_instead_of_time_awaiting_io() {
         let mut blocking = Duration::ZERO;
         let mut cpu = None;
-        observe(async { std::thread::sleep(Duration::from_millis(80)); }, |d| {
-            blocking = blocking.max(d.elapsed);
-            cpu = d.cpu;
-        }).await;
+        observe(
+            async {
+                std::thread::sleep(Duration::from_millis(80));
+            },
+            |d| {
+                blocking = blocking.max(d.elapsed);
+                cpu = d.cpu;
+            },
+        )
+        .await;
         assert!(blocking >= Duration::from_millis(80));
         #[cfg(unix)]
-        assert!(cpu.is_some_and(|d| d < Duration::from_millis(40)),
-            "sleeping inside a poll blocks the runtime but is not CPU work: {cpu:?}");
+        assert!(
+            cpu.is_some_and(|d| d < Duration::from_millis(40)),
+            "sleeping inside a poll blocks the runtime but is not CPU work: {cpu:?}"
+        );
         let mut yielding = Duration::ZERO;
-        observe(tokio::time::sleep(Duration::from_millis(80)), |d| yielding = yielding.max(d.elapsed)).await;
-        assert!(yielding < Duration::from_millis(40), "awaited IO must not be blamed as a blocking poll: {yielding:?}");
+        observe(tokio::time::sleep(Duration::from_millis(80)), |d| {
+            yielding = yielding.max(d.elapsed)
+        })
+        .await;
+        assert!(
+            yielding < Duration::from_millis(40),
+            "awaited IO must not be blamed as a blocking poll: {yielding:?}"
+        );
     }
 }

@@ -54,13 +54,15 @@ const PUBLIC_PATHS: &[&str] = &[
 ];
 
 /// Python `_PUBLIC_PREFIXES` (amux-server.py:848).
-const PUBLIC_PREFIXES: &[&str] = &["/s/", "/api/share/", "/invite/", "/proxy/", "/api/branding/"];
+const PUBLIC_PREFIXES: &[&str] = &[
+    "/s/",
+    "/api/share/",
+    "/invite/",
+    "/proxy/",
+    "/api/branding/",
+];
 
-pub async fn require_bearer(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn require_bearer(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let Some(expected) = &state.auth_token else {
         return next.run(req).await;
     };
@@ -299,21 +301,36 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: token.map(String::from),
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
     fn guarded_app(token: Option<&str>) -> Router {
         let st = state(token);
         Router::new()
-            .route("/api/thing", get(|| async { "ok" }).post(|| async { "posted" }))
+            .route(
+                "/api/thing",
+                get(|| async { "ok" }).post(|| async { "posted" }),
+            )
             .route("/api/branding/asset/{f}", get(|| async { "asset" }))
-            .route("/page", get(|| async { "page" }).post(|| async { "page-post" }))
-            .layer(axum::middleware::from_fn_with_state(st.clone(), require_bearer))
+            .route(
+                "/page",
+                get(|| async { "page" }).post(|| async { "page-post" }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                st.clone(),
+                require_bearer,
+            ))
             .with_state(st)
     }
 
-    async fn hit(app: &Router, method: &str, uri: &str, bearer: Option<&str>, peer: Option<&str>) -> StatusCode {
+    async fn hit(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        bearer: Option<&str>,
+        peer: Option<&str>,
+    ) -> StatusCode {
         let mut b = HttpRequest::builder().method(method).uri(uri);
         if let Some(t) = bearer {
             b = b.header("authorization", format!("Bearer {t}"));
@@ -331,39 +348,87 @@ mod tests {
         let app = guarded_app(Some("tok123"));
 
         // Bearer with the right token passes; wrong/absent 401s.
-        assert_eq!(hit(&app, "GET", "/api/thing", Some("tok123"), None).await, StatusCode::OK);
-        assert_eq!(hit(&app, "GET", "/api/thing", Some("nope"), None).await, StatusCode::UNAUTHORIZED);
-        assert_eq!(hit(&app, "GET", "/api/thing", None, None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            hit(&app, "GET", "/api/thing", Some("tok123"), None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            hit(&app, "GET", "/api/thing", Some("nope"), None).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            hit(&app, "GET", "/api/thing", None, None).await,
+            StatusCode::UNAUTHORIZED
+        );
 
         // ?_token= (the SPA's _authUrl spelling) passes; the bare token=
         // spelling is NOT an auth form (Python parity).
-        assert_eq!(hit(&app, "GET", "/api/thing?_token=tok123", None, None).await, StatusCode::OK);
-        assert_eq!(hit(&app, "GET", "/api/thing?token=tok123", None, None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            hit(&app, "GET", "/api/thing?_token=tok123", None, None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            hit(&app, "GET", "/api/thing?token=tok123", None, None).await,
+            StatusCode::UNAUTHORIZED
+        );
 
         // Localhost peer bypasses entirely; a LAN peer does not.
-        assert_eq!(hit(&app, "GET", "/api/thing", None, Some("127.0.0.1")).await, StatusCode::OK);
-        assert_eq!(hit(&app, "POST", "/api/thing", None, Some("127.0.0.1")).await, StatusCode::OK);
-        assert_eq!(hit(&app, "GET", "/api/thing", None, Some("192.168.1.50")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            hit(&app, "GET", "/api/thing", None, Some("127.0.0.1")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            hit(&app, "POST", "/api/thing", None, Some("127.0.0.1")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            hit(&app, "GET", "/api/thing", None, Some("192.168.1.50")).await,
+            StatusCode::UNAUTHORIZED
+        );
 
         // Python public prefix: branding assets load tokenless (an <img>
         // cannot set headers).
-        assert_eq!(hit(&app, "GET", "/api/branding/asset/logo.png", None, Some("192.168.1.50")).await, StatusCode::OK);
+        assert_eq!(
+            hit(
+                &app,
+                "GET",
+                "/api/branding/asset/logo.png",
+                None,
+                Some("192.168.1.50")
+            )
+            .await,
+            StatusCode::OK
+        );
 
         // Non-API GET is public (dashboard shell trust model); non-API POST
         // is not.
-        assert_eq!(hit(&app, "GET", "/page", None, Some("192.168.1.50")).await, StatusCode::OK);
-        assert_eq!(hit(&app, "POST", "/page", None, Some("192.168.1.50")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            hit(&app, "GET", "/page", None, Some("192.168.1.50")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            hit(&app, "POST", "/page", None, Some("192.168.1.50")).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
     async fn no_token_disables_auth_and_401_names_missing_credential() {
         let open = guarded_app(None);
-        assert_eq!(hit(&open, "POST", "/api/thing", None, None).await, StatusCode::OK);
+        assert_eq!(
+            hit(&open, "POST", "/api/thing", None, None).await,
+            StatusCode::OK
+        );
 
         let app = guarded_app(Some("tok123"));
         let res = app
             .clone()
-            .oneshot(HttpRequest::builder().uri("/api/thing").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/thing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
@@ -371,12 +436,17 @@ mod tests {
             res.headers().get("content-type").unwrap().to_str().unwrap(),
             "application/json"
         );
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v, serde_json::json!({
-            "error": "unauthorized", "reason": "missing_credential",
-            "recovery": "open_owner_or_invite_link"
-        }));
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "error": "unauthorized", "reason": "missing_credential",
+                "recovery": "open_owner_or_invite_link"
+            })
+        );
     }
 
     /// AMUX-4755. `owner-token` is a claim about a VERIFIED credential, so the
@@ -429,24 +499,63 @@ mod tests {
     #[tokio::test]
     async fn rejected_credentials_name_the_recovery_without_leaking_or_granting_access() {
         use sha2::Digest;
-        let cookie = format!("__Host-amux_owner={}", hex::encode(
-            sha2::Sha256::digest(b"amux-owner-session:tok123")
-        ));
+        let cookie = format!(
+            "__Host-amux_owner={}",
+            hex::encode(sha2::Sha256::digest(b"amux-owner-session:tok123"))
+        );
         let app = guarded_app(Some("tok123"));
         for (bearer, cookies, reason, recovery) in [
-            (Some("old-secret"), "", "invalid_bearer", "open_owner_or_invite_link"),
-            (None, "amux_member=revoked-secret", "unverified_member_cookie", "open_owner_or_invite_link"),
-            (None, "__Host-amux_owner=old-secret", "invalid_owner_session", "open_owner_or_invite_link"),
-            (None, cookie.as_str(), "owner_session_requires_bootstrap", "refresh_bootstrap"),
-            (Some("old-secret"), cookie.as_str(), "owner_session_requires_bootstrap", "refresh_bootstrap"),
+            (
+                Some("old-secret"),
+                "",
+                "invalid_bearer",
+                "open_owner_or_invite_link",
+            ),
+            (
+                None,
+                "amux_member=revoked-secret",
+                "unverified_member_cookie",
+                "open_owner_or_invite_link",
+            ),
+            (
+                None,
+                "__Host-amux_owner=old-secret",
+                "invalid_owner_session",
+                "open_owner_or_invite_link",
+            ),
+            (
+                None,
+                cookie.as_str(),
+                "owner_session_requires_bootstrap",
+                "refresh_bootstrap",
+            ),
+            (
+                Some("old-secret"),
+                cookie.as_str(),
+                "owner_session_requires_bootstrap",
+                "refresh_bootstrap",
+            ),
         ] {
-            let mut req = HttpRequest::builder().uri("/api/thing").header("cookie", cookies);
-            if let Some(bearer) = bearer { req = req.header("authorization", format!("Bearer {bearer}")); }
-            let response = app.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+            let mut req = HttpRequest::builder()
+                .uri("/api/thing")
+                .header("cookie", cookies);
+            if let Some(bearer) = bearer {
+                req = req.header("authorization", format!("Bearer {bearer}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{reason}");
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(body, serde_json::json!({"error":"unauthorized", "reason":reason, "recovery":recovery}));
+            assert_eq!(
+                body,
+                serde_json::json!({"error":"unauthorized", "reason":reason, "recovery":recovery})
+            );
             let rendered = String::from_utf8(bytes.to_vec()).unwrap();
             for secret in ["tok123", "old-secret", "revoked-secret", cookie.as_str()] {
                 assert!(!rendered.contains(secret));
