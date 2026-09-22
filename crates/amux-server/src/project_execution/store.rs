@@ -183,6 +183,116 @@ pub fn summary(conn: &Connection, project: &Project) -> anyhow::Result<Value> {
     }))
 }
 
+fn project_worker_lifecycle(
+    home: &std::path::Path,
+    worker: &str,
+) -> (String, Option<serde_json::Value>) {
+    let active = home.join("sessions").join(format!("{worker}.env"));
+    let expired = active.with_extension("env.reaped");
+    let source = if active.exists() {
+        Some(active)
+    } else if expired.exists() {
+        Some(expired)
+    } else {
+        None
+    };
+    let Some(source) = source else {
+        return ("missing".into(), None);
+    };
+    let env = crate::config::parse_env_file(&source);
+    let lifecycle = if source.extension().and_then(|x| x.to_str()) == Some("reaped") {
+        "expired"
+    } else if env.get("CC_ARCHIVED").is_some_and(|v| v == "1") {
+        "archived"
+    } else if env.get("CC_PAUSED").is_some_and(|v| v == "1") {
+        "paused"
+    } else {
+        "active"
+    };
+    (
+        lifecycle.into(),
+        Some(json!({
+            "path": source.to_string_lossy(),
+            "provider": env.get("CC_PROVIDER"),
+            "model": env.get("CC_MODEL"),
+            "effort": env.get("CC_REASONING_EFFORT").or_else(|| env.get("CC_EFFORT")),
+            "dir": env.get("CC_DIR"),
+            "project": env.get("CC_PROJECT"),
+            "worktree": env.get("CC_WORKTREE"),
+            "ephemeral": env.get("CC_EPHEMERAL").is_some_and(|v| v == "1"),
+        })),
+    )
+}
+
+fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) -> Vec<Value> {
+    let home = crate::config::amux_home();
+    let mut by_worker: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    let mut by_id: std::collections::BTreeMap<&str, &super::planner::CardPlan> =
+        std::collections::BTreeMap::new();
+    for plan in plans {
+        by_id.insert(plan.id.as_str(), plan);
+    }
+    for row in rows {
+        let Some(plan) = by_id.get(row.id.as_str()) else {
+            continue;
+        };
+        let worker = plan.execution.worker.trim();
+        if worker.is_empty() {
+            continue;
+        }
+        by_worker
+            .entry(worker.to_string())
+            .or_default()
+            .push(json!({
+                "id": row.id,
+                "title": row.title,
+                "status": row.status,
+                "phase": plan.phase,
+                "stage": plan.execution.stage,
+                "updated": row.updated,
+                "retained_assets": plan.execution.retained_assets.len(),
+                "waiting_label": plan.waiting_label,
+                "waiting_reason": plan.waiting_reason,
+            }));
+    }
+    by_worker
+        .into_iter()
+        .map(|(worker, tasks)| {
+            let (lifecycle, env) = project_worker_lifecycle(&home, &worker);
+            let workspace = crate::fanout_workspace::load(&home, &worker);
+            let integration = crate::fanout_workspace::integration_status(&home, &worker);
+            let verified_tasks = tasks
+                .iter()
+                .filter(|t| t.get("phase").and_then(Value::as_str) == Some("verified"))
+                .count();
+            let active_tasks = tasks.len().saturating_sub(verified_tasks);
+            let retained_assets: usize = tasks
+                .iter()
+                .map(|t| {
+                    t.get("retained_assets")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize
+                })
+                .sum();
+            json!({
+                "name": worker,
+                "lifecycle": lifecycle,
+                "openable": lifecycle != "missing" && lifecycle != "expired",
+                "resumable": lifecycle == "expired",
+                "task_count": tasks.len(),
+                "verified_tasks": verified_tasks,
+                "active_tasks": active_tasks,
+                "retained_assets": retained_assets,
+                "env": env,
+                "workspace": workspace,
+                "integration": integration,
+                "tasks": tasks,
+            })
+        })
+        .collect()
+}
+
 pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
     let project = get(conn, name)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
     let rows = bs::project_issues(conn, name)?;
@@ -215,8 +325,9 @@ pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
         .collect();
     let mut acceptance = super::acceptance::status(conn, &project)?;
     acceptance["executor_retirement"] = super::acceptance::retirement_allowed(conn, name)?;
+    let workers = project_workers(&rows, &plans);
     Ok(
-        json!({"project":project,"pause_settled":pause_settled,"cards":cards,"migrations":migrations,"commands":super::intake::receipts(conn,name)?,"acceptance":acceptance,"measured":true,"n_considered":rows.len(),
+        json!({"project":project,"pause_settled":pause_settled,"cards":cards,"workers":workers,"migrations":migrations,"commands":super::intake::receipts(conn,name)?,"acceptance":acceptance,"measured":true,"n_considered":rows.len(),
         "usage":super::usage::summary(conn,name)?}),
     )
 }
@@ -451,6 +562,76 @@ mod tests {
         assert_eq!(row.rev, 0);
         assert_eq!(row.depends_on, vec!["OTHER-1"]);
     }
+    #[test]
+    fn project_board_projects_workers_even_after_retirement() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::create_dir_all(dir.path().join("workspaces")).unwrap();
+        std::fs::write(
+            dir.path().join("sessions/project-worker.env.reaped"),
+            "CC_PROVIDER=codex
+CC_MODEL=gpt-5.5
+CC_REASONING_EFFORT=low
+CC_PROJECT=example
+CC_WORKTREE=1
+CC_EPHEMERAL=1
+CC_DIR=/tmp/project-worker
+",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("workspaces/project-worker.json"),
+            r#"{"repo":"/repo","path":"/tmp/project-worker","branch":"amux/fanout/project-worker","base":"abc"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("workspaces/project-worker.integration.json"),
+            r#"{"status":"integrated","head":"deadbeef","merged":true}"#,
+        )
+        .unwrap();
+        let store = Store::open(&dir.path().join("db")).unwrap();
+        store
+            .write(|c| {
+                save(c, "example", 0, &policy(), "test").map_err(sql_error)?;
+                let execution = super::super::planner::Execution {
+                    stage: "verified".into(),
+                    worker: "project-worker".into(),
+                    retained_assets: vec![super::super::assets::Retained {
+                        path: "/tmp/artifacts/report.md".into(),
+                        head: "deadbeef".into(),
+                        source: super::super::assets::Asset {
+                            path: "report.md".into(),
+                            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                        },
+                    }],
+                    ..Default::default()
+                };
+                c.execute(
+                    r#"INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria,execution_state) VALUES('A-1','Outcome','verified','doc','example',1,2,'Review artifact','["artifact exists"]',?1)"#,
+                    [serde_json::to_string(&execution).unwrap()],
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let view = board(&store.read().unwrap(), "example").unwrap();
+        assert_eq!(view["workers"].as_array().unwrap().len(), 1);
+        let worker = &view["workers"][0];
+        assert_eq!(worker["name"], "project-worker");
+        assert_eq!(worker["lifecycle"], "expired");
+        assert_eq!(worker["resumable"], true);
+        assert_eq!(worker["task_count"], 1);
+        assert_eq!(worker["verified_tasks"], 1);
+        assert_eq!(worker["retained_assets"], 1);
+        assert_eq!(worker["env"]["provider"], "codex");
+        assert_eq!(worker["env"]["model"], "gpt-5.5");
+        assert_eq!(worker["env"]["effort"], "low");
+        assert_eq!(worker["workspace"]["branch"], "amux/fanout/project-worker");
+        assert_eq!(worker["integration"]["status"], "integrated");
+        assert_eq!(worker["tasks"][0]["id"], "A-1");
+    }
+
     #[test]
     fn project_board_survives_an_executor_change_and_never_projects_done_as_verified() {
         let dir = tempfile::tempdir().unwrap();

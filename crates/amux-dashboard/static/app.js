@@ -11779,7 +11779,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1025';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1026';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44958,7 +44958,7 @@ function _projectRenderInventory(projects) {
     return `<button class="project-list-card ${p.name===_projectsName?'selected':''}" onclick="_projectChoose('${escJs(p.name)}')"><span class="project-list-row"><strong>${esc(p.name)}</strong><em class="project-pill ${esc(st.cls)}">${esc(st.label)}</em></span><span>${esc(repo || 'No repository configured')}</span><span>${esc((policy.worktree===false?'Shared checkout':'Dedicated worktrees')+(executor?' · '+executor:''))}</span></button>`;
   }).join('');
 }
-const _projectTabs=[['overview','Overview'],['tasks','Tasks'],['evidence','Evidence'],['dependencies','Dependencies'],['settings','Settings']];
+const _projectTabs=[['overview','Overview'],['tasks','Tasks'],['workers','Workers'],['evidence','Evidence'],['dependencies','Dependencies'],['settings','Settings']];
 function _projectCurrentTab() {
   const tab=_projectStorage('tab_'+(_projectsName||'')) || 'overview';
   return _projectTabs.some(([key])=>key===tab) ? tab : 'overview';
@@ -44986,6 +44986,7 @@ function _projectDetailTemplate(project) {
       '<div id="project-overview" class="project-overview-grid"></div>'+
     '</section>'+
     '<section id="project-panel-tasks" class="project-tab-panel" data-project-panel="tasks" hidden><div class="project-workspace"><div id="project-cards" class="project-columns" aria-label="Project tasks"></div><aside id="project-inspector" class="project-inspector" tabindex="-1" aria-label="Task inspector"></aside></div></section>'+
+    '<section id="project-panel-workers" class="project-tab-panel" data-project-panel="workers" hidden><div id="project-workers-panel" class="project-overview-grid"></div></section>'+
     '<section id="project-panel-evidence" class="project-tab-panel" data-project-panel="evidence" hidden><div id="project-evidence-panel" class="project-overview-grid"></div></section>'+
     '<section id="project-panel-dependencies" class="project-tab-panel" data-project-panel="dependencies" hidden><div id="project-dependencies-panel" class="project-overview-grid"></div></section>'+
     '<section id="project-panel-settings" class="project-tab-panel" data-project-panel="settings" hidden><details class="project-settings" data-open-key="telemetry" open><summary>Usage and telemetry</summary><div id="project-usage" class="project-usage"></div></details><details class="project-settings"><summary>Execution settings</summary>'+_projectConfig(project)+'</details><details class="project-settings"><summary>Migrate existing boards</summary><p>Preview explicit worker boards. Existing tasks and evidence keep their IDs. Pause this project before applying or rolling back.</p><label>Worker names, comma separated<input id="project-migration-workers"></label><button class="btn" onclick="_projectMigrationPreview()">Preview migration</button><pre id="project-migration-preview"></pre><button class="btn" id="project-migration-apply" hidden onclick="_projectMigrationApply()">Apply reviewed migration</button><div id="project-migration-history"></div><label>Migration ID<input id="project-migration-id"></label><button class="btn" onclick="_projectMigrationRollback()">Roll back unchanged rows</button></details></section>';
@@ -45041,6 +45042,58 @@ function _projectRenderEvidencePanel(data) {
 function _projectRenderDependencyPanel(data) {
   const el=document.getElementById('project-dependencies-panel'); if(!el) return;
   const rows=(data.cards||[]).filter(c=>(c.depends_on||[]).length || c.execution_plan?.waiting_reason).map(c=>`<article class="project-overview-card"><h3>${esc(c.id)} · ${esc(_projectClip(c.title,90))}</h3><p>${esc(c.execution_plan?.waiting_label || 'Dependency details')}</p><p class="project-muted">${esc((c.depends_on||[]).length ? 'Depends on '+(c.depends_on||[]).join(', ') : _projectClip(c.execution_plan?.waiting_reason||'',300))}</p><button class="btn" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">Open task</button></article>`).join('') || '<p class="project-empty" role="status">No explicit dependency holds. Dependencies are allowed only within this project.</p>';
+  if(el.dataset.sig!==rows){el.dataset.sig=rows;el.innerHTML=rows;}
+}
+
+function _projectWorkers(data) {
+  const provided=Array.isArray(data?.workers)?data.workers:[];
+  if(provided.length) return provided;
+  const by=new Map();
+  (data?.cards||[]).forEach(card=>{
+    const e=card.execution_plan?.execution||{},name=String(e.worker||'').trim();
+    if(!name) return;
+    if(!by.has(name)) by.set(name,{name,lifecycle:'missing',task_count:0,verified_tasks:0,active_tasks:0,retained_assets:0,tasks:[]});
+    const w=by.get(name);
+    const task={id:card.id,title:card.title,status:card.status,phase:card.phase,stage:e.stage,updated:_projectCardUpdated(card),retained_assets:(e.retained_assets||[]).length,waiting_label:card.execution_plan?.waiting_label,waiting_reason:card.execution_plan?.waiting_reason};
+    w.tasks.push(task);w.task_count++;if(card.phase==='verified')w.verified_tasks++;else w.active_tasks++;w.retained_assets+=task.retained_assets;
+  });
+  return [...by.values()];
+}
+function _projectWorkerRuntime(worker) {
+  const name=worker?.name||'';
+  const reg=name&&typeof sessions!=='undefined'?sessions.find(x=>x.name===name):null;
+  const inv=name&&typeof _expiredWorkerInventory!=='undefined'?_expiredWorkerInventory.get(name):null;
+  let lifecycle=worker?.lifecycle || (inv?'expired':'missing');
+  if(reg) lifecycle=reg.lifecycle || (reg.archived?'archived':reg.paused?'paused':'active');
+  else if(inv && (!lifecycle || lifecycle==='missing')) lifecycle='expired';
+  const running=!!reg && reg.running!==false && reg.status!=='stopped';
+  const label=lifecycle==='active'?(running?'Active · running':'Active · stopped'):lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
+  return {reg,inv,lifecycle,running,label};
+}
+async function _projectResumeWorker(name) {
+  if(!name) return;
+  await resumeWorker(name);
+  setTimeout(()=>openPeek(name),250);
+}
+function _projectWorkerAction(worker,runtime) {
+  const name=worker?.name||'';
+  if(!name) return '';
+  if(runtime.lifecycle==='expired' || worker?.resumable) return `<button class="btn" onclick="_projectResumeWorker('${escJs(name)}')">Resume and open</button>`;
+  if(runtime.lifecycle==='missing') return '<span class="project-muted">No worker env remains; retained task evidence is still listed.</span>';
+  return `<button class="btn" onclick="openPeek('${escJs(name)}')">Open worker</button>`;
+}
+function _projectRenderWorkersPanel(data) {
+  const el=document.getElementById('project-workers-panel'); if(!el) return;
+  const workers=_projectWorkers(data).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+  const rows=workers.map(worker=>{
+    const runtime=_projectWorkerRuntime(worker);
+    const env=worker.env||{},workspace=worker.workspace||{},integration=worker.integration&&typeof worker.integration==='object'?worker.integration:null;
+    const model=[env.provider,env.model,env.effort].filter(Boolean).join(' · ');
+    const checkout=workspace.path || env.dir || '';
+    const tasks=(worker.tasks||[]).slice().sort((a,b)=>Number(b.updated||0)-Number(a.updated||0)).map(t=>`<li><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(t.id)}'),0)">${esc(t.id)}</button><span>${esc(_projectClip(t.title||'',72))}</span><small>${esc(t.phase||t.status||'')}${t.stage?' · '+esc(t.stage):''}</small></li>`).join('');
+    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+esc(checkout||'Not recorded')+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||'Not recorded')+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
+    return '<article class="project-overview-card project-worker-card"><div class="project-card-heading"><h3>'+esc(worker.name||'worker')+'</h3>'+_projectWorkerAction(worker,runtime)+'</div>'+facts+'<div class="project-card-heading"><h3>Tasks</h3><span class="project-muted">'+esc(String(worker.retained_assets||0))+' retained assets</span></div><ul class="project-run-list">'+(tasks||'<li><span>No project tasks recorded for this worker</span></li>')+'</ul></article>';
+  }).join('') || '<p class="project-empty" role="status">No workers have been assigned to this project yet. Workers appear here after project tasks are claimed, and remain listed after pause, archive or expiration.</p>';
   if(el.dataset.sig!==rows){el.dataset.sig=rows;el.innerHTML=rows;}
 }
 
@@ -45265,7 +45318,7 @@ function _projectRender(data) {
   if(progress) {delete progress.dataset.stale;}
   const verifiedTasks=data.cards.filter(c=>c.phase==='verified').length,closedTasks=data.cards.filter(c=>c.phase==='closed').length;
   const activeTasks=data.cards.filter(c=>!['verified','closed'].includes(c.phase)).length;
-  const assignedWorkers=new Set(data.cards.map(c=>c.execution_plan?.execution?.worker).filter(Boolean));
+  const assignedWorkers=new Set(_projectWorkers(data).map(w=>w.name).filter(Boolean));
   const pendingCommands=data.commands.filter(c=>c.pending).length;
   setText('project-metric-outcomes',u.verified_outcomes+' / '+u.requested_outcomes);
   setText('project-metric-tasks',activeTasks+' active');
@@ -45286,6 +45339,7 @@ function _projectRender(data) {
   const historyHtml=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
   if(history && history.dataset.sig!==historyHtml) {history.dataset.sig=historyHtml;history.innerHTML=historyHtml;}
   _projectRenderOverview(data);
+  _projectRenderWorkersPanel(data);
   _projectRenderEvidencePanel(data);
   _projectRenderDependencyPanel(data);
   _projectApplyTab();
