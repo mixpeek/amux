@@ -11615,7 +11615,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1006';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1007';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -28376,6 +28376,7 @@ async function fetchBoard() {
     }
     _boardReadAppliedGeneration = readGeneration;
     _boardReadError = '';
+    if (_syncReadError) { _syncReadError = ''; _clearDeltaSyncRetry(); }
     updateConnectionStatus();
     // HTTP status is validated first: a 404 body {"error":"not found"} IS an
     // object, so the old typeof guard assigned it to sessionGates —
@@ -34875,6 +34876,7 @@ async function _runDeltaSync() {
     if (!r.ok) throw new Error(await _apiErrText(r));
     const data = await r.json();
     _syncReadError = '';
+    _clearDeltaSyncRetry();
     updateConnectionStatus();
     if (data.issues && data.issues.length) {
       // Apply delta to in-memory boardItems
@@ -34908,7 +34910,23 @@ async function _runDeltaSync() {
     _syncReadError = String(e.message || e);
     updateConnectionStatus();
     _dbgLog('Delta sync failed: ' + e.message);
+    _scheduleDeltaSyncRetry();
   }
+}
+let _deltaSyncRetryTimer = null;
+let _deltaSyncRetryAttempt = 0;
+function _scheduleDeltaSyncRetry() {
+  if (_deltaSyncRetryTimer) return;
+  const delay = Math.min(2000 * Math.pow(2, _deltaSyncRetryAttempt++), 30000);
+  _deltaSyncRetryTimer = setTimeout(() => {
+    _deltaSyncRetryTimer = null;
+    _runDeltaSync();
+  }, delay);
+}
+function _clearDeltaSyncRetry() {
+  _deltaSyncRetryAttempt = 0;
+  clearTimeout(_deltaSyncRetryTimer);
+  _deltaSyncRetryTimer = null;
 }
 // Run delta sync shortly after startup (after queue replay window)
 if (!window._peekEmbed) setTimeout(_runDeltaSync, 2500);
