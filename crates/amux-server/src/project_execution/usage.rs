@@ -269,18 +269,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _home = crate::api::settings::test_env::set_home(dir.path());
         std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        let repo_path = dir.path().join("repo");
+        let repo = repo_path.to_string_lossy().into_owned();
+        let worktree = crate::fanout_workspace::expected_path(&repo, "executor");
+        std::fs::create_dir_all(&worktree).unwrap();
         let env = dir.path().join("sessions/executor.env");
-        std::fs::write(&env, "CC_DIR=/repo\nCC_PROJECT=coverage\nCC_BOARD_CARD=A\n").unwrap();
+        std::fs::write(
+            &env,
+            format!("CC_DIR={repo}\nCC_PROJECT=coverage\nCC_BOARD_CARD=A\n"),
+        )
+        .unwrap();
         crate::fanout_workspace::save(
             dir.path(),
             "executor",
             &crate::fanout_workspace::Workspace {
-                repo: "/repo".into(),
-                path: dir
-                    .path()
-                    .join("worktrees/executor")
-                    .to_string_lossy()
-                    .into(),
+                repo: repo.clone(),
+                path: worktree.to_string_lossy().into_owned(),
                 branch: "amux/fanout/executor".into(),
                 base: "a".repeat(40),
             },
@@ -289,7 +293,7 @@ mod tests {
         let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
         let home = dir.path().to_path_buf();
         db.write(move|c| {
-            let policy=serde_json::from_value(json!({"repository":"/repo","enabled":true,"coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":"./verify.sh","cost_budget_usd":1})).unwrap();
+            let policy=serde_json::from_value(json!({"repository":repo,"enabled":true,"coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":"./verify.sh","cost_budget_usd":1})).unwrap();
             super::super::store::save(c,"coverage",0,&policy,"test").unwrap();
             let execution=super::super::planner::Execution{worker:"executor".into(),stage:"working".into(),..Default::default()};
             c.execute("INSERT INTO issues(id,title,status,session,project_group,created,updated,execution_state) VALUES('A','Outcome','doing','executor','coverage',1,1,?1)",[serde_json::to_string(&execution).unwrap()])?;
@@ -324,12 +328,12 @@ mod tests {
             std::fs::rename(home.join("sessions/executor.env"),home.join("sessions/executor.env.reaped")).unwrap();assert_eq!(summary(c,"coverage").unwrap()["tokens"],300);
             // Two validated records pointing at the same physical worktree are ambiguous.
             #[cfg(unix)] {
-                std::fs::create_dir_all(home.join("worktrees/executor")).unwrap();
-                std::os::unix::fs::symlink(home.join("worktrees/executor"),home.join("worktrees/alias")).unwrap();
-                std::fs::write(home.join("sessions/alias.env"),"CC_DIR=/repo\nCC_PROJECT=coverage\n").unwrap();
-                crate::fanout_workspace::save(&home,"alias",&crate::fanout_workspace::Workspace{repo:"/repo".into(),path:home.join("worktrees/alias").to_string_lossy().into(),branch:"amux/fanout/alias".into(),base:"a".repeat(40)}).unwrap();
+                let alias = crate::fanout_workspace::expected_path(&repo, "alias");
+                std::os::unix::fs::symlink(&worktree, &alias).unwrap();
+                std::fs::write(home.join("sessions/alias.env"),format!("CC_DIR={repo}\nCC_PROJECT=coverage\n")).unwrap();
+                crate::fanout_workspace::save(&home,"alias",&crate::fanout_workspace::Workspace{repo:repo.clone(),path:alias.to_string_lossy().into(),branch:"amux/fanout/alias".into(),base:"a".repeat(40)}).unwrap();
                 assert_eq!(summary(c,"coverage").unwrap()["tokens"],100,"same physical workspace cannot have two owners");
-                std::fs::remove_file(home.join("worktrees/alias")).unwrap();
+                std::fs::remove_file(alias).unwrap();
                 assert_eq!(summary(c,"coverage").unwrap()["tokens"],300);
             }
             c.execute("UPDATE issues SET execution_state=?1 WHERE id='F'",[serde_json::to_string(&execution).unwrap()])?;

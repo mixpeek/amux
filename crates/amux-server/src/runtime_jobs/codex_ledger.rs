@@ -232,7 +232,7 @@ pub(crate) fn workspace_workdirs(
                 env.with_extension("env.reaped")
             };
             let settings = crate::config::parse_env_file(&env);
-            if w.path != home.join("worktrees").join(name).to_string_lossy()
+            if w.path != crate::fanout_workspace::expected_path(&w.repo, name).to_string_lossy()
                 || w.branch != format!("amux/fanout/{name}")
                 || !Path::new(&w.repo).is_absolute()
                 || w.base.len() != 40

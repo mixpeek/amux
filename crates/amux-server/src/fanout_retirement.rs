@@ -182,7 +182,7 @@ pub(crate) async fn retire<F: Fleet>(
         .ok_or("integration receipt has no head")?
         .to_string();
     // A corrupt/mispointed record must never delete a shared checkout.
-    let expected = home.join("worktrees").join(name);
+    let expected = workspace::expected_path(&w.repo, name);
     if Path::new(&w.path) != expected || w.branch != format!("amux/fanout/{name}") {
         return Err("workspace record does not name this worker's own path and branch".into());
     }

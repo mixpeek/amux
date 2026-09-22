@@ -58,6 +58,9 @@ pub(crate) async fn git(repo: &str, args: &[&str]) -> Result<String, String> {
 fn record_path(home: &Path, name: &str) -> PathBuf {
     home.join("workspaces").join(format!("{name}.json"))
 }
+pub(crate) fn expected_path(repo: &str, name: &str) -> PathBuf {
+    Path::new(repo).join(".worktrees").join(name)
+}
 pub fn load(home: &Path, name: &str) -> Option<Workspace> {
     serde_json::from_slice(&std::fs::read(record_path(home, name)).ok()?).ok()
 }
@@ -85,11 +88,7 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
         .map(|w| w.repo.as_str())
         .unwrap_or(configured_repo);
     let repo = git(repo, &["rev-parse", "--show-toplevel"]).await?;
-    let path = home
-        .join("worktrees")
-        .join(name)
-        .to_string_lossy()
-        .into_owned();
+    let path = expected_path(&repo, name).to_string_lossy().into_owned();
     let branch = format!("amux/fanout/{name}");
     let existing = Path::new(&path).join(".git").exists();
     let base = if let Some(w) = old.as_ref() {
@@ -163,7 +162,7 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
                 "workspace directory exists without a valid git registration; preserved".into(),
             );
         }
-        std::fs::create_dir_all(home.join("worktrees")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(Path::new(&repo).join(".worktrees")).map_err(|e| e.to_string())?;
         // Only remove the missing path's stale registration. Branch commits
         // survive; never prune registrations belonging to other workers.
         let _ = git(&repo, &["worktree", "unlock", &path]).await;
