@@ -280,12 +280,19 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 .as_ref()
                 .is_some_and(|w| w.continued_generation.is_none());
         let stale_requirements = !state.stage.is_empty() && state.input_hash != input_hash(row);
+        let spawn_refused = state.stage == "waiting"
+            && state
+                .waiting
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("refusing to spawn a worker:"));
         let waiting = if phase == Phase::Verified || phase == Phase::Closed {
             None
         } else if !project.policy.enabled {
             Some("project_disabled".into())
         } else if project.policy.paused {
             Some("project_paused".into())
+        } else if spawn_refused {
+            state.waiting.clone()
         } else if stale_requirements {
             if let Some(reason) = &budget_wait {
                 Some(reason.clone())
