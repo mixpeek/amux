@@ -631,10 +631,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="groups-container"></div>
 </div>
 <div id="board-view" style="display:none;">
-  <div class="board-page-heading"><div><h1>Board <span class="board-legacy-badge">Legacy</span></h1><p>Legacy board and history. Start new work in <button class="btn" type="button" onclick="switchView('projects')">Projects</button>.</p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
-  <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
+  <div class="board-page-heading"><div><h1>Board <span class="board-legacy-badge">Legacy</span></h1><p>Legacy board/history · start new work in <button class="btn compact" type="button" onclick="switchView('projects')">Projects</button></p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
   <!-- No launch surface here: new work starts in Projects. Existing boards below remain for legacy maintenance. -->
-  <div class="board-toolbar">
+  <div class="board-control-row" aria-label="Board controls">
+    <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
+    <div class="board-toolbar">
     <div id="bf-chips" style="display:none;flex-basis:100%;order:3;flex-wrap:wrap;gap:6px;padding-top:6px;"></div>
     <!-- #bf-add is the FIRST flex child of the wrap (AMUX-2569): as a later
          sibling of a block-layout input it stacked underneath, burning a whole
@@ -669,10 +670,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="bv-btn" id="nudges-btn" onclick="_nudgesTogglePanel(event)" title="Enable or disable board nudges fleet-wide or per scope">Nudges</button>
       <div id="nudges-panel" style="display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;min-width:220px;box-shadow:0 4px 16px rgba(0,0,0,0.25);font-size:0.78rem;"></div>
     </div>
+    </div>
+    <div class="board-views" id="board-views"></div>
+    <div class="board-filters" id="board-filters"></div>
+    <div id="board-stats-mount"></div>
   </div>
-  <div class="board-views" id="board-views"></div>
-  <div class="board-filters" id="board-filters"></div>
-  <div id="board-stats-mount"></div>
   <div class="board-columns" id="board-columns"></div>
 </div>
 <!-- Calendar view -->

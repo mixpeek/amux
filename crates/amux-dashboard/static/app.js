@@ -7537,11 +7537,16 @@ function _renderExpiredSection() {
       const primary = [...w.cards].sort((a,b) => (b.updated || 0) - (a.updated || 0))[0];
       const epicCard = boardItems.find(c => w.cards.some(ch => ch.epic === c.id));
       const workerTitle = primary ? `${primary.id} · ${primary.title}` : w.name;
+      const pending = _workerLifecyclePending.get(w.name);
       html += `<div class="paused-card" data-session="${esc(w.name)}">
         <div class="paused-card-top">
           <span class="paused-card-name">${esc(workerTitle)}</span>
           <span class="paused-card-chip model" style="opacity:0.6">${doneCt}/${total} done</span>
           <span class="paused-card-spacer"></span>
+          <div class="paused-card-actions">
+            <button class="paused-resume-btn" ${pending ? 'disabled' : ''} onclick="resumeWorker('${escJs(w.name)}')">${esc(pending || 'Resume')}</button>
+            <button class="paused-archive-btn" ${pending ? 'disabled' : ''} onclick="archiveSession('${escJs(w.name)}')">Archive</button>
+          </div>
         </div>
         <div class="paused-card-meta"><code>${esc(w.name)}</code>
           ${w.parent ? `<span style="opacity:0.4;">&middot;</span> parent: <code>${esc(w.parent)}</code>` : ''}
@@ -8703,6 +8708,7 @@ async function _changeWorkerPaused(session, paused) {
   const done = _cardBusy(session, label);
   updatePeekStatus();
   _renderPausedSection();
+  _renderExpiredSection();
   try {
     const r = await apiCall(API + '/api/workers/' + encodeURIComponent(session) + (paused ? '/pause' : '/resume'), { method: 'POST' });
     if (r) {
@@ -8716,6 +8722,10 @@ async function _changeWorkerPaused(session, paused) {
         if (body.session === 'starting' || (!paused && body.session === 'started')) worker.status = 'starting';
       }
       updatePeekStatus();
+      if (!paused) {
+        _expiredWorkerInventory.delete(session);
+        _expiredWorkerInventoryAttemptAt = 0;
+      }
       showToast(session + (paused ? ' paused — work stopped' : ' resuming'));
     }
     await fetchSessions();
@@ -8723,6 +8733,7 @@ async function _changeWorkerPaused(session, paused) {
     _workerLifecyclePending.delete(session);
     done();
     render();
+    _renderExpiredSection();
     updatePeekStatus();
   }
 }
@@ -8732,7 +8743,12 @@ async function archiveSession(session) {
   const done = _cardBusy(session, 'Archiving');
   const r = await apiCall(API + '/api/sessions/' + session + '/archive', { method: 'POST', headers: { 'X-Amux-UI-Token': (window._AMUX_UI_TOKEN || '') } });
   done();
-  if (r) showToast(session + ' archived');
+  if (r) {
+    _expiredWorkerInventory.delete(session);
+    _expiredWorkerInventoryAttemptAt = 0;
+    _renderExpiredSection();
+    showToast(session + ' archived');
+  }
   await fetchSessions();
 }
 
@@ -44916,6 +44932,105 @@ function _projectClearRefreshError() {
   const err=document.getElementById('project-error');if(err) err.textContent='';
   const retry=document.getElementById('project-error-retry');if(retry) retry.hidden=true;
 }
+function _projectInventoryState(project) {
+  const policy=project?.policy || {};
+  if(policy.paused) return {label:'Paused',cls:'paused'};
+  if(policy.enabled===false) return {label:'Disabled',cls:'disabled'};
+  return {label:'Driving',cls:'active'};
+}
+function _projectRenderInventory(projects) {
+  const el=document.getElementById('project-list'); if(!el) return;
+  const rows=[{name:'',newProject:true}].concat(projects || []);
+  const sig=JSON.stringify([_projectsName,rows.map(p=>[p.name,p.newProject,!!p.policy?.paused,p.policy?.enabled,p.policy?.repository,p.policy?.executor?.provider,p.policy?.executor?.model,p.policy?.worktree])]);
+  if(el.dataset.sig===sig) return;
+  el.dataset.sig=sig;
+  el.innerHTML='<div class="project-list-title">Projects</div>'+rows.map(p=>{
+    if(p.newProject) {
+      return `<button class="project-list-card ${!_projectsName?'selected':''}" onclick="_projectChoose('')"><strong>+ New project</strong><span>Define an outcome, repository, gates and review evidence.</span></button>`;
+    }
+    const st=_projectInventoryState(p),policy=p.policy||{},repo=(policy.repository||'').replace(/^\/Users\/[^/]+/,'~');
+    const executor=[policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ');
+    return `<button class="project-list-card ${p.name===_projectsName?'selected':''}" onclick="_projectChoose('${escJs(p.name)}')"><span class="project-list-row"><strong>${esc(p.name)}</strong><em class="project-pill ${esc(st.cls)}">${esc(st.label)}</em></span><span>${esc(repo || 'No repository configured')}</span><span>${esc((policy.worktree===false?'Shared checkout':'Dedicated worktrees')+(executor?' · '+executor:''))}</span></button>`;
+  }).join('');
+}
+const _projectTabs=[['overview','Overview'],['tasks','Tasks'],['evidence','Evidence'],['dependencies','Dependencies'],['settings','Settings']];
+function _projectCurrentTab() {
+  const tab=_projectStorage('tab_'+(_projectsName||'')) || 'overview';
+  return _projectTabs.some(([key])=>key===tab) ? tab : 'overview';
+}
+function _projectTabsHtml() {
+  return '<nav class="project-tabs" aria-label="Project sections">'+_projectTabs.map(([key,label])=>`<button type="button" class="project-tab" data-project-tab="${esc(key)}" onclick="_projectSetTab('${escJs(key)}')">${esc(label)}</button>`).join('')+'</nav>';
+}
+function _projectSetTab(tab) {
+  _projectStorage('tab_'+(_projectsName||''),tab);
+  _projectApplyTab();
+}
+function _projectApplyTab() {
+  const tab=_projectCurrentTab();
+  document.querySelectorAll('[data-project-panel]').forEach(panel=>{ panel.hidden = panel.dataset.projectPanel !== tab; });
+  document.querySelectorAll('[data-project-tab]').forEach(btn=>{
+    const on=btn.dataset.projectTab===tab;
+    btn.classList.toggle('selected',on);
+    btn.setAttribute('aria-selected',on?'true':'false');
+  });
+}
+function _projectDetailTemplate(project) {
+  return _projectTabsHtml()+
+    '<section id="project-panel-overview" class="project-tab-panel" data-project-panel="overview">'+
+      '<section class="project-command-center"><div class="project-status"><div><span class="project-eyebrow">Current state</span><strong id="project-state"></strong></div><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div class="project-metrics" aria-label="Project health"><div><strong id="project-metric-outcomes">—</strong><span>Outcomes verified</span></div><div><strong id="project-metric-tasks">—</strong><span>Tasks active</span></div><div><strong id="project-metric-workers">—</strong><span>Workers assigned</span></div><div><strong id="project-metric-usage">—</strong><span>Observed usage</span></div></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><label class="project-composer-label" for="project-command">Add or refine the desired outcome</label><textarea id="project-command" rows="3" placeholder="Describe the result and how a human can verify the produced artifact" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div></section>'+
+      '<div id="project-overview" class="project-overview-grid"></div>'+
+    '</section>'+
+    '<section id="project-panel-tasks" class="project-tab-panel" data-project-panel="tasks" hidden><div class="project-workspace"><div id="project-cards" class="project-columns" aria-label="Project tasks"></div><aside id="project-inspector" class="project-inspector" tabindex="-1" aria-label="Task inspector"></aside></div></section>'+
+    '<section id="project-panel-evidence" class="project-tab-panel" data-project-panel="evidence" hidden><div id="project-evidence-panel" class="project-overview-grid"></div></section>'+
+    '<section id="project-panel-dependencies" class="project-tab-panel" data-project-panel="dependencies" hidden><div id="project-dependencies-panel" class="project-overview-grid"></div></section>'+
+    '<section id="project-panel-settings" class="project-tab-panel" data-project-panel="settings" hidden><details class="project-settings" data-open-key="telemetry" open><summary>Usage and telemetry</summary><div id="project-usage" class="project-usage"></div></details><details class="project-settings"><summary>Execution settings</summary>'+_projectConfig(project)+'</details><details class="project-settings"><summary>Migrate existing boards</summary><p>Preview explicit worker boards. Existing tasks and evidence keep their IDs. Pause this project before applying or rolling back.</p><label>Worker names, comma separated<input id="project-migration-workers"></label><button class="btn" onclick="_projectMigrationPreview()">Preview migration</button><pre id="project-migration-preview"></pre><button class="btn" id="project-migration-apply" hidden onclick="_projectMigrationApply()">Apply reviewed migration</button><div id="project-migration-history"></div><label>Migration ID<input id="project-migration-id"></label><button class="btn" onclick="_projectMigrationRollback()">Roll back unchanged rows</button></details></section>';
+}
+function _projectShortDate(ts) {
+  if(!ts) return '—';
+  const d=new Date((Number(ts)>1e12?Number(ts):Number(ts)*1000));
+  if(Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+}
+function _projectCardUpdated(card) { return Number(card.updated || card.created || 0); }
+function _projectAssets(data) {
+  const assets=[];
+  (data.cards||[]).forEach(card=>{
+    (card.execution_plan?.execution?.retained_assets||[]).forEach((asset,index)=>assets.push({card,asset,index}));
+  });
+  (data.acceptance?.review_assets||[]).forEach((entry,index)=>assets.push({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:'Project acceptance'}}));
+  return assets;
+}
+function _projectRenderOverview(data) {
+  const el=document.getElementById('project-overview'); if(!el) return;
+  const acc=data.acceptance||{}, policy=data.project.policy||{}, cards=data.cards||[], assets=_projectAssets(data);
+  const phases=['intake','ready','working','verifying','verified'];
+  const phaseSet=new Set(cards.map(c=>c.phase));
+  const timeline=phases.map(phase=>`<div class="project-timeline-step ${phaseSet.has(phase)||phase==='intake'?'done':''}"><span></span><strong>${esc(phase[0].toUpperCase()+phase.slice(1))}</strong><small>${phase==='verified'?cards.filter(c=>c.phase==='verified').length+' verified':phaseSet.has(phase)?'active':'pending'}</small></div>`).join('');
+  const recent=cards.slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<tr><td>${esc(c.id)}</td><td>${esc(_projectClip(c.title,54))}</td><td><span class="project-status-chip ${esc(c.phase)}">${esc(c.phase)}</span></td><td>${esc(_projectShortDate(_projectCardUpdated(c)))}</td></tr>`).join('');
+  const runs=cards.filter(c=>c.execution_plan?.execution?.stage || c.execution_plan?.execution?.report).slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<li><span class="project-run-dot ${c.phase==='verified'?'ok':''}"></span><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.execution?.stage || c.phase,40))}</span><small>${esc(_projectShortDate(_projectCardUpdated(c)))}</small></li>`).join('');
+  const deps=cards.filter(c=>(c.depends_on||[]).length || c.execution_plan?.waiting_label || c.execution_plan?.waiting_reason).slice(0,4).map(c=>`<li><button class="project-link" onclick="_projectSetTab('dependencies')">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.waiting_label || ((c.depends_on||[]).length+' explicit dependencies'),80))}</span></li>`).join('');
+  const evidenceSummary=['md','json','png','webm'].map(ext=>[ext,assets.filter(a=>(a.asset?.source?.path||a.asset?.path||'').endsWith('.'+ext)).length]).filter(x=>x[1]).map(([ext,n])=>`<li><span>${esc(ext.toUpperCase())} artifacts</span><strong>${n}</strong></li>`).join('') || '<li><span>No retained artifacts yet</span><strong>0</strong></li>';
+  const repo=(policy.repository||'').replace(/^\/Users\/[^/]+/,'~');
+  const context=`<dl class="project-context"><dt>Repository</dt><dd>${esc(repo||'Not configured')}</dd><dt>Checkout</dt><dd>${policy.worktree===false?'Shared checkout':'Dedicated worktrees'}</dd><dt>Planner</dt><dd>${esc([policy.coordinator?.provider,policy.coordinator?.model,policy.coordinator?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Executor</dt><dd>${esc([policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Gate</dt><dd>${esc(policy.verify_command||'Not configured')}</dd></dl>`;
+  const html=`<section class="project-overview-card wide"><h3>Project timeline</h3><div class="project-timeline">${timeline}</div></section><section class="project-overview-card"><h3>Project context</h3>${context}</section><section class="project-overview-card wide"><div class="project-card-heading"><h3>Tasks</h3><button class="project-link" onclick="_projectSetTab('tasks')">View kanban →</button></div><table class="project-task-table"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Updated</th></tr></thead><tbody>${recent||'<tr><td colspan="4">No tasks yet</td></tr>'}</tbody></table></section><section class="project-overview-card"><div class="project-card-heading"><h3>Recent runs</h3><button class="project-link" onclick="_projectSetTab('tasks')">View all →</button></div><ul class="project-run-list">${runs||'<li><span>No runs yet</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Dependencies</h3><button class="project-link" onclick="_projectSetTab('dependencies')">View all →</button></div><ul class="project-run-list">${deps||'<li><span>No active dependency holds</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Evidence summary</h3><button class="project-link" onclick="_projectSetTab('evidence')">View all →</button></div><ul class="project-evidence-summary">${evidenceSummary}</ul></section><section class="project-overview-card"><h3>Review note</h3><p>${esc(acc.reason ? acc.reason.replaceAll('_',' ') : (acc.state ? 'Acceptance state: '+acc.state : 'Whole-project acceptance has not run yet.'))}</p></section>`;
+  if(el.dataset.sig!==html){el.dataset.sig=html;el.innerHTML=html;}
+}
+function _projectRenderEvidencePanel(data) {
+  const el=document.getElementById('project-evidence-panel'); if(!el) return;
+  const assets=_projectAssets(data);
+  const rows=assets.map(a=>{
+    const path=a.asset?.source?.path || a.asset?.path || '';
+    const click=a.acceptance?`_projectAcceptanceRetainedAsset(${a.index})`:`_projectAssetPreview('${escJs(a.card.id)}',${a.index})`;
+    return `<article class="project-overview-card"><h3>${esc(a.card.id)} · ${esc(_projectClip(a.card.title||'Evidence',80))}</h3><p>${esc(path||'Retained evidence')}</p>${path?`<button class="btn" onclick="${click}">Open artifact</button>`:''}</article>`;
+  }).join('') || '<p class="project-empty" role="status">No retained artifacts yet. Completed project tasks must report Markdown, JSON, PNG or WebM assets.</p>';
+  if(el.dataset.sig!==rows){el.dataset.sig=rows;el.innerHTML=rows;}
+}
+function _projectRenderDependencyPanel(data) {
+  const el=document.getElementById('project-dependencies-panel'); if(!el) return;
+  const rows=(data.cards||[]).filter(c=>(c.depends_on||[]).length || c.execution_plan?.waiting_reason).map(c=>`<article class="project-overview-card"><h3>${esc(c.id)} · ${esc(_projectClip(c.title,90))}</h3><p>${esc(c.execution_plan?.waiting_label || 'Dependency details')}</p><p class="project-muted">${esc((c.depends_on||[]).length ? 'Depends on '+(c.depends_on||[]).join(', ') : _projectClip(c.execution_plan?.waiting_reason||'',300))}</p><button class="btn" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">Open task</button></article>`).join('') || '<p class="project-empty" role="status">No explicit dependency holds. Dependencies are allowed only within this project.</p>';
+  if(el.dataset.sig!==rows){el.dataset.sig=rows;el.innerHTML=rows;}
+}
+
 async function _projectsLoad() {
   // Never cancel a scheduled refresh when bailing out: an in-flight load reschedules itself, a hidden view must stop.
   if(activeView!=='projects') {_projectsStop();return;}
@@ -44926,7 +45041,7 @@ async function _projectsLoad() {
   const current=()=>token===_projectsToken && activeView==='projects';
   const root=document.getElementById('projects-view');
   if(!document.getElementById('project-selector')) {
-    root.innerHTML='<div class="project-heading"><div><h2>Projects</h2><p>Describe an outcome. Follow its progress and evidence.</p></div><label>Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy boards and history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div id="project-detail"></div>';
+    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into tasks, verified assets, integrated commits and a human review gate.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
     _projectsName=_projectStorage('selected');
   }
   try {
@@ -44935,6 +45050,7 @@ async function _projectsLoad() {
     const select=document.getElementById('project-selector');
     const options='<option value="">New project</option>'+inventory.projects.map(p=>'<option value="'+esc(p.name)+'">'+esc(p.name)+'</option>').join('');
     if(select.innerHTML!==options) select.innerHTML=options;select.value=_projectsName;
+    _projectRenderInventory(inventory.projects);
     if(!_projectsName) {
       if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=(inventory.projects.length?'':'<p class="project-empty" role="status">No projects yet. Create one to describe an outcome and follow its tasks and evidence.</p>')+_projectConfig(null)
       if(document.getElementById('project-config') && !document.getElementById('project-config').dataset.restored) {document.getElementById('project-config').dataset.restored='1';_projectSettingsRestore();}
@@ -44950,7 +45066,7 @@ async function _projectsLoad() {
       await fetchSessions();
       if(!current() || expected!==_projectsName) return;
       if(!_projectsData) {
-        document.getElementById('project-detail').innerHTML='<div class="project-status"><strong id="project-state"></strong><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><label class="project-composer-label" for="project-command">What outcome do you want?</label><textarea id="project-command" rows="3" placeholder="Describe the result and how to verify it" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div><div class="project-workspace"><div id="project-cards" class="project-columns"></div><aside id="project-inspector" class="project-inspector" tabindex="-1" aria-label="Task inspector"></aside></div><details class="project-settings" data-open-key="telemetry"><summary>Usage and telemetry</summary><div id="project-usage" class="project-usage"></div></details><details class="project-settings"><summary>Execution settings</summary>'+_projectConfig(data.project)+'</details><details class="project-settings"><summary>Migrate existing boards</summary><p>Preview explicit worker boards. Existing tasks and evidence keep their IDs. Pause this project before applying or rolling back.</p><label>Worker names, comma separated<input id="project-migration-workers"></label><button class="btn" onclick="_projectMigrationPreview()">Preview migration</button><pre id="project-migration-preview"></pre><button class="btn" id="project-migration-apply" hidden onclick="_projectMigrationApply()">Apply reviewed migration</button><div id="project-migration-history"></div><label>Migration ID<input id="project-migration-id"></label><button class="btn" onclick="_projectMigrationRollback()">Roll back unchanged rows</button></details>';
+        document.getElementById('project-detail').innerHTML=_projectDetailTemplate(data.project);
         document.getElementById('project-command').value=_projectStorage('draft_'+expected);
         _projectBindUi();
       }
@@ -45135,7 +45251,14 @@ function _projectRender(data) {
   const progress=document.getElementById('project-progress');
   if(progress) {delete progress.dataset.stale;}
   const verifiedTasks=data.cards.filter(c=>c.phase==='verified').length,closedTasks=data.cards.filter(c=>c.phase==='closed').length;
-  setText('project-progress',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+verifiedTasks+' of '+data.cards.length+' tasks verified'+(closedTasks?' · '+closedTasks+' closed (not verified)':'')+' · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake');
+  const activeTasks=data.cards.filter(c=>!['verified','closed'].includes(c.phase)).length;
+  const assignedWorkers=new Set(data.cards.map(c=>c.execution_plan?.execution?.worker).filter(Boolean));
+  const pendingCommands=data.commands.filter(c=>c.pending).length;
+  setText('project-metric-outcomes',u.verified_outcomes+' / '+u.requested_outcomes);
+  setText('project-metric-tasks',activeTasks+' active');
+  setText('project-metric-workers',assignedWorkers.size+' assigned');
+  setText('project-metric-usage',u.measured?u.tokens.toLocaleString()+' tokens':'not measured');
+  setText('project-progress',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+verifiedTasks+' of '+data.cards.length+' tasks verified'+(closedTasks?' · '+closedTasks+' closed (not verified)':'')+' · '+pendingCommands+' requests awaiting intake');
   const acc=data.acceptance,accEl=document.getElementById('project-acceptance');
   const accHtml=acc && typeof acc.state==='string'
     ? _projectAcceptanceHtml(acc)
@@ -45148,9 +45271,13 @@ function _projectRender(data) {
   const migrations=data.migrations || [];
   const history=document.getElementById('project-migration-history');
   const historyHtml=migrations.map(m=>'<p>'+esc(m.event)+' · '+esc(m.id)+'</p>').join('');
-  if(history.dataset.sig!==historyHtml) {history.dataset.sig=historyHtml;history.innerHTML=historyHtml;}
+  if(history && history.dataset.sig!==historyHtml) {history.dataset.sig=historyHtml;history.innerHTML=historyHtml;}
+  _projectRenderOverview(data);
+  _projectRenderEvidencePanel(data);
+  _projectRenderDependencyPanel(data);
+  _projectApplyTab();
   const migrationInput=document.getElementById('project-migration-id');
-  if(!migrationInput.value) migrationInput.value=migrations.find(m=>m.event==='project.migrated')?.id || '';
+  if(migrationInput && !migrationInput.value) migrationInput.value=migrations.find(m=>m.event==='project.migrated')?.id || '';
   if(typeof _refreshExpiredWorkerInventory==='function') _refreshExpiredWorkerInventory();
   const board=document.getElementById('project-cards');
   const selected=_projectStorage('task_'+p.name);

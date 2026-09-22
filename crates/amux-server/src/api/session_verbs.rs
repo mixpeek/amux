@@ -11650,7 +11650,22 @@ pub(crate) async fn dispose_verified_worker_terminal(name: &str) {
 async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
     let f = env_path(name);
     if !f.exists() {
-        return (false, format!("session '{name}' not found"));
+        let retired = f.with_extension("env.reaped");
+        if retired.exists() {
+            if let Err(error) = std::fs::rename(&retired, &f) {
+                return (false, format!("could not restore expired worker before archive: {error}"));
+            }
+            let mut cfg = EnvFile::load(&f);
+            cfg.set("CC_ARCHIVED", "1");
+            if let Err(error) = cfg.write(&f) {
+                return (false, env_write_error(&f, &error));
+            }
+            crate::api::sessions_legacy::invalidate_sessions_cache();
+            tracing::info!(session = name, verdict = "expired_worker_restored_for_archive", measured = true, n_considered = 1,
+                "restored retired env so archive can use the normal reversible archived state");
+        } else {
+            return (false, format!("session '{name}' not found"));
+        }
     }
     let cfg = parse_env(name);
     if is_running(name).await {

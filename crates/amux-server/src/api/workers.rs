@@ -1247,6 +1247,43 @@ fn step_response(
 
 // ---- lifecycle transitions ------------------------------------------------
 
+/// Expired legacy/fan-out workers are represented by `sessions/<name>.env.reaped`,
+/// not by a worker-table lifecycle row. Restore that receipt back to the normal
+/// env filename before routing through the same pause/resume/archive verbs used
+/// by visible workers. Resume restores as paused so the existing resume path
+/// clears the flag and starts the worker; if startup fails, it remains a visible
+/// paused worker that can be retried or archived.
+fn restore_retired_legacy_for_resume(name: &str) -> anyhow::Result<bool> {
+    use crate::api::session_verbs as fleet;
+    anyhow::ensure!(fleet::valid_session_name(name), "invalid session name");
+    let active = fleet::env_path(name);
+    if active.exists() {
+        return Ok(false);
+    }
+    let retired = active.with_extension("env.reaped");
+    if !retired.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = active.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&retired, &active)?;
+    let mut cfg = fleet::EnvFile::load(&active);
+    cfg.remove("CC_ARCHIVED");
+    cfg.set("CC_PAUSED", "1");
+    cfg.write(&active)?;
+    crate::api::sessions_legacy::invalidate_sessions_cache();
+    tracing::info!(
+        session = name,
+        mode = "resume",
+        verdict = "expired_worker_restored",
+        measured = true,
+        n_considered = 1,
+        "restored retired worker env so normal lifecycle controls can operate"
+    );
+    Ok(true)
+}
+
 /// Serialize lifecycle transitions by resolved worker name, including typed
 /// bootstrap, so an in-flight spawn cannot complete after Pause acknowledges.
 pub(crate) fn lifecycle_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -1280,6 +1317,11 @@ async fn change_pause(
     };
     let lock = lifecycle_lock(&name);
     let _guard = lock.lock().await;
+    if !paused {
+        if let Err(error) = restore_retired_legacy_for_resume(&name) {
+            return err(StatusCode::CONFLICT, json!({"error": error.to_string(), "state": "expired"}));
+        }
+    }
     let row = match state.store.read().and_then(|conn| Ok(queries::get_worker(&conn, &key)?)) {
         Ok(row) => row, Err(e) => return internal(e),
     };
@@ -2631,6 +2673,26 @@ mod tests {
         let (_, _, worker) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
         assert_eq!(worker["lifecycle"], "paused", "{worker}");
         assert_eq!(worker["state"]["state"], "stopped", "{worker}");
+    }
+
+    #[tokio::test]
+    async fn expired_legacy_resume_restores_reaped_env_before_starting() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let active = home.path().join("sessions/expired-probe.env");
+        let retired = active.with_extension("env.reaped");
+        std::fs::write(&retired, "CC_BACKEND=herdr\nCC_DIR=/tmp\nCC_ARCHIVED=1\n").unwrap();
+        let (app, _dir) = app();
+
+        let (st, _, body) = send(&app, "POST", "/api/workers/expired-probe/resume", None).await;
+        assert_eq!(st, StatusCode::BAD_GATEWAY, "resume should restore then fail honestly on unsupported backend: {body}");
+        assert!(body["error"].as_str().unwrap().contains("herdr-backed session start"), "{body}");
+        assert!(active.exists(), "expired receipt must be restored to the normal env path");
+        assert!(!retired.exists(), "restored worker must leave the expired accordion");
+        let env = crate::api::session_verbs::parse_env("expired-probe");
+        assert_eq!(env.get("CC_PAUSED"), Some("1"), "failed resume stays visible and retryable as paused");
+        assert_ne!(env.get("CC_ARCHIVED"), Some("1"), "resume must not leave archived outranking paused");
     }
 
     #[tokio::test]
