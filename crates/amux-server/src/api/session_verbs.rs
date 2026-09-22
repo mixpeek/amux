@@ -2223,6 +2223,13 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("telegram_mappings.last_routed_session", RenameDisposition::Migrate),
     ("mdai_runs", RenameDisposition::Migrate),
     ("board_drive_nudge_state", RenameDisposition::Migrate),
+    // The per-card budget is live state, not history: it records how many
+    // nudges a card has already drawn and when the next one is admitted.
+    // Stranded on the old name, a renamed lane reads an empty budget and the
+    // two self-re-arming nudges start over from zero, which is the exact
+    // behaviour 0082_nudge_budget.sql exists to bound. Migrate, like the
+    // sibling board_drive_nudge_state above it.
+    ("board_drive_nudge_budget", RenameDisposition::Migrate),
     ("dictation_history", RenameDisposition::Migrate),
     ("reclaim_quarantine", RenameDisposition::Migrate),
     ("send_dedup", RenameDisposition::Migrate),
