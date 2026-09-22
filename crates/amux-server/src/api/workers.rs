@@ -1313,6 +1313,34 @@ async fn change_pause(
             let result = if paused { protocol.pause(&worker).await } else { protocol.resume(&worker).await };
             if !matches!(result, Err(crate::opencode::ProtocolError::NoSession(_))) { result?; }
         }
+        if !paused {
+            // Resume with a lost conversation ref (#73): the next turn
+            // starts a fresh provider conversation, so queue one bounded
+            // memory re-supply. Best-effort and idempotent. A failure here
+            // must not fail the resume itself, and a live conversation
+            // needs nothing.
+            if let Some(row) = &row {
+                if let Ok(worker) = WorkerId::parse(&row.id) {
+                    let worker_id = worker.clone();
+                    if let Err(e) = state.store.write_async(move |conn| {
+                        let enqueued = if crate::orchestrator::memory_resupply::has_conversation_ref(conn, &worker_id) {
+                            false
+                        } else {
+                            crate::orchestrator::memory_resupply::enqueue_resupply(
+                                conn,
+                                &worker_id,
+                                amux_core::protocol::MemoryResupplyReason::Resume,
+                                chrono::Utc::now(),
+                            )?
+                        };
+                        Ok(WriteOutcome { applied: enqueued, events: vec![] })
+                    }).await {
+                        tracing::warn!(worker = %row.id, error = %e,
+                            "resume memory re-supply enqueue failed; resume continues without it");
+                    }
+                }
+            }
+        }
         if legacy {
             if paused {
                 fleet::stop_for_pause(&state, &name).await?;

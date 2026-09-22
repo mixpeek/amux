@@ -518,7 +518,48 @@ pub fn apply_event(
                 payload: None,
             });
         }
-        WorkerEvent::Started | WorkerEvent::TaskUpdated(_) | WorkerEvent::ContextLow(_) => {}
+        WorkerEvent::Started => {
+            // Fresh agent start (#73): with no persisted conversation ref
+            // the next turn opens a new provider conversation, so queue one
+            // bounded memory re-supply. A reconnect (ref present) continues
+            // its own conversation and needs nothing.
+            if !crate::orchestrator::memory_resupply::has_conversation_ref(conn, worker)
+                && crate::orchestrator::memory_resupply::enqueue_resupply(
+                    conn,
+                    worker,
+                    amux_core::protocol::MemoryResupplyReason::SessionStart,
+                    now,
+                )?
+            {
+                events.push(ev(
+                    EntityType::Other("memory_resupply".into()),
+                    wid,
+                    MutationKind::Created,
+                ));
+            }
+        }
+        WorkerEvent::ContextLow(_) => {
+            // Post-compaction re-supply (#73): native compaction is
+            // provider-managed and unobservable from here, so a low reading
+            // queues one bounded re-assertion for the next turn boundary,
+            // the earliest point durable facts can be restored after the
+            // provider summarized them away. `AtTurnBoundary` timing plus
+            // same-key dedup keep a low persistent reading from stacking
+            // turns.
+            if crate::orchestrator::memory_resupply::enqueue_resupply(
+                conn,
+                worker,
+                amux_core::protocol::MemoryResupplyReason::PostCompaction,
+                now,
+            )? {
+                events.push(ev(
+                    EntityType::Other("memory_resupply".into()),
+                    wid,
+                    MutationKind::Created,
+                ));
+            }
+        }
+        WorkerEvent::TaskUpdated(_) => {}
     }
 
     // `applied` mirrors the events: every real write above pushes one, so an
@@ -1078,7 +1119,7 @@ mod tests {
         assert_eq!(worker_state(&store), WorkerState::Stopped);
 
         // A second Exited finds no live session, so the ORIGINAL exit
-        // reason survives (end exactly once — the record is the record).
+        // reason survives (end exactly once � the record is the record).
         apply(&store, WorkerEvent::Exited(ExitStatus { code: None, signal: Some(9) }));
         let conn = store.read().unwrap();
         let reason: String = conn
@@ -1091,6 +1132,90 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ExitReason>(&reason).unwrap(),
             ExitReason::Completed
+        );
+    }
+
+    /// #73: a fresh agent start (no persisted conversation ref) queues one
+    /// session-start memory re-supply.
+    #[test]
+    fn started_without_conversation_ref_queues_start_resupply() {
+        use amux_core::protocol::MemoryResupplyReason;
+        let store = store();
+        seed(&store);
+        let reply = apply(&store, WorkerEvent::Started);
+        assert!(reply.applied, "queueing the resupply is a real write");
+        let conn = store.read().unwrap();
+        let key = crate::orchestrator::memory_resupply::resupply_key(
+            &wid(),
+            MemoryResupplyReason::SessionStart,
+        );
+        let cmd = commands::by_idempotency_key(&conn, &wid(), &key)
+            .unwrap()
+            .expect("start resupply must be queued");
+        assert!(
+            matches!(
+                cmd.command,
+                WorkerCommand::MemoryResupply { reason: MemoryResupplyReason::SessionStart }
+            ),
+            "{:?}",
+            cmd.command
+        );
+    }
+
+    /// #73: a start that continues a persisted conversation queues nothing:
+    /// the agent's history is intact, so a re-supply turn adds nothing.
+    #[test]
+    fn started_with_conversation_ref_queues_nothing() {
+        let store = store();
+        seed(&store);
+        store
+            .write(|conn| {
+                conn.execute(
+                    "INSERT INTO _amux_conversations (worker_id, provider, conversation_ref, updated_at)
+                     VALUES (?1, 'claude', 'conv-live-1', '2026-08-09T00:00:00+00:00')",
+                    params![wid().as_str()],
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let reply = apply(&store, WorkerEvent::Started);
+        assert!(!reply.applied, "a reconnect is a no-op for memory re-supply");
+        let conn = store.read().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _amux_commands WHERE worker_id = ?1",
+                params![wid().as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "no command may be queued");
+    }
+
+    /// #73: a low-context reading queues one post-compaction re-supply for
+    /// the next turn boundary, the earliest point durable facts can be
+    /// re-asserted after provider-managed compaction.
+    #[test]
+    fn context_low_queues_post_compaction_resupply() {
+        use amux_core::protocol::MemoryResupplyReason;
+        let store = store();
+        seed(&store);
+        let reply = apply(&store, WorkerEvent::ContextLow(5));
+        assert!(reply.applied, "queueing the resupply is a real write");
+        let conn = store.read().unwrap();
+        let key = crate::orchestrator::memory_resupply::resupply_key(
+            &wid(),
+            MemoryResupplyReason::PostCompaction,
+        );
+        let cmd = commands::by_idempotency_key(&conn, &wid(), &key)
+            .unwrap()
+            .expect("post-compaction resupply must be queued");
+        assert!(
+            matches!(
+                cmd.command,
+                WorkerCommand::MemoryResupply { reason: MemoryResupplyReason::PostCompaction }
+            ),
+            "{:?}",
+            cmd.command
         );
     }
 

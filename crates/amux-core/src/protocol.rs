@@ -57,6 +57,25 @@ pub enum WorkerCommand {
     Pause,
     /// Unsuspend the worker. Immediate.
     Resume,
+    /// Re-supply durable memories as a bounded prompt turn (#73). The
+    /// command carries only the trigger reason (Invariant 29): visible
+    /// memories are resolved live at delivery from the canonical store,
+    /// so a queued resupply can never deliver a stale copy.
+    MemoryResupply { reason: MemoryResupplyReason },
+}
+
+/// Why a memory re-supply was requested. Recorded on the command for
+/// observability and idempotency scoping. Delivery behaves the same
+/// for every reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryResupplyReason {
+    /// Fresh agent start with no provider conversation to continue.
+    SessionStart,
+    /// Resume whose conversation ref was lost (restart, dropped ref).
+    Resume,
+    /// Re-assert durable facts after provider-managed compaction.
+    PostCompaction,
 }
 
 // ---------------------------------------------------------------------------
