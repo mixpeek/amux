@@ -615,8 +615,9 @@ pub fn request_rerun(
 }
 
 /// A task binds itself to approved verifiers with `contract:<id>` acceptance criteria. Its report may
-/// only carry the approved command for each, so an executor cannot swap a check for `true`, invent or
-/// repeat a criterion, or satisfy a human review.
+/// only carry the approved command and required evidence for each, so an executor cannot swap a
+/// check for `true`, invent or repeat a criterion, satisfy a human review, or silently retain the
+/// wrong artifact.
 pub fn contract_binding(
     criteria: &[String],
     report: &planner::Report,
@@ -652,6 +653,17 @@ pub fn contract_binding(
             checks.len() == 1 && checks[0].command.trim() == command.trim(),
             "the check for contract:{id} must be exactly the approved verifier command"
         );
+        let assets: std::collections::HashSet<&str> = report
+            .assets
+            .iter()
+            .map(|asset| asset.path.as_str())
+            .collect();
+        for evidence in &criterion.evidence {
+            anyhow::ensure!(
+                assets.contains(evidence.as_str()),
+                "contract:{id} requires reported asset {evidence}"
+            );
+        }
     }
     Ok(())
 }
@@ -685,7 +697,14 @@ pub fn catalogue(contract: &AcceptanceContract) -> String {
         .criteria
         .iter()
         .filter(|c| !c.verifier.is_human())
-        .map(|c| format!("contract:{} = {}", c.id, c.requirement))
+        .map(|c| {
+            let evidence = if c.evidence.is_empty() {
+                String::new()
+            } else {
+                format!("; required evidence assets: {}", c.evidence.join(", "))
+            };
+            format!("contract:{} = {}{}", c.id, c.requirement, evidence)
+        })
         .collect();
     if lines.is_empty() {
         return String::new();
@@ -1044,6 +1063,29 @@ mod tests {
             Some(&c)
         )
         .is_ok());
+    }
+
+    #[test]
+    fn contract_bound_reports_must_include_required_evidence_assets() {
+        let c = contract(json!({"revision":1,"criteria":[
+            {"id":"artifact","requirement":"artifact exists","verifier":{"type":"command","id":"artifact-check","command":"python3 scripts/verify.py"},"evidence":["docs/result.md"]}
+        ]}));
+        let refs = vec!["contract:artifact".to_string()];
+        let mut missing = report(&[("contract:artifact", "python3 scripts/verify.py")]);
+        missing.assets = vec![super::super::assets::Asset {
+            path: "docs/wrong.md".into(),
+            sha256: "0".repeat(64),
+        }];
+        let err = contract_binding(&refs, &missing, Some(&c)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("contract:artifact requires reported asset docs/result.md"));
+
+        missing.assets = vec![super::super::assets::Asset {
+            path: "docs/result.md".into(),
+            sha256: "0".repeat(64),
+        }];
+        assert!(contract_binding(&refs, &missing, Some(&c)).is_ok());
     }
 
     #[test]

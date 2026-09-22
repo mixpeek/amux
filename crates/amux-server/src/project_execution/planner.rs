@@ -279,12 +279,23 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 .output_wait
                 .as_ref()
                 .is_some_and(|w| w.continued_generation.is_none());
+        let stale_requirements = !state.stage.is_empty() && state.input_hash != input_hash(row);
         let waiting = if phase == Phase::Verified || phase == Phase::Closed {
             None
         } else if !project.policy.enabled {
             Some("project_disabled".into())
         } else if project.policy.paused {
             Some("project_paused".into())
+        } else if stale_requirements {
+            if let Some(reason) = &budget_wait {
+                Some(reason.clone())
+            } else if available == 0 {
+                Some("executor_capacity".into())
+            } else {
+                available -= 1;
+                action = "claim";
+                None
+            }
         } else if state.waiting.is_some() && state.stage != "repair" && !output_continuation {
             state.waiting.clone()
         } else if !bs::has_execution_details(row) && row.item_type != "epic" {
@@ -296,8 +307,6 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             && row.status == "needsyou"
         {
             Some("authorization_required".into())
-        } else if !state.stage.is_empty() && state.input_hash != input_hash(row) {
-            Some("requirements_changed".into())
         } else if let Some(blocker) = super::graph::readiness(conn, row)?.blocker() {
             // One shared predicate for edges, verified outputs and holds; invalid edges stay visible.
             Some(blocker)
@@ -473,6 +482,16 @@ pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<Write
     }
     let row = bs::get_issue(conn, id)?.ok_or_else(|| anyhow::anyhow!("task missing"))?;
     let mut state = item.execution;
+    if !state.stage.is_empty() && state.input_hash != input_hash(&row) {
+        state.attempt = 0;
+        state.retry_grants.clear();
+        state.verification_retries.clear();
+        state.verification_retry_pending = false;
+        state.output_wait = None;
+        state.wait_category = None;
+        state.report = None;
+        state.retained_assets.clear();
+    }
     state.attempt += 1;
     state.generation += 1;
     state.input_hash = input_hash(&row);

@@ -119,9 +119,34 @@ pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
     } else {
         "Execute this finite project task in the project's shared checkout. This project is single-lane in shared-checkout mode; keep the checkout clean, commit the exact result, and do not start unrelated work."
     };
+    let criteria = row
+        .acceptance_criteria
+        .as_deref()
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok());
+    let contract_requirements = row
+        .acceptance_criteria
+        .as_deref()
+        .and_then(|v| serde_json::from_str::<Vec<String>>(v).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|criterion| criterion.strip_prefix("contract:").map(str::to_string))
+        .filter_map(|id| {
+            let criterion = p.policy.acceptance.as_ref()?.criterion(&id)?;
+            let command = match &criterion.verifier {
+                amux_core::project::ContractVerifier::Command { command, .. } => command.clone(),
+                amux_core::project::ContractVerifier::Human { .. } => return None,
+            };
+            Some(json!({
+                "id": &criterion.id,
+                "requirement": &criterion.requirement,
+                "command": command,
+                "evidence_required": &criterion.evidence,
+            }))
+        })
+        .collect::<Vec<_>>();
     format!(
         r#"{output_protocol}
-{checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then produce a durable receipt before stopping: write the exact report body to `.amux/project-report.json` in this worktree, then optionally POST the same body to /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Receipt body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. Report checks must be static commands: no `$()`, no backticks, and no absolute checkout paths. If a check needs dynamic logic, commit a script and report a static command that calls that script, for example `python3 scripts/verify.py`. report.assets is required for new completed project tasks. Markdown/JSON/text reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after writing the receipt/report. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.
+{checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then produce a durable receipt before stopping: write the exact report body to `.amux/project-report.json` in this worktree, then optionally POST the same body to /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Receipt body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. Report checks must be static commands: no `$()`, no backticks, no `.amux` receipt files, and no absolute checkout paths. If a check needs dynamic logic, commit a script and report a static command that calls that script, for example `python3 scripts/verify.py`. report.assets is required for new completed project tasks, and every `contract_requirements[].evidence_required` path below must be included as an asset when that contract criterion is referenced. Markdown/JSON/text reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after writing the receipt/report. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.
 Task packet:
 {}"#,
         p.name,
@@ -130,7 +155,7 @@ Task packet:
         e.input_hash,
         p.name,
         row.id,
-        json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":row.acceptance_criteria.as_deref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command})
+        json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"criteria":criteria,"contract_requirements":contract_requirements,"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command})
     )
 }
 
@@ -646,6 +671,10 @@ fn repair_after_failure(e: &Execution, max_attempts: u32, action: &str, error: &
     !e.verification_retry_pending
         && e.attempt < e.attempt_limit(max_attempts)
         && (action == "verify"
+            || (action == "observe"
+                && (error.contains("report")
+                    || error.contains("criterion")
+                    || error.contains("check")))
             || matches!(
                 error,
                 "executor_stopped_before_result" | "executor_returned_without_result"
@@ -725,15 +754,13 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                 }
                 verify(state, &p, &id, &e).await
             }
-            "observe" => {
-                observe_with(state, name, &id, &e, || async {
-                    sv::boundary_signals(state, Some(&e.worker))
-                        .await
-                        .map(|signals| turn_observation(&signals, &e.worker))
-                })
-                .await?;
-                Ok(())
-            }
+            "observe" => observe_with(state, name, &id, &e, || async {
+                sv::boundary_signals(state, Some(&e.worker))
+                    .await
+                    .map(|signals| turn_observation(&signals, &e.worker))
+            })
+            .await
+            .map_err(|e| e.to_string()),
             "complete_epic" => {
                 let id = id.clone();
                 state.store.write_async(move|c| {
@@ -974,6 +1001,91 @@ mod observation_tests {
         let current = planner::execution(&state.store.read().unwrap(), "A").unwrap();
         assert_eq!(current.stage, "reported");
         assert!(current.report.is_some());
+    }
+    #[test]
+    fn invalid_project_report_file_enters_repair_instead_of_reingest_loop() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let db = crate::db::Store::open(&home.path().join("db")).unwrap();
+        db.write(|c| {
+            let policy=serde_json::from_value(json!({
+                "repository": "/repo",
+                "worktree": true,
+                "coordinator": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+                "executor": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+                "verify_command": "python3 scripts/verify_goal_07_iteration.py",
+                "max_attempts": 2,
+                "enabled": true,
+                "acceptance": {"criteria": [{
+                    "id": "goal-artifact",
+                    "requirement": "Artifact passes the project verifier",
+                    "verifier": {"type": "command", "id": "verify-goal-artifact", "command": "python3 scripts/verify_goal_07_iteration.py"}
+                }]}
+            })).unwrap();
+            store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
+            c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,session,created,updated,next_action,acceptance_criteria) VALUES('A','Goal artifact','Write artifact','doing','doc','sample','px-sample-a',1,1,'Write artifact','[\"contract:goal-artifact\"]')",[])?;
+            let row=bs::get_issue(c,"A")?.unwrap();
+            let e=Execution{
+                stage:"working".into(),
+                attempt:1,
+                generation:1,
+                input_hash:planner::input_hash(&row),
+                worker:"px-sample-a".into(),
+                delivery_id:"project:sample:A:1".into(),
+                observed_at:1,
+                ..Default::default()
+            };
+            planner::save_execution(c,&row,&e,"project.execution").map_err(store::sql_error)
+        }).unwrap();
+        planner::register_test_workspace("px-sample-a", "/repo");
+        let worktree = home.path().join("worktrees").join("px-sample-a");
+        std::fs::create_dir_all(worktree.join(".amux")).unwrap();
+        let e = planner::execution(&db.read().unwrap(), "A").unwrap();
+        std::fs::write(
+            worktree.join(".amux/project-report.json"),
+            serde_json::to_vec_pretty(&json!({
+                "generation": e.generation,
+                "input_hash": e.input_hash,
+                "report": {
+                    "head": "a".repeat(40),
+                    "summary": "bad worker receipt with a substituted contract check",
+                    "checks": [{"criterion":"contract:goal-artifact","command":"test -f wrong-path.md"}],
+                    "assets": [{"path":"wrong-path.md","sha256":"0".repeat(64)}]
+                }
+            })).unwrap(),
+        ).unwrap();
+        let state = AppState {
+            store: Arc::new(db),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(drive_project(&state, "sample"))
+            .unwrap();
+        let c = state.store.read().unwrap();
+        let after = planner::execution(&c, "A").unwrap();
+        assert_eq!(after.stage, "repair");
+        assert!(after.report.is_none());
+        assert!(
+            after
+                .waiting
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exactly the approved verifier command"),
+            "{after:?}"
+        );
+        assert_eq!(
+            planner::plan(&c, &store::get(&c, "sample").unwrap().unwrap())
+                .unwrap()
+                .into_iter()
+                .find(|p| p.id == "A")
+                .unwrap()
+                .action,
+            "claim"
+        );
     }
     #[test]
     fn project_observation_rejects_delayed_delivery_old_idle_and_report_races() {

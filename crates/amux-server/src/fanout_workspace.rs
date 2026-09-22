@@ -319,6 +319,9 @@ pub(crate) fn validate_verification_command(
     if command.contains("$(") || command.contains('`') {
         return Err("verification commands must be static candidate-relative commands; put dynamic logic in a committed script and call that script".into());
     }
+    if command.contains(".amux/") || command.split_whitespace().any(|part| part == ".amux") {
+        return Err("verification commands cannot depend on .amux receipt files; report receipts are harness plumbing, not committed candidate evidence".into());
+    }
     for source in [&workspace.path, &workspace.repo] {
         let mut spellings = vec![source.clone()];
         if let Ok(path) = std::fs::canonicalize(source) {
@@ -1400,6 +1403,9 @@ A  artifacts/project-report.json"
         let err =
             validate_verification_command(&workspace, "test `pwd` = /tmp/source-repo").unwrap_err();
         assert!(err.contains("static candidate-relative"));
+        let err = validate_verification_command(&workspace, "test -f .amux/project-report.json")
+            .unwrap_err();
+        assert!(err.contains("receipt files"));
     }
 
     #[tokio::test]
