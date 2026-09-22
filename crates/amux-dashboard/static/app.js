@@ -1350,12 +1350,12 @@ function showConnHistory() {
     : '';
   const modal = document.createElement('div');
   modal.id = 'conn-hist-modal';
-  modal.style.cssText = 'position:fixed;inset:0;z-index:2200;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);padding:16px;';
+  modal.className = 'conn-hist-overlay';
   modal.onclick = e => { if (e.target === modal) modal.remove(); };
-  modal.innerHTML = '<div onclick="event.stopPropagation()" style="background:var(--bg);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;max-height:80dvh;overflow:auto;padding:1.2rem;box-shadow:0 8px 32px rgba(0,0,0,0.4);">'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
-    + '<span id="conn-modal-status" style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span><button class="btn" id="conn-modal-close" aria-label="Close connection history" onclick="this.closest(\'#conn-hist-modal\').remove()">&#x2715;</button></div>'
-    + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Connection interruptions on this device (this browser)</div>'
+  modal.innerHTML = '<div class="conn-hist-box" role="dialog" aria-modal="true" aria-labelledby="conn-modal-title" onclick="event.stopPropagation()">'
+    + '<div class="conn-hist-head"><b id="conn-modal-title" class="conn-hist-title">Connection</b>'
+    + '<span id="conn-modal-status" class="conn-hist-status" style="color:' + stateColor + ';">' + stateLabel + '</span><button class="btn conn-hist-close" id="conn-modal-close" aria-label="Close connection history" onclick="this.closest(\'#conn-hist-modal\').remove()">&#x2715;</button></div>'
+    + '<div class="conn-hist-subtitle">Connection interruptions on this device (this browser)</div>'
     + _pingWidgetHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div><div id="conn-modal-write-notice">' + _localWriteNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
   modal.querySelector('#conn-modal-read-notice')._noticeHTML = _sessionReadNotice();
@@ -11779,7 +11779,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1026';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1027';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

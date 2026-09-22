@@ -6773,6 +6773,74 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .amux-dialog-viewport:is(#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,#conn-hist-modal) > div {
   max-height: calc(var(--dialog-viewport-height, 100dvh) - 40px) !important;
 }
+
+/* Connection modal: same dialog on desktop and phone.  The markup used to carry
+   the sizing inline in app.js, so the global visual-viewport fixes could not be
+   tested and narrow screens produced the cramped, clipped history view seen in
+   AMUX-4808.  Keep the shape here so every modal guard can reason about it. */
+#conn-hist-modal.conn-hist-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+  box-sizing: border-box;
+  padding: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+}
+#conn-hist-modal .conn-hist-box {
+  width: min(440px, 100%);
+  max-height: calc(var(--dialog-viewport-height, 100dvh) - 40px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.2rem;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+#conn-hist-modal .conn-hist-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -1.2rem -1.2rem 4px;
+  padding: 1.2rem 1.2rem 10px;
+  position: sticky;
+  top: -1.2rem;
+  z-index: 2;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+#conn-hist-modal .conn-hist-title { font-size: 1rem; flex: 1; min-width: 0; }
+#conn-hist-modal .conn-hist-status { font-size: 0.82rem; font-weight: 600; white-space: nowrap; }
+#conn-hist-modal .conn-hist-close { flex-shrink: 0; min-width: 44px; min-height: 44px; }
+#conn-hist-modal .conn-hist-subtitle { color: var(--dim); font-size: 0.76rem; margin-bottom: 10px; }
+@media (max-width:600px) {
+  #conn-hist-modal.conn-hist-overlay {
+    align-items: stretch;
+    justify-content: stretch;
+    padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+  }
+  #conn-hist-modal .conn-hist-box {
+    width: 100%;
+    max-width: none;
+    max-height: calc(var(--dialog-viewport-height, 100dvh) - 16px);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  #conn-hist-modal .conn-hist-head {
+    margin: -16px -16px 8px;
+    padding: 12px 16px 10px;
+    top: -16px;
+  }
+  #conn-hist-modal .conn-hist-title { font-size: 1rem; }
+  #conn-hist-modal .conn-hist-status { max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+  #conn-hist-modal .conn-hist-subtitle { font-size: 0.82rem; line-height: 1.35; }
+  #conn-hist-modal .btn { min-height: 44px; }
+}
 @media (max-width:600px) {
   .amux-dialog-viewport button { min-height:44px; min-width:44px; }
 }

@@ -1799,3 +1799,44 @@ fn the_ui_closed_statuses_match_the_servers_derivation() {
     // And the count is not a coincidence of two short lists.
     assert!(from_js.len() >= 5, "{from_js:?}");
 }
+
+/// AMUX-4808: the connection history/error dialog is the one the user opens
+/// when sync is already broken, so it must remain readable on a phone and under
+/// a keyboard. Keep its shell in CSS classes, not inline JavaScript styles, so
+/// the shared modal viewport guard can size it and this test can pin the shape.
+#[test]
+fn connection_history_modal_uses_the_mobile_dialog_shell() {
+    let js = asset("app.js");
+    let css = asset("app.css");
+
+    for needle in [
+        "modal.className = 'conn-hist-overlay'",
+        "class=\"conn-hist-box\" role=\"dialog\" aria-modal=\"true\"",
+        "aria-labelledby=\"conn-modal-title\"",
+        "class=\"btn conn-hist-close\"",
+    ] {
+        assert!(
+            js.contains(needle),
+            "connection modal lost its classed, accessible shell: {needle}"
+        );
+    }
+    assert!(
+        !js.contains("modal.style.cssText = 'position:fixed;inset:0;z-index:2200"),
+        "the connection modal shell must not be hidden in inline styles; CSS owns the mobile layout"
+    );
+    for needle in [
+        "#conn-hist-modal.conn-hist-overlay",
+        "#conn-hist-modal .conn-hist-box",
+        "max-height: calc(var(--dialog-viewport-height, 100dvh) - 16px)",
+        "@media (max-width:600px)",
+        "#conn-hist-modal .conn-hist-close",
+        "min-height: 44px",
+        "position: sticky",
+        "-webkit-overflow-scrolling: touch",
+    ] {
+        assert!(
+            css.contains(needle),
+            "connection modal CSS lost mobile-safe layout detail: {needle}"
+        );
+    }
+}
