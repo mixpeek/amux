@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1019';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1020';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11896,6 +11896,9 @@ function openPeek(name, opts) {
   _peekAgentsReset();
   _bindPeekScrollAffordance();
   requestAnimationFrame(_peekScrollAffordance);
+  // AMUX-5025. Fired once per open, two frames in, so the overlay has been laid
+  // out and the numbers are real. Cheap: one hidden probe element and one POST.
+  requestAnimationFrame(() => requestAnimationFrame(() => _peekInsetReport('open')));
   _peekOpenGeneration++;
   const openIdentity = _peekIdentity(name);
   try { _applyPeekTabVisibility(); } catch(e) {}
@@ -26088,6 +26091,72 @@ function _chromeRenameTab(id) {
   const commit = () => { const val = inp.value.trim(); tab.name = val || ''; _chromeRender(); _chromeSave(); };
   inp.addEventListener('blur', commit);
   inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } if (e.key === 'Escape') { tab.name = ''; inp.blur(); }});
+}
+
+/// WHERE THE EMPTY BAND ACTUALLY COMES FROM (AMUX-5025).
+///
+/// Ethan has reported an empty strip above the worker header and below the
+/// composer three times. Two real double-counted safe-area insets have been
+/// found and fixed and neither closed it. app.css has twenty rules that add
+/// `env(safe-area-inset-top)`, and reading them cannot say which are live on a
+/// particular device, theme and chrome state — the two fixes so far came from
+/// reading, and both were half the answer.
+///
+/// So this reports the resolved geometry from the device itself: what the
+/// overlay is offset by, where the header actually lands, and what the browser
+/// resolved `env()` to. `measured` is on every field that was read, and a
+/// field that could not be read is omitted rather than sent as zero.
+///
+/// It STAYS after the fix. A fourth recurrence should name its own cause
+/// instead of costing another screenshot round trip (ethos rule 4).
+function _peekInsetReport(reason) {
+  try {
+    const probe = document.createElement('div');
+    probe.setAttribute('style',
+      'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;'
+      + 'padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);');
+    document.body.appendChild(probe);
+    const pcs = getComputedStyle(probe);
+    const envTop = parseFloat(pcs.paddingTop) || 0;
+    const envBottom = parseFloat(pcs.paddingBottom) || 0;
+    probe.remove();
+
+    const box = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom),
+               padTop: Math.round(parseFloat(cs.paddingTop) || 0),
+               padBottom: Math.round(parseFloat(cs.paddingBottom) || 0) };
+    };
+    const overlay = document.getElementById('peek-overlay');
+    const payload = {
+      kind: 'peek-inset-report', reason, ver: APP_VER,
+      measured: true, n_considered: 1,
+      innerHeight: window.innerHeight, innerWidth: window.innerWidth,
+      env_top: envTop, env_bottom: envBottom,
+      chrome_tab_h: Math.round(parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--chrome-tab-h')) || 0),
+      overlay: box(overlay),
+      header: box(overlay && overlay.querySelector('.overlay-header')),
+      tabs: box(overlay && overlay.querySelector('.peek-tabs')),
+      body_el: box(document.getElementById('peek-body')),
+      composer: box(document.getElementById('peek-cmd-input')),
+      // THE NUMBER THE REPORT EXISTS FOR: how much empty space sits between the
+      // carve and the first thing a reader sees.
+      gap_above_header: (() => {
+        const h = overlay && overlay.querySelector('.overlay-header');
+        return h ? Math.round(h.getBoundingClientRect().top - envTop) : null;
+      })(),
+      gap_below_composer: (() => {
+        const c = document.getElementById('peek-cmd-input');
+        return c ? Math.round(window.innerHeight - envBottom - c.getBoundingClientRect().bottom) : null;
+      })(),
+    };
+    console.warn('[amux] peek inset report', JSON.stringify(payload));
+    fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload) }).catch(() => {});
+  } catch (e) { /* a diagnostic must never break the surface it measures */ }
 }
 
 function _chromeUpdateOffsets() {
