@@ -2530,6 +2530,69 @@ pub fn todo_is_reachable_by_dispatch(
     }))]
 }
 
+/// A credential-shaped `NAME=VALUE` seen in a live process argument list.
+///
+/// THE VALUE IS NEVER CARRIED, here or anywhere downstream. Only its length,
+/// which distinguishes a real key from the empty `ANTHROPIC_API_KEY=` an OAuth
+/// worker uses to suppress an inherited one, and which cannot itself be a key.
+/// A detector for leaked secrets that logs the secret is the leak.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgvSecret {
+    pub pid: String,
+    pub key: String,
+    pub value_len: usize,
+}
+
+/// AMUX-4946: is any live process carrying a credential in its argv?
+///
+/// Process arguments are world-readable, and a tmux SERVER keeps the argv of
+/// the `new-session` that created it for its whole lifetime — measured at
+/// 3d22h with a live `OPENAI_API_KEY` in it, readable by every lane, script
+/// and diagnostic on a box running ~60 of them.
+///
+/// AMUX-4803 fixed the path that caused it, and this watches for the CONDITION
+/// instead. That difference is the point: the spawn guard is a source test
+/// scoped to one block plus a predicate on one backend, so a leak arriving
+/// from any other path — a new spawn site, a script, a hook — would be as
+/// invisible as the original was. The original was found by reading `ps`, not
+/// by a failing test, and its own guard says so. This is that read, on a tick.
+pub fn no_secrets_in_process_argv(found: &[ArgvSecret], n_considered: usize) -> Vec<InvariantResult> {
+    const ID: &str = "security.no_secrets_in_process_argv";
+    if found.is_empty() {
+        return vec![InvariantResult::pass(ID).evidence(json!({
+            "processes_with_secrets": 0,
+            "n_considered": n_considered,
+            "measured": true,
+        }))];
+    }
+    let mut pids: Vec<&str> = found.iter().map(|f| f.pid.as_str()).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let who: Vec<String> =
+        found.iter().map(|f| format!("pid {} {} (len {})", f.pid, f.key, f.value_len)).collect();
+    vec![InvariantResult::fail(
+        ID,
+        "no live process carries a credential-shaped NAME=VALUE in its argv".to_string(),
+        format!(
+            "{} credential-shaped value(s) in the argv of {} process(es), readable by every \
+             process on this box: {}. Names and lengths only; the values are deliberately not \
+             read into this verdict. Pass secrets with `tmux set-environment` after the session \
+             exists, never as `-e KEY=VALUE` (AMUX-4803/AMUX-4946).",
+            found.len(),
+            pids.len(),
+            who.join(", "),
+        ),
+    )
+    .evidence(json!({
+        "processes_with_secrets": pids.len(),
+        "pairs": found.len(),
+        "n_considered": n_considered,
+        "measured": true,
+        "keys": found.iter().map(|f| json!({"pid": f.pid, "key": f.key, "value_len": f.value_len}))
+            .collect::<Vec<_>>(),
+    }))]
+}
+
 /// One enabled schedule whose target cannot receive it (AMUX-4784).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UndeliverableSchedule {
@@ -8676,6 +8739,68 @@ mod repeat_offer_tests {
         // ...and the threshold, or a later reader cannot tell whether the zero
         // means "nothing cycled" or "the bar was set impossibly high".
         assert!(d.contains("threshold"), "{d}");
+    }
+}
+
+#[cfg(test)]
+mod argv_secret_invariant_tests {
+    use super::*;
+
+    fn secret(pid: &str, key: &str, len: usize) -> ArgvSecret {
+        ArgvSecret { pid: pid.into(), key: key.into(), value_len: len }
+    }
+
+    /// AMUX-4946. Both arms, because a detector that only ever sees zero is
+    /// indistinguishable from one that cannot see.
+    #[test]
+    fn a_clean_box_passes_and_a_leaked_key_fails_naming_pid_and_key() {
+        let clean = no_secrets_in_process_argv(&[], 1284);
+        assert_eq!(clean[0].status, Status::Pass);
+        assert_eq!(clean[0].evidence["n_considered"], json!(1284));
+
+        let leaked = no_secrets_in_process_argv(&[secret("4100", "OPENAI_API_KEY", 164)], 1284);
+        assert_eq!(leaked[0].status, Status::Fail);
+        let observed = leaked[0].observed.clone();
+        assert!(observed.contains("OPENAI_API_KEY"), "the key must be named: {observed}");
+        assert!(observed.contains("4100"), "the pid must be named: {observed}");
+    }
+
+    /// THE SECURITY PROPERTY ITSELF: a detector for leaked secrets must not
+    /// become the leak. The verdict and its evidence travel into the invariants
+    /// API, the server log and any card autofix files from it, so a value
+    /// carried here is a value published three more times.
+    #[test]
+    fn the_value_never_appears_in_the_verdict_or_its_evidence() {
+        const VALUE: &str = "sk-live-THIS-MUST-NEVER-BE-PRINTED";
+        // The struct has no field to put it in, which is the design: this test
+        // pins that the rendered verdict cannot acquire one either.
+        let leaked = no_secrets_in_process_argv(
+            &[secret("4100", "OPENAI_API_KEY", VALUE.len())],
+            1284,
+        );
+        let rendered =
+            format!("{}{}{}", leaked[0].observed, leaked[0].expected, leaked[0].evidence);
+        assert!(!rendered.contains(VALUE), "the verdict leaked the value it was reporting");
+        assert!(!rendered.contains("sk-live"), "not even a prefix: {rendered}");
+        // The LENGTH does travel, and is what separates a real key from the
+        // empty `ANTHROPIC_API_KEY=` an OAuth worker uses to suppress one.
+        assert!(rendered.contains(&VALUE.len().to_string()), "the length is the usable signal");
+    }
+
+    /// Several pairs on one process are one exposed process, not several.
+    #[test]
+    fn pairs_and_processes_are_counted_separately() {
+        let leaked = no_secrets_in_process_argv(
+            &[
+                secret("4100", "OPENAI_API_KEY", 164),
+                secret("4100", "GOOGLE_API_KEY", 39),
+                secret("4771", "ANTHROPIC_API_KEY", 108),
+            ],
+            900,
+        );
+        let evidence = &leaked[0].evidence;
+        assert_eq!(evidence["pairs"], json!(3));
+        assert_eq!(evidence["processes_with_secrets"], json!(2));
     }
 }
 

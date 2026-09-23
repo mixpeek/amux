@@ -467,6 +467,7 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // halves reporting success for 11 days).
     out.extend(autofix_dispatchable_check(state));
     out.extend(todo_reachable_check(state).await);
+    out.extend(argv_secret_check().await);
     out.extend(repeat_offer_check(state));
     out.extend(archived_terminal_check(state));
     out.extend(card_type_vocabulary_check(state));
@@ -2320,6 +2321,61 @@ fn repeat_offer_check(state: &AppState) -> Vec<InvariantResult> {
         })
         .collect();
     checks::repeat_offers_are_visible(&pairs, total, REPEAT_OFFER_THRESHOLD)
+}
+
+/// AMUX-4946: read `ps` the way the human who found the leak did.
+///
+/// Identifier-shaped keys only (`NAME=VALUE`, letters/digits/underscore), which
+/// is exactly the env-assignment form `-e KEY=VALUE` produces. A flag-style
+/// `--api-key=...` is the same hazard and is deliberately NOT matched: it also
+/// matches ordinary references like `--secret-name=foo`, and a noisy security
+/// invariant is one people learn to skip past.
+///
+/// The predicate is `tmux::env_pair_is_argv_safe`, the SAME one the spawn guard
+/// refuses on, so the detector and the mechanism cannot come to disagree about
+/// what counts as a secret.
+async fn argv_secret_check() -> Vec<InvariantResult> {
+    const ID: &str = "security.no_secrets_in_process_argv";
+    let output =
+        tokio::process::Command::new("ps").args(["-axww", "-o", "pid=,command="]).output().await;
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut found = Vec::new();
+            let mut considered = 0usize;
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                considered += 1;
+                let (pid, rest) = line.split_once(' ').unwrap_or((line, ""));
+                for token in rest.split_whitespace() {
+                    let Some((key, value)) = token.split_once('=') else { continue };
+                    let identifier = !key.is_empty()
+                        && !key.starts_with(|c: char| c.is_ascii_digit())
+                        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                    if identifier && !crate::backend::tmux::env_pair_is_argv_safe(key, value) {
+                        found.push(checks::ArgvSecret {
+                            pid: pid.to_string(),
+                            key: key.to_string(),
+                            // LENGTH, never the value.
+                            value_len: value.len(),
+                        });
+                    }
+                }
+            }
+            checks::no_secrets_in_process_argv(&found, considered)
+        }
+        Ok(out) => vec![InvariantResult::unknown(
+            ID,
+            format!("ps exited {} — cannot confirm no argv carries a credential", out.status),
+        )],
+        Err(e) => vec![InvariantResult::unknown(
+            ID,
+            format!("ps unavailable ({e}) — cannot confirm no argv carries a credential"),
+        )],
+    }
 }
 
 async fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
