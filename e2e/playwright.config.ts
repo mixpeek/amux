@@ -192,6 +192,32 @@ export default defineConfig({
   projects: TARGETS.map((t) => ({
     name: t.name,
     use: { ...t.use, baseURL: `https://localhost:${t.port}` },
+    // AMUX-4983. ios-safari alone gets a larger budget, because the thing it
+    // spends it on is not the test.
+    //
+    // Measured 2026-09-23: with the server up and webkit warm, the test that
+    // failed CI runs in 2.4-2.6s, five times out of five (--repeat-each=5,
+    // one server start). The failure is never an assertion — it is
+    // "Test timeout of 30000ms exceeded while setting up \"page\"", i.e. the
+    // 30s TEST budget consumed by a COLD page/browser launch before any test
+    // code runs. Reproduced 1 in 3 locally on identical bytes.
+    //
+    // So the margin here is enormous rather than generous: a warm run uses 3%
+    // of 90s. It cannot hide a slow test; it only stops a cold launch from
+    // being charged to the first test that happens to draw it. That matters
+    // beyond this spec — a setup timeout lands on whichever test went first,
+    // so the spec NAME in such a failure is noise, which is how AMUX-4967
+    // ended up cataloguing five unrelated "flaky specs" and was discarded.
+    //
+    // retries stays 0 on purpose. A retry would also paper over this, and
+    // would additionally hide a genuinely failing assertion; a bigger budget
+    // cannot, because the assertion still runs and still fails.
+    //
+    // This is the cheapest of the three options on the card. If it recurs,
+    // the next step is instrumenting the launch itself — the config already
+    // prints host load every run for exactly that reason (AMUX-3605/3646,
+    // load averages in the thirties on 28 cores).
+    ...(t.name === 'ios-safari' ? { timeout: 90_000 } : {}),
   })),
   webServer: TARGETS.map((t) => ({
     // Builds from COMMITTED HEAD, not this shared working tree — a peer
